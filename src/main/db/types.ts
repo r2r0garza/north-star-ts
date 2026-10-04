@@ -941,10 +941,22 @@ export interface UserStory {
   worktreePath: string | null
   baseOid: string | null
   attempts: number
-  origin: "user" | "agent"
+  // "gate": a fix story the acceptance gate created from an app_bug (110.03).
+  origin: "user" | "agent" | "gate"
+  // Fix stories: the gate that created it, and the criterion it fixes (the
+  // original story's, even when the bug resurfaced on another fix story).
+  gateId: string | null
+  fixes: UserStoryFixTarget | null
   position: number
   startedAt: number | null
   finishedAt: number | null
+}
+
+export interface UserStoryFixTarget {
+  userStoryId: string
+  criterionId: string
+  // The criterion's words when the fix was created: ids are positional.
+  criterion: string
 }
 
 export interface UserStoryEdge {
@@ -1065,6 +1077,12 @@ export type GateCriterionOutcome =
 
 export interface GateCriterionResult {
   id: string
+  // The criterion's words, stamped when the gate finishes (ids are positional,
+  // so a criterion dropped later renumbers the rest).
+  text?: string
+  // A criterion the user accepted as is at an earlier gate (110.03): it
+  // counts as passed whatever QA recorded.
+  waived?: boolean
   outcome: GateCriterionOutcome
   evidence: string
   // The criterion's automated checks in the manifest, with what the harness
@@ -1112,6 +1130,46 @@ export interface WaveGateReport {
   reason?: string
   // Why the suite couldn't be committed, when it couldn't.
   commitNote?: string
+  // Set when the gate finishes (110.03): the fix stories its app_bugs became,
+  // and the criteria that hit the fix-round cap and went to the user.
+  fixes?: GateFix[]
+  escalations?: GateEscalation[]
+}
+
+// One app_bug turned into a fix story (or, in Manual, proposed as one).
+export interface GateFix {
+  // The criterion as QA triaged it.
+  userStoryId: string
+  key: string
+  criterionId: string
+  // The original criterion it traces back to (a fix story's bug is its root's).
+  root: UserStoryFixTarget & { key: string }
+  // 1 for the first fix round of the root criterion, 2 for the second, …
+  fixRound: number
+  fixStoryId: string | null
+  fixStoryKey: string | null
+  proposalId: string | null
+}
+
+export type GateEscalationAction = "accept" | "user_fix" | "drop"
+
+// A criterion still app_bug after maxGateFixRounds fix rounds: the user
+// accepts it as is, fixes it themselves, or drops it from the story.
+export interface GateEscalation {
+  id: string
+  root: UserStoryFixTarget & { key: string }
+  // Fix rounds already spent on it.
+  rounds: number
+  problem: string
+  evidence: string
+  checks: ProofCheckResult[]
+  artifacts?: string[]
+  resolution?: {
+    action: GateEscalationAction
+    note: string
+    by: string
+    at: number
+  }
 }
 
 export interface MissionControlRunLink {

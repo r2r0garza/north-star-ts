@@ -577,6 +577,9 @@ describe.skipIf(!sqliteLoads)("milestone integration", () => {
 
   it("fails the gate on an app bug, keeps the story merged, and still commits the suite", async () => {
     const { root, feature, milestone, userStory } = await mergedStory("a")
+    features.setFeatureStatus(feature.id, "paused", "test")
+    features.setDriveMode(feature.id, "copilot")
+    features.setFeatureStatus(feature.id, "active", "test")
     gateTurn = scriptedGate('node -e "process.exit(1)"', {
       "a AC-1": {
         outcome: "app_bug",
@@ -585,10 +588,30 @@ describe.skipIf(!sqliteLoads)("milestone integration", () => {
       },
     })
     const run = await runGate(feature.id, milestone.id)
-    expect(run.status).toBe("failed")
+    // QA's step did its job; the gate failed and its app bug became a fix
+    // story (plan 110.03).
+    expect(run.status).toBe("completed")
     expect(run.outcomeReason).toMatch(/round 1 failed: a didn't pass/)
     const [gate] = waveGates.listWaveGates(milestone.id)
-    expect(gate.status).toBe("failed")
+    expect(gate.status).toBe("fixing")
+    const fix = features
+      .listUserStories(milestone.id)
+      .find((s) => s.origin === "gate")!
+    expect(fix).toMatchObject({
+      key: "fix-a-ac1",
+      status: "draft",
+      gateId: gate.id,
+      fixes: {
+        userStoryId: userStory("a").id,
+        criterionId: "AC-1",
+        criterion: "The file exists",
+      },
+    })
+    expect(fix.spec.acceptance[0]).toBe("The file exists")
+    expect(fix.spec.acceptance[1]).toContain("`a-ac-1`")
+    expect(fix.spec.notes).toContain("e2e/stories/billing.milestone-1.a.json")
+    // The milestone is back to work: the fix story is the next wave.
+    expect(features.getMilestone(milestone.id)!.status).toBe("active")
     expect(gate.report).toMatchObject({
       outcome: "failed",
       stories: [

@@ -179,6 +179,7 @@ function createUserStory(
     spec: specOf(draft),
     podKey: draft.pod ?? null,
     origin: input.origin,
+    fix: draft.fix ?? null,
     actor: input.actor,
     reason: input.reason,
   })

@@ -10,6 +10,7 @@ export type BudgetKey =
   | "maxMessagesPerHour"
   | "maxActiveHours"
   | "maxPhaseMinutes"
+  | "maxGateFixRounds"
 
 export type BudgetLevel = "ok" | "soft" | "hard"
 
@@ -73,6 +74,14 @@ export const BUDGET_SPECS: readonly BudgetSpec[] = [
     onHard:
       "The phase is told to wrap up; at twice the limit it stops and the user story retries.",
   },
+  {
+    key: "maxGateFixRounds",
+    label: "Fix rounds per gate criterion",
+    default: 2,
+    unit: "rounds",
+    onHard:
+      "The acceptance gate asks you about the criterion instead of adding another fix story.",
+  },
 ]
 
 export const SOFT_BUDGET_RATIO = 0.8
@@ -118,6 +127,7 @@ export const MILESTONE_BUDGETS: ReadonlySet<BudgetKey> = new Set([
   "maxUserStoryAttempts",
   "maxPlanRevisionsPerMilestone",
   "maxAgentUserStoriesPerMilestone",
+  "maxGateFixRounds",
 ])
 
 export function budgetMeters(
@@ -143,6 +153,7 @@ export function budgetMeters(
     // Agent-added user stories are a subset of the milestone's; showing the
     // total keeps "2 / 5" from reading as over the limit on a 7-story milestone.
     const agentStories = spec.key === "maxAgentUserStoriesPerMilestone"
+    const fixRounds = spec.key === "maxGateFixRounds"
     return {
       key: spec.key,
       label: spec.label,
@@ -158,6 +169,11 @@ export function budgetMeters(
       ...(agentStories
         ? {
             help: "Counts user stories seats added on their own (such as the lead splitting one). Stories from a plan you applied don't count.",
+          }
+        : {}),
+      ...(fixRounds
+        ? {
+            help: "The most fix stories any one acceptance criterion has needed at this milestone's gates. At the limit, the gate asks you instead.",
           }
         : {}),
     }

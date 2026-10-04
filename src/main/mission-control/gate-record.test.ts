@@ -373,6 +373,27 @@ describe("decideGateRecord", () => {
     }
   })
 
+  it("doesn't ask for criteria the user accepted as is (plan 110.03)", () => {
+    const waived = verification({
+      stories: [
+        { ...stories[0], waived: ["AC-2"] },
+        { ...stories[1], waived: ["AC-1"] },
+      ],
+      results: [
+        result("f.m.items", "add", true),
+        result("f.m.items", "complete", false),
+        result("f.m.shell", "loads", false),
+      ],
+    })
+    const decision = decideGateRecord({
+      submission: submit([passedBoth[0]]),
+      verification: waived,
+      recordedBy: "qa@implementation",
+      processRunId: "run-1",
+    })
+    expect(decision).toMatchObject({ ok: true })
+  })
+
   it("needs a check_fixed with a justification to change an earlier story's checks", () => {
     const changed = {
       checkChanges: [

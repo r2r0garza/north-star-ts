@@ -9,6 +9,7 @@ const usage: BudgetUsage = {
   maxMessagesPerHour: 0,
   maxActiveHours: 0,
   maxPhaseMinutes: 0,
+  maxGateFixRounds: 0,
 }
 
 describe("budgetMeters", () => {

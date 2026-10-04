@@ -34,6 +34,7 @@ import { evidenceDir } from "./evidence"
 import { runPlaywrightCheck } from "./playwright-runner"
 import { waitForTestBrowser } from "./playwright-install"
 import { recordEvent } from "../db/repositories/mc-events"
+import { gateWaivers, waivedCriteria } from "./gate-fixes"
 import { holdPhaseClock } from "../tasks/process/phase-clock"
 import {
   userStoryCriteria,
@@ -132,6 +133,9 @@ export interface GateCheckStory {
   storyRef: string
   criteria: UserStoryCriterion[]
   batch: boolean
+  // Criteria the user accepted as is at an earlier gate (plan 110.03): not
+  // triaged, whatever their checks do.
+  waived: string[]
 }
 
 export interface GateChecks {
@@ -150,6 +154,7 @@ export function gateChecks(link: MissionControlRunLink): GateChecks | null {
   const feature = features.getFeature(link.featureId)
   if (!gate || !feature) return null
   const batch = new Set(gate.storyIds)
+  const waivers = gateWaivers(feature.id, gate.id)
   const stories = new Map<string, GateCheckStory>()
   for (const milestone of features.listMilestones(feature.id))
     for (const story of features.listUserStories(milestone.id)) {
@@ -164,6 +169,7 @@ export function gateChecks(link: MissionControlRunLink): GateChecks | null {
         storyRef,
         criteria: userStoryCriteria(story),
         batch: batch.has(story.id),
+        waived: waivedCriteria(story, waivers),
       })
     }
   return {

@@ -34,6 +34,9 @@ import * as seatCommsRepo from "../db/repositories/seat-comms"
 import * as seatSessionsRepo from "../db/repositories/seat-sessions"
 import { deleteConversationsWithArtifacts } from "../conversations/lifecycle"
 import { startHookRun } from "../mission-control/hook-runner"
+import { resolveGateEscalation } from "../mission-control/gate-fixes"
+import { emitWorkChanged } from "../mission-control/work-events"
+import type { GateEscalationAction } from "../db/types"
 import type { MilestoneIntegration } from "../mission-control/integration"
 import type { Navigator } from "../mission-control/navigator"
 import type { HealthMonitor } from "../mission-control/health/monitor"
@@ -347,6 +350,36 @@ export function registerMissionControlHandlers(
   ipcMain.handle(
     "missionControl:integration:status",
     (_event, milestoneId: string) => integration.status(milestoneId)
+  )
+  // A criterion still failing after the gate's fix rounds (plan 110.03):
+  // accept it as is, fix it yourself (the feature pauses; resuming re-runs
+  // the gate), or drop it from the story.
+  ipcMain.handle(
+    "missionControl:integration:resolveGateEscalation",
+    (
+      _event,
+      input: {
+        gateId: string
+        escalationId: string
+        action: GateEscalationAction
+        note?: string
+      }
+    ) => {
+      if (!["accept", "user_fix", "drop"].includes(input.action))
+        throw new Error(`Unknown action: ${String(input.action)}`)
+      const outcome = resolveGateEscalation({ ...input, by: "user" })
+      const milestone = features.getMilestone(outcome.gate.milestoneId)
+      if (milestone) {
+        if (
+          outcome.pause &&
+          features.getFeature(milestone.featureId)?.status === "active"
+        )
+          navigator.pause(milestone.featureId, outcome.pause, "user")
+        integration.advanceMilestone(milestone.id)
+        emitWorkChanged(milestone.featureId)
+      }
+      return outcome.gate
+    }
   )
   ipcMain.handle(
     "missionControl:integration:setPolicy",

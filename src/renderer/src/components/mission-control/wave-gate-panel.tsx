@@ -1,16 +1,24 @@
+import { useState } from "react"
 import {
   AlertTriangle,
   CheckCircle2,
   CircleSlash,
   FileDiff,
+  Hammer,
   ShieldCheck,
+  Trash2,
   Wrench,
   XCircle,
 } from "lucide-react"
+import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import type {
   FeatureGraph,
   GateCriterionOutcome,
+  GateEscalation,
+  GateEscalationAction,
   WaveGate,
   WaveGateReport,
   WaveGateStatus,
@@ -20,7 +28,9 @@ import { CheckResults, EvidenceFiles } from "./proof-panel"
 // A milestone's wave acceptance gates (plan 110.02): per gate, how QA triaged
 // each criterion of its batch (and any earlier story that regressed), the
 // checks behind each outcome, changes QA made to checks that already passed,
-// and the commit that put the suite on the integration branch.
+// and the commit that put the suite on the integration branch. Since 110.03
+// also the fix stories its app bugs became, and the criteria past the
+// fix-round cap that wait on the user.
 
 const GATE_STATUS: Record<
   WaveGateStatus,
@@ -78,10 +88,16 @@ function GateReport({
   graph: FeatureGraph
   report: WaveGateReport
 }) {
-  const criterionText = (userStoryId: string, id: string) =>
+  const criterionText = (
+    userStoryId: string,
+    id: string,
+    text: string | undefined
+  ) =>
+    text ??
     graph.userStories.find((s) => s.id === userStoryId)?.spec.acceptance[
       Number(id.replace(/^AC-/, "")) - 1
-    ] ?? ""
+    ] ??
+    ""
   const earlier = report.checkChanges.filter((c) => c.earlierStories.length)
   return (
     <div className="space-y-3">
@@ -119,10 +135,20 @@ function GateReport({
                     <div className="min-w-0 flex-1">
                       <div className="text-sm">
                         <span className="font-medium">{criterion.id}</span>{" "}
-                        {criterionText(story.userStoryId, criterion.id)}
+                        {criterionText(
+                          story.userStoryId,
+                          criterion.id,
+                          criterion.text
+                        )}
                       </div>
                       <div className={`text-xs ${meta.className}`}>
                         {meta.label}
+                        {criterion.waived && (
+                          <span className="text-muted-foreground">
+                            {" "}
+                            · accepted as is earlier, so it counts as passed
+                          </span>
+                        )}
                       </div>
                       {note && (
                         <div className="text-xs">
@@ -198,12 +224,206 @@ function GateReport({
   )
 }
 
+const RESOLUTION_LABEL: Record<GateEscalationAction, string> = {
+  accept: "Accepted as is",
+  user_fix: "You're fixing it",
+  drop: "Criterion dropped",
+}
+
+function EscalationCard({
+  gate,
+  escalation,
+  onChanged,
+}: {
+  gate: WaveGate
+  escalation: GateEscalation
+  onChanged?: () => Promise<void>
+}) {
+  const [note, setNote] = useState("")
+  const [pending, setPending] = useState(false)
+  const label = `${escalation.root.key} ${escalation.root.criterionId}`
+  const decide = async (action: GateEscalationAction, success: string) => {
+    setPending(true)
+    try {
+      await window.cowork.missionControl.integration.resolveGateEscalation({
+        gateId: gate.id,
+        escalationId: escalation.id,
+        action,
+        note: note.trim() || undefined,
+      })
+      toast.success(success)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error))
+    } finally {
+      setPending(false)
+      await onChanged?.()
+    }
+  }
+  const resolution = escalation.resolution
+  return (
+    <div
+      className={`space-y-2 rounded-md border p-3 text-sm ${resolution ? "" : "border-destructive/50 bg-destructive/5"}`}
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <AlertTriangle
+          className={`size-4 ${resolution ? "text-muted-foreground" : "text-destructive"}`}
+        />
+        <span className="font-medium">{label}</span>
+        <span className="text-xs text-muted-foreground">
+          still failing after {escalation.rounds} fix round
+          {escalation.rounds === 1 ? "" : "s"}
+        </span>
+        {resolution && (
+          <Badge variant="outline" className="ml-auto">
+            {RESOLUTION_LABEL[resolution.action]}
+          </Badge>
+        )}
+      </div>
+      <p className="text-sm">{escalation.root.criterion}</p>
+      {escalation.problem && (
+        <p className="text-xs">What's wrong: {escalation.problem}</p>
+      )}
+      <p className="text-xs text-muted-foreground">{escalation.evidence}</p>
+      {escalation.checks.length > 0 && (
+        <CheckResults checks={escalation.checks} />
+      )}
+      {escalation.artifacts?.length ? (
+        <EvidenceFiles paths={escalation.artifacts} />
+      ) : null}
+      {resolution ? (
+        resolution.note && (
+          <p className="text-xs text-muted-foreground">
+            Note: {resolution.note}
+          </p>
+        )
+      ) : (
+        <div className="space-y-2 pt-1">
+          <Input
+            value={note}
+            onChange={(event) => setNote(event.target.value)}
+            placeholder="Note (optional): why, or what you'll change"
+            className="h-8 text-xs"
+            disabled={pending}
+          />
+          <div className="flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={pending}
+              title="Waive the criterion: it counts as passed from now on, and the story can be done"
+              onClick={() => void decide("accept", `${label} accepted as is`)}
+            >
+              <CheckCircle2 className="size-3.5" /> Accept as is
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={pending}
+              title="Pause the feature while you fix it on the integration branch; resuming runs the acceptance gate again"
+              onClick={() =>
+                void decide(
+                  "user_fix",
+                  "Paused. Resume when it's fixed; the gate runs again."
+                )
+              }
+            >
+              <Hammer className="size-3.5" /> I'll fix it
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="text-muted-foreground hover:text-destructive"
+              disabled={pending}
+              title="Remove the criterion from the user story; the gate runs again"
+              onClick={() => {
+                if (
+                  !window.confirm(
+                    `Drop "${escalation.root.criterion}" from ${escalation.root.key}? The criterion is removed from the user story and the acceptance gate runs again.`
+                  )
+                )
+                  return
+                void decide("drop", `${label} dropped`)
+              }}
+            >
+              <Trash2 className="size-3.5" /> Drop the criterion
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function GateFollowups({
+  graph,
+  gate,
+  report,
+  onChanged,
+}: {
+  graph: FeatureGraph
+  gate: WaveGate
+  report: WaveGateReport
+  onChanged?: () => Promise<void>
+}) {
+  const fixes = report.fixes ?? []
+  const escalations = report.escalations ?? []
+  if (!fixes.length && !escalations.length) return null
+  const fixStories = graph.userStories.filter((s) => s.gateId === gate.id)
+  return (
+    <div className="space-y-2">
+      {fixes.length > 0 && (
+        <div className="space-y-1 rounded-md border p-3 text-xs">
+          <div className="flex items-center gap-1.5 font-medium">
+            <Wrench className="size-3.5" /> Fix stories
+          </div>
+          <ul className="space-y-0.5">
+            {fixes.map((fix) => {
+              const story =
+                fixStories.find((s) => s.id === fix.fixStoryId) ??
+                fixStories.find(
+                  (s) =>
+                    s.fixes?.userStoryId === fix.root.userStoryId &&
+                    s.fixes?.criterion === fix.root.criterion
+                )
+              return (
+                <li key={`${fix.root.userStoryId}:${fix.root.criterion}`}>
+                  {fix.root.key} {fix.root.criterionId} (fix round{" "}
+                  {fix.fixRound}) →{" "}
+                  {story ? (
+                    <>
+                      <code>{story.key}</code> · {story.status}
+                    </>
+                  ) : fix.proposalId ? (
+                    "proposed: apply it from the inbox"
+                  ) : (
+                    "not created"
+                  )}
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      )}
+      {escalations.map((escalation) => (
+        <EscalationCard
+          key={escalation.id}
+          gate={gate}
+          escalation={escalation}
+          onChanged={onChanged}
+        />
+      ))}
+    </div>
+  )
+}
+
 export function WaveGateHistory({
   graph,
   gates,
+  onChanged,
 }: {
   graph: FeatureGraph
   gates: WaveGate[]
+  onChanged?: () => Promise<void>
 }) {
   if (!gates.length) return null
   const keys = (ids: string[]) =>
@@ -224,7 +444,7 @@ export function WaveGateHistory({
         return (
           <details
             key={gate.id}
-            open={index === 0}
+            open={index === 0 || gate.status === "escalated"}
             className="group rounded-md border p-3"
           >
             <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 text-sm select-none">
@@ -253,6 +473,14 @@ export function WaveGateHistory({
                 <p className="text-xs text-amber-600 dark:text-amber-500">
                   {commitNote}
                 </p>
+              )}
+              {report && (
+                <GateFollowups
+                  graph={graph}
+                  gate={gate}
+                  report={report}
+                  onChanged={onChanged}
+                />
               )}
               {report ? (
                 <GateReport graph={graph} report={report} />

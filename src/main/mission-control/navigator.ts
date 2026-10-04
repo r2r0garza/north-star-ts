@@ -51,6 +51,11 @@ import {
 import { SEAT_WAKE_KIND } from "./sessions"
 import { APP_LAUNCH_REQUIRED } from "./user-story-runner"
 import { hasActiveFeatureTask } from "../db/repositories/tasks"
+import {
+  maxFixRoundsUsed,
+  openEscalations,
+  pendingFixProposal,
+} from "./gate-fixes"
 
 // The Navigator (plan 106.6): GPS for a feature. Deterministic and
 // restart-safe — it keeps no state of its own beyond the tick log. On every
@@ -196,6 +201,7 @@ export function budgetUsage(
     maxMessagesPerHour: comms.countSeatMessagesSince(feature.id, now - HOUR_MS),
     maxActiveHours: Math.round((feature.drive.activeMs / HOUR_MS) * 100) / 100,
     maxPhaseMinutes: longestRunningPhaseMinutes(feature.id, now),
+    maxGateFixRounds: milestone ? maxFixRoundsUsed(milestone.id) : 0,
   }
 }
 
@@ -285,6 +291,14 @@ export function positionInput(
       round: gate.round,
       status: gate.status,
       storyIds: gate.storyIds,
+      fixStoryIds: userStories
+        .filter((s) => s.gateId === gate.id)
+        .map((s) => s.id),
+      proposalPending: !!pendingFixProposal(gate),
+      escalations: openEscalations(gate).map((e) => ({
+        id: e.id,
+        summary: `${e.root.key} ${e.root.criterionId} still fails at acceptance gate round ${gate.round} after ${e.rounds} fix round${e.rounds === 1 ? "" : "s"}: ${e.problem || "see the gate report"}. Accept it as is, fix it yourself, or drop the criterion.`,
+      })),
     })),
     runs: playbookRuns.map((r) => ({
       id: r.id,

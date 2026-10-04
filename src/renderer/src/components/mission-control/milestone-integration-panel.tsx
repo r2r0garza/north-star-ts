@@ -434,7 +434,7 @@ export function MilestoneIntegrationPanel({
         </div>
       )}
 
-      <WaveGateHistory graph={graph} gates={status.gates} />
+      <WaveGateHistory graph={graph} gates={status.gates} onChanged={reload} />
 
       {milestone.status === "review" && (
         <div className="space-y-3 rounded-md border border-primary/40 bg-primary/5 p-3">

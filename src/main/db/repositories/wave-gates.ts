@@ -150,3 +150,18 @@ export function setRunningWaveGateReport(id: string, report: unknown): boolean {
       .run(JSON.stringify(report), id).changes === 1
   )
 }
+
+// Replace a gate's report while it is in one of `from`, keeping its status
+// (an escalation decided while others still wait, plan 110.03).
+export function setWaveGateReport(
+  id: string,
+  report: unknown,
+  from: readonly WaveGateStatus[]
+): WaveGate | null {
+  const result = getDb()
+    .prepare(
+      `UPDATE wave_gates SET report = ? WHERE id = ? AND status IN (${from.map(() => "?").join(", ")})`
+    )
+    .run(JSON.stringify(report), id, ...from)
+  return result.changes === 1 ? getWaveGate(id) : null
+}

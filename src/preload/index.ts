@@ -83,6 +83,8 @@ import type {
   SeatMemory,
   SeatMemoryRetraction,
   HealthSignal,
+  WaveGate,
+  GateEscalationAction,
 } from "../main/db/types"
 import type { Position } from "../shared/mission-control/position"
 import type {
@@ -1145,6 +1147,17 @@ const api = {
           "missionControl:integration:status",
           milestoneId
         ) as Promise<MilestoneIntegrationStatus>,
+      // Decide a criterion the acceptance gate escalated (plan 110.03).
+      resolveGateEscalation: (input: {
+        gateId: string
+        escalationId: string
+        action: GateEscalationAction
+        note?: string
+      }) =>
+        ipcRenderer.invoke(
+          "missionControl:integration:resolveGateEscalation",
+          input
+        ) as Promise<WaveGate>,
       setPolicy: (milestoneId: string, mode: MergePolicyMode) =>
         ipcRenderer.invoke(
           "missionControl:integration:setPolicy",
@@ -2900,6 +2913,10 @@ export type {
   GateCriterionResult,
   GateStoryResult,
   GateCheckChange,
+  GateFix,
+  GateEscalation,
+  GateEscalationAction,
+  UserStoryFixTarget,
   MissionControlRunLink,
   MergePolicyMode,
   MergeQueueEntry,

@@ -808,6 +808,14 @@ function MilestoneView({
                               agent
                             </Badge>
                           )}
+                          {userStory.origin === "gate" && (
+                            <Badge
+                              variant="secondary"
+                              title={`Fix story from the acceptance gate${userStory.fixes ? ` for ${userStory.fixes.criterionId}: ${userStory.fixes.criterion}` : ""}`}
+                            >
+                              gate fix
+                            </Badge>
+                          )}
                           <HealthDot
                             className="ml-auto"
                             severity={health[userStory.id]}
@@ -957,6 +965,11 @@ function MilestoneView({
               {userStory.origin === "agent" && (
                 <Badge variant="secondary" className="ml-2 shrink-0">
                   agent
+                </Badge>
+              )}
+              {userStory.origin === "gate" && (
+                <Badge variant="secondary" className="ml-2 shrink-0">
+                  gate fix
                 </Badge>
               )}
               <HealthDot className="ml-2" severity={health[userStory.id]} />

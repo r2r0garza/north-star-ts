@@ -26,6 +26,12 @@ export interface UserStoryDraft {
   blocks?: string[]
   // Run after every other user story in the milestone, including later ones.
   runsLast?: boolean
+  // Set only by the harness (plan 110.03), never parsed from a seat: a fix
+  // story for a criterion an acceptance gate found broken.
+  fix?: {
+    gateId: string
+    target: { userStoryId: string; criterionId: string; criterion: string }
+  }
 }
 
 export interface UserStoryEdit {

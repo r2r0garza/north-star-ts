@@ -9,6 +9,7 @@ import type {
   PlaybookWithHooks,
   UserStory,
   WaveGate,
+  WaveGateReport,
 } from "../db/types"
 import { ensureDefaultPlaybook } from "./playbook-defaults"
 import {
@@ -16,6 +17,13 @@ import {
   storyPassed,
   summarizeGateReport,
 } from "./gate-record"
+import {
+  createGateFollowups,
+  GATE_PROPOSER,
+  gateWaivers,
+  maxGateFixRounds,
+  waivedCriteria,
+} from "./gate-fixes"
 import { renderGateObjective, renderIntentChain } from "./user-story-objective"
 import type { UserStoryRunner } from "./user-story-runner"
 
@@ -222,11 +230,14 @@ export function failWaveGateForRun(
 }
 
 // The gate's run completed (plan 110.02): finish the gate from QA's record.
-// It passes when every criterion it triaged passed (or had its check
-// corrected); either way, batch stories whose criteria all passed become
-// done, and the rest stay merged. `suite` is what committing the checks
-// directory to the integration branch came to. Idempotent: a gate that
-// isn't running is left alone.
+// Batch stories whose criteria all passed (or had their check corrected, or
+// were accepted as is at an earlier gate) become done; the rest stay merged.
+// A check that couldn't reach the app fails the gate as setup. Otherwise
+// every app_bug becomes a fix story (110.03), or, past the fix-round cap, an
+// escalation to the user: the gate is `fixing` or `escalated` until the
+// next round. `suite` is what committing the checks directory to the
+// integration branch came to. Idempotent: a gate that isn't running is left
+// alone.
 export function concludeWaveGate(
   playbookRunId: string,
   suite: { commit: string | null; note?: string }
@@ -245,7 +256,30 @@ export function concludeWaveGate(
       playbooks.finishPlaybookRun(playbookRunId, "failed", reason)
       return finished
     }
-    const byStory = new Map(recorded.stories.map((s) => [s.userStoryId, s]))
+    const milestone = features.getMilestone(gate.milestoneId)!
+    const feature = features.getFeature(milestone.featureId)!
+    const waivers = gateWaivers(feature.id, gate.id)
+    // Stamp each criterion's words, and mark the ones the user accepted.
+    const stamped: WaveGateReport = {
+      ...recorded,
+      stories: recorded.stories.map((entry) => {
+        const story = features.getUserStory(entry.userStoryId)
+        const waived = new Set(story ? waivedCriteria(story, waivers) : [])
+        return {
+          ...entry,
+          criteria: entry.criteria.map((c) => {
+            const text =
+              story?.spec.acceptance[Number(c.id.replace(/^AC-/, "")) - 1]
+            return {
+              ...c,
+              ...(text ? { text } : {}),
+              ...(waived.has(c.id) ? { waived: true } : {}),
+            }
+          }),
+        }
+      }),
+    }
+    const byStory = new Map(stamped.stories.map((s) => [s.userStoryId, s]))
     const done: UserStory[] = []
     const held: string[] = []
     for (const id of gate.storyIds) {
@@ -253,15 +287,49 @@ export function concludeWaveGate(
       if (!story) continue
       const entry = byStory.get(id)
       // A story without criteria has nothing to triage.
-      const passed = entry ? storyPassed(entry) : !story.spec.acceptance.length
+      const passed = entry
+        ? storyPassed(entry)
+        : !story.spec.acceptance.length ||
+          waivedCriteria(story, waivers).length === story.spec.acceptance.length
       if (passed) done.push(story)
       else held.push(story.key)
     }
-    const failedEarlier = recorded.stories
+    const failedEarlier = stamped.stories
       .filter((s) => !s.batch && !storyPassed(s))
       .map((s) => s.key)
     const passed = !held.length && !failedEarlier.length
-    const summary = summarizeGateReport(recorded)
+    const setup = stamped.stories.some((s) =>
+      s.criteria.some((c) => c.outcome === "unreachable" && !c.waived)
+    )
+    // A setup problem goes to the user before any fix story: the bugs it
+    // hides would be guesses.
+    const followups =
+      passed || setup
+        ? { fixes: [], escalations: [] }
+        : createGateFollowups({ feature, milestone, gate, report: stamped })
+    // Failed with nothing to fix (no app bug triaged): the user re-runs it,
+    // rather than the drive re-running it in a loop.
+    const status: WaveGate["status"] = passed
+      ? "passed"
+      : followups.escalations.length
+        ? "escalated"
+        : followups.fixes.length
+          ? "fixing"
+          : "failed"
+    const summary = summarizeGateReport(stamped)
+    const followupText = [
+      followups.fixes.length
+        ? `${followups.fixes.length} fix ${followups.fixes.length === 1 ? "story" : "stories"} ${feature.driveMode === "manual" ? "proposed" : "added"} (${followups.fixes.map((f) => f.fixStoryKey ?? `${f.root.key} ${f.root.criterionId}`).join(", ")})`
+        : "",
+      followups.escalations.length
+        ? `${followups.escalations.map((e) => `${e.root.key} ${e.root.criterionId}`).join(", ")} still failing after ${maxGateFixRounds(feature)} fix round${maxGateFixRounds(feature) === 1 ? "" : "s"}: waiting on you`
+        : "",
+      setup
+        ? "a check couldn't reach the app: fix the setup and run it again"
+        : "",
+    ]
+      .filter(Boolean)
+      .join("; ")
     const reason = passed
       ? null
       : `Acceptance gate round ${gate.round} failed: ${[
@@ -271,20 +339,22 @@ export function concludeWaveGate(
             : "",
         ]
           .filter(Boolean)
-          .join("; ")}. ${summary}.`
-    const finished = waveGates.finishWaveGate(
-      gate.id,
-      passed ? "passed" : "failed",
-      {
-        report: {
-          ...recorded,
-          outcome: passed ? "passed" : "failed",
-          ...(reason ? { reason } : {}),
-          ...(suite.note ? { commitNote: suite.note } : {}),
-        },
-        checksCommit: suite.commit,
-      }
-    )
+          .join(
+            "; "
+          )}. ${summary}.${followupText ? ` ${followupText[0].toUpperCase()}${followupText.slice(1)}.` : ""}`
+    const finished = waveGates.finishWaveGate(gate.id, status, {
+      report: {
+        ...stamped,
+        outcome: passed ? "passed" : "failed",
+        ...(reason ? { reason } : {}),
+        ...(suite.note ? { commitNote: suite.note } : {}),
+        ...(followups.fixes.length ? { fixes: followups.fixes } : {}),
+        ...(followups.escalations.length
+          ? { escalations: followups.escalations }
+          : {}),
+      },
+      checksCommit: suite.commit,
+    })
     if (!finished) return null
     for (const story of done)
       if (story.status === "merged")
@@ -293,9 +363,21 @@ export function concludeWaveGate(
           { status: "done" },
           `Passed the acceptance gate (round ${gate.round})`
         )
+    for (const fix of followups.fixes)
+      if (fix.fixStoryKey)
+        features.recordRevision(
+          feature.id,
+          "user_story",
+          fix.root.userStoryId,
+          "gate_fix",
+          { gateId: gate.id, round: gate.round, fixStory: fix.fixStoryKey },
+          GATE_PROPOSER,
+          `${fix.root.criterionId} failed at acceptance gate round ${gate.round}; fixed by ${fix.fixStoryKey}`
+        )
+    // The step itself did its job unless it left the user a setup problem.
     playbooks.finishPlaybookRun(
       playbookRunId,
-      passed ? "completed" : "failed",
+      status === "failed" ? "failed" : "completed",
       passed
         ? `Acceptance gate round ${gate.round} passed: ${summary}.`
         : reason

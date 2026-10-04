@@ -139,6 +139,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensurePhaseRunQaChecksColumn,
   ensureWorkspaceAppLaunchColumn,
   ensureWaveGates,
+  ensureUserStoryFixColumns,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -377,6 +378,14 @@ CREATE TABLE IF NOT EXISTS wave_gates (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_wave_gates_round ON wave_gates(milestone_id, round);
 CREATE INDEX IF NOT EXISTS idx_wave_gates_run ON wave_gates(playbook_run_id);
 `)
+}
+
+// v69 (plan 110.03): a fix story's acceptance gate and the criterion it fixes
+// (JSON UserStoryFixTarget).
+function ensureUserStoryFixColumns(db: Database.Database): void {
+  if (!tableExists(db, "user_stories")) return
+  addColumnIfMissing(db, "user_stories", "gate_id", "TEXT")
+  addColumnIfMissing(db, "user_stories", "fixes", "TEXT")
 }
 
 // v58: a workspace's generated files and the command that rebuilds them
@@ -634,6 +643,7 @@ export function runMigrations(
       ensurePhaseRunQaChecksColumn(db)
       ensureWorkspaceAppLaunchColumn(db)
       ensureWaveGates(db)
+      ensureUserStoryFixColumns(db)
       ensureConversationNotes(db)
       ensureSeatMemory(db)
       ensureHealth(db)

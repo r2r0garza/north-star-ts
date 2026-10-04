@@ -15,6 +15,7 @@ import {
   snapshotChecks,
   unreachableChecks,
   updateQaChecks,
+  type GateCheckStory,
   type GateChecks,
   type ManifestSet,
 } from "./qa-checks"
@@ -98,11 +99,16 @@ export function gateStepNote(input: {
     "### The batch",
     ...batch.flatMap((story) => [
       `#### ${story.userStory.key}: ${story.userStory.title} (ref \`${story.storyRef}\`)`,
-      ...story.criteria.map((c) => `- **${c.id}**: ${c.text}`),
+      ...fixLine(story, gate),
+      ...story.criteria.map(
+        (c) =>
+          `- **${c.id}**: ${c.text}${story.waived.includes(c.id) ? " _(accepted as is by the user: don't triage it)_" : ""}`
+      ),
       present.has(story.storyRef)
         ? `  Manifest: \`${storyManifestPath(gate.checksDir, story.storyRef)}\` (extend it; fix what doesn't hold on the integrated app).`
         : `  No manifest yet: write \`${storyManifestPath(gate.checksDir, story.storyRef)}\`.`,
     ]),
+    ...waivedSection(gate),
     "",
     "### The suite",
     earlier.length
@@ -125,11 +131,45 @@ export function gateStepNote(input: {
     "- `run_checks` with no `checkIds` runs the whole suite: this batch and every earlier story's checks. Run single checks while you work, but the record counts only results on the suite as it is when you record: after your last change, run the whole suite once more.",
     "- Triage every criterion of the batch, and every earlier criterion whose check failed here, with `record_gate`:",
     "  - `passed`: its checks pass on the current suite.",
-    "  - `app_bug`: the app doesn't do what the criterion says. Its check fails, and `problem` says what the app does wrong. Don't weaken the check to make it pass; a follow-up user story fixes the app.",
+    "  - `app_bug`: the app doesn't do what the criterion says. Its check fails, and `problem` says what the app does wrong. Don't weaken the check to make it pass; the harness turns it into a fix story that runs next, and `problem` is what its builder reads first, so make it specific.",
     "  - `check_fixed`: the check asserted a detail the criterion doesn't ask for (a label, an order, exact copy). You corrected the check and it passes now. Give the `justification`; it's shown to the user with the diff. Changing a check of an earlier story that already passed a gate needs the same, and is highlighted.",
     "  - `unreachable`: the check couldn't reach the app (setup, not the criterion). Give the `reason`; the user fixes the setup.",
     "- Never change product code: you verify it. The harness commits the checks directory to the integration branch when this step ends, whatever the outcome, so the builders of follow-up stories can run the exact failing checks.",
   ].join("\n")
+}
+
+// A fix story in the batch: what it fixes, so QA proves it with the original
+// criterion's check rather than inventing a new one.
+function fixLine(story: GateCheckStory, gate: GateChecks): string[] {
+  const target = story.userStory.fixes
+  if (!target) return []
+  const original = [...gate.stories.values()].find(
+    (s) => s.userStory.id === target.userStoryId
+  )
+  if (!original) return []
+  const fixing = `  A fix story for ${original.userStory.key} ${target.criterionId} ("${target.criterion}"), which failed an earlier gate.`
+  return [
+    original.batch
+      ? `${fixing} Prove it with that criterion's check rather than a second check of the same behavior: add this story's tag to the test's title (\`… @${original.storyRef} @${target.criterionId} @${story.storyRef} @AC-1\`) and map its criteria to it in this story's manifest.`
+      : `${fixing} ${original.userStory.key} passed an earlier gate, so leave its checks as they are: give this story its own check of the criterion.`,
+  ]
+}
+
+// Criteria accepted as is: their checks may still fail, and that's settled.
+function waivedSection(gate: GateChecks): string[] {
+  const earlier = [...gate.stories.values()].filter(
+    (s) => !s.batch && s.waived.length
+  )
+  if (!earlier.length) return []
+  return [
+    "",
+    "### Accepted as is",
+    "The user accepted these criteria as they are at an earlier gate. Their checks may still fail; leave them and don't triage them:",
+    ...earlier.map(
+      (s) =>
+        `- ${s.userStory.key} ${s.waived.join(", ")} (ref \`${s.storyRef}\`)`
+    ),
+  ]
 }
 
 // ── what changed in the checks directory ───────────────────────────────────
@@ -252,6 +292,7 @@ export async function recordWaveGate(input: {
     storyRef: s.storyRef,
     criteria: s.criteria,
     batch: s.batch,
+    waived: s.waived,
   }))
   const inMilestone = new Set(
     features.listUserStories(gate.milestoneId).map((s) => s.id)

@@ -4,6 +4,7 @@ import {
   computePosition,
   positionFingerprint,
   renderPosition,
+  type PositionGateInput,
   type PositionInput,
   type PositionMilestoneInput,
   type PositionRunInput,
@@ -18,6 +19,7 @@ const NO_USAGE: BudgetUsage = {
   maxMessagesPerHour: 0,
   maxActiveHours: 0,
   maxPhaseMinutes: 0,
+  maxGateFixRounds: 0,
 }
 
 function milestone(
@@ -814,7 +816,11 @@ describe("computePosition — the wave acceptance gate (plan 110)", () => {
     expect(running.maneuver).toMatchObject({ kind: "wait" })
     expect(running.maneuver.text).toContain("round 1")
     expect(running.dispatch).toEqual([])
-    expect(running.milestone?.gate).toEqual({ round: 1, status: "running" })
+    expect(running.milestone?.gate).toEqual({
+      round: 1,
+      status: "running",
+      fixing: [],
+    })
   })
 
   it("asks the user to re-run a gate that failed on the same batch", () => {
@@ -846,6 +852,151 @@ describe("computePosition — the wave acceptance gate (plan 110)", () => {
         },
       }),
     ])
+  })
+
+  // Plan 110.03: a gate that failed with app bugs.
+  const fixingGate = (over: Partial<PositionGateInput> = {}) => ({
+    id: "g1",
+    milestoneId: "m1",
+    round: 1,
+    status: "fixing" as const,
+    storyIds: ["a"],
+    fixStoryIds: ["f"],
+    ...over,
+  })
+
+  it("runs the gate's fix stories as the next wave, and nothing else", () => {
+    const p = computePosition(
+      input({
+        milestones: [gated({ status: "active" })],
+        userStories: [
+          userStory("a", "m1", { status: "merged" }),
+          userStory("f", "m1", { status: "ready" }),
+          userStory("x", "m1", { status: "ready" }),
+        ],
+        gates: [fixingGate()],
+      })
+    )
+    expect(p.maneuver.kind).toBe("dispatch")
+    expect(p.dispatch).toEqual([{ userStory: "f", retry: false }])
+    expect(p.deferred).toContainEqual({
+      userStory: "x",
+      reason: "waiting for the acceptance gate's fix stories",
+    })
+    expect(p.milestone?.gate).toEqual({
+      round: 1,
+      status: "fixing",
+      fixing: ["f"],
+    })
+    expect(p.feature.nextHook).toBeNull()
+  })
+
+  it("holds the next gate until its fix stories merge, then runs it on them all", () => {
+    const building = computePosition(
+      input({
+        milestones: [gated({ status: "active" })],
+        userStories: [
+          userStory("a", "m1", { status: "merged" }),
+          userStory("f", "m1", { status: "running" }),
+        ],
+        gates: [fixingGate()],
+      })
+    )
+    expect(building.maneuver).toMatchObject({ kind: "wait" })
+    expect(building.maneuver.text).toContain("fix stories")
+    const merged = computePosition(
+      input({
+        milestones: [gated()],
+        userStories: [
+          userStory("a", "m1", { status: "merged" }),
+          userStory("f", "m1", { status: "merged" }),
+        ],
+        gates: [fixingGate()],
+      })
+    )
+    expect(merged.maneuver).toMatchObject({
+      kind: "run_hook",
+      hook: { hook: "after_each_wave" },
+    })
+    expect(merged.maneuver.text).toContain("round 2")
+  })
+
+  it("keeps the barrier for a regression fix even with nothing merged", () => {
+    const p = computePosition(
+      input({
+        milestones: [gated({ status: "active" })],
+        userStories: [
+          userStory("a", "m1", { status: "done" }),
+          userStory("f", "m1", { status: "draft" }),
+          userStory("x", "m1", { status: "ready" }),
+        ],
+        gates: [fixingGate()],
+      })
+    )
+    expect(p.dispatch.map((d) => d.userStory)).toEqual(["f"])
+  })
+
+  it("waits on the user for an escalated criterion", () => {
+    const p = computePosition(
+      input({
+        milestones: [gated()],
+        userStories: [userStory("a", "m1", { status: "merged" })],
+        gates: [
+          fixingGate({
+            status: "escalated",
+            fixStoryIds: [],
+            escalations: [{ id: "e1", summary: "a AC-1 still fails." }],
+          }),
+        ],
+      })
+    )
+    expect(p.maneuver.kind).toBe("decide")
+    expect(p.feature.nextHook).toBeNull()
+    expect(p.pendingDecisions).toEqual([
+      expect.objectContaining({
+        key: "gate_escalation:g1:e1",
+        kind: "gate_escalation",
+        owner: "user",
+        action: { kind: "open_milestone", milestoneId: "m1" },
+      }),
+    ])
+  })
+
+  it("doesn't move to review while a regression waits on the user", () => {
+    const p = computePosition(
+      input({
+        milestones: [gated({ status: "review", dodReviewed: true })],
+        userStories: [userStory("a", "m1", { status: "done" })],
+        gates: [
+          fixingGate({
+            status: "escalated",
+            fixStoryIds: [],
+            escalations: [{ id: "e1", summary: "a AC-1 regressed." }],
+          }),
+        ],
+      })
+    )
+    expect(p.maneuver.kind).toBe("decide")
+    expect(p.milestone?.doneConditionMet).toBe(false)
+  })
+
+  it("waits for the Manual fix-story proposal before running the gate again", () => {
+    const p = computePosition(
+      input({
+        feature: {
+          id: "i1",
+          status: "active",
+          driveMode: "manual",
+          hooks: [],
+          defaultPodKey: "impl",
+        },
+        milestones: [gated()],
+        userStories: [userStory("a", "m1", { status: "merged" })],
+        gates: [fixingGate({ fixStoryIds: [], proposalPending: true })],
+      })
+    )
+    expect(p.maneuver.kind).toBe("decide")
+    expect(p.pendingDecisions.some((d) => d.kind === "hook_due")).toBe(false)
   })
 
   it("dispatches the next wave once the gate passed", () => {

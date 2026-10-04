@@ -75,6 +75,12 @@ export interface PositionGateInput {
   round: number
   status: "running" | "passed" | "fixing" | "escalated" | "failed"
   storyIds: string[]
+  // Plan 110.03: the fix stories the gate created, its Manual proposal of
+  // them still waiting, and the criteria past the fix-round cap that wait on
+  // the user.
+  fixStoryIds?: string[]
+  proposalPending?: boolean
+  escalations?: Array<{ id: string; summary: string }>
 }
 
 export interface PositionInput {
@@ -149,6 +155,7 @@ export type DecisionKind =
   | "user_story_failed"
   | "proof_rejected"
   | "merge_conflict"
+  | "gate_escalation"
   | "milestone_dod"
   | "milestone_landing"
   | "budget"
@@ -210,8 +217,13 @@ export interface Position {
     // Merged into the integration branch, awaiting the wave gate (plan 110).
     merged: string[]
     done: string[]
-    // The milestone's latest acceptance gate.
-    gate: { round: number; status: PositionGateInput["status"] } | null
+    // The milestone's latest acceptance gate, and its fix stories not yet
+    // through a gate.
+    gate: {
+      round: number
+      status: PositionGateInput["status"]
+      fixing: string[]
+    } | null
     // Waiting on predecessors that are not done yet.
     waiting: Array<{ userStory: string; on: string[] }>
     blocked: Array<{ userStory: string; reason: string }>
@@ -347,6 +359,8 @@ export function computePosition(input: PositionInput): Position {
     if (
       meter.key === "maxConcurrentUserStories" ||
       meter.key === "maxPhaseMinutes" ||
+      // The gate escalates the criterion itself (plan 110.03).
+      meter.key === "maxGateFixRounds" ||
       meter.level === "ok" ||
       meter.final
     )
@@ -743,6 +757,27 @@ export function computePosition(input: PositionInput): Position {
     .filter((gate) => gate.milestoneId === milestone.id)
     .sort((a, b) => a.round - b.round)
   const latestGate = gates.at(-1) ?? null
+  // A gate that failed with app bugs (plan 110.03): its fix stories run as
+  // the next wave, before anything else, and criteria past the fix-round cap
+  // wait on the user. The next gate runs once they're all in.
+  const gateOpen =
+    latestGate?.status === "fixing" || latestGate?.status === "escalated"
+  const fixIds = new Set(gateOpen ? (latestGate?.fixStoryIds ?? []) : [])
+  const openFixes = [...fixIds].filter((id) => {
+    const status = byId.get(id)?.status
+    return status && !["merged", "done", "cancelled"].includes(status)
+  })
+  const escalations =
+    latestGate?.status === "escalated" ? (latestGate.escalations ?? []) : []
+  for (const escalation of escalations)
+    decide({
+      key: `gate_escalation:${latestGate!.id}:${escalation.id}`,
+      kind: "gate_escalation",
+      owner: "user",
+      target: { kind: "milestone", id: milestone.id },
+      summary: escalation.summary,
+    })
+  const fixProposal = gateOpen && latestGate?.proposalPending === true
   const milestoneState: NonNullable<Position["milestone"]> = {
     id: milestone.id,
     key: milestone.key,
@@ -756,7 +791,13 @@ export function computePosition(input: PositionInput): Position {
     merged,
     done,
     gate: latestGate
-      ? { round: latestGate.round, status: latestGate.status }
+      ? {
+          round: latestGate.round,
+          status: latestGate.status,
+          fixing: [...fixIds].filter(
+            (id) => !["done", "cancelled"].includes(byId.get(id)?.status ?? "")
+          ),
+        }
       : null,
     waiting,
     blocked,
@@ -837,6 +878,10 @@ export function computePosition(input: PositionInput): Position {
   // ── the milestone's work is merged: review, judgment, landing ─────────────
   if (
     allSettled &&
+    // A gate decision still open (a regression the user hasn't decided on)
+    // holds the milestone back from review.
+    !escalations.length &&
+    !fixProposal &&
     ["review", "active", "integrating"].includes(milestone.status)
   ) {
     if (milestone.hooks.includes("after_all_user_stories")) {
@@ -926,14 +971,81 @@ export function computePosition(input: PositionInput): Position {
     })
   }
 
+  // ── dispatch: ready user stories, critical path first, then position ──────────
+  const critical = new Set(criticalPath)
+  const order = (id: string) => byId.get(id)?.position ?? 0
+  const plan = (
+    allowed: (id: string) => boolean
+  ): { dispatch: Position["dispatch"]; deferred: Position["deferred"] } => {
+    const candidates = [
+      ...ready.map((id) => ({ id, retry: false })),
+      ...retryable.map((id) => ({ id, retry: true })),
+    ]
+      .filter((c) => allowed(c.id))
+      .sort(
+        (a, b) =>
+          Number(critical.has(b.id)) - Number(critical.has(a.id)) ||
+          order(a.id) - order(b.id)
+      )
+    const dispatch: Position["dispatch"] = []
+    const deferred: Position["deferred"] = []
+    const podsFree = { ...capacity.podsFree }
+    let free = capacity.concurrencyFree
+    const building = allMilestoneUserStories.filter(
+      (s) => s.status === "running" || s.status === "proving"
+    )
+    for (const candidate of candidates) {
+      const userStory = byId.get(candidate.id)!
+      const pod = userStory.podKey ?? feature.defaultPodKey
+      if (free <= 0) {
+        deferred.push({
+          userStory: userStory.id,
+          reason:
+            capacity.reason ??
+            (capacity.mode === "git"
+              ? `the budget allows ${input.limits.maxConcurrentUserStories} user stories at once`
+              : "the workspace isn't a git repository, so one run at a time"),
+        })
+        continue
+      }
+      if (pod && (podsFree[pod] ?? 1) <= 0) {
+        deferred.push({ userStory: userStory.id, reason: `pod ${pod} is busy` })
+        continue
+      }
+      const overlap =
+        input.feature.overlapPolicy === "parallel"
+          ? undefined
+          : [...building, ...dispatch.map((d) => byId.get(d.userStory)!)].find(
+              (other) =>
+                touchHintsOverlap(userStory.touchHints, other.touchHints)
+            )
+      if (overlap) {
+        deferred.push({
+          userStory: userStory.id,
+          reason: `touch hints overlap ${overlap.key}`,
+        })
+        continue
+      }
+      dispatch.push({ userStory: userStory.id, retry: candidate.retry })
+      free--
+      if (pod) podsFree[pod] = (podsFree[pod] ?? 1) - 1
+    }
+    return { dispatch, deferred }
+  }
+
   // ── the wave gate (plan 110): a barrier while merged stories await it ──────
-  if (merged.length) {
+  if (merged.length || openFixes.length || escalations.length || fixProposal) {
     const keys = merged.map(keyOf).join(", ")
-    // No new story starts while a gate is due or running.
-    const held = [...ready, ...retryable].map((id) => ({
-      userStory: id,
-      reason: "waiting for the acceptance gate",
-    }))
+    // No new story starts while a gate is due, running, or fixing; only the
+    // gate's own fix stories do.
+    const held = [...ready, ...retryable]
+      .filter((id) => !fixIds.has(id))
+      .map((id) => ({
+        userStory: id,
+        reason: gateOpen
+          ? "waiting for the acceptance gate's fix stories"
+          : "waiting for the acceptance gate",
+      }))
     const gateRunning =
       latestGate?.status === "running" ||
       hookState(input.runs, "after_each_wave", milestone.id) === "running"
@@ -942,6 +1054,44 @@ export function computePosition(input: PositionInput): Position {
         {
           kind: "wait",
           text: `The acceptance gate for ${milestone.key}${latestGate ? ` (round ${latestGate.round})` : ""} is running on ${keys}.`,
+        },
+        { deferred: held }
+      )
+    if (fixProposal)
+      return withMilestone(
+        {
+          kind: "decide",
+          text: `The acceptance gate for ${milestone.key} (round ${latestGate!.round}) proposed fix stories: apply or reject them.`,
+        },
+        { deferred: held }
+      )
+    if (openFixes.length) {
+      const fixes = plan((id) => fixIds.has(id))
+      if (fixes.dispatch.length)
+        return withMilestone(
+          {
+            kind: "dispatch",
+            text: `Start the acceptance gate's fix ${fixes.dispatch.length === 1 ? "story" : "stories"} ${fixes.dispatch.map((d) => keyOf(d.userStory)).join(", ")}.`,
+          },
+          { dispatch: fixes.dispatch, deferred: [...fixes.deferred, ...held] }
+        )
+      return withMilestone(
+        {
+          kind:
+            escalations.length ||
+            openFixes.some((id) => decisions.some((d) => d.target.id === id))
+              ? "decide"
+              : "wait",
+          text: `Waiting on the acceptance gate's fix stories for ${milestone.key}: ${openFixes.map(keyOf).join(", ")}.`,
+        },
+        { deferred: [...fixes.deferred, ...held] }
+      )
+    }
+    if (escalations.length)
+      return withMilestone(
+        {
+          kind: "decide",
+          text: `The acceptance gate for ${milestone.key} (round ${latestGate!.round}) needs you: ${escalations.length} criteri${escalations.length === 1 ? "on" : "a"} still failing after the fix rounds.`,
         },
         { deferred: held }
       )
@@ -982,71 +1132,21 @@ export function computePosition(input: PositionInput): Position {
         { deferred: held }
       )
     }
-    const hook = hookRef("after_each_wave", milestone.id, milestone.key)
-    return withMilestone(
-      {
-        kind: "run_hook",
-        hook,
-        text: `Run the acceptance gate for ${milestone.key} (round ${(latestGate?.round ?? 0) + 1}) on ${keys}.`,
-      },
-      { nextHook: hook, deferred: held }
-    )
+    // Fix stories all cancelled, and nothing merged left to prove: carry on.
+    if (merged.length) {
+      const hook = hookRef("after_each_wave", milestone.id, milestone.key)
+      return withMilestone(
+        {
+          kind: "run_hook",
+          hook,
+          text: `Run the acceptance gate for ${milestone.key} (round ${(latestGate?.round ?? 0) + 1}) on ${keys}.`,
+        },
+        { nextHook: hook, deferred: held }
+      )
+    }
   }
 
-  // ── dispatch: ready user stories, critical path first, then position ──────────
-  const critical = new Set(criticalPath)
-  const order = (id: string) => byId.get(id)?.position ?? 0
-  const candidates = [
-    ...ready.map((id) => ({ id, retry: false })),
-    ...retryable.map((id) => ({ id, retry: true })),
-  ].sort(
-    (a, b) =>
-      Number(critical.has(b.id)) - Number(critical.has(a.id)) ||
-      order(a.id) - order(b.id)
-  )
-  const dispatch: Position["dispatch"] = []
-  const deferred: Position["deferred"] = []
-  const podsFree = { ...capacity.podsFree }
-  let free = capacity.concurrencyFree
-  const building = allMilestoneUserStories.filter(
-    (s) => s.status === "running" || s.status === "proving"
-  )
-  for (const candidate of candidates) {
-    const userStory = byId.get(candidate.id)!
-    const pod = userStory.podKey ?? feature.defaultPodKey
-    if (free <= 0) {
-      deferred.push({
-        userStory: userStory.id,
-        reason:
-          capacity.reason ??
-          (capacity.mode === "git"
-            ? `the budget allows ${input.limits.maxConcurrentUserStories} user stories at once`
-            : "the workspace isn't a git repository, so one run at a time"),
-      })
-      continue
-    }
-    if (pod && (podsFree[pod] ?? 1) <= 0) {
-      deferred.push({ userStory: userStory.id, reason: `pod ${pod} is busy` })
-      continue
-    }
-    const overlap =
-      input.feature.overlapPolicy === "parallel"
-        ? undefined
-        : [...building, ...dispatch.map((d) => byId.get(d.userStory)!)].find(
-            (other) => touchHintsOverlap(userStory.touchHints, other.touchHints)
-          )
-    if (overlap) {
-      deferred.push({
-        userStory: userStory.id,
-        reason: `touch hints overlap ${overlap.key}`,
-      })
-      continue
-    }
-    dispatch.push({ userStory: userStory.id, retry: candidate.retry })
-    free--
-    if (pod) podsFree[pod] = (podsFree[pod] ?? 1) - 1
-  }
-
+  const { dispatch, deferred } = plan(() => true)
   if (dispatch.length)
     return withMilestone(
       {
@@ -1183,6 +1283,7 @@ export function positionFingerprint(position: Position): string {
           position.milestone.done,
           position.milestone.gate?.round ?? null,
           position.milestone.gate?.status ?? null,
+          position.milestone.gate?.fixing ?? [],
           position.milestone.blocked.map((b) => b.userStory),
           position.milestone.retryable,
           position.milestone.waiting.map((w) => w.userStory),
@@ -1227,7 +1328,9 @@ export function renderPosition(position: Position): string {
       `Ready: ${keys(m.ready)} · Running: ${keys(m.running)} · Merging: ${keys(m.integrating)}${m.merged.length ? ` · Merged, awaiting the acceptance gate: ${keys(m.merged)}` : ""} · Done: ${keys(m.done)}`
     )
     if (m.gate)
-      lines.push(`Acceptance gate: round ${m.gate.round}, ${m.gate.status}.`)
+      lines.push(
+        `Acceptance gate: round ${m.gate.round}, ${m.gate.status}.${m.gate.fixing.length ? ` Fix stories (they run before anything else): ${keys(m.gate.fixing)}.` : ""}`
+      )
     if (m.waiting.length)
       lines.push(
         `Waiting: ${m.waiting.map((w) => `${key(w.userStory)} (on ${keys(w.on)})`).join("; ")}`

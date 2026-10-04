@@ -1,6 +1,6 @@
 # PR110: Wave acceptance gate — exploratory QA per story, Playwright suite per wave
 
-> Status: **IN PROGRESS** — `110.01` and `110.02` done (2026-10-04); `110.03`–`110.05` remain. Proposed 2026-10-04. Follow-up to `109` (QA seats that verify independently) and
+> Status: **IN PROGRESS** — `110.01`, `110.02`, and `110.03` done (2026-10-04); `110.04` and `110.05` remain. Proposed 2026-10-04. Follow-up to `109` (QA seats that verify independently) and
 > `106.5` (worktrees and the merge queue). Changes `109.02`'s per-story checks step; keeps `109.03`–
 > `109.06`. Uses the current names: Features, Milestones, User stories.
 
@@ -294,6 +294,59 @@ starts from them. `110.05` is independent after `110.01`.
 - **UI.** The milestone's integration panel lists its gates, newest first: status, batch, the suite
   commit, and per story and criterion the outcome, the problem / justification / reason, the check
   results, and screenshots; changes to already-passed checks are highlighted.
+
+## `110.03` as built (2026-10-04)
+
+- **Fix stories.** When a gate finishes with app bugs, `concludeWaveGate` turns each into a user story
+  in the gate's milestone (`gate-fixes.ts`): key `fix-<story>-ac<n>`, title `Fix <story> AC-n:
+  <problem>`, the failed criterion's words plus "the gate's check `<id>` … passes" as acceptance, the
+  original's touch hints and pod, notes with QA's evidence, the check results, and where the committed
+  suite and the story's manifest are. `origin: "gate"`, and two new `user_stories` columns (v69):
+  `gate_id` and `fixes` (`{ userStoryId, criterionId, criterion }`). No dependencies. Copilot and
+  Autopilot apply them through the plan-edit engine (actor `acceptance-gate`, so they don't count
+  against the agent-story budget); Manual gets one `user_story` proposal carrying the same link (the
+  draft's `fix` field is set only by the harness, never parsed from a seat). If applying fails, it
+  falls back to the proposal so the gate always finishes. The original story stays `merged`, and its
+  revision log records "AC-n failed at acceptance gate round N; fixed by <fix story>".
+- **One root per bug.** A bug on a fix story is counted against the criterion it fixes, and a gate
+  makes at most one fix per root criterion, however many stories it showed up on. Criteria are matched
+  by their words, not their positional ids.
+- **The cap.** `maxGateFixRounds` is a new feature budget (default 2, per milestone in the meter). Each
+  earlier gate that made (or proposed) a fix for the root is one round; at the cap the gate records an
+  escalation instead of another fix story. The budget never raises its own decision: the escalation is
+  the decision.
+- **Gate statuses.** `passed`; `fixing` (fix stories made or proposed); `escalated` (at least one
+  criterion past the cap; other bugs still get fix stories); `failed` for a setup problem (any
+  `unreachable`: no fix stories, the bugs it hides would be guesses), for a missing record, or for a
+  failure with nothing to fix. The gate's run completes unless it failed. Each criterion in the
+  finished report carries its words (`text`).
+- **Position.** While the latest gate is `fixing` or `escalated`, the barrier holds even with nothing
+  merged (a regression of a `done` story): only the gate's fix stories dispatch, everything else is
+  deferred "waiting for the acceptance gate's fix stories", and the next gate runs once they're all
+  merged (or cancelled), on every merged story, originals and fixes together. A pending Manual
+  proposal holds the gate too. Each open escalation is a `gate_escalation` decision for the user, and an
+  open escalation also holds a milestone whose stories are all done back from review.
+- **The three actions** (`resolveGateEscalation`, IPC `integration.resolveGateEscalation`, buttons on
+  the escalation in the milestone's gate history):
+  - **Accept as is** waives the criterion. Waivers live on the gate's escalation and are matched by
+    the criterion's words: later gates mark it `waived` and count it as passed, `record_gate` stops
+    requiring it, and the kickoff note tells QA to leave it. The story becomes `done` if everything
+    else passed, and merged fix stories chasing it are settled.
+  - **I'll fix it** pauses the feature (`pausedBy: "user"`) with a note; resuming runs the gate again.
+  - **Drop the criterion** removes it from the story's spec (an execution-owned spec revision,
+    audited), settles the fix stories chasing it, and runs the gate again (QA brings the story's
+    manifest in line with the renumbered criteria).
+  When the last escalation is decided the gate becomes `fixing` (something still to prove) or
+  `passed`.
+- **The gate step.** The kickoff note marks waived criteria, lists criteria accepted earlier, and says
+  which batch stories are fix stories and how to prove them with the original's check (sharing its
+  test when the original is in the batch, its own check otherwise). `app_bug`'s `problem` is now
+  described as what the fix story's builder reads first.
+- **UI.** The gate history shows each gate's fix stories (with their status, or "proposed") and its
+  escalations with the three actions and an optional note; an escalated gate opens expanded. Fix
+  stories carry a "gate fix" badge in the plan.
+- **Known edge.** "I'll fix it" on a regression of a `done` story, with nothing merged, has no batch
+  to re-run; the next wave's gate re-runs the suite.
 
 ## Out of scope
 

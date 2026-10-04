@@ -30,6 +30,8 @@ export interface GateStory {
   criteria: UserStoryCriterion[]
   // In this gate's batch (as opposed to a story an earlier gate passed).
   batch: boolean
+  // Criteria the user accepted as is (plan 110.03): never required.
+  waived?: string[]
 }
 
 export interface GateVerification {
@@ -270,8 +272,10 @@ export function decideGateRecord(input: {
       submitted.get(story.storyRef)?.criteria.map((c) => c.id) ?? []
     )
     const coverage = v.coverage[story.storyRef] ?? {}
+    const waived = new Set(story.waived ?? [])
     const required = story.criteria
       .map((c) => c.id)
+      .filter((id) => !waived.has(id))
       .filter(
         (id) =>
           story.batch ||
@@ -454,10 +458,11 @@ export function decideGateRecord(input: {
   }
 }
 
-// Whether every criterion of a story passed (or had its check corrected).
+// Whether every criterion of a story passed (or had its check corrected, or
+// was accepted as is by the user at an earlier gate).
 export function storyPassed(story: GateStoryResult): boolean {
   return story.criteria.every(
-    (c) => c.outcome === "passed" || c.outcome === "check_fixed"
+    (c) => c.waived || c.outcome === "passed" || c.outcome === "check_fixed"
   )
 }
 
