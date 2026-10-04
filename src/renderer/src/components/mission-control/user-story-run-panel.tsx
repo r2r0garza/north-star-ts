@@ -237,6 +237,12 @@ export function UserStoryRunPanel({
           is done once it merges into the integration branch.
         </p>
       )}
+      {userStory.status === "merged" && (
+        <p className="text-xs text-muted-foreground">
+          Merged into the integration branch. It is done once the milestone's
+          acceptance gate passes; stories that depend on it wait until then.
+        </p>
+      )}
       <UserStoryWorktreePanel userStory={userStory} />
       {latest && latest.status !== "running" && latest.outcomeReason && (
         <p

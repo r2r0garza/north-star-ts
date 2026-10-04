@@ -138,6 +138,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureWorkspaceMissionControlColumn,
   ensurePhaseRunQaChecksColumn,
   ensureWorkspaceAppLaunchColumn,
+  ensureWaveGates,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -354,6 +355,28 @@ function ensurePhaseRunQaChecksColumn(db: Database.Database): void {
 // seats (JSON AppLaunch: services, ports, readiness, dependencies).
 function ensureWorkspaceAppLaunchColumn(db: Database.Database): void {
   addColumnIfMissing(db, "workspaces", "app_launch", "TEXT")
+}
+
+// v68 (plan 110.01): wave acceptance gates, one row per gate a milestone ran
+// over its merged user stories. Idempotent for the self-heal pass.
+function ensureWaveGates(db: Database.Database): void {
+  if (!tableExists(db, "milestones")) return
+  db.exec(`
+CREATE TABLE IF NOT EXISTS wave_gates (
+  id              TEXT PRIMARY KEY,
+  milestone_id    TEXT NOT NULL REFERENCES milestones(id) ON DELETE CASCADE,
+  round           INTEGER NOT NULL,
+  story_ids       TEXT NOT NULL DEFAULT '[]',
+  status          TEXT NOT NULL,
+  playbook_run_id TEXT,
+  report          TEXT,
+  checks_commit   TEXT,
+  created_at      INTEGER NOT NULL,
+  finished_at     INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wave_gates_round ON wave_gates(milestone_id, round);
+CREATE INDEX IF NOT EXISTS idx_wave_gates_run ON wave_gates(playbook_run_id);
+`)
 }
 
 // v58: a workspace's generated files and the command that rebuilds them
@@ -610,6 +633,7 @@ export function runMigrations(
       ensureWorkspaceMissionControlColumn(db)
       ensurePhaseRunQaChecksColumn(db)
       ensureWorkspaceAppLaunchColumn(db)
+      ensureWaveGates(db)
       ensureConversationNotes(db)
       ensureSeatMemory(db)
       ensureHealth(db)

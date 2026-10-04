@@ -733,6 +733,207 @@ describe("computePosition — milestone lifecycle", () => {
   })
 })
 
+describe("computePosition — the wave acceptance gate (plan 110)", () => {
+  const gated = (over: Partial<PositionMilestoneInput> = {}) =>
+    milestone("m1", {
+      status: "integrating",
+      hooks: ["after_each_wave" as const],
+      ...over,
+    })
+
+  it("runs the gate once the milestone is quiescent with merged stories", () => {
+    const p = computePosition(
+      input({
+        milestones: [gated()],
+        userStories: [
+          userStory("a", "m1", { status: "merged" }),
+          userStory("b", "m1", { status: "merged" }),
+          userStory("c", "m1", { status: "ready" }),
+        ],
+        edges: [edge("a", "c")],
+      })
+    )
+    expect(p.maneuver).toMatchObject({
+      kind: "run_hook",
+      hook: { hook: "after_each_wave", milestoneId: "m1" },
+    })
+    expect(p.feature.nextHook?.hook).toBe("after_each_wave")
+    expect(p.milestone?.merged).toEqual(["a", "b"])
+    expect(p.dispatch).toEqual([])
+  })
+
+  it("keeps a dependent of a merged story waiting: only done satisfies it", () => {
+    const p = computePosition(
+      input({
+        milestones: [gated()],
+        userStories: [
+          userStory("a", "m1", { status: "merged" }),
+          userStory("c", "m1", { status: "ready" }),
+        ],
+        edges: [edge("a", "c")],
+      })
+    )
+    expect(p.milestone?.ready).toEqual([])
+    expect(p.milestone?.waiting).toEqual([{ userStory: "c", on: ["a"] }])
+  })
+
+  it("starts nothing new while the gate is due or running", () => {
+    const stories = [
+      userStory("a", "m1", { status: "merged" }),
+      userStory("b", "m1", { status: "running" }),
+      userStory("x", "m1", { status: "ready" }),
+    ]
+    const due = computePosition(
+      input({ milestones: [gated()], userStories: stories })
+    )
+    expect(due.maneuver.kind).toBe("wait")
+    expect(due.dispatch).toEqual([])
+    expect(due.deferred).toEqual([
+      { userStory: "x", reason: "waiting for the acceptance gate" },
+    ])
+
+    const running = computePosition(
+      input({
+        milestones: [gated()],
+        userStories: [
+          userStory("a", "m1", { status: "merged" }),
+          userStory("x", "m1", { status: "ready" }),
+        ],
+        runs: [run("after_each_wave", "running", { milestoneId: "m1" })],
+        gates: [
+          {
+            id: "g1",
+            milestoneId: "m1",
+            round: 1,
+            status: "running",
+            storyIds: ["a"],
+          },
+        ],
+      })
+    )
+    expect(running.maneuver).toMatchObject({ kind: "wait" })
+    expect(running.maneuver.text).toContain("round 1")
+    expect(running.dispatch).toEqual([])
+    expect(running.milestone?.gate).toEqual({ round: 1, status: "running" })
+  })
+
+  it("asks the user to re-run a gate that failed on the same batch", () => {
+    const p = computePosition(
+      input({
+        milestones: [gated()],
+        userStories: [userStory("a", "m1", { status: "merged" })],
+        runs: [run("after_each_wave", "failed", { milestoneId: "m1" })],
+        gates: [
+          {
+            id: "g1",
+            milestoneId: "m1",
+            round: 1,
+            status: "failed",
+            storyIds: ["a"],
+          },
+        ],
+      })
+    )
+    expect(p.maneuver.kind).toBe("decide")
+    expect(p.pendingDecisions).toEqual([
+      expect.objectContaining({
+        key: "hook_failed:after_each_wave:g1",
+        owner: "user",
+        action: {
+          kind: "run_hook",
+          hook: "after_each_wave",
+          milestoneId: "m1",
+        },
+      }),
+    ])
+  })
+
+  it("dispatches the next wave once the gate passed", () => {
+    const p = computePosition(
+      input({
+        milestones: [gated({ status: "active" })],
+        userStories: [
+          userStory("a", "m1", { status: "done" }),
+          userStory("c", "m1", { status: "ready" }),
+        ],
+        edges: [edge("a", "c")],
+        gates: [
+          {
+            id: "g1",
+            milestoneId: "m1",
+            round: 1,
+            status: "passed",
+            storyIds: ["a"],
+          },
+        ],
+      })
+    )
+    expect(p.dispatch.map((d) => d.userStory)).toEqual(["c"])
+  })
+
+  it("counts the milestone complete-able only once the last gate passed", () => {
+    const merged = computePosition(
+      input({
+        milestones: [gated({ status: "integrating", dodReviewed: true })],
+        userStories: [userStory("a", "m1", { status: "merged" })],
+      })
+    )
+    expect(merged.milestone?.doneConditionMet).toBe(false)
+    expect(merged.maneuver.kind).toBe("run_hook")
+    const passed = computePosition(
+      input({
+        milestones: [gated({ status: "review", dodReviewed: true })],
+        userStories: [userStory("a", "m1", { status: "done" })],
+      })
+    )
+    expect(passed.maneuver).toMatchObject({ kind: "complete_milestone" })
+  })
+
+  it("runs the gate itself in Copilot and leaves it to the user in Manual", () => {
+    const base = {
+      milestones: [gated()],
+      userStories: [userStory("a", "m1", { status: "merged" })],
+    }
+    const copilot = computePosition(
+      input({
+        ...base,
+        feature: { ...input().feature, driveMode: "copilot" },
+      })
+    )
+    expect(copilot.maneuver.kind).toBe("run_hook")
+    expect(copilot.pendingDecisions).toEqual([])
+    const manual = computePosition(
+      input({ ...base, feature: { ...input().feature, driveMode: "manual" } })
+    )
+    expect(manual.pendingDecisions).toEqual([
+      expect.objectContaining({
+        kind: "hook_due",
+        key: "hook_due:after_each_wave:m1",
+      }),
+    ])
+  })
+
+  it("fingerprints a story moving from merged to done", () => {
+    const base = { milestones: [gated()] }
+    const merged = computePosition(
+      input({
+        ...base,
+        userStories: [userStory("a", "m1", { status: "merged" })],
+      })
+    )
+    const done = computePosition(
+      input({
+        ...base,
+        userStories: [userStory("a", "m1", { status: "done" })],
+      })
+    )
+    expect(positionFingerprint(merged)).not.toBe(positionFingerprint(done))
+    expect(renderPosition(merged)).toContain(
+      "Merged, awaiting the acceptance gate: a"
+    )
+  })
+})
+
 describe("computePosition — budgets and identity", () => {
   it("raises budget decisions at the soft and hard levels", () => {
     const p = computePosition(

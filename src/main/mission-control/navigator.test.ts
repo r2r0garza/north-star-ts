@@ -142,6 +142,7 @@ import * as features from "../db/repositories/features"
 import * as playbooks from "../db/repositories/playbooks"
 import * as proposals from "../db/repositories/proposals"
 import * as ticks from "../db/repositories/navigator-ticks"
+import * as waveGates from "../db/repositories/wave-gates"
 import * as seatComms from "../db/repositories/seat-comms"
 import { upsertWorkspace } from "../db/repositories/workspaces"
 import { ProcessService } from "../tasks/process/service"
@@ -149,6 +150,7 @@ import { UserStoryRunner, recordUserStoryProof } from "./user-story-runner"
 import { startConflictResolution, startHookRun } from "./hook-runner"
 import { MilestoneIntegration } from "./integration"
 import { Navigator } from "./navigator"
+import { createDefaultPlaybook } from "./playbook-defaults"
 import {
   applyProposal,
   checkProposal,
@@ -1044,6 +1046,65 @@ describe.skipIf(!sqliteLoads)("Navigator copilot and map tools", () => {
           r.reason?.startsWith("Attempt 1 started")
       )
     expect(revision?.actor).toBe("lead@orchestration")
+  })
+
+  it("runs the acceptance gate itself; the merged story is done once it passes", async () => {
+    setup()
+    const root = repo()
+    const id = draftFeature(root)
+    const milestone = features.getFeatureGraph(id)!.milestones[0]
+    for (const key of ["a", "b"])
+      features.createUserStory({
+        milestoneId: milestone.id,
+        key,
+        title: key.toUpperCase(),
+        spec: { acceptance: [`${key} works`] },
+      })
+    const a = () => userStoriesOf(id).find((s) => s.key === "a")!
+    const b = () => userStoriesOf(id).find((s) => s.key === "b")!
+    features.setUserStoryEdges(milestone.id, [
+      { fromUserStoryId: a().id, toUserStoryId: b().id },
+    ])
+    // The default milestone playbook's gate, without its planning review.
+    const playbook = createDefaultPlaybook("milestone")
+    playbooks.removeHook(playbook.id, "before_user_stories")
+    features.updateMilestone(milestone.id, { playbookId: playbook.id })
+    builds.set("a", { "a.txt": "a\n" })
+    await navigator.startDrive(id, { mode: "copilot" })
+    await navigator.idle()
+    const turn = { ...LEAD, featureId: id }
+    expect(
+      await getMapTools()!.assignUserStory(turn, { userStory: "a" })
+    ).toMatchObject({ ok: true })
+    await settle()
+
+    expect(a().status).toBe("done")
+    expect(waveGates.listWaveGates(milestone.id)).toEqual([
+      expect.objectContaining({
+        round: 1,
+        status: "passed",
+        storyIds: [a().id],
+      }),
+    ])
+    const gateTick = ticks
+      .listTicks(id, 50)
+      .find((t) => t.actions.some((x) => x.kind === "run_hook"))
+    expect(gateTick?.actions).toContainEqual(
+      expect.objectContaining({
+        kind: "run_hook",
+        target: "after_each_wave",
+        ok: true,
+      })
+    )
+    // The gate was the Navigator's, not a decision for the user.
+    expect(
+      (await navigator.position(id)).pendingDecisions.map((d) => d.kind)
+    ).not.toContain("hook_due")
+    // b depended on a: now that a is done it's the lead's to start.
+    expect(directions(id).at(-1)!.body).toContain(
+      "Ready to start now (assign_user_story, critical path first): b"
+    )
+    expect(b().status).not.toBe("running")
   })
 
   it("enforces decision rights: a lead without revise_plan can only propose", async () => {

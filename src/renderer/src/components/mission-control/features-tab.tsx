@@ -628,6 +628,28 @@ function MilestoneView({
               notActive ??
               (userStories.length ? null : "Add user stories to review first."),
           },
+          ...(userStories.some((s) => s.status === "merged") ||
+          (navigator.position?.milestone?.id === milestone.id &&
+            navigator.position.milestone.gate)
+            ? [
+                {
+                  hook: "after_each_wave" as const,
+                  label: "Run acceptance gate",
+                  milestoneId: milestone.id,
+                  disabledReason:
+                    notActive ??
+                    (!userStories.some((s) => s.status === "merged")
+                      ? "No merged user story is awaiting the gate."
+                      : userStories.some((s) =>
+                            ["running", "proving", "integrating"].includes(
+                              s.status
+                            )
+                          )
+                        ? "The gate runs once nothing in the milestone is running or merging."
+                        : null),
+                },
+              ]
+            : []),
           {
             hook: "after_all_user_stories",
             label: "Run review",
@@ -806,8 +828,15 @@ function MilestoneView({
                             <Badge
                               className={health[userStory.id] ? "" : "ml-auto"}
                               variant="outline"
+                              title={
+                                userStory.status === "merged"
+                                  ? "On the integration branch, awaiting the milestone's acceptance gate"
+                                  : undefined
+                              }
                             >
-                              {userStory.status}
+                              {userStory.status === "merged"
+                                ? "Merged · awaiting gate"
+                                : userStory.status}
                             </Badge>
                           )}
                         </div>

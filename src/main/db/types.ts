@@ -771,6 +771,9 @@ export type UserStoryStatus =
   | "running"
   | "proving"
   | "integrating"
+  // Merged into the integration branch and awaiting its wave's acceptance
+  // gate (plan 110). Only "done" satisfies a dependency.
+  | "merged"
   | "done"
   | "failed"
   | "cancelled"
@@ -976,6 +979,7 @@ export type PlaybookHookName =
   | "run"
   | "before_user_stories"
   | "after_each_user_story"
+  | "after_each_wave"
   | "after_all_user_stories"
   | "plan"
   | "between_milestones"
@@ -1020,6 +1024,31 @@ export interface PlaybookRun {
   outcomeReason: string | null
   // Set when the run works in its own worktree rather than the workspace.
   worktreePath: string | null
+  createdAt: number
+  finishedAt: number | null
+}
+
+// A wave acceptance gate (plan 110): the milestone's merged user stories (the
+// batch) proven together on the integration branch.
+export type WaveGateStatus =
+  | "running"
+  | "passed"
+  | "fixing"
+  | "escalated"
+  | "failed"
+
+export interface WaveGate {
+  id: string
+  milestoneId: string
+  // 1, 2, … per milestone.
+  round: number
+  // The batch: exactly the user stories that were merged when the gate opened.
+  storyIds: string[]
+  status: WaveGateStatus
+  playbookRunId: string | null
+  // Per story and criterion outcomes (plan 110.02); free-form until then.
+  report: unknown | null
+  checksCommit: string | null
   createdAt: number
   finishedAt: number | null
 }

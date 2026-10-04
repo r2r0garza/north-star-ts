@@ -20,6 +20,7 @@ export type HookName =
   | "on_complete"
   | "before_user_stories"
   | "after_each_user_story"
+  | "after_each_wave"
   | "after_all_user_stories"
   | "run"
 
@@ -67,6 +68,15 @@ export interface PositionRunInput {
   createdAt: number
 }
 
+// A wave acceptance gate (plan 110) a milestone ran over its merged stories.
+export interface PositionGateInput {
+  id: string
+  milestoneId: string
+  round: number
+  status: "running" | "passed" | "fixing" | "escalated" | "failed"
+  storyIds: string[]
+}
+
 export interface PositionInput {
   feature: {
     id: string
@@ -86,6 +96,7 @@ export interface PositionInput {
     toUserStoryId: string
   }>
   runs: PositionRunInput[]
+  gates?: PositionGateInput[]
   mergeQueue: Array<{
     id: string
     userStoryId: string
@@ -196,8 +207,12 @@ export interface Position {
     ready: string[]
     running: string[]
     integrating: string[]
+    // Merged into the integration branch, awaiting the wave gate (plan 110).
+    merged: string[]
     done: string[]
-    // Waiting on predecessors that are not merged yet.
+    // The milestone's latest acceptance gate.
+    gate: { round: number; status: PositionGateInput["status"] } | null
+    // Waiting on predecessors that are not done yet.
     waiting: Array<{ userStory: string; on: string[] }>
     blocked: Array<{ userStory: string; reason: string }>
     // Failed user stories the Navigator may retry mechanically.
@@ -242,6 +257,7 @@ const HOOK_LABEL: Record<string, string> = {
   before_user_stories: "milestone planning review",
   after_all_user_stories: "milestone review",
   after_each_user_story: "conflict resolution",
+  after_each_wave: "acceptance gate",
   run: "user story run",
 }
 
@@ -391,7 +407,11 @@ export function computePosition(input: PositionInput): Position {
     extra: Partial<typeof empty> = {}
   ): Position => {
     // Only Autopilot runs hooks itself; otherwise a due hook waits on the user.
-    if (maneuver.kind === "run_hook" && feature.driveMode !== "autopilot")
+    // Copilot also runs the acceptance gate: it's verification, not a decision.
+    if (
+      maneuver.kind === "run_hook" &&
+      !runsItself(feature.driveMode, maneuver.hook.hook)
+    )
       decide({
         key: `hook_due:${maneuver.hook.hook}:${maneuver.hook.milestoneId ?? ""}`,
         kind: "hook_due",
@@ -588,6 +608,7 @@ export function computePosition(input: PositionInput): Position {
   const ready: string[] = []
   const runningUserStories: string[] = []
   const integrating: string[] = []
+  const merged: string[] = []
   const done: string[] = []
   const waiting: Array<{ userStory: string; on: string[] }> = []
   const blocked: Array<{ userStory: string; reason: string }> = []
@@ -609,6 +630,9 @@ export function computePosition(input: PositionInput): Position {
         break
       case "integrating":
         integrating.push(userStory.id)
+        break
+      case "merged":
+        merged.push(userStory.id)
         break
       case "done":
         done.push(userStory.id)
@@ -666,7 +690,8 @@ export function computePosition(input: PositionInput): Position {
         break
       }
       default: {
-        // draft / ready: runnable once every predecessor has merged.
+        // draft / ready: runnable once every predecessor is done (merged
+        // and, with a wave gate, through it).
         if (cancelledPred) {
           blocked.push({
             userStory: userStory.id,
@@ -714,6 +739,10 @@ export function computePosition(input: PositionInput): Position {
 
   const allSettled =
     userStories.length > 0 && userStories.every((s) => s.status === "done")
+  const gates = (input.gates ?? [])
+    .filter((gate) => gate.milestoneId === milestone.id)
+    .sort((a, b) => a.round - b.round)
+  const latestGate = gates.at(-1) ?? null
   const milestoneState: NonNullable<Position["milestone"]> = {
     id: milestone.id,
     key: milestone.key,
@@ -724,7 +753,11 @@ export function computePosition(input: PositionInput): Position {
     ready,
     running: runningUserStories,
     integrating,
+    merged,
     done,
+    gate: latestGate
+      ? { round: latestGate.round, status: latestGate.status }
+      : null,
     waiting,
     blocked,
     retryable,
@@ -893,6 +926,73 @@ export function computePosition(input: PositionInput): Position {
     })
   }
 
+  // ── the wave gate (plan 110): a barrier while merged stories await it ──────
+  if (merged.length) {
+    const keys = merged.map(keyOf).join(", ")
+    // No new story starts while a gate is due or running.
+    const held = [...ready, ...retryable].map((id) => ({
+      userStory: id,
+      reason: "waiting for the acceptance gate",
+    }))
+    const gateRunning =
+      latestGate?.status === "running" ||
+      hookState(input.runs, "after_each_wave", milestone.id) === "running"
+    if (gateRunning)
+      return withMilestone(
+        {
+          kind: "wait",
+          text: `The acceptance gate for ${milestone.key}${latestGate ? ` (round ${latestGate.round})` : ""} is running on ${keys}.`,
+        },
+        { deferred: held }
+      )
+    const busy = [
+      runningUserStories.length ? `${runningUserStories.length} running` : "",
+      integrating.length ? `${integrating.length} merging` : "",
+    ].filter(Boolean)
+    if (busy.length)
+      return withMilestone(
+        {
+          kind: "wait",
+          text: `Waiting on user stories: ${busy.join(", ")}; then the acceptance gate for ${milestone.key} runs on the merged ones.`,
+        },
+        { deferred: held }
+      )
+    // A gate that failed on this same batch waits on the user.
+    if (
+      latestGate?.status === "failed" &&
+      merged.every((id) => latestGate.storyIds.includes(id))
+    ) {
+      decide({
+        key: `hook_failed:after_each_wave:${latestGate.id}`,
+        kind: "hook_failed",
+        owner: "user",
+        target: { kind: "milestone", id: milestone.id },
+        summary: `The acceptance gate for ${milestone.key} (round ${latestGate.round}) failed on ${keys}. Run it again.`,
+        action: {
+          kind: "run_hook",
+          hook: "after_each_wave",
+          milestoneId: milestone.id,
+        },
+      })
+      return withMilestone(
+        {
+          kind: "decide",
+          text: `The acceptance gate for ${milestone.key} failed.`,
+        },
+        { deferred: held }
+      )
+    }
+    const hook = hookRef("after_each_wave", milestone.id, milestone.key)
+    return withMilestone(
+      {
+        kind: "run_hook",
+        hook,
+        text: `Run the acceptance gate for ${milestone.key} (round ${(latestGate?.round ?? 0) + 1}) on ${keys}.`,
+      },
+      { nextHook: hook, deferred: held }
+    )
+  }
+
   // ── dispatch: ready user stories, critical path first, then position ──────────
   const critical = new Set(criticalPath)
   const order = (id: string) => byId.get(id)?.position ?? 0
@@ -975,6 +1075,13 @@ export function computePosition(input: PositionInput): Position {
         : "Nothing can move right now.",
     },
     { deferred }
+  )
+}
+
+// Whether the drive starts a due hook itself rather than asking the user.
+export function runsItself(mode: DriveMode, hook: HookName): boolean {
+  return (
+    mode === "autopilot" || (mode === "copilot" && hook === "after_each_wave")
   )
 }
 
@@ -1072,7 +1179,10 @@ export function positionFingerprint(position: Position): string {
           position.milestone.ready,
           position.milestone.running,
           position.milestone.integrating,
+          position.milestone.merged,
           position.milestone.done,
+          position.milestone.gate?.round ?? null,
+          position.milestone.gate?.status ?? null,
           position.milestone.blocked.map((b) => b.userStory),
           position.milestone.retryable,
           position.milestone.waiting.map((w) => w.userStory),
@@ -1114,8 +1224,10 @@ export function renderPosition(position: Position): string {
       `Active milestone: ${m.key} "${m.name}" (${m.status}).`,
       `Waves: ${m.waves.map((wave, i) => `${i + 1}) ${keys(wave)}`).join("  ") || "none"}`,
       `Critical path: ${keys(m.criticalPath)}`,
-      `Ready: ${keys(m.ready)} · Running: ${keys(m.running)} · Merging: ${keys(m.integrating)} · Done: ${keys(m.done)}`
+      `Ready: ${keys(m.ready)} · Running: ${keys(m.running)} · Merging: ${keys(m.integrating)}${m.merged.length ? ` · Merged, awaiting the acceptance gate: ${keys(m.merged)}` : ""} · Done: ${keys(m.done)}`
     )
+    if (m.gate)
+      lines.push(`Acceptance gate: round ${m.gate.round}, ${m.gate.status}.`)
     if (m.waiting.length)
       lines.push(
         `Waiting: ${m.waiting.map((w) => `${key(w.userStory)} (on ${keys(w.on)})`).join("; ")}`

@@ -134,7 +134,8 @@ import {
 } from "../db/repositories/workspaces"
 import { ProcessService } from "../tasks/process/service"
 import { UserStoryRunner, recordUserStoryProof } from "./user-story-runner"
-import { startConflictResolution } from "./hook-runner"
+import { startConflictResolution, startHookRun } from "./hook-runner"
+import * as waveGates from "../db/repositories/wave-gates"
 import { MilestoneIntegration } from "./integration"
 import { createDefaultPlaybook } from "./playbook-defaults"
 import type { AgentDefinition } from "../agent/agents/types"
@@ -240,7 +241,14 @@ function rig() {
   return created
 }
 
-function featureIn(workspace: string, keys: string[]) {
+// Most tests here are about the merge queue (106.5), so their milestone
+// playbook has no wave acceptance gate and a merge lands the story done.
+// `gate: true` keeps the default playbook's gate (plan 110).
+function featureIn(
+  workspace: string,
+  keys: string[],
+  options: { gate?: boolean } = {}
+) {
   const graph = features.createFeature({
     key: "billing",
     name: "Billing",
@@ -250,6 +258,11 @@ function featureIn(workspace: string, keys: string[]) {
     workspaceId: upsertWorkspace(workspace).id,
   })
   const milestone = graph.milestones[0]
+  if (!options.gate) {
+    const playbook = createDefaultPlaybook("milestone")
+    playbooks.removeHook(playbook.id, "after_each_wave")
+    features.updateMilestone(milestone.id, { playbookId: playbook.id })
+  }
   for (const key of keys)
     features.createUserStory({
       milestoneId: milestone.id,
@@ -307,6 +320,160 @@ afterEach(() => {
 })
 
 describe.skipIf(!sqliteLoads)("milestone integration", () => {
+  it("lands a merge as merged with the wave gate, and the gate makes it done", async () => {
+    setup()
+    const root = repo()
+    const { feature, milestone, userStory } = featureIn(
+      root,
+      ["api", "pdf", "ui"],
+      { gate: true }
+    )
+    features.setUserStoryEdges(milestone.id, [
+      {
+        fromUserStoryId: userStory("api").id,
+        toUserStoryId: userStory("ui").id,
+      },
+      {
+        fromUserStoryId: userStory("pdf").id,
+        toUserStoryId: userStory("ui").id,
+      },
+    ])
+    builds.set("api", { "api.txt": "api\n" })
+    builds.set("pdf", { "pdf.txt": "pdf\n" })
+    const api = await runner.startUserStory(userStory("api").id)
+    await drive(api.processRunId!)
+    await integration.idle()
+    expect(features.getUserStory(userStory("api").id)!.status).toBe("merged")
+    // Its worktree is gone like any merged story's.
+    expect(existsSync(api.worktreePath!)).toBe(false)
+    // pdf is still running: no gate yet, and the dependent waits on both.
+    const pdf = await runner.startUserStory(userStory("pdf").id)
+    await expect(
+      startHookRun(runner, {
+        featureId: feature.id,
+        milestoneId: milestone.id,
+        hook: "after_each_wave",
+      })
+    ).rejects.toThrow(/Wait for pdf \(running\)/)
+    await drive(pdf.processRunId!)
+    await integration.idle()
+    await expect(runner.startUserStory(userStory("ui").id)).rejects.toThrow(
+      /awaiting their acceptance gate: (api, pdf|pdf, api)\./
+    )
+    expect(features.getMilestone(milestone.id)!.status).toBe("active")
+
+    const run = await startHookRun(runner, {
+      featureId: feature.id,
+      milestoneId: milestone.id,
+      hook: "after_each_wave",
+    })
+    expect(run).toMatchObject({ hook: "after_each_wave", status: "completed" })
+    const [gate] = waveGates.listWaveGates(milestone.id)
+    expect(gate).toMatchObject({
+      round: 1,
+      status: "passed",
+      playbookRunId: run.id,
+    })
+    expect(gate.storyIds.sort()).toEqual(
+      [userStory("api").id, userStory("pdf").id].sort()
+    )
+    expect(features.getUserStory(userStory("api").id)!.status).toBe("done")
+    expect(features.getUserStory(userStory("pdf").id)!.status).toBe("done")
+    // Nothing is merged now, so there is no gate to run.
+    await expect(
+      startHookRun(runner, {
+        featureId: feature.id,
+        milestoneId: milestone.id,
+        hook: "after_each_wave",
+      })
+    ).rejects.toThrow(/No user story in milestone-1 is merged/)
+
+    // The dependent starts once both are done; after it, the second gate's
+    // batch is only ui, and passing it brings the milestone to review.
+    const ui = await runner.startUserStory(userStory("ui").id)
+    await drive(ui.processRunId!)
+    await integration.idle()
+    expect(features.getUserStory(userStory("ui").id)!.status).toBe("merged")
+    expect(features.getMilestone(milestone.id)!.status).toBe("integrating")
+    await startHookRun(runner, {
+      featureId: feature.id,
+      milestoneId: milestone.id,
+      hook: "after_each_wave",
+    })
+    const second = waveGates.listWaveGates(milestone.id)[1]
+    expect(second).toMatchObject({
+      round: 2,
+      status: "passed",
+      storyIds: [userStory("ui").id],
+    })
+    integration.advanceMilestone(milestone.id)
+    expect(features.getMilestone(milestone.id)!.status).toBe("review")
+  })
+
+  it("settles merged stories when the playbook drops its gate", async () => {
+    setup()
+    const root = repo()
+    const { feature, milestone, userStory } = featureIn(root, ["a"], {
+      gate: true,
+    })
+    builds.set("a", { "a.txt": "a\n" })
+    const a = await runner.startUserStory(userStory("a").id)
+    await drive(a.processRunId!)
+    await integration.idle()
+    expect(features.getUserStory(userStory("a").id)!.status).toBe("merged")
+    const playbook = playbooks
+      .listPlaybooks()
+      .find((p) => p.altitude === "milestone")!
+    playbooks.removeHook(playbook.id, "after_each_wave")
+    await startHookRun(runner, {
+      featureId: feature.id,
+      milestoneId: milestone.id,
+      hook: "after_each_wave",
+    })
+    expect(features.getUserStory(userStory("a").id)!.status).toBe("done")
+    expect(waveGates.listWaveGates(milestone.id)[0].report).toMatchObject({
+      reason: "The milestone playbook has no gate hook.",
+    })
+  })
+
+  it("fails the gate when its run ends without a result, keeping the batch merged", async () => {
+    setup()
+    const root = repo()
+    const { feature, milestone, userStory } = featureIn(root, ["a"], {
+      gate: true,
+    })
+    builds.set("a", { "a.txt": "a\n" })
+    const a = await runner.startUserStory(userStory("a").id)
+    await drive(a.processRunId!)
+    await integration.idle()
+    // A gate run interrupted before it recorded a result (110.02 runs steps).
+    const run = playbooks.createPlaybookRun({
+      playbookId: null,
+      hook: "after_each_wave",
+      featureId: feature.id,
+      milestoneId: milestone.id,
+    })
+    const gate = waveGates.createWaveGate({
+      milestoneId: milestone.id,
+      storyIds: [userStory("a").id],
+      playbookRunId: run.id,
+    })
+    runner.reconcile()
+    expect(waveGates.getWaveGate(gate.id)!.status).toBe("failed")
+    expect(features.getUserStory(userStory("a").id)!.status).toBe("merged")
+    // Re-running it opens the next round.
+    await startHookRun(runner, {
+      featureId: feature.id,
+      milestoneId: milestone.id,
+      hook: "after_each_wave",
+    })
+    expect(waveGates.listWaveGates(milestone.id).map((g) => g.status)).toEqual([
+      "failed",
+      "passed",
+    ])
+    expect(features.getUserStory(userStory("a").id)!.status).toBe("done")
+  })
+
   it("runs independent user stories in parallel worktrees, merges them in order, and starts the dependent user story on both", async () => {
     setup()
     const root = repo()

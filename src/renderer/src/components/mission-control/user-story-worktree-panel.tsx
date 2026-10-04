@@ -98,7 +98,7 @@ export function UserStoryWorktreePanel({ userStory }: { userStory: UserStory }) 
         </p>
       ) : (
         <p className="text-xs text-muted-foreground">
-          {userStory.status === "done"
+          {userStory.status === "done" || userStory.status === "merged"
             ? "Merged; its worktree was removed."
             : "The worktree was removed; the branch is kept for inspection."}
         </p>

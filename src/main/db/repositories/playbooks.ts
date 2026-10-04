@@ -37,6 +37,7 @@ export const PLAYBOOK_HOOKS: Record<
   milestone: [
     "before_user_stories",
     "after_each_user_story",
+    "after_each_wave",
     "after_all_user_stories",
   ],
   feature: ["plan", "between_milestones", "on_complete"],

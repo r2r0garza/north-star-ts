@@ -6,6 +6,7 @@ import { listApprovals } from "../db/repositories/approvals"
 import * as playbooks from "../db/repositories/playbooks"
 import * as proposalsRepo from "../db/repositories/proposals"
 import * as comms from "../db/repositories/seat-comms"
+import * as waveGates from "../db/repositories/wave-gates"
 import type {
   DriveMode,
   Feature,
@@ -31,6 +32,7 @@ import {
   positionFingerprint,
   type Decision,
   type HookName,
+  runsItself,
   type Position,
   type PositionInput,
   type PositionUserStoryInput,
@@ -181,7 +183,9 @@ export function budgetUsage(
       (r) => r.userStoryId && r.hook === "run"
     ).length,
     maxUserStoryAttempts: userStories
-      .filter((s) => final || !["done", "cancelled"].includes(s.status))
+      .filter(
+        (s) => final || !["done", "merged", "cancelled"].includes(s.status)
+      )
       .reduce((max, s) => Math.max(max, s.attempts), 0),
     maxPlanRevisionsPerMilestone: milestone
       ? features.countRevisions(feature.id, milestone.id, "revise_plan")
@@ -275,6 +279,13 @@ export function positionInput(
         toUserStoryId: e.toUserStoryId,
       }))
     ),
+    gates: waveGates.listFeatureWaveGates(feature.id).map((gate) => ({
+      id: gate.id,
+      milestoneId: gate.milestoneId,
+      round: gate.round,
+      status: gate.status,
+      storyIds: gate.storyIds,
+    })),
     runs: playbookRuns.map((r) => ({
       id: r.id,
       hook: r.hook as HookName,
@@ -410,7 +421,7 @@ export function renderDirection(input: {
       )
     if (position.feature.nextHook)
       lines.push(
-        `The user runs the ${position.feature.nextHook.label}; no action needed from you.`
+        `${runsItself(mode, position.feature.nextHook.hook) ? "The Navigator" : "The user"} runs the ${position.feature.nextHook.label}; no action needed from you.`
       )
   }
   if (lead.length) {
@@ -624,8 +635,15 @@ export class Navigator {
           detail: reason,
         })
         this.deps.notifyUser(`Mission Control paused “${feature.name}”`, reason)
-      } else if (mode === "autopilot") {
-        await this.drive(feature, position, actions)
+      } else {
+        // Copilot starts only the acceptance gate (plan 110): verification,
+        // not a decision. Autopilot drives every mechanical step.
+        if (mode === "autopilot") await this.drive(feature, position, actions)
+        else if (
+          position.maneuver.kind === "run_hook" &&
+          runsItself(mode, position.maneuver.hook.hook)
+        )
+          await this.runHook(feature, position, actions)
         const failed = actions.filter((a) => MECHANICAL.has(a.kind) && !a.ok)
         if (retry === MAX_ACTION_RETRIES && failed.length)
           this.deps.notifyUser(
@@ -673,8 +691,7 @@ export class Navigator {
 
   // Which retry this tick would be (1-based), or 0 when it shouldn't retry.
   private retryNumber(feature: Feature, previous: NavigatorTick): number {
-    if (feature.status !== "active" || feature.driveMode !== "autopilot")
-      return 0
+    if (feature.status !== "active" || feature.driveMode === "manual") return 0
     if (!previous.actions.some((a) => MECHANICAL.has(a.kind) && !a.ok)) return 0
     if (this.now() - previous.createdAt < ACTION_RETRY_MS) return 0
     let streak = 0
@@ -700,6 +717,36 @@ export class Navigator {
           "local_merge",
           NAVIGATOR_ADDRESS
         )
+  }
+
+  // Start the due hook the position names.
+  private async runHook(
+    feature: Feature,
+    position: Position,
+    actions: NavigatorTickAction[]
+  ): Promise<void> {
+    const maneuver = position.maneuver
+    if (maneuver.kind !== "run_hook" || position.feature.runningHook) return
+    try {
+      await this.deps.startHook({
+        featureId: feature.id,
+        milestoneId: maneuver.hook.milestoneId,
+        hook: maneuver.hook.hook as PlaybookHookName,
+      })
+      actions.push({
+        kind: "run_hook",
+        target: maneuver.hook.hook,
+        ok: true,
+        detail: `Started the ${maneuver.hook.label}`,
+      })
+    } catch (error) {
+      actions.push({
+        kind: "run_hook",
+        target: maneuver.hook.hook,
+        ok: false,
+        detail: errorText(error),
+      })
+    }
   }
 
   // Autopilot's mechanical steps.
@@ -743,27 +790,8 @@ export class Navigator {
       }
     }
     const maneuver = position.maneuver
-    if (maneuver.kind === "run_hook" && !position.feature.runningHook) {
-      try {
-        await this.deps.startHook({
-          featureId: feature.id,
-          milestoneId: maneuver.hook.milestoneId,
-          hook: maneuver.hook.hook as PlaybookHookName,
-        })
-        actions.push({
-          kind: "run_hook",
-          target: maneuver.hook.hook,
-          ok: true,
-          detail: `Started the ${maneuver.hook.label}`,
-        })
-      } catch (error) {
-        actions.push({
-          kind: "run_hook",
-          target: maneuver.hook.hook,
-          ok: false,
-          detail: errorText(error),
-        })
-      }
+    if (maneuver.kind === "run_hook") {
+      await this.runHook(feature, position, actions)
       return
     }
     if (maneuver.kind === "dispatch") {

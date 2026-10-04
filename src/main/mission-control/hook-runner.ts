@@ -14,6 +14,7 @@ import {
 } from "./user-story-objective"
 import type { ResolutionLaunchInput } from "./integration"
 import { renderFollowupsForReview } from "./followups"
+import { startWaveGate } from "./wave-gate"
 
 // Milestone and feature hooks (plan 106.3, decision 4). Each hook is its own
 // small Process run whose objective is composed from its container. They are
@@ -49,6 +50,10 @@ export async function startHookRun(
     throw new Error(
       `The ${input.hook.replace(/_/g, " ")} hook runs on a milestone.`
     )
+  // The wave acceptance gate (plan 110) proves the milestone's merged user
+  // stories together.
+  if (input.hook === "after_each_wave")
+    return startWaveGate({ feature, milestone: milestone! })
   if (input.hook === "between_milestones" && !milestone)
     throw new Error(
       "Choose the finished milestone to run the between-milestones hook on."

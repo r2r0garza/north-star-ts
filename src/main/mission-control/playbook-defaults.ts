@@ -81,7 +81,7 @@ export const DEFAULT_PLAYBOOKS: Record<PlaybookAltitude, DefaultPlaybook> = {
   milestone: {
     name: "Plan → Review",
     description:
-      "Before user stories run, the lead reviews the user story set against the milestone outcome. When a user story's merge conflicts, the integrator (or the lead) resolves it and QA re-verifies the user story. After all user stories, the lead writes the milestone summary.",
+      "Before user stories run, the lead reviews the user story set against the milestone outcome. When a user story's merge conflicts, the integrator (or the lead) resolves it and QA re-verifies the user story. After each wave merges, QA proves the merged user stories together on the integration branch. After all user stories, the lead writes the milestone summary.",
     hooks: {
       before_user_stories: [
         {
@@ -105,6 +105,17 @@ export const DEFAULT_PLAYBOOKS: Record<PlaybookAltitude, DefaultPlaybook> = {
           name: "Re-verify the merged result against each acceptance criterion and record the proof",
           role: "qa",
           // No validator, for the same reason as the user story test step.
+          proofStep: true,
+          contextScope: "user_story",
+        },
+      ],
+      // The wave acceptance gate (plan 110): runs once the milestone is
+      // quiescent with merged user stories; they're done when it passes.
+      after_each_wave: [
+        {
+          key: "accept",
+          name: "Write and run the acceptance suite for the merged stories against the integrated app, triage every failure, and record the gate result",
+          role: "qa",
           proofStep: true,
           contextScope: "user_story",
         },

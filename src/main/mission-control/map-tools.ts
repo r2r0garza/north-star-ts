@@ -517,14 +517,14 @@ export function milestoneJudgeRefusal(milestone: Milestone): string | null {
 // Stories whose runs are still going finish and merge on their own. A lead
 // that judged early read "running" as Mission Control being stuck, and
 // escalated it to the user.
-const IN_FLIGHT = new Set(["running", "proving", "integrating"])
+const IN_FLIGHT = new Set(["running", "proving", "integrating", "merged"])
 
 function stillInFlight(milestone: Milestone): string {
   const open = features
     .listUserStories(milestone.id)
     .filter((s) => s.status !== "done" && s.status !== "cancelled")
   if (!open.length || !open.every((s) => IN_FLIGHT.has(s.status))) return ""
-  return " Their runs are still in progress and merge on their own; the Navigator asks you to judge the milestone once every user story has merged. Nothing is stuck, so there's nothing to escalate: wait for that direction."
+  return " Their runs are still in progress and merge (and pass their acceptance gate) on their own; the Navigator asks you to judge the milestone once every user story is done. Nothing is stuck, so there's nothing to escalate: wait for that direction."
 }
 
 // The user's definition-of-done judgment (when the lead doesn't hold

@@ -1,6 +1,6 @@
 # PR110: Wave acceptance gate — exploratory QA per story, Playwright suite per wave
 
-> Status: **PROPOSED** (2026-10-04). Follow-up to `109` (QA seats that verify independently) and
+> Status: **IN PROGRESS** — `110.01` done (2026-10-04); `110.02`–`110.05` remain. Proposed 2026-10-04. Follow-up to `109` (QA seats that verify independently) and
 > `106.5` (worktrees and the merge queue). Changes `109.02`'s per-story checks step; keeps `109.03`–
 > `109.06`. Uses the current names: Features, Milestones, User stories.
 
@@ -221,6 +221,34 @@ starts from them. `110.05` is independent after `110.01`.
    that exists. Stories authored under `109.02` already have manifests in the same format, so the
    first gate adopts them as its starting suite. Should Reset to default warn when a milestone using
    the playbook is in flight?
+
+## `110.01` as built (2026-10-04)
+
+- **Status and barrier.** `merged` sits between `integrating` and `done` (`integrating → merged →
+  done`). `completeMerge` lands a story `merged` when the milestone playbook has `after_each_wave`, else
+  `done`. Single-flight (non-git) workspaces have no integration branch and keep going straight to
+  `done`. Dependencies, `readySet`, and the runner's start check accept only `done`; health's
+  `settled()`, the greenfield "first story alone" check, the attempts budget, and the milestone's
+  `active → integrating` move treat `merged` as landed.
+- **Position.** While any story is `merged`, nothing new dispatches (ready and retryable stories are
+  deferred with "waiting for the acceptance gate"). Once nothing is running, proving, or merging, the
+  maneuver is `run_hook after_each_wave`; a gate that `failed` on the same batch becomes a
+  `hook_failed` decision with a re-run action. The position carries `milestone.merged` and the latest
+  `milestone.gate`.
+- **Open question 1 resolved: yes for Copilot.** `runsItself(mode, hook)` — Autopilot runs every
+  due hook, Copilot runs only the gate, Manual gets the `hook_due` decision. A failed gate start in
+  Copilot is retried on the heartbeat like Autopilot's mechanical steps.
+- **The gate step is a pass-through.** `startWaveGate` (`wave-gate.ts`) opens the `wave_gates` row
+  (batch = the `merged` stories, fixed at open) and an `after_each_wave` playbook run, then passes it in
+  the same transaction: batch stories become `done`, gate `passed`, run `completed`. The hook's steps
+  are not run yet; `110.02` replaces `passThrough()`. A gate run that ends any other way fails its gate
+  and leaves the batch `merged`.
+- **Playbook dropped its gate.** If the hook is removed while stories are `merged`, the next gate
+  passes them through (report notes there was no gate hook), so they never strand.
+- **Default playbook.** The shipped milestone playbook has the `accept` QA proof step. Existing
+  installs pick it up through Reset to default.
+- **UI.** "Merged · awaiting gate" badge, an "awaiting gate" count in the Navigator strip, a manual
+  **Run acceptance gate** control on the milestone, and the hook in the Playbooks tab.
 
 ## Out of scope
 

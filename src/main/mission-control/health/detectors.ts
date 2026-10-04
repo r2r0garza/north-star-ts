@@ -148,8 +148,10 @@ function messageEvidence(message: SnapshotMessage): HealthEvidence {
 
 const isSeat = (address: string) => parseSeatAddress(address) !== null
 const podOf = (address: string) => parseSeatAddress(address)?.podKey ?? null
+// A merged story awaiting its wave gate (plan 110) is settled too: its work
+// is on the integration branch and the gate, not the story, moves next.
 const settled = (status: UserStoryStatus) =>
-  status === "done" || status === "cancelled"
+  status === "done" || status === "merged" || status === "cancelled"
 
 // ── ceremony_rising (bureaucracy) ───────────────────────────────────────────
 

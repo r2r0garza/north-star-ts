@@ -31,6 +31,7 @@ import type {
   UserStory,
 } from "../db/types"
 import { deriveWaves } from "../../shared/mission-control/waves"
+import { hasWaveGate } from "./wave-gate"
 import {
   changedFiles,
   commitWorktreeChanges,
@@ -824,7 +825,8 @@ export class MilestoneIntegration {
     return path.join(this.deps.worktreeRoot(), featureId, `${kind}-${suffix()}`)
   }
 
-  // A merge landed: the entry is merged, the user story done, its worktree gone.
+  // A merge landed: the entry is merged, the user story done (or merged and
+  // awaiting its wave gate), its worktree gone.
   private async completeMerge(
     entry: MergeQueueEntry,
     mergeCommit: string | null,
@@ -849,13 +851,19 @@ export class MilestoneIntegration {
       )
       if (!updated) return null
       const userStory = features.getUserStory(entry.userStoryId)
+      const milestone = features.getMilestone(entry.milestoneId)
+      // With a wave acceptance gate (plan 110) the story waits, merged, for
+      // the gate to prove it on the integration branch.
+      const gated = !!milestone && hasWaveGate(milestone)
       if (userStory?.status === "integrating")
         features.setUserStoryExecution(
           userStory.id,
-          { status: "done", finishedAt: Date.now() },
-          mergeCommit
-            ? `Merged into the integration branch (${mergeCommit.slice(0, 10)})`
-            : "Merged into the integration branch (no changes)"
+          { status: gated ? "merged" : "done", finishedAt: Date.now() },
+          `${
+            mergeCommit
+              ? `Merged into the integration branch (${mergeCommit.slice(0, 10)})`
+              : "Merged into the integration branch (no changes)"
+          }${gated ? "; awaiting its acceptance gate" : ""}`
         )
       return updated
     })()
@@ -1200,8 +1208,9 @@ export class MilestoneIntegration {
 
   // ── milestone progress and landing ──────────────────────────────────────────
 
-  // active → integrating while finished user stories wait to merge; → review once
-  // every user story that wasn't cancelled is done; back to active when one leaves
+  // active → integrating while finished user stories wait to merge (or, merged,
+  // for their acceptance gate); → review once every user story that wasn't
+  // cancelled is done; back to active when one leaves
   // the queue unmerged. Idempotent and quiet when nothing changes, so it is
   // safe to call on every read (status) and after plan edits (user story delete).
   advanceMilestone(milestoneId: string): void {
@@ -1214,7 +1223,10 @@ export class MilestoneIntegration {
     if (!userStories.length) return
     const allDone = userStories.every((s) => s.status === "done")
     const settled = userStories.every(
-      (s) => s.status === "done" || s.status === "integrating"
+      (s) =>
+        s.status === "done" ||
+        s.status === "merged" ||
+        s.status === "integrating"
     )
     const target = allDone
       ? "review"
@@ -1237,7 +1249,7 @@ export class MilestoneIntegration {
         features.advanceMilestoneStatus(
           milestoneId,
           "integrating",
-          "Every user story is merging"
+          "Every user story is merging or awaiting its acceptance gate"
         )
       else if (!settled && milestone.status === "integrating")
         features.advanceMilestoneStatus(

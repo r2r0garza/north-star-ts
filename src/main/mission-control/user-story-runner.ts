@@ -25,6 +25,7 @@ import type {
 } from "../db/types"
 import type { Finding } from "../../shared/mission-control/workspace-analysis"
 import { ensureDefaultPlaybook } from "./playbook-defaults"
+import { failWaveGateForRun } from "./wave-gate"
 import { QA_ROLE } from "./qa-scope"
 import { checksDriftBlock, readStoryManifest, storyChecks } from "./qa-checks"
 import {
@@ -502,10 +503,15 @@ export class UserStoryRunner {
       .filter((edge) => edge.toUserStoryId === userStory.id)
       .map((edge) => features.getUserStory(edge.fromUserStoryId))
       .filter((dep): dep is UserStory => !!dep && dep.status !== "done")
-    if (blockers.length)
+    if (blockers.length) {
+      // Merged predecessors still wait on their wave's acceptance gate (110).
+      const gated = blockers.filter((b) => b.status === "merged")
       throw new Error(
-        `User story ${userStory.key} depends on unmerged user stories: ${blockers.map((b) => b.key).join(", ")}. A user story starts once its predecessors are done${milestone.integrationBranch ? " and merged into the integration branch" : ""}.`
+        gated.length === blockers.length
+          ? `User story ${userStory.key} depends on user stories awaiting their acceptance gate: ${gated.map((b) => b.key).join(", ")}. A user story starts once its predecessors are done, which a merged one is when the milestone's acceptance gate passes.`
+          : `User story ${userStory.key} depends on unmerged user stories: ${blockers.map((b) => (b.status === "merged" ? `${b.key} (merged, awaiting its acceptance gate)` : b.key)).join(", ")}. A user story starts once its predecessors are done${milestone.integrationBranch ? " and merged into the integration branch" : ""}.`
       )
+    }
     // Overlapping touch hints serialize by default (decision 7): two user stories
     // editing the same area in parallel is how merge conflicts are made. The
     // feature's "parallel" policy, or a one-off "Run anyway", opts out.
@@ -664,7 +670,9 @@ export class UserStoryRunner {
     const milestones = features.listMilestones(feature.id)
     if (
       milestones.some((m) =>
-        features.listUserStories(m.id).some((s) => s.status === "done")
+        features
+          .listUserStories(m.id)
+          .some((s) => s.status === "done" || s.status === "merged")
       )
     )
       return false
@@ -819,6 +827,11 @@ export class UserStoryRunner {
       if (!playbooks.finishPlaybookRun(playbookRunId, status, reason))
         return null
       const playbookRun = playbooks.getPlaybookRun(playbookRunId)!
+      if (playbookRun.hook === "after_each_wave" && status !== "completed")
+        failWaveGateForRun(
+          playbookRun.id,
+          reason ?? `The acceptance gate's run ${status}.`
+        )
       if (!playbookRun.userStoryId || playbookRun.hook !== "run") return null
       const userStory = features.getUserStory(playbookRun.userStoryId)
       if (!userStory || !["running", "proving"].includes(userStory.status))
