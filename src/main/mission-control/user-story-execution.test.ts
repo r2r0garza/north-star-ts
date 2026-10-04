@@ -32,7 +32,7 @@ interface LoopCall {
   proofResult?: RecordProofResult
   seat?: { address: string; profile: string; anchor: unknown }
   writeScope?: { allow: string[] }
-  qaChecks?: "author" | "verify"
+  qaChecks?: "author" | "explore" | "verify"
   // The seat browser handle input this worker would get (plan 109.04).
   seatBrowser?: { phaseRunId: string; label: string; origins: string[] }
   // What run_checks returned in the test step (plan 109.05).
@@ -55,7 +55,7 @@ vi.mock("../agent", () => ({
     processPhaseRunId?: string
     missionControlSeat?: { address: string; profile: string; anchor: unknown }
     writeScope?: { allow: string[] }
-    processQaChecks?: "author" | "verify"
+    processQaChecks?: "author" | "explore" | "verify"
     processAppLaunch?: boolean
     seatBrowser?: (signal: AbortSignal) => unknown
     workspace?: string
@@ -113,11 +113,12 @@ vi.mock("../agent", () => ({
       }
     }
     loopCalls.push(call)
-    // QA's checks step (plan 109.02) completes only with a valid manifest.
+    // QA's checks step (plan 109.02, playbooks from before 110.04) completes
+    // only with a valid manifest.
     if (input.processQaChecks !== "author" || manifestSkips-- <= 0)
       writeFakeManifest(input, checkCommand ?? undefined)
-    // The test step runs QA's checks first, as its kickoff says (plan 109.05).
-    if (runChecksInVerify && input.processQaChecks === "verify")
+    // A test step that tries run_checks anyway (plan 110.04 refuses it).
+    if (runChecksInVerify && input.processQaChecks)
       call.checksRun = await runChecksTool.execute({}, {
         workspace: input.workspace,
         processRunId: input.processRunId,
@@ -179,8 +180,9 @@ let routerReply = ""
 let hangLoops = false
 // How many checks-step turns finish without writing the manifest.
 let manifestSkips = 0
-// QA writes automated checks running this command instead of exploratory
-// ones, and whether the test step calls run_checks before its proof.
+// QA's checks step (a legacy playbook) writes automated checks running this
+// command instead of exploratory ones, and whether a QA proof step calls
+// run_checks before its proof.
 let checkCommand: string | null = null
 let runChecksInVerify = false
 let flagBackOnce = false
@@ -224,6 +226,7 @@ import {
 } from "./user-story-runner"
 import { startHookRun } from "./hook-runner"
 import { proveInApp, writeFakeManifest } from "../test/qa-manifest"
+import { createLegacyChecksPlaybook } from "../test/legacy-playbook"
 import { appStartTool } from "../agent/tools/app_launch_tools"
 import { runChecksTool } from "../agent/tools/qa_checks_tools"
 import { testAppServices } from "./app-launch"
@@ -392,7 +395,7 @@ beforeEach(() => {
 })
 
 describe.skipIf(!sqliteLoads)("user story execution", () => {
-  it("runs spec → checks → build → test with bound seats and marks the user story done on an accepted proof", async () => {
+  it("runs spec → build → test with bound seats and marks the user story done on an accepted proof", async () => {
     const rig = orchestratedRig()
     const { userStory } = billingFeature(rig.id)
     proofSubmissions.push(acceptedProof)
@@ -409,23 +412,17 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
     )
     expect(workers.map((c) => c.agentName)).toEqual([
       "agentref:v1:builder",
-      "agentref:v1:qa",
       "agentref:v1:builder",
       "agentref:v1:qa",
     ])
-    expect(workers.map((c) => c.proofStep)).toEqual([false, false, false, true])
-    // QA authors checks, then verifies; only QA steps get the check tools.
+    expect(workers.map((c) => c.proofStep)).toEqual([false, false, true])
+    // QA verifies by exploring the running app (plan 110.04): no checks.
     expect(workers.map((c) => c.qaChecks)).toEqual([
       undefined,
-      "author",
       undefined,
-      "verify",
+      "explore",
     ])
-    expect(workers[1].userMessage).toContain(
-      "e2e/stories/billing.milestone-1.invoice-model.json"
-    )
-    // The builder is told the frozen checks are QA's.
-    expect(workers[2].userMessage).toContain("QA's acceptance checks")
+    expect(workers[1].userMessage).not.toContain("QA's acceptance checks")
     // Seat narrowing reaches the worker as a runtime-only agent override.
     expect(workers[0].agentOverride?.tools).toEqual(["read", "edit"])
     // Seat charter, rig culture, pod culture, and intent chain are in context.
@@ -436,12 +433,13 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
     )
     expect(workers[0].sectionContent).toContain("Pod culture: tests first.")
     expect(workers[0].sectionContent).toContain("Customers can be invoiced.")
-    expect(workers[3].sectionContent).toContain("QA charter")
+    expect(workers[2].sectionContent).toContain("QA charter")
     // The objective is the rendered spec with stable criterion ids.
     expect(workers[0].userMessage).toContain("**AC-1**: Invoice has line items")
-    expect(workers[3].userMessage).toContain("record_proof")
-    expect(workers[3].userMessage).toContain("Start by calling `run_checks`")
-    expect(workers[3].proofResult).toMatchObject({
+    expect(workers[2].userMessage).toContain("record_proof")
+    expect(workers[2].userMessage).toContain("## Verifying by exploration")
+    expect(workers[2].userMessage).not.toContain("run_checks")
+    expect(workers[2].proofResult).toMatchObject({
       ok: true,
       status: "accepted",
     })
@@ -453,12 +451,7 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
       "builder@implementation",
       "builder@implementation",
       "qa@implementation",
-      "qa@implementation",
     ])
-    // The checks step froze the checks directory.
-    expect(
-      phaseRuns.find((pr) => pr.qaChecks?.freeze)?.qaChecks?.freeze?.files
-    ).toHaveProperty(["e2e/stories/billing.milestone-1.invoice-model.json"])
 
     const done = features.getUserStory(userStory.id)!
     expect(done.status).toBe("done")
@@ -470,7 +463,7 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
     expect(playbooks.getPlaybookRun(playbookRun.id)!.status).toBe("completed")
   })
 
-  describe("the proof gate reads what the harness recorded (plan 109.05)", () => {
+  describe("the proof gate reads what the harness recorded (plans 109.05, 110.04)", () => {
     const NODE = JSON.stringify(process.execPath)
     const ids = ["AC-1", "AC-2"].map(
       (id) => `billing.milestone-1.invoice-model-${id}`
@@ -497,49 +490,29 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
       }
     }
 
-    it("accepts covered criteria whose checks passed through run_checks in the test step", async () => {
-      checkCommand = `${NODE} -e "process.exit(0)"`
-      runChecksInVerify = true
-      const { verify, story } = await run(byChecks)
-      expect(verify.checksRun).toMatch(/2 passed, 0 failed/)
+    it("accepts criteria exercised in the app with saved evidence", async () => {
+      const { verify, story } = await run(acceptedProof)
       expect(verify.proofResult).toMatchObject({ ok: true, status: "accepted" })
       expect(story.proof).toMatchObject({
         criteria: [
-          {
-            id: "AC-1",
-            method: "qa_check",
-            checks: [{ checkId: ids[0], status: "passed", attempts: 1 }],
-          },
-          { id: "AC-2", method: "qa_check" },
+          { id: "AC-1", method: "app_exercised" },
+          { id: "AC-2", method: "app_exercised" },
         ],
       })
     })
 
-    it("refuses covered criteria whose checks failed, or never ran in the test step", async () => {
-      checkCommand = `${NODE} -e "process.exit(1)"`
+    it("refuses qa_check: the test step runs no checks", async () => {
       runChecksInVerify = true
-      const failed = await run(byChecks)
-      expect(failed.verify.proofResult).toMatchObject({
-        ok: false,
-        code: "proof_rejected_by_rules",
-        message: expect.stringMatching(/AC-1: check .* failed in this step/),
-      })
-      expect(failed.story.status).not.toBe("done")
-    })
-
-    it("refuses covered criteria when run_checks wasn't called", async () => {
-      checkCommand = `${NODE} -e "process.exit(0)"`
       const { verify } = await run(byChecks)
+      expect(verify.checksRun).toMatch(/runs no checks/)
       expect(verify.proofResult).toMatchObject({
         ok: false,
         code: "proof_rejected_by_rules",
-        message: expect.stringMatching(
-          /has no result in this step\. Run it with run_checks/
-        ),
+        message: expect.stringMatching(/AC-1: this step runs no QA checks/),
       })
     })
 
-    it("refuses an exploratory criterion exercised without saved evidence", async () => {
+    it("refuses a criterion exercised without saved evidence", async () => {
       const { verify } = await run({
         verdict: "accepted",
         criteria: ["AC-1", "AC-2"].map((id) => ({
@@ -557,9 +530,18 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
         ),
       })
     })
+
+    it("doesn't bind the proof to a legacy checks step's manifest", async () => {
+      createLegacyChecksPlaybook()
+      checkCommand = `${NODE} -e "process.exit(1)"`
+      const { verify, story } = await run(acceptedProof)
+      expect(verify.qaChecks).toBe("explore")
+      expect(verify.proofResult).toMatchObject({ ok: true, status: "accepted" })
+      expect(story.status).toBe("done")
+    })
   })
 
-  it("confines the QA seat's writes to its checks and scratch directories (plan 109.01)", async () => {
+  it("confines the QA seat's test step to its scratch directory (plans 109.01, 110.04)", async () => {
     const rig = orchestratedRig()
     const { userStory } = billingFeature(rig.id)
     proofSubmissions.push(acceptedProof)
@@ -574,19 +556,49 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
     const scratch = `.mission-control/scratch/${playbookRun.processRunId}`
     // Builders write anywhere, as before.
     expect(workers[0].writeScope).toBeUndefined()
-    expect(workers[2].writeScope).toBeUndefined()
-    // Both QA steps: authoring the checks and verifying.
-    expect(workers[1].writeScope).toEqual({ allow: [checks, scratch] })
-    expect(workers[3].writeScope).toEqual({ allow: [checks, scratch] })
-    expect(workers[3].sectionContent).toContain(`\`${checks}/\``)
-    expect(workers[3].sectionContent).toContain(
-      "`@billing.milestone-1.invoice-model`"
+    expect(workers[1].writeScope).toBeUndefined()
+    // QA explores and writes nothing in the repository.
+    expect(workers[2].writeScope).toEqual({ allow: [scratch] })
+    expect(workers[2].sectionContent).toContain(
+      "you write nothing in the repository"
     )
-    expect(existsSync(join(workspaceDir, checks))).toBe(true)
+    expect(workers[2].sectionContent).not.toContain(
+      "## How checks are organized"
+    )
+    expect(existsSync(join(workspaceDir, checks))).toBe(false)
     expect(existsSync(join(workspaceDir, scratch, ".gitignore"))).toBe(true)
   })
 
+  it("keeps a legacy checks step confined to its checks and scratch directories", async () => {
+    createLegacyChecksPlaybook()
+    const rig = orchestratedRig()
+    const { userStory } = billingFeature(rig.id)
+    proofSubmissions.push(acceptedProof)
+    const playbookRun = await runner.startUserStory(userStory.id)
+    await drive(playbookRun.processRunId!)
+
+    const scratch = `.mission-control/scratch/${playbookRun.processRunId}`
+    const qa = loopCalls.filter((c) => c.seat?.address === "qa@implementation")
+    expect(qa.map((c) => [c.qaChecks, c.writeScope])).toEqual([
+      ["author", { allow: ["e2e", scratch] }],
+      ["explore", { allow: [scratch] }],
+    ])
+    expect(qa[0].userMessage).toContain(
+      "e2e/stories/billing.milestone-1.invoice-model.json"
+    )
+    expect(qa[0].sectionContent).toContain(
+      "`@billing.milestone-1.invoice-model`"
+    )
+    // Nothing is frozen, and the builder isn't told the checks are QA's.
+    const builder = loopCalls.filter(
+      (c) => c.seat?.address === "builder@implementation"
+    )
+    expect(builder[1].userMessage).not.toContain("QA's acceptance checks")
+    expect(features.getUserStory(userStory.id)!.status).toBe("done")
+  })
+
   it("sends the manifest validator's message back to the checks step (plan 109.02)", async () => {
+    createLegacyChecksPlaybook()
     const rig = orchestratedRig()
     const { userStory } = billingFeature(rig.id)
     proofSubmissions.push(acceptedProof)
@@ -601,6 +613,7 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
   })
 
   it("fails the checks step when the manifest never validates", async () => {
+    createLegacyChecksPlaybook()
     const rig = orchestratedRig()
     const { userStory } = billingFeature(rig.id)
     manifestSkips = 99
@@ -609,7 +622,7 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
 
     // The first turn plus two repairs, then no build or test step.
     expect(loopCalls.filter((c) => c.qaChecks === "author")).toHaveLength(3)
-    expect(loopCalls.some((c) => c.qaChecks === "verify")).toBe(false)
+    expect(loopCalls.some((c) => c.qaChecks === "explore")).toBe(false)
     expect(features.getUserStory(userStory.id)!.status).toBe("failed")
     expect(processRunFailure(playbookRun.processRunId!)?.reason).toMatch(
       /without a valid check manifest/
@@ -1118,10 +1131,10 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
         const playbookRun = await runner.startUserStory(userStory.id)
         await drive(playbookRun.processRunId!)
         expect(features.getUserStory(userStory.id)!.status).toBe("done")
-        // spec, build (builder) and checks, test (QA): every step started it.
-        expect(appStarts).toHaveLength(4)
+        // spec, build (builder) and test (QA): every step started it.
+        expect(appStarts).toHaveLength(3)
         expect(appStarts.every((s) => s.ready && s.briefed)).toBe(true)
-        expect(new Set(appStarts.map((s) => s.phaseRunId)).size).toBe(4)
+        expect(new Set(appStarts.map((s) => s.phaseRunId)).size).toBe(3)
         expect(testAppServices.size).toBe(0)
         expect(await allDead(appStarts.flatMap((s) => s.pids))).toBe(true)
       })
@@ -1185,17 +1198,14 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
     const workers = loopCalls.filter(
       (c) => !c.userMessage?.startsWith("# Review the")
     )
-    // QA's checks step gets no browser: there's no app yet, and its checks
-    // come from the spec alone. The test step gets one.
+    // QA's exploratory test step drives the app in its own tab.
     expect(
       workers.map((c) => [c.qaChecks ?? null, c.seatBrowser?.label ?? null])
     ).toEqual([
       [null, "builder@implementation · billing.milestone-1.invoice-model"],
-      ["author", null],
       [null, "builder@implementation · billing.milestone-1.invoice-model"],
-      ["verify", "qa@implementation · billing.milestone-1.invoice-model"],
+      ["explore", "qa@implementation · billing.milestone-1.invoice-model"],
     ])
-    expect(workers[1].sectionContent).not.toContain("## Your browser")
     // One tab per phase run, each released when its step ended.
     const browsing = workers.filter((c) => c.seatBrowser)
     const phaseRunIds = browsing.map((c) => c.seatBrowser!.phaseRunId)
@@ -1205,7 +1215,7 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
     expect(browsing.every((c) => c.seatBrowser!.origins.length === 0)).toBe(
       true
     )
-    expect(workers[3].sectionContent).toContain("## Your browser")
+    expect(workers[2].sectionContent).toContain("## Your browser")
   })
 
   it("gives seat steps no browser when none is installed", async () => {
@@ -1218,7 +1228,7 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
       (c) => !c.userMessage?.startsWith("# Review the")
     )
     expect(workers.every((c) => !c.seatBrowser)).toBe(true)
-    expect(workers[3].sectionContent).not.toContain("## Your browser")
+    expect(workers[2].sectionContent).not.toContain("## Your browser")
   })
 
   it("applies a QA send-back on Autopilot or by default, and asks the user when the playbook requires it", async () => {
@@ -1470,14 +1480,12 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
           builderSession.conversationId,
           builderSession.conversationId,
         ])
-        // QA's checks and test steps share its user story session too.
+        // QA's test step runs in its user story session too.
         const qaSession = sessionFor("qa@implementation", runId)
-        expect(
-          qa.slice(index * 2, index * 2 + 2).map((c) => c.conversationId)
-        ).toEqual([qaSession.conversationId, qaSession.conversationId])
+        expect(qa[index].conversationId).toBe(qaSession.conversationId)
       }
       expect(builder[0].conversationId).not.toBe(builder[2].conversationId)
-      expect(qa[0].conversationId).not.toBe(qa[2].conversationId)
+      expect(qa[0].conversationId).not.toBe(qa[1].conversationId)
       // No long-lived session was needed.
       expect(
         seatSessionsRepo.listSeatSessions({
@@ -1487,8 +1495,8 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
       ).toHaveLength(0)
       // Every role-bound worker is a seat turn, anchored to its user story.
       expect(workers.every((c) => c.seat?.profile === "work")).toBe(true)
-      expect(qa[3].seat?.anchor).toEqual({ kind: "user_story", id: second.id })
-      expect(qa[3].sectionContent).toContain("## Mission Control Comms")
+      expect(qa[1].seat?.anchor).toEqual({ kind: "user_story", id: second.id })
+      expect(qa[1].sectionContent).toContain("## Mission Control Comms")
       // Each step's frozen result is its own turn's output.
       const secondRun = playbooks.listPlaybookRuns({
         userStoryId: second.id,
@@ -1510,9 +1518,8 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
         "qa@implementation"
       )!
       expect(session.scope).toBe("feature")
-      // Only the test step asked for the long-lived session; the checks step
-      // keeps its per-story one.
-      const tests = qa.filter((c) => c.qaChecks === "verify")
+      // The test step asked for the long-lived session.
+      const tests = qa.filter((c) => c.qaChecks === "explore")
       expect(tests.map((c) => c.conversationId)).toEqual([
         session.conversationId,
         session.conversationId,

@@ -4,6 +4,7 @@ import { execFileSync } from "child_process"
 import { randomUUID } from "crypto"
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -44,7 +45,7 @@ let resolution: Record<string, string> | null = null
 // The wave gate's QA turn (plan 110.02): every batch criterion passes,
 // unless a test scripts it.
 type GateTurn = (input: {
-  processQaChecks?: "author" | "verify" | "gate"
+  processQaChecks?: "author" | "explore" | "verify" | "gate"
   processRunId?: string
   processPhaseRunId?: string
   workspace?: string
@@ -62,9 +63,10 @@ vi.mock("../agent", () => ({
     processProofStep?: boolean
     processRunId?: string
     processPhaseRunId?: string
-    processQaChecks?: "author" | "verify" | "gate"
+    processQaChecks?: "author" | "explore" | "verify" | "gate"
   }) => {
-    // QA's checks step (plan 109.02) needs a valid manifest to complete.
+    // QA's checks step (a playbook from before plan 110.04) needs a valid
+    // manifest to complete.
     writeFakeManifest(input)
     // The wave gate's QA step (plan 110.02) records the gate.
     await gateTurn(input)
@@ -482,6 +484,7 @@ describe.skipIf(!sqliteLoads)("milestone integration", () => {
           "stories",
           `${story.storyRef}.json`
         )
+        mkdirSync(path.dirname(file), { recursive: true })
         writeFileSync(
           file,
           JSON.stringify({

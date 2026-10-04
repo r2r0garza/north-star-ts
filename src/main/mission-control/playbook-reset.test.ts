@@ -17,6 +17,10 @@ import {
   diffSteps,
   resetPlaybookToDefault,
 } from "./playbook-defaults"
+import {
+  createLegacyChecksPlaybook,
+  LEGACY_PLAYBOOK_NAME,
+} from "../test/legacy-playbook"
 
 beforeEach(() => {
   if (!sqliteLoads) return
@@ -55,49 +59,27 @@ describe("diffSteps", () => {
   })
 })
 
-// The pre-109.02 user story default, as a workspace created it.
-function createOldDefault() {
-  const playbook = createDefaultPlaybook("user_story")
-  const processId = playbook.hooks[0].processId
-  const graph = processes.getProcessGraph(processId)!
-  const checks = graph.phases.find((p) => p.key === "checks")!
-  db.prepare("DELETE FROM process_edges WHERE process_id = ?").run(processId)
-  db.prepare("DELETE FROM process_phases WHERE id = ?").run(checks.id)
-  const phases = processes
-    .listPhases(processId)
-    .sort((a, b) => a.position - b.position)
-  processes.createEdge({
-    processId,
-    fromPhaseId: phases[0].id,
-    toPhaseId: phases[1].id,
-  })
-  processes.createEdge({
-    processId,
-    fromPhaseId: phases[1].id,
-    toPhaseId: phases[2].id,
-  })
-  playbooks.updatePlaybook(playbook.id, { name: "Spec → Build → Test" })
-  return playbooks.getPlaybook(playbook.id)!
-}
-
 describe.skipIf(!sqliteLoads)("Reset to default", () => {
   it("leaves an existing default untouched until reset, then replaces it in place", () => {
-    const old = createOldDefault()
+    const old = createLegacyChecksPlaybook()
     const diff = diffPlaybookWithDefault(old.id)
     expect(diff.differs).toBe(true)
     expect(diff.name).toEqual({
-      current: "Spec → Build → Test",
+      current: LEGACY_PLAYBOOK_NAME,
       template: DEFAULT_PLAYBOOKS.user_story.name,
     })
     const run = diff.hooks.find((h) => h.hook === "run")!
     expect(
-      run.steps.filter((s) => s.change === "added").map((s) => s.step.key)
+      run.steps.filter((s) => s.change === "removed").map((s) => s.step.key)
     ).toEqual(["checks"])
+    expect(
+      run.steps.filter((s) => s.change === "changed").map((s) => s.step.key)
+    ).toEqual(["build", "test"])
 
     // Nothing changes until the user confirms.
     expect(
       processes.listPhases(old.hooks[0].processId).map((p) => p.key)
-    ).not.toContain("checks")
+    ).toContain("checks")
 
     const reset = resetPlaybookToDefault(old.id)
     expect(reset.id).toBe(old.id)
@@ -105,12 +87,7 @@ describe.skipIf(!sqliteLoads)("Reset to default", () => {
     const phases = processes
       .listPhases(reset.hooks[0].processId)
       .sort((a, b) => a.position - b.position)
-    expect(phases.map((p) => p.key)).toEqual([
-      "spec",
-      "checks",
-      "build",
-      "test",
-    ])
+    expect(phases.map((p) => p.key)).toEqual(["spec", "build", "test"])
     expect(diffPlaybookWithDefault(old.id).differs).toBe(false)
     // The replaced step group had no run history, so it's gone.
     expect(processes.getProcessDefinition(old.hooks[0].processId)).toBeFalsy()

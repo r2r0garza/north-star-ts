@@ -123,7 +123,7 @@ export function gateStepNote(input: {
     "- Look at the running app (the browser) only to find how to locate things: roles, accessible names, labels, visible text. Locate by `getByRole`, `getByLabel`, and `getByText`, never CSS selectors or test ids the criterion doesn't mention.",
     '- A control whose label changes with state ("Complete" → "Mark active") is located by a name valid in both states (a regular expression, or its row and role), or re-located after each action. Don\'t pin a label one story chose when another story\'s criterion changes it.',
     '- One criterion per `test()`, tagged with the story\'s ref and the criterion id, e.g. `test("… @<ref> @AC-1", …)`; navigate relative to `baseURL` (`page.goto("/")`).',
-    '- Each story\'s manifest maps every criterion id to its checks, as in the user story checks: a Playwright check is `{ "id": "ac1-short-name", "kind": "automated", "runner": "playwright", "spec": "specs/area.spec.ts", "grep": "@AC-1" }` (spec relative to the checks directory, plus `"services"` when it needs the app). Prefer automated checks; mark a criterion `exploratory` only when nothing mechanical can check it, and then prove it in the browser with a screenshot.',
+    '- Each story\'s manifest maps every criterion id to its checks: a Playwright check is `{ "id": "ac1-short-name", "kind": "automated", "runner": "playwright", "spec": "specs/area.spec.ts", "grep": "@AC-1" }` (spec relative to the checks directory, plus `"services"` when it needs the app). Prefer automated checks; mark a criterion `exploratory` only when nothing mechanical can check it, and then prove it in the browser with a screenshot.',
     ...appGuidance(gate),
     ...(input.services ? ["", input.services] : []),
     "",

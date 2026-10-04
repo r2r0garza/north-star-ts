@@ -27,7 +27,7 @@ import type { Finding } from "../../shared/mission-control/workspace-analysis"
 import { ensureDefaultPlaybook } from "./playbook-defaults"
 import { concludeWaveGate, failWaveGateForRun } from "./wave-gate"
 import { QA_ROLE } from "./qa-scope"
-import { checksDriftBlock, readStoryManifest, storyChecks } from "./qa-checks"
+import { readStoryManifest, storyChecks } from "./qa-checks"
 import {
   checkOutcomes,
   decideProof,
@@ -1028,12 +1028,19 @@ async function proofVerification(input: {
   workspace: string
   submission: ProofSubmission
 }): Promise<ProofVerification> {
+  const evidence = await savedEvidence(
+    input.phaseRun.id,
+    input.submission.criteria.flatMap((c) => c.artifacts ?? [])
+  )
+  // A user story's own test step verifies by exploration (plan 110.04): its
+  // manifest, if a playbook from before 110.04 wrote one, is the wave gate's
+  // to run, not this proof's. A merge re-verification runs the checks.
   const story = storyChecks(input.link)
-  let coverage: ProofVerification["coverage"] = null
-  if (story) {
-    const read = await readStoryManifest(input.workspace, story)
-    if (read.ok)
-      coverage = Object.fromEntries(
+  if (!story?.reverify)
+    return { coverage: null, checks: {}, evidence, exploratory: true }
+  const read = await readStoryManifest(input.workspace, story)
+  const coverage: ProofVerification["coverage"] = read.ok
+    ? Object.fromEntries(
         Object.entries(read.manifest.criteria).map(([id, checks]) => [
           id.toUpperCase(),
           {
@@ -1046,16 +1053,14 @@ async function proofVerification(input: {
           },
         ])
       )
-  }
+    : null
   return {
     coverage,
-    checks: story
-      ? checkOutcomes(input.phaseRun.qaChecks?.results ?? [], story.storyRef)
-      : {},
-    evidence: await savedEvidence(
-      input.phaseRun.id,
-      input.submission.criteria.flatMap((c) => c.artifacts ?? [])
+    checks: checkOutcomes(
+      input.phaseRun.qaChecks?.results ?? [],
+      story.storyRef
     ),
+    evidence,
   }
 }
 
@@ -1135,12 +1140,6 @@ export async function recordUserStoryProof(input: {
       code: "run_finished",
       message: "This user story run has already finished.",
     }
-  // The builder changed QA's frozen checks (plan 109.02): no acceptance until
-  // QA reviews and re-freezes them. A rejection is always allowed.
-  const drift = checksDriftBlock(phaseRun)
-  if (submission.verdict === "accepted" && drift)
-    return { ok: false, code: "checks_changed", message: drift }
-
   const decision = decideProof({
     submission,
     criteria,

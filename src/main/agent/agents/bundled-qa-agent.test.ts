@@ -11,9 +11,9 @@ const prompt = readFileSync(
 )
 
 describe("bundled QA agent", () => {
-  it("writes and runs checks but never edits product code", () => {
+  it("exercises the work and writes checks, but never edits product code", () => {
     expect(prompt).toMatch(
-      /You write and run checks\. You never edit product code/
+      /You exercise the work and write and run checks\. You never edit product code/
     )
     expect(prompt).not.toMatch(/you verify and report; you do not fix/i)
   })
@@ -52,11 +52,24 @@ describe("bundled QA agent", () => {
   it("explores with the browser and asserts with Playwright (plan 109.06)", () => {
     expect(prompt).toMatch(/explore with the browser, assert with Playwright/)
     expect(prompt).toMatch(/\| Playwright checks, run with `run_checks` \|/)
-    expect(prompt).toMatch(/must be marked `exploratory`/)
+    expect(prompt).toMatch(/must be marked `exploratory` in it/)
     expect(prompt).toMatch(/`getByRole`, `getByLabel`, and `getByText`/)
     expect(prompt).toMatch(/relative to `baseURL`/)
     expect(prompt).toMatch(/One criterion per `test\(\)`/)
     expect(prompt).toMatch(/_electron\.launch/)
     expect(prompt).toMatch(/you must not add it/)
+  })
+
+  it("verifies a user story by exploration and leaves the suite to the gate (plan 110.04)", () => {
+    expect(prompt).toMatch(/\*\*Explore, or write checks\?\*\*/)
+    expect(prompt).toMatch(
+      /a user story's test step: you write nothing in the repository/
+    )
+    expect(prompt).toMatch(
+      /the milestone's acceptance gate writes the durable checks/
+    )
+    expect(prompt).toMatch(
+      /only the scratch directory when it verifies by exploration/
+    )
   })
 })

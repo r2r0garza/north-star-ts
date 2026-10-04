@@ -94,9 +94,8 @@ const UNIVERSAL = new Set([
   // which must be able to record regardless of its agent's tool narrowing.
   "record_proof",
   // QA acceptance checks (plan 109.02): offered only to a Mission Control QA
-  // step, which must be able to run and re-freeze its checks.
+  // step, which must be able to run its checks.
   "run_checks",
-  "refreeze_checks",
   // The wave acceptance gate (plan 110.02): offered only to its QA step.
   "record_gate",
   // App lifecycle (plan 109.03): offered only to a Mission Control builder

@@ -38,9 +38,9 @@ interface DefaultPlaybook {
 
 export const DEFAULT_PLAYBOOKS: Record<PlaybookAltitude, DefaultPlaybook> = {
   user_story: {
-    name: "Spec → Author checks → Build → Test",
+    name: "Spec → Build → Test",
     description:
-      "Refine the user story spec against the codebase, have QA write acceptance checks from the spec, build it, then run the checks, test the running app, and record the proof.",
+      "Refine the user story spec against the codebase, build it, then have QA verify each criterion in the running app and record an evidence-backed proof. The milestone's acceptance gate writes and runs the Playwright suite once the wave merges.",
     autonomousRework: true,
     hooks: {
       run: [
@@ -51,23 +51,17 @@ export const DEFAULT_PLAYBOOKS: Record<PlaybookAltitude, DefaultPlaybook> = {
           contextScope: "user_story",
         },
         {
-          // Plan 109.02: QA writes its checks before the build exists, so the
-          // builder can't shape them. Completes only with a valid manifest;
-          // the checks directory is then frozen.
-          key: "checks",
-          name: "Write acceptance checks for each criterion from the spec (do not read or wait for the implementation; edit only the checks directory)",
-          role: "qa",
-          contextScope: "user_story",
-        },
-        {
           key: "build",
-          name: "Build the user story to its acceptance criteria; make the QA checks pass without editing them",
+          name: "Build the user story to its acceptance criteria",
           role: "builder",
           contextScope: "user_story",
         },
         {
+          // Plan 110.04: QA proves the story by exploring the running app in
+          // its worktree, with saved evidence. The wave gate (the milestone's
+          // after_each_wave) writes and runs the Playwright suite.
           key: "test",
-          name: "Run the QA checks, test the running app against each criterion, and record the proof",
+          name: "Start the app, verify each acceptance criterion by exercising it in the running app, and record the proof with evidence",
           role: "qa",
           // No validator: this step already verifies every criterion and the
           // proof tool gates it (independent verifier, frozen proof). A

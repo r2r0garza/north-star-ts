@@ -23,15 +23,15 @@ describe("default playbooks", () => {
 })
 
 describe("the default user story playbook", () => {
-  it("has QA write checks between the spec and the build", () => {
+  it("builds, then has QA verify by exploration (plan 110.04)", () => {
     const steps = DEFAULT_PLAYBOOKS.user_story.hooks.run!
     expect(steps.map((step) => [step.key, step.role])).toEqual([
       ["spec", "builder"],
-      ["checks", "qa"],
       ["build", "builder"],
       ["test", "qa"],
     ])
-    expect(steps[1].proofStep).toBeFalsy()
-    expect(steps[3].proofStep).toBe(true)
+    expect(steps[2].proofStep).toBe(true)
+    expect(steps[2].name).toMatch(/running app/)
+    expect(steps[1].name).not.toMatch(/checks/)
   })
 })

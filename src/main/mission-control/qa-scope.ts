@@ -58,28 +58,45 @@ export function checksForRun(link: MissionControlRunLink): {
 // `qa` seat may write only the workspace's checks directory and the run's
 // scratch directory; every other role is unrestricted (undefined). Checks are
 // shared test code (page objects, fixtures, specs by product area), so the
-// whole checks directory is in scope, not a folder per story. Both
-// directories are created up front, and the scratch directory ignores itself
-// so `git add -A` on the user story branch never commits it. Throws
-// ChecksDirIgnoredError when git ignores the checks directory.
+// whole checks directory is in scope, not a folder per story. A step that
+// writes no checks (`checks: false`: a user story's exploratory test step,
+// plan 110.04) may write only its scratch directory. The directories are
+// created up front, and the scratch directory ignores itself so `git add -A`
+// on the user story branch never commits it. Throws ChecksDirIgnoredError
+// when git ignores a checks directory in scope.
 export async function seatWriteScope(input: {
   role: string
   link: MissionControlRunLink
   runId: string
   workingDirectory: string | undefined
+  checks?: boolean
 }): Promise<SeatScope | undefined> {
   if (input.role !== QA_ROLE) return undefined
   const { checksDir, storyRef } = checksForRun(input.link)
   const scratch = `${SCRATCH_DIR}/${input.runId}`
-  const scope: SeatScope = {
-    writeScope: { allow: [checksDir, scratch] },
-    contextSection: writeScopeContextSection({ checksDir, scratch, storyRef }),
-  }
+  const checks = input.checks !== false
+  const scope: SeatScope = checks
+    ? {
+        writeScope: { allow: [checksDir, scratch] },
+        contextSection: writeScopeContextSection({
+          checksDir,
+          scratch,
+          storyRef,
+        }),
+      }
+    : {
+        writeScope: { allow: [scratch] },
+        contextSection: writeScopeContextSection({
+          checksDir: null,
+          scratch,
+          storyRef,
+        }),
+      }
   if (!input.workingDirectory) return scope
   const root = input.workingDirectory
   try {
     // Real-path checked: a symlinked parent must not create folders elsewhere.
-    for (const dir of [checksDir, scratch])
+    for (const dir of checks ? [checksDir, scratch] : [scratch])
       await mkdir(await resolveInWorkspaceReal(root, dir), { recursive: true })
     const ignore = await resolveInWorkspaceReal(root, `${scratch}/.gitignore`)
     await writeFile(ignore, "*\n", {
@@ -94,7 +111,10 @@ export async function seatWriteScope(input: {
   // Checks git ignores would never be committed with the user story, so the
   // user couldn't re-run them and `reverify` would find nothing. Refuse the
   // step rather than lose them silently. (Not a repository: nothing to check.)
-  if (await gitSucceeds(root, ["check-ignore", "-q", `${checksDir}/check`]))
+  if (
+    checks &&
+    (await gitSucceeds(root, ["check-ignore", "-q", `${checksDir}/check`]))
+  )
     throw new ChecksDirIgnoredError(checksDir)
   return scope
 }
@@ -112,15 +132,23 @@ export class ChecksDirIgnoredError extends Error {
 // `out_of_scope` refusal is a backstop, not how it finds out, and how checks
 // are organized so stories share page objects instead of duplicating them.
 export function writeScopeContextSection(input: {
-  checksDir: string
+  // Null for a step that writes no checks: scratch only.
+  checksDir: string | null
   scratch: string
   storyRef: string | null
 }): ContextSection {
   const { checksDir, scratch, storyRef } = input
+  if (checksDir === null)
+    return writeScopeSection([
+      "## Where you may write",
+      `In this step you verify by exploring the running app, and you write nothing in the repository. You can create, edit, move, and delete files only inside \`${scratch}/\`: throwaway scripts, logs, and notes. Never committed.`,
+      "",
+      "Every other path in the workspace is read-only to you, and the file tools refuse writes there. Don't work around that with shell commands: you verify product code, you don't change it. Report what's wrong as findings in your proof.",
+    ])
   const lines = [
     "## Where you may write",
     "In this step you can create, edit, move, and delete files only inside:",
-    `- \`${checksDir}/\`: the project's acceptance checks, committed with the user story.`,
+    `- \`${checksDir}/\`: the project's acceptance checks, committed to the repository.`,
     `- \`${scratch}/\`: throwaway files (logs, output, notes). Never committed.`,
     "",
     "Every other path in the workspace is read-only to you, and the file tools refuse writes there. Don't work around that with shell commands: you verify product code, you don't change it. Report what's wrong as findings in your proof.",
@@ -135,6 +163,10 @@ export function writeScopeContextSection(input: {
     lines.push(
       `- Tag every check you write for this user story with \`@${storyRef}\` and its criterion id, in the test's name or the framework's tagging mechanism, e.g. \`test("totals are computed @${storyRef} @AC-2", …)\`. That's how a story's checks are found and re-run on their own (\`--grep @${storyRef}\`).`
     )
+  return writeScopeSection(lines)
+}
+
+function writeScopeSection(lines: string[]): ContextSection {
   return {
     name: "mission_control_write_scope",
     priority: SEAT_CONTEXT_PRIORITY,

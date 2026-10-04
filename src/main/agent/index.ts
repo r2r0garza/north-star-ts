@@ -91,7 +91,7 @@ import {
 import { containerNameForConversation } from "./env/container"
 import { flagForReworkTool } from "./tools/flag_for_rework"
 import { recordProofTool } from "./tools/record_proof"
-import { refreezeChecksTool, runChecksTool } from "./tools/qa_checks_tools"
+import { runChecksTool } from "./tools/qa_checks_tools"
 import { recordGateTool } from "./tools/record_gate"
 import { appLaunchTools } from "./tools/app_launch_tools"
 import { seatCommsTools } from "./tools/seat_comms_tools"
@@ -904,12 +904,13 @@ export interface RunAgentLoopOptions {
   // it is offered record_proof. The tool re-derives the user story, criteria, and
   // seats from the run itself; this flag only controls the offer.
   processProofStep?: boolean
-  // Mission Control (plan 109.02): this worker is a QA seat's step in a user
-  // story run. Both kinds are offered run_checks; the test step ("verify") is
-  // also offered refreeze_checks. A wave gate's QA step ("gate", plan 110.02)
-  // is offered run_checks and record_gate. The tools re-derive the story (or
-  // gate) and manifests from the run; this only controls the offer.
-  processQaChecks?: "author" | "verify" | "gate"
+  // Mission Control (plan 109.02): this worker is a QA seat's step. A checks
+  // step ("author") and a merge re-verification ("verify") are offered
+  // run_checks; a wave gate's QA step ("gate", plan 110.02) run_checks and
+  // record_gate. A user story's test step ("explore", plan 110.04) verifies
+  // by exploration and gets neither. The tools re-derive the story (or gate)
+  // and manifests from the run; this only controls the offer.
+  processQaChecks?: "author" | "explore" | "verify" | "gate"
   // Mission Control (plan 109.03): this worker is a builder or QA seat's step
   // and the workspace has an app launch recipe. Offers app_start /
   // app_status / app_stop; the tools re-derive the recipe and the owning
@@ -1476,14 +1477,14 @@ export async function runAgentLoop(
         opts.processProofStep && opts.processRunId && !planMode
           ? [recordProofTool.definition]
           : [],
-        // run_checks / refreeze_checks (plan 109.02): process-structural too,
-        // offered only to a QA seat's work step in a user story run.
-        opts.processQaChecks && opts.processRunId && !planMode
+        // run_checks (plan 109.02): process-structural too, offered only to
+        // a QA seat's step that runs checks.
+        opts.processQaChecks &&
+          opts.processQaChecks !== "explore" &&
+          opts.processRunId &&
+          !planMode
           ? [
               runChecksTool.definition,
-              ...(opts.processQaChecks === "verify"
-                ? [refreezeChecksTool.definition]
-                : []),
               ...(opts.processQaChecks === "gate"
                 ? [recordGateTool.definition]
                 : []),

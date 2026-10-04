@@ -4,6 +4,7 @@ import {
   checkOutcomes,
   decideProof,
   parseProofSubmission,
+  verificationProblems,
   weakProofCriteria,
   type ProofVerification,
 } from "./proof"
@@ -236,6 +237,34 @@ describe("verification methods (plan 109.05)", () => {
     return parsed
   }
   const qaCheck = { method: "qa_check", checkIds: ["ac1-a", "ac1-b"] }
+
+  it("verifies a user story's test step by exploration, with no checks (plan 110.04)", () => {
+    const exploratory = verification({
+      coverage: null,
+      checks: {},
+      exploratory: true,
+    })
+    expect(
+      verificationProblems(
+        proof({ method: "app_exercised", artifacts: [shot] }),
+        exploratory
+      )
+    ).toEqual([])
+    expect(
+      verificationProblems(proof({ method: "command" }), exploratory)
+    ).toEqual([])
+    expect(verificationProblems(proof(qaCheck), exploratory)).toEqual([
+      expect.stringMatching(/^AC-1: this step runs no QA checks/),
+    ])
+    expect(
+      verificationProblems(proof({ method: "app_exercised" }), exploratory)
+    ).toEqual([
+      expect.stringMatching(/^AC-1: verifying in the app needs evidence/),
+    ])
+    expect(
+      verificationProblems(proof({ method: "code_read" }), exploratory)
+    ).toEqual([expect.stringMatching(/^AC-1: reading the code/)])
+  })
 
   it("requires a known method, and checkIds for qa_check", () => {
     expect(

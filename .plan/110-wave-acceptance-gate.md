@@ -1,6 +1,6 @@
 # PR110: Wave acceptance gate — exploratory QA per story, Playwright suite per wave
 
-> Status: **IN PROGRESS** — `110.01`, `110.02`, and `110.03` done (2026-10-04); `110.04` and `110.05` remain. Proposed 2026-10-04. Follow-up to `109` (QA seats that verify independently) and
+> Status: **IN PROGRESS** — `110.01` through `110.04` done (2026-10-04); `110.05` remains. Proposed 2026-10-04. Follow-up to `109` (QA seats that verify independently) and
 > `106.5` (worktrees and the merge queue). Changes `109.02`'s per-story checks step; keeps `109.03`–
 > `109.06`. Uses the current names: Features, Milestones, User stories.
 
@@ -347,6 +347,50 @@ starts from them. `110.05` is independent after `110.01`.
   stories carry a "gate fix" badge in the plan.
 - **Known edge.** "I'll fix it" on a regression of a `done` story, with nothing merged, has no batch
   to re-run; the next wave's gate re-runs the suite.
+
+## `110.04` as built (2026-10-04)
+
+- **Default playbook.** The user story default is now **Spec → Build → Test**: `build` is "Build the
+  user story to its acceptance criteria", and `test` (QA, proof step) is "Start the app, verify each
+  acceptance criterion by exercising it in the running app, and record the proof with evidence".
+  Existing installs keep their stored playbook until **Reset to default**, whose diff shows the `checks`
+  step removed and `build` / `test` renamed.
+- **Step kinds.** `qaStepKind` gains `explore`: a QA proof step in a user story run. `verify` now means
+  only a merge conflict's re-verification (`after_each_user_story`), which keeps running the
+  milestone's checks until `110.05`. A QA non-proof step in a story run is still `author`, so a stored
+  playbook from before this slice keeps writing the story's manifest, which the wave gate adopts.
+- **The exploratory step.** Its kickoff (`exploreStepNote`) says there are no checks to write or run,
+  that the gate writes the suite after the merge, how to start the app (`app_start` with the recipe's
+  services, or, without a recipe, the project's own start command in the background on a free port),
+  to snapshot and screenshot each criterion, to use commands for an app the browser can't drive, and to
+  write nothing in the repository; then the `109.05` method rules without `qa_check`. It keeps the seat
+  browser and app tools, gets no `run_checks` (the tool also refuses it, `exploratory_step`), and its
+  write scope is the run's scratch directory only (`seatWriteScope({ checks: false })`, with its own
+  context section; the checks directory isn't created or required to be tracked).
+- **The proof.** `proofVerification` returns no coverage and no check results outside a merge
+  re-verification, with `exploratory: true`. `109.05`'s rules are unchanged otherwise (`app_exercised`
+  needs saved evidence, `code_read` is never met, `builder_tests` is flagged); `qa_check` is refused
+  with a pointer to `app_exercised` / `command`. A legacy checks step's manifest no longer binds the
+  story proof. The plan's `method: "exploratory"` kept its existing name, `app_exercised`.
+- **Retired.** The checks freeze, drift detection, `refreeze_checks` (tool, tool category, and
+  `refreezeQaChecks`), `checksDriftBlock` and the `checks_changed` refusal, `builderStepNote`, and the
+  outside-writes snapshot (`worktreeChanges`, `changedOutside`). `PhaseRunQaChecks` keeps only
+  `results`; old rows' extra fields are ignored. `snapshotChecks` stays for the gate's suite hash, no
+  longer writing blobs to the object store. The legacy checks step still validates its manifest
+  (with the repair rounds and the no-recipe reachability lint), and its kickoff now says the gate runs
+  the checks instead of that they're frozen.
+- **Prompts.** The generic proof instruction says to exercise the running app and cite evidence paths.
+  The bundled QA agent (refreshed for unedited copies) now decides per task whether to explore or write
+  checks: exploration for a user story's test step, Playwright at the acceptance gate; the tool
+  table, write-scope, and report sections follow. The gate kickoff no longer refers to "the user story
+  checks".
+- **Tests.** `qa-checks.test.ts` (step kinds, the legacy checks step without a freeze, the exploratory
+  kickoff with and without a recipe, `run_checks` refused), `proof.test.ts` (exploratory rules),
+  `user-story-execution.test.ts` (three-step run, exploratory proof accepted with evidence and refused
+  with `qa_check` or without evidence, a legacy manifest not binding the proof, scratch-only scope, the
+  legacy checks step's scope and repair rounds via `src/main/test/legacy-playbook.ts`), the playbook
+  default and reset tests, the QA agent prompt test. The gate tests' fake QA now writes the batch's
+  manifests itself, as the gate does once stories stop authoring them.
 
 ## Out of scope
 

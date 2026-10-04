@@ -74,7 +74,7 @@ import { spawnSubagentTool } from "./spawn_subagent"
 import { spawnSubagentsTool } from "./spawn_subagents"
 import { flagForReworkTool } from "./flag_for_rework"
 import { recordProofTool } from "./record_proof"
-import { refreezeChecksTool, runChecksTool } from "./qa_checks_tools"
+import { runChecksTool } from "./qa_checks_tools"
 import { recordGateTool } from "./record_gate"
 import { appLaunchTools } from "./app_launch_tools"
 import { seatCommsTools } from "./seat_comms_tools"
@@ -153,10 +153,9 @@ const otherTools: Tool[] = [
   // step (plan 106.3 — opts.processProofStep). Not in toolDefinitions.
   recordProofTool,
   // QA acceptance checks (plan 109.02): offered by runChat only to a QA seat's
-  // step in a user story run (opts.processQaChecks); refreeze_checks only to
-  // its test step. Not in toolDefinitions.
+  // checks step, merge re-verification, or wave gate (opts.processQaChecks).
+  // Not in toolDefinitions.
   runChecksTool,
-  refreezeChecksTool,
   // record_gate (plan 110.02): offered by runChat only to the QA step of a
   // milestone's wave acceptance gate (opts.processQaChecks "gate"). Not in
   // toolDefinitions.
@@ -298,7 +297,7 @@ export { presentPlanTool } from "./present_plan_tool"
 export { spawnSubagentsTool } from "./spawn_subagents"
 export { flagForReworkTool } from "./flag_for_rework"
 export { recordProofTool } from "./record_proof"
-export { refreezeChecksTool, runChecksTool } from "./qa_checks_tools"
+export { runChecksTool } from "./qa_checks_tools"
 export { recordGateTool } from "./record_gate"
 export { appLaunchTools } from "./app_launch_tools"
 export { seatCommsTools } from "./seat_comms_tools"

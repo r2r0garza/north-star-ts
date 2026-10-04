@@ -38,7 +38,7 @@ let resolution: Record<string, string> | null = null
 // The wave gate's QA turn (plan 110.02): every batch criterion passes,
 // unless a test scripts it.
 type GateTurn = (input: {
-  processQaChecks?: "author" | "verify" | "gate"
+  processQaChecks?: "author" | "explore" | "verify" | "gate"
   processRunId?: string
   processPhaseRunId?: string
   workspace?: string
@@ -60,7 +60,7 @@ vi.mock("../agent", () => ({
     processProofStep?: boolean
     processRunId?: string
     processPhaseRunId?: string
-    processQaChecks?: "author" | "verify" | "gate"
+    processQaChecks?: "author" | "explore" | "verify" | "gate"
     missionControlSeat?: import("./seat-turns").SeatTurnIdentity
   }) => {
     // QA's checks step (plan 109.02) needs a valid manifest to complete.

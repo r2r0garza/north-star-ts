@@ -1429,9 +1429,9 @@ export interface ProcessPhaseRun {
   seatAddress?: string | null
   runtimeSnapshot?: ProcessRuntimeSnapshot | null
   // QA acceptance checks on a Mission Control QA step (plan 109.02): the
-  // freeze taken when the checks step completes, drift found when the test
-  // step starts, and the results `run_checks` recorded. Written only by the
-  // harness, never from model arguments.
+  // results `run_checks` recorded. Written only by the harness, never from
+  // model arguments. (Rows from before plan 110.04 may also hold a freeze,
+  // drift, and outside writes; nothing reads them.)
   qaChecks?: PhaseRunQaChecks | null
 }
 
@@ -1442,23 +1442,6 @@ export interface ChecksSnapshot {
   checksDir: string
   hash: string
   files: Record<string, string>
-}
-
-export interface ChecksFreeze extends ChecksSnapshot {
-  frozenAt: number
-  // Why QA re-froze the checks in the test step (refreeze_checks).
-  reason?: string
-}
-
-export interface ChecksChange {
-  path: string
-  change: "added" | "modified" | "deleted"
-  // A page object, fixture, or helper other stories' checks may use, as
-  // opposed to this story's own specs and manifest.
-  shared: boolean
-  // Line counts from git, when both versions are known.
-  added?: number
-  removed?: number
 }
 
 export interface CheckResult {
@@ -1501,17 +1484,6 @@ export interface CheckResult {
 }
 
 export interface PhaseRunQaChecks {
-  freeze?: ChecksFreeze
-  // Set when the test step starts and the checks differ from the freeze.
-  // The proof can't be accepted until QA re-freezes them.
-  drift?: {
-    changed: ChecksChange[]
-    detectedAt: number
-    resolvedAt: number | null
-  }
-  // Files outside the checks and scratch directories that QA's checks step
-  // changed (shell writes bypass the write scope).
-  outsideWrites?: string[]
   results?: CheckResult[]
 }
 

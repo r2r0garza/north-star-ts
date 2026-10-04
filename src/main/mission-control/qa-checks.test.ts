@@ -95,10 +95,9 @@ const stories = [
 
 import {
   authorStepNote,
-  checksDriftBlock,
   completeAuthorStep,
+  exploreStepNote,
   qaStepKind,
-  refreezeQaChecks,
   runQaChecks,
   startVerifyStep,
   storyChecks,
@@ -121,6 +120,12 @@ const link: MissionControlRunLink = {
   userStoryId: "s1",
   playbookRunId: "p1",
   hook: "run",
+}
+// A merge conflict's re-verification of the same story: the story-linked QA
+// proof step that still runs checks (plan 110.04).
+const reverifyLink: MissionControlRunLink = {
+  ...link,
+  hook: "after_each_user_story",
 }
 
 let root: string
@@ -193,7 +198,7 @@ beforeEach(async () => {
   run = {
     id: "r1",
     parentPhaseRunId: null,
-    missionControl: link,
+    missionControl: reverifyLink,
     seatBindings: {
       seats: { "qa@pod": { address: "qa@pod", role: "qa" } },
     },
@@ -221,9 +226,9 @@ const webService: AppLaunch["services"][number] = {
 }
 
 describe("qaStepKind", () => {
-  it("is author for a QA step, verify for a QA proof step, else none", () => {
+  it("is explore for a story's QA proof step, author for its other QA steps (plan 110.04)", () => {
     expect(qaStepKind({ role: "qa", proofStep: false, link })).toBe("author")
-    expect(qaStepKind({ role: "qa", proofStep: true, link })).toBe("verify")
+    expect(qaStepKind({ role: "qa", proofStep: true, link })).toBe("explore")
     expect(qaStepKind({ role: "builder", proofStep: false, link })).toBeNull()
     expect(
       qaStepKind({
@@ -232,6 +237,12 @@ describe("qaStepKind", () => {
         link: { ...link, userStoryId: null },
       })
     ).toBeNull()
+  })
+
+  it("is verify for a merge conflict's re-verification", () => {
+    expect(
+      qaStepKind({ role: "qa", proofStep: true, link: reverifyLink })
+    ).toBe("verify")
   })
 
   it("is gate for a QA proof step in a milestone's wave gate (plan 110.02)", () => {
@@ -248,63 +259,40 @@ describe("qaStepKind", () => {
   })
 })
 
-describe("the checks step", () => {
+describe("the checks step (a playbook from before plan 110.04)", () => {
   it("does not complete without a valid manifest", async () => {
-    const before = { ok: false }
-    const missing = await completeAuthorStep({
-      phaseRunId: "author",
-      link,
-      runId: "r1",
-      workspace: root,
-      before: null,
-    })
-    expect(missing).toMatchObject(before)
+    const missing = await completeAuthorStep({ link, workspace: root })
+    expect(missing).toMatchObject({ ok: false })
     if (!missing.ok)
       expect(missing.message).toMatch(/e2e\/stories\/billing\.m1\.login\.json/)
 
     write("e2e/stories/billing.m1.login.json", '{"criteria":{"AC-1":[]}}')
-    const invalid = await completeAuthorStep({
-      phaseRunId: "author",
-      link,
-      runId: "r1",
-      workspace: root,
-      before: null,
-    })
+    const invalid = await completeAuthorStep({ link, workspace: root })
     expect(invalid.ok).toBe(false)
     if (!invalid.ok) {
       expect(invalid.message).toMatch(/AC-1 needs a non-empty list/)
       expect(invalid.message).toMatch(/missing: AC-2\./)
     }
-    expect(phaseRuns.get("author")!.qaChecks).toBeNull()
   })
 
-  it("freezes the whole checks directory and records writes outside it", async () => {
-    const { worktreeChanges } = await import("./qa-checks")
-    const before = await worktreeChanges(root)
+  it("completes with a valid manifest and freezes nothing", async () => {
     write(
       "e2e/specs/login.spec.ts",
       "test('redirects @billing.m1.login @AC-1')\n"
     )
     write("e2e/stories/billing.m1.login.json", manifest({ ac1: "true" }))
-    write("src/app.ts", "export const app = 2\n") // a shell write by QA
-    const done = await completeAuthorStep({
-      phaseRunId: "author",
-      link,
-      runId: "r1",
-      workspace: root,
-      before,
-    })
+    const done = await completeAuthorStep({ link, workspace: root })
     expect(done).toEqual({
       ok: true,
       warnings: [expect.stringMatching(/"ac1"/)],
     })
-    const state = phaseRuns.get("author")!.qaChecks!
-    expect(Object.keys(state.freeze!.files)).toEqual([
-      "e2e/pages/login.ts",
-      "e2e/specs/login.spec.ts",
-      "e2e/stories/billing.m1.login.json",
-    ])
-    expect(state.outsideWrites).toEqual(["src/app.ts"])
+    expect(phaseRuns.get("author")!.qaChecks).toBeNull()
+  })
+
+  it("says the gate runs the checks, not that they're frozen", () => {
+    const note = authorStepNote(storyChecks(link)!)
+    expect(note).toMatch(/acceptance gate runs these checks/)
+    expect(note).not.toMatch(/frozen/)
   })
 })
 
@@ -322,14 +310,7 @@ describe("checks that can't reach the app (plan 109.07)", () => {
       "AC-2": [{ id: "ac2-copy", kind: "exploratory", note: "Check the copy" }],
     },
   })
-  const complete = () =>
-    completeAuthorStep({
-      phaseRunId: "author",
-      link,
-      runId: "r1",
-      workspace: root,
-      before: null,
-    })
+  const complete = () => completeAuthorStep({ link, workspace: root })
 
   it("won't finish the checks step with no recipe and nothing starting the app", async () => {
     write("e2e/stories/billing.m1.login.json", playwrightManifest)
@@ -343,7 +324,6 @@ describe("checks that can't reach the app (plan 109.07)", () => {
       expect(relative.message).toMatch(
         /"ac1-add" \(specs\/list\.spec\.ts\) navigates to a relative path/
       )
-    expect(phaseRuns.get("author")!.qaChecks).toBeNull()
 
     write(
       "e2e/specs/list.spec.ts",
@@ -480,115 +460,57 @@ describe("step kickoffs (plan 109.06)", () => {
     )
   })
 
-  it("reverify runs the checks and uses the browser only for failures", () => {
-    const note = verifyStepNote({
-      story: { ...storyChecks(link)!, reverify: true },
-      frozen: true,
-      changed: [],
-      outsideWrites: [],
-    })
+  it("reverify runs the checks and uses the browser only for failures", async () => {
+    const note = verifyStepNote()
     expect(note).toMatch(/call `run_checks`/)
     expect(note).toMatch(/Use the browser only to investigate a failure\./)
+    expect(note).toMatch(/`qa_check`/)
+    expect(note).not.toMatch(/refreeze_checks/)
+
+    phaseRuns.set("verify", {
+      ...phaseRuns.get("verify")!,
+      qaChecks: { results: [{ checkId: "old" } as never] },
+    })
+    expect(
+      await startVerifyStep({ run, phaseRunId: "verify", resuming: false })
+    ).toBe(note)
+    expect(phaseRuns.get("verify")!.qaChecks!.results).toEqual([])
   })
 })
 
-describe("drift between the checks and test steps", () => {
-  async function author() {
-    write(
-      "e2e/specs/login.spec.ts",
-      "test('redirects @billing.m1.login @AC-1')\n"
-    )
+describe("the exploratory test step (plan 110.04)", () => {
+  it("has QA verify in the running app with evidence, and run no checks", () => {
+    appLaunch = { services: [webService] }
+    const note = exploreStepNote(storyChecks(link)!)
+    expect(note).toMatch(/## Verifying by exploration/)
+    expect(note).toMatch(/no checks to write or run in this step/)
+    expect(note).toMatch(/acceptance gate writes and runs the Playwright suite/)
+    expect(note).toMatch(/Start the app with `app_start`.*`web`/)
+    expect(note).toMatch(/`browser_screenshot`/)
+    expect(note).toMatch(/Write nothing in the repository/)
+    expect(note).toMatch(/`app_exercised`/)
+    expect(note).not.toMatch(/`qa_check`/)
+    expect(note).not.toMatch(/run_checks`/)
+  })
+
+  it("without a recipe, has QA start the app itself on a free port", () => {
+    const note = exploreStepNote(storyChecks(link)!)
+    expect(note).toMatch(/no app launch recipe/)
+    expect(note).toMatch(/free port/)
+    expect(note).not.toMatch(/app_start/)
+  })
+
+  it("refuses run_checks", async () => {
+    run.missionControl = link
     write("e2e/stories/billing.m1.login.json", manifest({ ac1: "true" }))
-    const done = await completeAuthorStep({
-      phaseRunId: "author",
-      link,
-      runId: "r1",
-      workspace: root,
-      before: null,
-    })
-    expect(done.ok).toBe(true)
-  }
-
-  it("adds no note when the checks are unchanged", async () => {
-    await author()
-    const note = await startVerifyStep({
-      run,
-      phaseRunId: "verify",
-      workspace: root,
-      resuming: false,
-    })
-    expect(note).toMatch(/Start by calling `run_checks`/)
-    // Explore with the browser, assert with Playwright (plan 109.06).
-    expect(note).toMatch(
-      /use the browser to find the right locator, fix the spec, and call `refreeze_checks`/
-    )
-    expect(note).toMatch(
-      /verify the exploratory criteria in the browser and save evidence/
-    )
-    expect(note).not.toMatch(/changed after they were frozen/)
-    expect(checksDriftBlock(phaseRuns.get("verify")!)).toBeNull()
-  })
-
-  it("lists a builder's edit to a story check and blocks acceptance until re-frozen", async () => {
-    await author()
-    write(
-      "e2e/specs/login.spec.ts",
-      "test.skip('redirects @billing.m1.login @AC-1')\nexport {}\n"
-    )
-    const note = await startVerifyStep({
-      run,
-      phaseRunId: "verify",
-      workspace: root,
-      resuming: false,
-    })
-    expect(note).toMatch(/This story's checks and manifest:/)
-    expect(note).toMatch(/`e2e\/specs\/login\.spec\.ts`: modified \(\+2 −1\)/)
-    expect(checksDriftBlock(phaseRuns.get("verify")!)).toMatch(
-      /e2e\/specs\/login\.spec\.ts/
-    )
-
-    const refrozen = await refreezeQaChecks({
-      processRunId: "r1",
-      phaseRunId: "verify",
-      workspace: root,
-      reason: "I fixed my own check's selector",
-    })
-    expect(refrozen).toEqual({ ok: true, files: 3, changed: 1 })
-    expect(checksDriftBlock(phaseRuns.get("verify")!)).toBeNull()
-  })
-
-  it("marks an edit to only a shared page object as shared", async () => {
-    await author()
-    write("e2e/pages/login.ts", "export const loginButton = 'button'\n")
-    const note = await startVerifyStep({
-      run,
-      phaseRunId: "verify",
-      workspace: root,
-      resuming: false,
-    })
-    expect(note).toMatch(/Shared files \(page objects/)
-    expect(note).not.toMatch(/This story's checks and manifest:/)
-    const drift = phaseRuns.get("verify")!.qaChecks!.drift!
-    expect(drift.changed).toEqual([
-      expect.objectContaining({
-        path: "e2e/pages/login.ts",
-        change: "modified",
-        shared: true,
-      }),
-    ])
-    expect(checksDriftBlock(phaseRuns.get("verify")!)).not.toBeNull()
-  })
-
-  it("only the test step re-freezes", async () => {
-    await author()
     expect(
-      await refreezeQaChecks({
+      await runQaChecks({
         processRunId: "r1",
-        phaseRunId: "author",
+        phaseRunId: "verify",
         workspace: root,
-        reason: "x",
       })
-    ).toMatchObject({ ok: false, code: "not_test_step" })
+    ).toMatchObject({ ok: false, code: "exploratory_step" })
+    expect(phaseRuns.get("verify")!.qaChecks).toBeNull()
   })
 })
 
@@ -768,7 +690,6 @@ describe("run_checks", () => {
   })
 
   it("runs every merged story's checks on reverify", async () => {
-    run.missionControl = { ...link, hook: "after_each_user_story" }
     write("e2e/stories/billing.m1.login.json", manifest({ ac1: "true" }))
     write(
       "e2e/stories/billing.m1.logout.json",

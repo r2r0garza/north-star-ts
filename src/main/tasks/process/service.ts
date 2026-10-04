@@ -50,12 +50,11 @@ import { getSeatSessions } from "../../mission-control/sessions"
 import { seatWriteScope, type SeatScope } from "../../mission-control/qa-scope"
 import {
   authorStepNote,
-  builderStepNote,
   completeAuthorStep,
+  exploreStepNote,
   qaStepKind,
   startVerifyStep,
   storyChecks,
-  worktreeChanges,
 } from "../../mission-control/qa-checks"
 import { startGateStep } from "../../mission-control/gate-step"
 import {
@@ -127,15 +126,17 @@ export const PROCESS_RUN_KIND = "process_run"
 const PROOF_STEP_INSTRUCTION =
   "## Recording the proof\n" +
   "You are this user story's verifier. Check every acceptance criterion yourself — " +
-  "run the tests or commands, read the code — and then call `record_proof` exactly " +
+  "exercise the running app, run commands — and then call `record_proof` exactly " +
   "once with one entry per criterion id (AC-1, AC-2, …) listed in the objective. " +
   "Each entry needs a status (met, not_met, or not_verifiable) and concrete evidence: " +
   'what you ran or inspected and what you observed. Use verdict "accepted" only when ' +
-  'every criterion is met; otherwise record "rejected". Artifacts are workspace-relative ' +
-  "file paths. The tool validates your proof and explains anything it rejects."
+  'every criterion is met; otherwise record "rejected". Artifacts are the evidence ' +
+  "paths your screenshots and saved output returned. The tool validates your proof " +
+  "and explains anything it rejects."
 
-// How many times a checks step that finished without a valid manifest is sent
-// the validator's message before the step fails (plan 109.02).
+// How many times a checks step (a playbook from before plan 110.04) that
+// finished without a valid manifest is sent the validator's message before
+// the step fails (plan 109.02).
 const MANIFEST_REPAIR_ROUNDS = 2
 
 // The process_run task's input blob (015 producer contract): the run id, so the
@@ -1427,27 +1428,34 @@ export class ProcessService {
         },
       })
 
-      const scoped = await this.seatWriteScope(run, seat, workspace)
-      if ("error" in scoped) return { error: scoped.error, retryable: false }
-      const { seatScope } = scoped
-      // QA acceptance checks (plan 109.02): a QA step in a user story run
-      // either authors the checks (completes only with a valid manifest, then
-      // freezes them) or verifies (drift since the freeze is recorded first).
-      // A builder step after the freeze is told the checks are QA's. A wave
-      // gate's QA step (plan 110.02) writes and runs the acceptance suite in
-      // the gate's worktree, with the app started from the recipe.
+      // QA's step (plans 109.02, 110): a user story's test step verifies by
+      // exploring the running app and writes nothing in the repository
+      // (plan 110.04). A checks step, from a playbook older than that,
+      // completes only with a valid manifest. A merge re-verification runs
+      // the milestone's checks. A wave gate's QA step (plan 110.02) writes
+      // and runs the acceptance suite in the gate's worktree, with the app
+      // started from the recipe.
       const qaKind = qaStepKind({
         role: seat?.role,
         proofStep: !!phase.proofStep,
         link: missionControl,
       })
+      const scoped = await this.seatWriteScope(
+        run,
+        seat,
+        workspace,
+        qaKind !== "explore"
+      )
+      if ("error" in scoped) return { error: scoped.error, retryable: false }
+      const { seatScope } = scoped
       let qaNote: string | null = null
-      let worktreeBefore: Record<string, string> | null = null
       try {
         if (qaKind === "author" && workspace) {
           const story = storyChecks(missionControl!)
           qaNote = story ? authorStepNote(story) : null
-          worktreeBefore = await worktreeChanges(workspace)
+        } else if (qaKind === "explore" && workspace) {
+          const story = storyChecks(missionControl!)
+          qaNote = story ? exploreStepNote(story) : null
         } else if (qaKind === "gate" && workspace) {
           qaNote = await startGateStep({
             run,
@@ -1459,11 +1467,8 @@ export class ProcessService {
           qaNote = await startVerifyStep({
             run,
             phaseRunId: phaseRun.id,
-            workspace,
             resuming: resumingWorker,
           })
-        } else if (seat && missionControl?.userStoryId) {
-          qaNote = builderStepNote(run)
         }
       } catch (err) {
         console.warn("[process] could not prepare the QA checks:", err)
@@ -1569,11 +1574,8 @@ export class ProcessService {
             }
           if (qaKind !== "author" || !workspace) break
           const gate = await completeAuthorStep({
-            phaseRunId: phaseRun.id,
             link: missionControl!,
-            runId: run.id,
             workspace,
-            before: worktreeBefore,
           })
           if (gate.ok) break
           if (round >= MANIFEST_REPAIR_ROUNDS)
@@ -2193,13 +2195,16 @@ export class ProcessService {
   }
 
   // Where a seat-bound worker may write (plan 109.01): a `qa` seat only in its
-  // checks directory and the run's scratch directory. Resolved
+  // checks directory and the run's scratch directory (only the latter in an
+  // exploratory test step, plan 110.04). Resolved
   // from the seat's role on the frozen bindings, never from the model. An
   // error (git ignores the checks directory) fails the step, not retryable.
   private async seatWriteScope(
     run: ProcessRun,
     seat: SeatBinding | null,
-    workspace: string | undefined
+    workspace: string | undefined,
+    // False for a step that writes no checks (plan 110.04): scratch only.
+    checks = true
   ): Promise<{ seatScope?: SeatScope } | { error: string }> {
     const link = this.missionControlRoot(run)?.missionControl
     if (!seat || !link) return {}
@@ -2210,6 +2215,7 @@ export class ProcessService {
           link,
           runId: run.id,
           workingDirectory: workspace,
+          checks,
         }),
       }
     } catch (err) {

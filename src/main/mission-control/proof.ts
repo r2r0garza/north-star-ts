@@ -147,6 +147,9 @@ export interface ProofVerification {
   checks: Record<string, ProofCheckResult & { criterionId: string }>
   // The submitted artifacts that are files in this step's evidence directory.
   evidence: ReadonlySet<string>
+  // A user story's test step (plan 110.04): verified by exploring the
+  // running app, with no QA checks to cite.
+  exploratory?: boolean
 }
 
 export const NO_VERIFICATION: ProofVerification = {
@@ -208,6 +211,12 @@ export function verificationProblems(
     if (method === "code_read") {
       problems.push(
         `${id}: reading the code doesn't verify a criterion. Verify it another way, or record it not_verifiable with a reason.`
+      )
+      continue
+    }
+    if (method === "qa_check" && verification.exploratory) {
+      problems.push(
+        `${id}: this step runs no QA checks (the acceptance gate does, after the merge). Verify it in the running app and use method "app_exercised" with saved evidence, or "command" for a command you ran.`
       )
       continue
     }
