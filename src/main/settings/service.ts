@@ -306,6 +306,10 @@ const KEY_SKILL_SOURCES = "skillSources"
 const KEY_AGENT_SOURCES = "agentSources"
 const KEY_MCP_SOURCES = "mcpSources"
 const KEY_BROWSER = "browser"
+// The user allowed the one-time download of Playwright's test browser (plan
+// 109.06). Its own key, not part of BrowserSettings, so saving the browser
+// switches from a stale settings screen can't revoke it.
+const KEY_TEST_BROWSER_CONSENT = "testBrowserDownloadConsent"
 const KEY_THEME = "theme"
 const KEY_IDE = "ide"
 const KEY_NOTIFICATIONS = "notifications"
@@ -836,6 +840,14 @@ export function setMcpSources(next: McpSourcesSettings): McpSourcesSettings {
   settingsRepo.setSetting(KEY_MCP_SOURCES, JSON.stringify(next))
   mcpSourcesCache = next
   return next
+}
+
+export function getTestBrowserConsent(): boolean {
+  return settingsRepo.getSetting(KEY_TEST_BROWSER_CONSENT) === "true"
+}
+
+export function setTestBrowserConsent(): void {
+  settingsRepo.setSetting(KEY_TEST_BROWSER_CONSENT, "true")
 }
 
 export function setBrowser(next: BrowserSettings): BrowserSettings {

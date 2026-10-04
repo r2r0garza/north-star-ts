@@ -171,6 +171,7 @@ export function renderHookObjective(input: {
         "Give every user story a short key, a goal, concrete acceptance criteria (each one checkable), touch hints for the files it will change, and `depends_on` keys for user stories it must wait for. " +
         "Keep user stories small enough to build and prove in one sitting, and keep independent user stories independent so they run in parallel. " +
         "Mark a user story that must come after all the others (an integration proof, docs) `runs_last` instead of listing every other story in its `depends_on`. " +
+        "If nothing in the workspace runs yet (a new project), make the first user story a walking skeleton: the smallest version of the app that starts with one command and reads its port from the `PORT` environment variable (a package.json `start` script, or `node server.js`), and have every user story that needs the running app list it in `depends_on`. Mission Control builds that first story alone, so QA can test the others against a running app. " +
         "Before you submit, check coverage: go through every item of the feature's definition of done and each milestone's outcome and definition of done, and make sure some user story's acceptance criteria deliver and verify it. Add a user story for anything uncovered; the milestone's planning review otherwise finds it after you. " +
         "The user reviews and applies the proposal. Without the tool, write the plan in your final message."
     )

@@ -113,6 +113,7 @@ import {
   resetSubProcessChild,
 } from "./flagback"
 import { unknownSideEffectingToolCalls } from "../../agent/repair"
+import { clearPhaseClock, phaseClockHeld, phaseHeldMs } from "./phase-clock"
 
 // The DAG orchestrator task kind (plan 025). One ProcessService per app, holding
 // the runner reference so startRun can enqueue the process_run task. The executor
@@ -1372,32 +1373,37 @@ export class ProcessService {
       // Mission Control's per-phase time limit: past it, the worker is told to
       // wrap up; at twice it, the phase stops with a failure so the user
       // story retries with a fresh context (nav-test-8's refine ran an hour).
+      // Time spent waiting on the user (phase-clock.ts) moves the deadlines.
       const limitMinutes = this.phaseMinuteLimit(run)
       let overTime = false
       const timers: Array<ReturnType<typeof setTimeout>> = []
       if (limitMinutes) {
         const limitMs = limitMinutes * 60_000
-        const elapsed =
-          Date.now() -
-          (processes.getPhaseRun(phaseRun.id)?.startedAt ?? Date.now())
-        timers.push(
-          setTimeout(
-            () =>
-              addConversationNote(
-                worker.id,
-                wrapUpNote(limitMinutes),
-                "mission-control"
-              ),
-            Math.max(0, limitMs - elapsed)
-          ),
-          setTimeout(
-            () => {
-              overTime = true
-              childAbort.abort(PHASE_TIME_LIMIT)
-            },
-            Math.max(0, 2 * limitMs - elapsed)
+        const startedAt =
+          processes.getPhaseRun(phaseRun.id)?.startedAt ?? Date.now()
+        const at = (offsetMs: number, fire: () => void) => {
+          const check = () => {
+            const remaining =
+              startedAt + offsetMs + phaseHeldMs(phaseRun.id) - Date.now()
+            if (phaseClockHeld(phaseRun.id))
+              timers.push(setTimeout(check, Math.max(remaining, 60_000)))
+            else if (remaining > 0) timers.push(setTimeout(check, remaining))
+            else fire()
+          }
+          const remaining = startedAt + offsetMs - Date.now()
+          timers.push(setTimeout(check, Math.max(0, remaining)))
+        }
+        at(limitMs, () =>
+          addConversationNote(
+            worker.id,
+            wrapUpNote(limitMinutes),
+            "mission-control"
           )
         )
+        at(2 * limitMs, () => {
+          overTime = true
+          childAbort.abort(PHASE_TIME_LIMIT)
+        })
       }
       const overTimeFailure = () => ({
         error: `The phase ran past its time limit: told to wrap up at ${limitMinutes} min, stopped at ${2 * limitMinutes!} min.`,
@@ -1463,8 +1469,11 @@ export class ProcessService {
       const appLaunch = !!appRecipe?.services.length
       // Seat browser (plan 109.04): a seat's work step drives the app in an
       // isolated, local-only background tab owned by this phase run, closed
-      // (and its storage cleared) when the phase ends.
-      const seatBrowser = seatTurn && workspace ? getSeatBrowser() : null
+      // (and its storage cleared) when the phase ends. Not in QA's checks
+      // step (plan 109.06): there's no app to drive yet, and the checks must
+      // come from the spec, blind to the implementation.
+      const seatBrowser =
+        seatTurn && workspace && qaKind !== "author" ? getSeatBrowser() : null
       const seatBrowserLabelText = seatBrowser
         ? seatBrowserLabel(seatTurn!.address, missionControl!)
         : ""
@@ -1598,6 +1607,7 @@ export class ProcessService {
         }
       } finally {
         for (const timer of timers) clearTimeout(timer)
+        clearPhaseClock(phaseRun.id)
         if (inSession) seatSessions!.markSessionActivity(worker.id, false)
         releaseSeat?.()
         // Whatever this step started (app_start, or a check's services

@@ -196,7 +196,7 @@ export class MapToolService {
         data: { playbook_run_id: run.id },
       }
     } catch (error) {
-      return fail("start_failed", message(error).replace(/^touch_overlap: /, ""))
+      return fail("start_failed", message(error).replace(/^(touch_overlap|app_launch_required): /, ""))
     }
   }
 
@@ -229,7 +229,7 @@ export class MapToolService {
         data: { playbook_run_id: run.id },
       }
     } catch (error) {
-      return fail("start_failed", message(error).replace(/^touch_overlap: /, ""))
+      return fail("start_failed", message(error).replace(/^(touch_overlap|app_launch_required): /, ""))
     }
   }
 

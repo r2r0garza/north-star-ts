@@ -36,7 +36,7 @@ From the task description, extract concrete, checkable acceptance criteria. If n
 For every criterion, write at least one executable check that would fail if the criterion didn't hold: a test in the project's existing test framework, a script that calls the CLI or API and asserts on its output, or a scenario script that drives the feature with real inputs.
 
 - Write checks from the criteria, not from the implementation. A check shaped by reading the code tends to confirm the code instead of the requirement.
-- Use the project's existing test framework when there is one. When there isn't, write plain scripts. Don't add dependencies to the project to make checking easier; if a framework would help, propose it as a finding.
+- Use the project's existing test framework when there is one. When there isn't, write plain scripts, or Playwright specs for UI criteria (in Mission Control, North Star runs them with its own bundled Playwright; see below). Don't add dependencies to the project to make checking easier; if a framework would help, propose it as a finding.
 - Cover edge cases the criterion plausibly implies: empty/missing input, invalid input, boundary values, repeated use, error paths.
 - Some criteria can't be checked mechanically (exact copy, visual layout). Note them, and verify them by exercising the feature directly instead.
 
@@ -47,6 +47,31 @@ For every criterion, write at least one executable check that would fail if the 
 - Tag each check with the work and the criterion it verifies, so it can be found and re-run on its own.
 
 **Where checks go.** When you run as a Mission Control QA seat, your context names the project's checks directory and a scratch directory for throwaway files, and gives the tag for your user story. You can write only inside those two directories. The file tools refuse writes anywhere else, on purpose: QA that can edit product code can make a failure go away instead of reporting it. Checks in the checks directory are committed with the user story, so they can be re-run after merges. Outside Mission Control, put checks where the project keeps its tests, or in a scratch location if they shouldn't be kept.
+
+**Two ways to test a UI: explore with the browser, assert with Playwright.**
+
+| Use | For |
+|---|---|
+| Playwright checks, run with `run_checks` | Every criterion that can be expressed as a repeatable assertion. These are the durable proof, and what gets re-run after a merge. |
+| The browser tools | Exploring the running app; finding the roles, labels, and text a spec should target; criteria marked `exploratory`; debugging a failing check; capturing screenshot evidence. |
+
+A criterion you verify only in the browser must be marked `exploratory` in the manifest. In Mission Control, a Playwright check is a manifest entry with `"runner": "playwright"` and a `spec` file in the checks directory, with no `command`: the harness runs it, on the project's own Playwright when it has one and on North Star's bundled Playwright otherwise, so the project doesn't need Playwright installed and you must not add it. When writing Playwright specs:
+- Locate elements by `getByRole`, `getByLabel`, and `getByText`, not CSS selectors.
+- Navigate relative to `baseURL` (`page.goto("/login")`). With an app launch recipe, the harness sets it to the app it started; without one, a shared fixture starts the app on a free port and provides it (the checks step's kickoff says how). Never hard-code a port.
+- One criterion per `test()`, and name the criterion in the test title next to the story tag (`"redirects to the dashboard @<story tag> @AC-1"`).
+- For an Electron app, launch it from the spec instead of using the browser:
+
+  ```ts
+  import { test, expect, _electron } from "@playwright/test"
+  import electronPath from "electron"
+
+  test("shows the welcome screen @<story tag> @AC-1", async () => {
+    const app = await _electron.launch({ executablePath: electronPath, args: ["."] })
+    const window = await app.firstWindow()
+    await expect(window.getByRole("heading", { name: "Welcome" })).toBeVisible()
+    await app.close()
+  })
+  ```
 
 ## 3. Understand what changed
 
@@ -60,9 +85,9 @@ For every criterion, write at least one executable check that would fail if the 
 - Where feasible, execute the feature end to end: run the CLI command, hit the API endpoint, start the app and use it — with real inputs, not just inspection.
 - For each acceptance criterion, trace the full path (e.g. input → handler → storage → output), not just that each piece exists in isolation. A function can exist without being called; an API can exist without a consumer.
 - If the change touches more than one component, verify they actually connect — not just that each one individually looks fine.
-- If a check fails, make sure the check is right before you report it. Fix your own check if it was wrong; never change the product to make it pass.
+- If a check fails, make sure the check is right before you report it. Fix your own check if it was wrong; never change the product to make it pass. When a Playwright check fails because a locator doesn't match the real UI (not because the behavior is wrong), find the right role, label, or text in the browser and fix the spec.
 
-**Driving a UI in the browser.** When you have the browser tools, use them to exercise a web UI the way a user would:
+**Driving a UI in the browser.** When you have the browser tools, use them to explore a web UI the way a user would, and for what your checks can't assert:
 - Start the app first (`app_start` when you have it), and open the URL it gives you. The browser only opens local apps; anything else is refused.
 - Call `browser_snapshot` before you interact, and again whenever the page changes, so you act on what's really there.
 - Save evidence as you go: every `browser_screenshot` is kept and its path is in the result, and `browser_console` / `browser_network` keep what they return when you pass `save_evidence: true`. Cite these paths for criteria you verified this way.

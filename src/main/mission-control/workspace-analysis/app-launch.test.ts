@@ -1,5 +1,9 @@
+import { execFileSync } from "child_process"
+import { mkdtempSync, rmSync, writeFileSync } from "fs"
+import { tmpdir } from "os"
+import path from "path"
 import { describe, expect, it } from "vitest"
-import { appLaunchDrafts } from "./app-launch"
+import { appLaunchDrafts, appLaunchDraftsAtRef } from "./app-launch"
 import type { ProjectRoot } from "./inventory"
 
 function root(dir: string, ecosystems: ProjectRoot["ecosystems"]): ProjectRoot {
@@ -139,5 +143,75 @@ describe("appLaunchDrafts", () => {
         fix: expect.objectContaining({ kind: "manual" }),
       }),
     ])
+  })
+
+  it("proposes a dependency-free Node server that reads PORT", async () => {
+    const server =
+      "const http = require('node:http')\nhttp.createServer(handler).listen(process.env.PORT || 3000)\n"
+    // No manifest at all: the workspace root is still checked.
+    const [draft] = await drafts({ "server.js": server, "index.html": "" }, [])
+    expect(draft.fix).toMatchObject({
+      kind: "apply-settings",
+      patch: {
+        appLaunch: {
+          add: [
+            { key: "web", command: "node server.js", cwd: "", port: "auto" },
+          ],
+        },
+      },
+    })
+    expect(draft.confidence).toBe("likely")
+    // A package.json with nothing to serve falls back to the server file.
+    const [fallback] = await drafts(
+      { "package.json": pkg({ test: "node --test" }), "server.js": server },
+      [root("", ["npm"])]
+    )
+    expect(
+      fallback.fix.kind === "apply-settings" &&
+        fallback.fix.patch.appLaunch?.add?.[0].command
+    ).toBe("node server.js")
+    // A fixed port would collide across parallel worktrees.
+    expect(await drafts({ "server.js": "server.listen(3000)" }, [])).toEqual([])
+  })
+})
+
+describe("appLaunchDraftsAtRef", () => {
+  it("reads a branch's tip, not the checkout", async () => {
+    const repo = mkdtempSync(path.join(tmpdir(), "app-launch-ref-"))
+    const git = (...args: string[]) =>
+      execFileSync("git", args, { cwd: repo, stdio: "pipe" }).toString()
+    try {
+      git("init", "-q", "-b", "main")
+      git("config", "user.email", "test@example.com")
+      git("config", "user.name", "Test")
+      writeFileSync(path.join(repo, ".gitignore"), "node_modules\n")
+      git("add", ".")
+      git("commit", "-q", "-m", "init")
+      git("checkout", "-q", "-b", "integration")
+      writeFileSync(
+        path.join(repo, "server.js"),
+        "require('http').createServer(() => {}).listen(process.env.PORT)\n"
+      )
+      git("add", ".")
+      git("commit", "-q", "-m", "server")
+      git("checkout", "-q", "main")
+
+      expect(
+        await appLaunchDraftsAtRef({ workspace: repo, ref: "main" })
+      ).toEqual([])
+      const [draft] = await appLaunchDraftsAtRef({
+        workspace: repo,
+        ref: "integration",
+      })
+      expect(draft).toMatchObject({
+        key: "app-launch:recipe",
+        fix: { patch: { appLaunch: { add: [{ command: "node server.js" }] } } },
+      })
+      expect(
+        await appLaunchDraftsAtRef({ workspace: repo, ref: "missing" })
+      ).toEqual([])
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+    }
   })
 })

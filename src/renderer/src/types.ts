@@ -108,6 +108,7 @@ export type {
   Backend,
   LocalRuntimeProfile,
   LocalProfileCapabilities,
+  TestBrowserState,
   FilePermission,
   ApprovalCategory,
   RuntimeStatus,

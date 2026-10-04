@@ -30,6 +30,9 @@ interface DefaultStep {
 interface DefaultPlaybook {
   name: string
   description: string
+  // Route cross-phase flag_for_rework autonomously instead of raising a
+  // confirmation card (the Process builder's "Autonomous rework routing").
+  autonomousRework?: boolean
   hooks: Partial<Record<PlaybookHookName, DefaultStep[]>>
 }
 
@@ -38,6 +41,7 @@ export const DEFAULT_PLAYBOOKS: Record<PlaybookAltitude, DefaultPlaybook> = {
     name: "Spec → Author checks → Build → Test",
     description:
       "Refine the user story spec against the codebase, have QA write acceptance checks from the spec, build it, then run the checks, test the running app, and record the proof.",
+    autonomousRework: true,
     hooks: {
       run: [
         {
@@ -149,6 +153,10 @@ function buildHookProcess(
     name: `${playbook.name} · ${hook.replace(/_/g, " ")}`,
     description: `Playbook step group for the ${hook} hook.`,
   })
+  if (DEFAULT_PLAYBOOKS[playbook.altitude].autonomousRework)
+    processes.updateProcessDefinition(definition.id, {
+      requireFlagApproval: false,
+    })
   let previous: string | null = null
   steps.forEach((step, position) => {
     const phase = processes.createPhase({

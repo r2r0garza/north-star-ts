@@ -50,6 +50,11 @@ export const HEALTH_EVENTS = {
     weight: 1,
     label: "Approval requested",
   },
+  test_browser_needed: {
+    class: "ceremony",
+    weight: 1,
+    label: "Waiting for the test browser",
+  },
   plan_revision: { class: "ceremony", weight: 1, label: "Plan revision" },
   proposal_created: {
     class: "ceremony",

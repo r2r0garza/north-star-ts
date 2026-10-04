@@ -326,6 +326,44 @@ describe("computePosition — waves and dispatch", () => {
     expect(busy.dispatch).toEqual([])
   })
 
+  it("builds the first user story alone while nothing in the workspace runs yet", () => {
+    const greenfield = {
+      mode: "git" as const,
+      busy: false,
+      firstStoryAlone: true,
+    }
+    const first = computePosition(
+      input({
+        feature: { ...input().feature, overlapPolicy: "parallel" },
+        userStories: [userStory("a"), userStory("b"), userStory("c")],
+        workspace: greenfield,
+      })
+    )
+    expect(first.dispatch.map((d) => d.userStory)).toEqual(["a"])
+    expect(first.deferred.map((d) => d.reason)).toEqual([
+      expect.stringMatching(/first user story builds alone/),
+      expect.stringMatching(/first user story builds alone/),
+    ])
+    const building = computePosition(
+      input({
+        userStories: [
+          userStory("a", "m1", { status: "running" }),
+          userStory("b"),
+        ],
+        runs: [
+          run("run", "running", {
+            userStoryId: "a",
+            milestoneId: "m1",
+            isolated: true,
+          }),
+        ],
+        workspace: greenfield,
+      })
+    )
+    expect(building.dispatch).toEqual([])
+    expect(building.capacity.concurrencyFree).toBe(0)
+  })
+
   it("holds a user story without acceptance criteria and asks the lead", () => {
     const p = computePosition(
       input({ userStories: [userStory("a", "m1", { acceptanceCount: 0 })] })

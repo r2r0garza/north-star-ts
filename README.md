@@ -66,6 +66,25 @@ is no environment-variable fallback for configured provider credentials.
 `.env.local` is loaded by the main process for non-secret local configuration, such
 as the optional `NEXT_system_name` system-name override.
 
+## QA checks and Playwright
+
+In Mission Control, the QA seat writes acceptance checks into the workspace's checks
+directory (`e2e/` by default). UI checks are usually Playwright specs. Your project
+doesn't need Playwright for them: when it has no `@playwright/test`, North Star runs
+the specs with its own bundled copy, using the app itself as Node, so you don't need
+Node installed either. When your project has Playwright, North Star uses yours, with
+your `playwright.config` merged under its own settings.
+
+Those specs therefore run inside North Star, but **not from your own terminal**
+(`npx playwright test`) unless you add `@playwright/test` to your project. North Star
+never adds it for you.
+
+Browser checks use your installed Google Chrome. Without Chrome, North Star asks once
+(in Mission Control, or **Settings → General → Browser → Test browser for QA checks**)
+before downloading Playwright's test browser into its own app data. Until then, checks
+that need a browser are recorded as not verifiable. Electron apps are checked with
+Playwright's `_electron.launch`, which needs no browser.
+
 ## Prompts & Skills
 
 ```

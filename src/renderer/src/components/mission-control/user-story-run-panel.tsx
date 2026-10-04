@@ -149,7 +149,7 @@ export function UserStoryRunPanel({
       const message = errorMessage(error)
       if (message.startsWith("touch_overlap:"))
         setOverlap(message.replace(/^touch_overlap:\s*/, ""))
-      else toast.error(message)
+      else toast.error(message.replace(/^app_launch_required:\s*/, ""))
     } finally {
       setPending(false)
     }

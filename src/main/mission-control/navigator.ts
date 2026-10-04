@@ -47,6 +47,7 @@ import {
   processRunFailure,
 } from "./user-story-runner"
 import { SEAT_WAKE_KIND } from "./sessions"
+import { APP_LAUNCH_REQUIRED } from "./user-story-runner"
 import { hasActiveFeatureTask } from "../db/repositories/tasks"
 
 // The Navigator (plan 106.6): GPS for a feature. Deterministic and
@@ -90,6 +91,9 @@ export interface NavigatorDeps {
   ): Promise<PlaybookRun>
   // A start already in progress (worktree setup running), so dispatch skips it.
   isStartingUserStory?(userStoryId: string): boolean
+  // Greenfield with a QA seat and no app launch recipe: one story at a time
+  // until one lands (plan 109.07).
+  firstStoryAlone?(feature: Feature): Promise<boolean>
   preparingUserStories?(
     featureId: string
   ): Array<{ userStoryId: string; since: number; step: string | null }>
@@ -520,7 +524,10 @@ export class Navigator {
       cached = { key, mode: await this.deps.workspaceMode(feature) }
       this.modes.set(feature.id, cached)
     }
-    if (cached.mode.mode === "git") return { mode: "git", busy: false }
+    if (cached.mode.mode === "git")
+      return (await this.deps.firstStoryAlone?.(feature))
+        ? { mode: "git", busy: false, firstStoryAlone: true }
+        : { mode: "git", busy: false }
     const occupant = activePlaybookRunForWorkspace(feature)
     return {
       mode: "single_flight",
@@ -762,6 +769,7 @@ export class Navigator {
     if (maneuver.kind === "dispatch") {
       // Start them together: each start prepares a worktree and its setup,
       // which can take a while, so one story never waits on another's.
+      const setupRefusals: string[] = []
       const results = await Promise.all(
         position.dispatch.map(
           async (item): Promise<NavigatorTickAction | null> => {
@@ -783,12 +791,35 @@ export class Navigator {
               })
               return { kind, target: key, ok: true, detail: `Started ${key}` }
             } catch (error) {
+              if (
+                SETUP_REFUSAL.test(error instanceof Error ? error.message : "")
+              )
+                setupRefusals.push(errorText(error))
               return { kind, target: key, ok: false, detail: errorText(error) }
             }
           }
         )
       )
       actions.push(...results.filter((a): a is NavigatorTickAction => !!a))
+      // The workspace needs the user (an app launch recipe): pause rather
+      // than retry a start that can't succeed until they act.
+      if (
+        setupRefusals.length &&
+        features.getFeature(feature.id)?.status === "active"
+      ) {
+        const reason = setupRefusals[0]
+        this.pause(feature.id, reason, "setup")
+        actions.push({
+          kind: "auto_pause",
+          target: null,
+          ok: true,
+          detail: reason,
+        })
+        this.deps.notifyUser(
+          `Mission Control paused “${feature.name}”`,
+          reason.slice(0, 400)
+        )
+      }
       return
     }
     if (maneuver.kind === "complete_milestone") {
@@ -933,7 +964,7 @@ export class Navigator {
   pause(
     featureId: string,
     reason: string,
-    by: "user" | "budget" | "health" = "user"
+    by: "user" | "budget" | "health" | "setup" = "user"
   ): Feature {
     const before = features.getFeature(featureId)
     if (!before) throw new Error(`Feature not found: ${featureId}`)
@@ -1053,11 +1084,13 @@ export class Navigator {
   }
 }
 
+// A start refused for a reason only the user can fix: retrying won't help.
+const SETUP_REFUSAL = new RegExp(`^${APP_LAUNCH_REQUIRED}: `)
+
 function errorText(error: unknown): string {
-  return (error instanceof Error ? error.message : String(error)).replace(
-    /^touch_overlap: /,
-    ""
-  )
+  return (error instanceof Error ? error.message : String(error))
+    .replace(/^touch_overlap: /, "")
+    .replace(SETUP_REFUSAL, "")
 }
 
 // A proposal the lead made while a milestone's planning review

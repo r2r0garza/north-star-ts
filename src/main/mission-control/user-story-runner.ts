@@ -11,6 +11,7 @@ import { recordEvent } from "../db/repositories/mc-events"
 import { emitWorkChanged } from "./work-events"
 import type {
   Feature,
+  Milestone,
   MissionControlRunLink,
   PlaybookAltitude,
   PlaybookHookName,
@@ -22,6 +23,7 @@ import type {
   UserStoryProof,
   UserStory,
 } from "../db/types"
+import type { Finding } from "../../shared/mission-control/workspace-analysis"
 import { ensureDefaultPlaybook } from "./playbook-defaults"
 import { QA_ROLE } from "./qa-scope"
 import { checksDriftBlock, readStoryManifest, storyChecks } from "./qa-checks"
@@ -89,7 +91,20 @@ export interface UserStoryRunnerDeps {
   // Worktrees and the merge queue (plan 106.5). Without it every run is
   // single-flight in the workspace, as in 106.3.
   integration?: MilestoneIntegration
+  // The workspace's app launch finding for the ref a story starts from (plan
+  // 109.07); null when nothing runnable is there. Without it, stories start
+  // without the app launch preflight.
+  // `record: false` only looks, without adding it to the checklist.
+  appLaunchFinding?(input: {
+    feature: Feature
+    ref: string
+    record?: boolean
+  }): Promise<Finding | null>
 }
+
+// A story start refused because QA would need the running app and no app
+// launch recipe can start it (plan 109.07). The Navigator pauses on it.
+export const APP_LAUNCH_REQUIRED = "app_launch_required"
 
 const CLI_PROVIDERS: Record<string, string> = {
   claude_code: "Claude Code",
@@ -163,6 +178,16 @@ export function maxConcurrentUserStories(feature: Feature): number {
       DEFAULT_MAX_CONCURRENT_USER_STORIES
     )
   )
+}
+
+// QA verifies the feature's stories in the running app, and the workspace has
+// no app launch recipe to start it (plan 109.07).
+function needsAppLaunch(feature: Feature): boolean {
+  if (!feature.workspaceId) return false
+  if (!feature.rigSnapshot?.seats.some((seat) => seat.role === QA_ROLE))
+    return false
+  const workspace = getWorkspace(feature.workspaceId)
+  return !!workspace && !workspace.appLaunch.services.length
 }
 
 export function featureWorkspacePath(feature: Feature): string {
@@ -502,6 +527,8 @@ export class UserStoryRunner {
         )
     }
 
+    await this.assertAppLaunchReady(feature, milestone, userStory)
+
     const playbook = playbookFor("user_story", userStory.playbookId)
     const attempt = userStory.attempts + 1
     const integration = this.deps.integration
@@ -585,6 +612,67 @@ export class UserStoryRunner {
           )
       },
     })
+  }
+
+  // The app launch preflight (plan 109.07). A QA seat verifies the story in
+  // the running app, which only an app launch recipe can start for it. When
+  // the workspace has none but the story's starting point (the milestone's
+  // integration branch, where earlier stories landed) has a runnable app,
+  // refuse the start and offer the detected recipe, instead of a QA step that
+  // can't reach the app. Nothing runnable yet (greenfield) starts as before,
+  // and so does a dismissed finding.
+  private async assertAppLaunchReady(
+    feature: Feature,
+    milestone: Milestone,
+    userStory: UserStory
+  ): Promise<void> {
+    if (!needsAppLaunch(feature)) return
+    const finding = await this.appLaunchFindingFor(feature, milestone, true)
+    if (finding?.status !== "open" || finding.fix.kind !== "apply-settings")
+      return
+    const commands = (finding.fix.patch.appLaunch?.add ?? [])
+      .map((service) => `\`${service.command}\``)
+      .join(" and ")
+    throw new Error(
+      `${APP_LAUNCH_REQUIRED}: User story ${userStory.key} is verified by QA in the running app, but this workspace has no app launch recipe, so nothing can start the app for it.${commands ? ` The app looks like it runs with ${commands}.` : ""} Apply "${finding.title}" in the workspace checklist (or add a recipe in Advanced settings → App launch), or dismiss that finding to run without one.`
+    )
+  }
+
+  // The app launch finding for where a milestone's next story starts (its
+  // integration branch, where earlier stories landed).
+  private async appLaunchFindingFor(
+    feature: Feature,
+    milestone: Milestone,
+    record: boolean
+  ): Promise<Finding | null> {
+    const lookup = this.deps.appLaunchFinding
+    if (!lookup) return null
+    const ref = milestone.integrationBranch ?? milestone.baseRef ?? "HEAD"
+    return lookup({ feature, ref, record }).catch((error: unknown) => {
+      console.warn("[user-story] app launch preflight:", error)
+      return null
+    })
+  }
+
+  // Greenfield (plan 109.07): while no user story of the feature has landed
+  // and nothing in the workspace runs yet, the first story builds alone.
+  // Stories started beside it would be verified by QA against an app that
+  // doesn't exist in their worktrees. Once it lands, the app launch
+  // preflight offers the recipe it made detectable.
+  async firstStoryAlone(feature: Feature): Promise<boolean> {
+    if (!this.deps.appLaunchFinding || !needsAppLaunch(feature)) return false
+    const milestones = features.listMilestones(feature.id)
+    if (
+      milestones.some((m) =>
+        features.listUserStories(m.id).some((s) => s.status === "done")
+      )
+    )
+      return false
+    const milestone = milestones.find(
+      (m) => !["completed", "cancelled"].includes(m.status)
+    )
+    if (!milestone) return false
+    return (await this.appLaunchFindingFor(feature, milestone, false)) === null
   }
 
   // ── cancelling ────────────────────────────────────────────────────────────

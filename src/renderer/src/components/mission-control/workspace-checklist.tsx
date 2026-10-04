@@ -5,6 +5,7 @@ import {
   ChevronDown,
   ChevronRight,
   CircleSlash,
+  Download,
   Info,
   Loader2,
   OctagonAlert,
@@ -40,6 +41,7 @@ import type {
   WorkspaceAnalysis,
 } from "@/types"
 import { SetupTerminal, watchSetupOutput } from "./setup-terminal"
+import { TestBrowserFixStatus } from "./test-browser"
 
 // The workspace setup checklist (plan 106.11): findings with concrete fixes,
 // Apply all's review sheet, and the live setup run. Every action names a
@@ -234,7 +236,16 @@ function CommandList({ fix }: { fix: Fix }) {
 function actionLabel(fix: Fix): string {
   if (fix.kind === "run-command") return fix.patch ? "Apply and run" : "Run"
   if (fix.kind === "run-checks") return "Run checks"
+  if (fix.kind === "download-test-browser") return "Download"
   return "Apply"
+}
+
+function ActionIcon({ fix }: { fix: Fix }) {
+  if (fix.kind === "run-command" || fix.kind === "run-checks")
+    return <Play className="size-4" />
+  if (fix.kind === "download-test-browser")
+    return <Download className="size-4" />
+  return <Wrench className="size-4" />
 }
 
 function FindingRow({
@@ -294,6 +305,7 @@ function FindingRow({
             <div className="space-y-1">
               <div className="text-xs font-medium">{fix.summary}</div>
               <CommandList fix={fix} />
+              {fix.kind === "download-test-browser" && <TestBrowserFixStatus />}
               {finding.replacesUserSetting && (
                 <p className="text-xs text-amber-600">
                   This replaces a setting you wrote.
@@ -372,11 +384,7 @@ function FindingRow({
               disabled={busy}
               onClick={() => void onFix(finding.key, null)}
             >
-              {fix.kind === "run-command" || fix.kind === "run-checks" ? (
-                <Play className="size-4" />
-              ) : (
-                <Wrench className="size-4" />
-              )}
+              <ActionIcon fix={fix} />
               {actionLabel(fix)}
             </Button>
           )}
@@ -687,7 +695,9 @@ export function ApplyAllDialog({
                         ? "Setting"
                         : item.kind === "check"
                           ? "Runs build scripts"
-                          : "Runs a command"}
+                          : item.kind === "download"
+                            ? "Downloads a browser"
+                            : "Runs a command"}
                     </Badge>
                     {item.confidence !== "verified" && (
                       <Badge variant="outline" className="font-normal">
@@ -783,7 +793,10 @@ export function WorkspaceChecklist({
     setBusy(true)
     try {
       const result = await api.applyFix(featureId, key, alternative)
+      const fix = findings.find((f) => f.key === key)?.fix
       if (result.run) toast.message("Running in the setup terminal below")
+      else if (fix?.kind === "download-test-browser" && alternative === null)
+        toast.message("Downloading the test browser")
       else toast.success("Applied")
     } catch (error) {
       toast.error(errorMessage(error))

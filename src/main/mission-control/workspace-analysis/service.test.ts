@@ -27,8 +27,14 @@ import {
   upsertWorkspace,
 } from "../../db/repositories/workspaces"
 import { setFakeToolsForTests } from "./exec"
-import { WorkspaceAnalysisService, ownerIdFor } from "./index"
+import {
+  WorkspaceAnalysisService,
+  ownerIdFor,
+  type TestBrowserDeps,
+} from "./index"
 import type { Complete } from "./interpret"
+import { TEST_BROWSER_FINDING, type WorkspaceBrowser } from "./test-browser"
+import type { TestBrowserState } from "../playwright-install"
 
 const dirs: string[] = []
 const git = (cwd: string, ...args: string[]) =>
@@ -99,10 +105,30 @@ let changes: string[]
 let runs: SetupRunView[]
 let model: Complete | null
 
-function service() {
+function service(
+  options: {
+    testBrowser?: TestBrowserDeps
+    qaSeat?: boolean
+    // A draft: a live rig with a QA seat, no snapshot yet.
+    liveRigQaSeat?: boolean
+  } = {}
+) {
   return new WorkspaceAnalysisService({
     terminals: terminal,
-    getFeature: (id) => features.getFeature(id) ?? undefined,
+    getFeature: (id) => {
+      const feature = features.getFeature(id) ?? undefined
+      if (feature && options.liveRigQaSeat)
+        return { ...feature, rigId: "rig1", rigSnapshot: null }
+      return feature && options.qaSeat
+        ? {
+            ...feature,
+            rigSnapshot: { seats: [{ role: "qa" }] } as never,
+          }
+        : feature
+    },
+    getRig: (id) =>
+      id === "rig1" ? ({ seats: [{ role: "qa" }] } as never) : null,
+    testBrowser: options.testBrowser,
     getWorkspace,
     updateWorkspace: (id, patch) => updateWorkspace(id, patch),
     setOverlapPolicy: (featureId, value) =>
@@ -529,5 +555,157 @@ describe.skipIf(!sqliteLoads)("WorkspaceAnalysisService", () => {
     expect(
       again.findings.some((f) => f.key === "worktree-env:model:notes/todo.md")
     ).toBe(true)
+  })
+})
+
+// QA's test browser (plan 109.06): a live finding about the machine.
+class FakeTestBrowser extends EventEmitter implements TestBrowserDeps {
+  current: TestBrowserState = {
+    status: "missing",
+    requested: false,
+    consent: false,
+    progress: null,
+    sizeMb: 92,
+    error: null,
+  }
+  own: WorkspaceBrowser | null = null
+  installs = 0
+  state() {
+    return this.current
+  }
+  async refresh() {
+    return this.current
+  }
+  async install() {
+    this.installs++
+    this.set({ status: "downloading" })
+    return true
+  }
+  onChanged(listener: (state: TestBrowserState) => void) {
+    this.on("changed", listener)
+    return () => this.off("changed", listener)
+  }
+  async workspace() {
+    return this.own
+  }
+  set(patch: Partial<TestBrowserState>) {
+    this.current = { ...this.current, ...patch }
+    this.emit("changed", this.current)
+  }
+}
+
+describe.skipIf(!sqliteLoads)("WorkspaceAnalysisService test browser", () => {
+  function readyRepo() {
+    const root = repo(python, { ".env.local": "x" })
+    mkdirSync(path.join(root, ".venv"))
+    writeFileSync(path.join(root, ".venv", "pyvenv.cfg"), "home=/usr/bin\n")
+    return root
+  }
+
+  it("blocks Start when a QA seat has no browser, until one is there", async () => {
+    const browser = new FakeTestBrowser()
+    const { feature } = featureFor(readyRepo())
+    const svc = service({ testBrowser: browser, qaSeat: true })
+    const first = await svc.preflight(feature.id)
+    expect(first.ok).toBe(false)
+    expect(first.blockers).toEqual([TEST_BROWSER_FINDING])
+    const finding = svc
+      .get(feature.id)!
+      .findings.find((f) => f.key === TEST_BROWSER_FINDING)!
+    expect(finding.fix).toMatchObject({
+      kind: "download-test-browser",
+      sizeMb: 92,
+    })
+    expect(finding.alternatives[0]).toMatchObject({ kind: "manual" })
+
+    // Live: the browser's own state resolves it, without re-analysis.
+    changes = []
+    browser.set({ status: "installed" })
+    expect(changes).toContain(feature.id)
+    const resolved = svc
+      .get(feature.id)!
+      .findings.find((f) => f.key === TEST_BROWSER_FINDING)!
+    expect(resolved.status).toBe("resolved")
+    expect(resolved.resolution).toBe("Test browser installed")
+    expect((await svc.preflight(feature.id)).ok).toBe(true)
+  })
+
+  it("downloads it when the fix is applied, from the finding or Apply all", async () => {
+    const browser = new FakeTestBrowser()
+    const { feature } = featureFor(readyRepo())
+    const svc = service({ testBrowser: browser, qaSeat: true })
+    await svc.analyze(feature.id, { model: false })
+    const result = await svc.applyFix(feature.id, TEST_BROWSER_FINDING)
+    expect(result.run).toBeNull()
+    expect(browser.installs).toBe(1)
+    browser.set({ status: "missing" })
+    const item = svc
+      .previewApplyAll(feature.id)
+      .find((i) => i.findingKey === TEST_BROWSER_FINDING)!
+    expect(item.kind).toBe("download")
+    await svc.applyAll(feature.id, [item.id])
+    expect(browser.installs).toBe(2)
+  })
+
+  it("uses Chrome when it's installed", async () => {
+    const browser = new FakeTestBrowser()
+    browser.current = { ...browser.current, status: "chrome" }
+    const { feature } = featureFor(readyRepo())
+    const svc = service({ testBrowser: browser, qaSeat: true })
+    expect((await svc.preflight(feature.id)).ok).toBe(true)
+    const finding = svc
+      .get(feature.id)!
+      .findings.find((f) => f.key === TEST_BROWSER_FINDING)!
+    expect(finding.resolution).toBe("Uses your Google Chrome")
+  })
+
+  it("checks the project's own Playwright browser instead, and installs it with a command", async () => {
+    const browser = new FakeTestBrowser()
+    browser.own = { version: "1.63.0", installed: false, location: "/cache/x" }
+    const { feature } = featureFor(readyRepo())
+    const svc = service({ testBrowser: browser, qaSeat: true })
+    const first = await svc.preflight(feature.id)
+    expect(first.blockers).toEqual([TEST_BROWSER_FINDING])
+    const finding = svc
+      .get(feature.id)!
+      .findings.find((f) => f.key === TEST_BROWSER_FINDING)!
+    expect(finding.fix).toMatchObject({
+      kind: "run-command",
+      commands: [{ command: "npx playwright install chromium", cwd: "" }],
+    })
+    terminal.scripts.set("npx playwright install chromium", {
+      exit: 0,
+      effect: () => {
+        browser.own = { ...browser.own!, installed: true }
+      },
+    })
+    await svc.applyFix(feature.id, TEST_BROWSER_FINDING)
+    const run = await settled(svc, feature.id)
+    expect(run?.status).toBe("succeeded")
+    const after = svc
+      .get(feature.id)!
+      .findings.find((f) => f.key === TEST_BROWSER_FINDING)!
+    expect(after.status).toBe("resolved")
+    expect(after.lastRun).toMatchObject({ ok: true })
+  })
+
+  it("uses the live rig for a draft that has no rig snapshot yet", async () => {
+    const browser = new FakeTestBrowser()
+    const { feature } = featureFor(readyRepo())
+    const svc = service({ testBrowser: browser, liveRigQaSeat: true })
+    const analysis = await svc.analyze(feature.id, { model: false })
+    expect(
+      analysis.findings.find((f) => f.key === TEST_BROWSER_FINDING)?.status
+    ).toBe("open")
+  })
+
+  it("makes no finding for a rig without a QA seat", async () => {
+    const browser = new FakeTestBrowser()
+    const { feature } = featureFor(readyRepo())
+    const svc = service({ testBrowser: browser, qaSeat: false })
+    expect((await svc.preflight(feature.id)).ok).toBe(true)
+    expect(
+      svc.get(feature.id)!.findings.some((f) => f.key === TEST_BROWSER_FINDING)
+    ).toBe(false)
   })
 })

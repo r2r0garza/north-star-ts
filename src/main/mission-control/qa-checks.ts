@@ -1,6 +1,7 @@
 import { createHash } from "crypto"
 import { lstat, readdir, readFile } from "fs/promises"
-import { join } from "path"
+import { tmpdir } from "os"
+import { join, posix } from "path"
 import * as features from "../db/repositories/features"
 import * as processes from "../db/repositories/processes"
 import type {
@@ -26,9 +27,16 @@ import {
   type AppLaunch,
 } from "../../shared/mission-control/app-launch"
 import { QA_ROLE, checksForRun } from "./qa-scope"
+import { evidenceDir } from "./evidence"
+import { runPlaywrightCheck } from "./playwright-runner"
+import { waitForTestBrowser } from "./playwright-install"
+import { recordEvent } from "../db/repositories/mc-events"
+import { holdPhaseClock } from "../tasks/process/phase-clock"
 import { userStoryCriteria } from "./user-story-objective"
 import {
   automatedChecks,
+  localImports,
+  unreachableAppProblem,
   validateChecksManifest,
   type AutomatedCheck,
   type ChecksManifest,
@@ -534,13 +542,13 @@ async function checkServices(
 ): Promise<
   | {
       ok: true
-      command: string
+      command: string | null
       env: Record<string, string>
     }
   | { ok: false; output: string }
 > {
-  if (!check.services.length)
-    return { ok: true, command: check.command, env: {} }
+  const command = check.runner === "command" ? check.command : null
+  if (!check.services.length) return { ok: true, command, env: {} }
   const started = await startServices({
     owner: app.owner,
     root,
@@ -557,7 +565,7 @@ async function checkServices(
   try {
     return {
       ok: true,
-      command: substitutePorts(check.command, null, ports),
+      command: command === null ? null : substitutePorts(command, null, ports),
       env,
     }
   } catch (err) {
@@ -568,12 +576,49 @@ async function checkServices(
   }
 }
 
+// Failures that mean the check never reached the app.
+const UNREACHABLE =
+  /net::ERR_(?:CONNECTION_REFUSED|CONNECTION_RESET|CONNECTION_CLOSED|EMPTY_RESPONSE|ADDRESS_UNREACHABLE)|Cannot navigate to invalid URL|\bInvalid URL\b|\bECONNREFUSED\b/
+
+// Why a failed check never reached the app, or null (plan 109.07).
+export function unreachableReason(
+  result: Pick<CheckResult, "passed" | "outputTail" | "playwright">,
+  recipe: AppLaunch
+): string | null {
+  if (result.passed) return null
+  const text = [
+    result.outputTail,
+    ...(result.playwright?.tests.map((t) => t.error ?? "") ?? []),
+  ].join("\n")
+  const match = UNREACHABLE.exec(text)
+  if (!match) return null
+  return `Couldn't reach the app (${match[0]}), so this says nothing about the criterion. ${
+    recipe.services.length
+      ? "Check that it declares the services it needs and navigates relative to its baseURL."
+      : "This workspace has no app launch recipe: nothing starts the app and Playwright gets no baseURL, so the check must start the app itself (a fixture that starts it on a free port and provides baseURL)."
+  }`
+}
+
 async function runOne(
   root: string,
   check: AutomatedCheck & { criterionId: string },
   storyRef: string,
   attempt: number,
-  app: { owner: string; recipe: AppLaunch },
+  app: { owner: string; recipe: AppLaunch; checksDir: string },
+  signal?: AbortSignal
+): Promise<CheckResult> {
+  const result = await runOneCheck(root, check, storyRef, attempt, app, signal)
+  if (result.notVerifiable) return result
+  const unreachable = unreachableReason(result, app.recipe)
+  return unreachable ? { ...result, unreachable } : result
+}
+
+async function runOneCheck(
+  root: string,
+  check: AutomatedCheck & { criterionId: string },
+  storyRef: string,
+  attempt: number,
+  app: { owner: string; recipe: AppLaunch; checksDir: string },
   signal?: AbortSignal
 ): Promise<CheckResult> {
   const started = Date.now()
@@ -607,8 +652,53 @@ async function runOne(
       durationMs: Date.now() - started,
       outputTail: tail(services.output),
     }
+  if (check.runner === "playwright") {
+    const outputDir = evidenceDir(app.owner)
+    let checksDir: string
+    try {
+      checksDir = await resolveInWorkspaceReal(root, app.checksDir)
+    } catch (err) {
+      return {
+        ...base,
+        passed: false,
+        exitCode: null,
+        timedOut: false,
+        durationMs: 0,
+        outputTail: `checks directory "${app.checksDir}": ${err instanceof Error ? err.message : String(err)}`,
+      }
+    }
+    const run = await runPlaywrightCheck({
+      cwd,
+      checksDir,
+      storyRef,
+      check,
+      env: services.env,
+      // Traces and screenshots of failures are evidence, kept with the
+      // step's other evidence (never in the repo).
+      outputDir: join(
+        outputDir ?? join(tmpdir(), "north-star-evidence", app.owner),
+        "playwright",
+        `${check.id}-${attempt}`
+      ),
+      signal,
+    })
+    return {
+      ...base,
+      passed: run.passed,
+      exitCode: run.exitCode,
+      timedOut: run.timedOut,
+      durationMs: Date.now() - started,
+      outputTail: tail(run.output),
+      playwright: {
+        ...run.runner,
+        tests: run.tests,
+        artifacts: run.artifacts,
+      },
+      ...(run.notVerifiable ? { notVerifiable: run.notVerifiable } : {}),
+    }
+  }
   try {
-    const { stdout, stderr } = await runLongCommand(services.command, {
+    const { stdout, stderr } = await runLongCommand(services.command!, {
       cwd,
       // CI keeps test runners non-interactive (Playwright otherwise serves
       // its HTML report after a failure and waits for Ctrl+C).
@@ -662,6 +752,41 @@ export type RunChecksOutcome =
     }
   | { ok: false; code: string; message: string }
 
+// A Playwright check on the bundled runner that couldn't launch a browser
+// (no Chrome, and the test browser not downloaded or allowed yet). Checks
+// that only use `request` never launch one, so they run either way.
+function neededBrowser(result: CheckResult): boolean {
+  return (
+    !!result.notVerifiable &&
+    result.playwright?.source === "bundled" &&
+    result.playwright.browser === "missing"
+  )
+}
+
+// Ask the user for the test browser and wait for it, rather than record the
+// checks as not verifiable and burn the attempt. The wait doesn't count
+// toward the phase's time limit. False when stopped first.
+async function awaitTestBrowser(
+  ctx: Extract<QaToolContext, { ok: true }>,
+  signal?: AbortSignal
+): Promise<boolean> {
+  const link = ctx.root.missionControl
+  if (link)
+    recordEvent({
+      featureId: link.featureId,
+      type: "test_browser_needed",
+      userStoryId: link.userStoryId,
+      seatAddress: ctx.phaseRun.seatAddress,
+      refId: ctx.phaseRun.id,
+    })
+  const release = holdPhaseClock(ctx.phaseRun.id)
+  try {
+    return await waitForTestBrowser(signal)
+  } finally {
+    release()
+  }
+}
+
 // Run the story's automated checks (or the given ones) in the worktree. A
 // failing check is rerun once and both attempts are recorded, so flake shows
 // instead of hiding. Results are appended to the phase run.
@@ -713,24 +838,54 @@ export async function runQaChecks(input: {
         message: `No automated check with id ${unknown.map((id) => `"${id}"`).join(", ")}. Automated checks: ${all.map(({ check }) => check.id).join(", ") || "none"}.`,
       }
   }
-  const results: CheckResult[] = []
-  const app = { owner: ctx.phaseRun.id, recipe: ctx.story.recipe }
-  for (const { storyRef, check } of selected) {
-    if (input.signal?.aborted) break
-    const first = await runOne(
-      input.workspace,
-      check,
-      storyRef,
-      1,
-      app,
-      input.signal
-    )
-    results.push(first)
-    if (!first.passed && !input.signal?.aborted)
-      results.push(
-        await runOne(input.workspace, check, storyRef, 2, app, input.signal)
-      )
+  const app = {
+    owner: ctx.phaseRun.id,
+    recipe: ctx.story.recipe,
+    checksDir: ctx.story.checksDir,
   }
+  const key = (storyRef: string, checkId: string) => `${storyRef}\0${checkId}`
+  const runAll = async (list: typeof selected) => {
+    const byCheck = new Map<string, CheckResult[]>()
+    for (const { storyRef, check } of list) {
+      if (input.signal?.aborted) break
+      const first = await runOne(
+        input.workspace,
+        check,
+        storyRef,
+        1,
+        app,
+        input.signal
+      )
+      const attempts = [first]
+      // A check that couldn't run (no browser yet) or never reached the app
+      // would only fail the same way again.
+      if (
+        !first.passed &&
+        !first.notVerifiable &&
+        !first.unreachable &&
+        !input.signal?.aborted
+      )
+        attempts.push(
+          await runOne(input.workspace, check, storyRef, 2, app, input.signal)
+        )
+      byCheck.set(key(storyRef, check.id), attempts)
+    }
+    return byCheck
+  }
+  const byCheck = await runAll(selected)
+  // Checks that needed the browser wait for it, then run again.
+  const waiting = selected.filter(({ storyRef, check }) =>
+    byCheck.get(key(storyRef, check.id))?.some(neededBrowser)
+  )
+  if (
+    waiting.length &&
+    !input.signal?.aborted &&
+    (await awaitTestBrowser(ctx, input.signal))
+  )
+    for (const [k, attempts] of await runAll(waiting)) byCheck.set(k, attempts)
+  const results = selected.flatMap(
+    ({ storyRef, check }) => byCheck.get(key(storyRef, check.id)) ?? []
+  )
   updateQaChecks(ctx.phaseRun.id, (current) => ({
     ...current,
     results: [...(current.results ?? []), ...results],
@@ -750,21 +905,52 @@ export function summarizeCheckRun(
   let passed = 0
   let failed = 0
   let flaky = 0
+  let notVerifiable = 0
+  let unreachable = 0
   for (const [id, attempts] of byCheck) {
     const [first, second] = attempts
-    const status = first.passed
-      ? "passed"
-      : second?.passed
-        ? "flaky (failed, then passed on retry)"
-        : first.timedOut
-          ? "failed (timed out)"
-          : "failed"
-    if (first.passed) passed++
+    const status = first.notVerifiable
+      ? "not verifiable"
+      : first.unreachable
+        ? "couldn't reach the app"
+        : first.passed
+          ? "passed"
+          : second?.passed
+            ? "flaky (failed, then passed on retry)"
+            : first.timedOut
+              ? "failed (timed out)"
+              : "failed"
+    if (first.notVerifiable) notVerifiable++
+    else if (first.unreachable) unreachable++
+    else if (first.passed) passed++
     else if (second?.passed) flaky++
     else failed++
     lines.push(
       `- ${id} (${first.storyRef} ${first.criterionId}): ${status}, ${Math.round(first.durationMs / 100) / 10}s`
     )
+    if (first.notVerifiable) {
+      lines.push(`  ${first.notVerifiable}`)
+      continue
+    }
+    if (first.unreachable) lines.push(`  ${first.unreachable}`)
+    // A Playwright check's tests, with the error of each that didn't pass,
+    // and where its failure traces and screenshots were saved.
+    const last = attempts[attempts.length - 1]
+    if (last.playwright) {
+      for (const test of last.playwright.tests)
+        lines.push(
+          `  ${test.status === "passed" ? "✓" : test.status === "skipped" ? "-" : "✗"} ${test.title} (${test.status})${
+            test.error
+              ? `\n${test.error
+                  .split("\n")
+                  .map((l) => `      ${l}`)
+                  .join("\n")}`
+              : ""
+          }`
+        )
+      if (last.playwright.artifacts.length)
+        lines.push(`  saved: ${last.playwright.artifacts.join(", ")}`)
+    }
     if (!first.passed)
       for (const attempt of attempts)
         lines.push(
@@ -775,7 +961,7 @@ export function summarizeCheckRun(
         )
   }
   const head = outcome.results.length
-    ? `Ran ${byCheck.size} automated check${byCheck.size === 1 ? "" : "s"}: ${passed} passed, ${failed} failed, ${flaky} flaky. Results are recorded on this step.`
+    ? `Ran ${byCheck.size} automated check${byCheck.size === 1 ? "" : "s"}: ${passed} passed, ${failed} failed, ${flaky} flaky${notVerifiable ? `, ${notVerifiable} not verifiable` : ""}${unreachable ? `, ${unreachable} couldn't reach the app` : ""}. Results are recorded on this step.`
     : "No automated checks to run."
   return [
     head,
@@ -797,6 +983,67 @@ export function summarizeCheckRun(
 
 // ── the checks step: completion and freeze ──────────────────────────────────
 
+// A local module's source: the specifier as written, or with a script
+// extension or as a folder's index. Null when it can't be read.
+async function readModule(
+  root: string,
+  from: string,
+  specifier: string
+): Promise<string | null> {
+  const base = posix.join(posix.dirname(from), specifier)
+  const candidates = [
+    base,
+    ...[".ts", ".tsx", ".js", ".mjs", ".cjs", ".mts", ".cts"].flatMap((ext) => [
+      `${base}${ext}`,
+      `${base}/index${ext}`,
+    ]),
+  ]
+  for (const candidate of candidates) {
+    try {
+      const path = await resolveInWorkspaceReal(root, candidate)
+      if (await isFile(path)) return await readFile(path, "utf8")
+    } catch {
+      // Outside the workspace or missing: try the next.
+    }
+  }
+  return null
+}
+
+// With no app launch recipe, Playwright checks must start the app themselves
+// (plan 109.07). The checks step can't finish with one that can't reach it:
+// once frozen, the test step couldn't fix it.
+async function unreachableChecks(
+  root: string,
+  story: StoryChecks,
+  manifest: ChecksManifest
+): Promise<string[]> {
+  if (story.recipe.services.length) return []
+  const problems: string[] = []
+  for (const check of automatedChecks(manifest)) {
+    if (check.runner !== "playwright" || check.services.length) continue
+    const specPath = posix.join(story.checksDir, check.spec)
+    const specText = await readModule(
+      root,
+      specPath,
+      `./${posix.basename(specPath)}`
+    )
+    if (specText === null) continue
+    const helperTexts: string[] = []
+    for (const specifier of localImports(specText)) {
+      const text = await readModule(root, specPath, specifier)
+      if (text !== null) helperTexts.push(text)
+    }
+    const problem = unreachableAppProblem({
+      id: check.id,
+      spec: check.spec,
+      specText,
+      helperTexts,
+    })
+    if (problem) problems.push(problem)
+  }
+  return problems
+}
+
 // Run when a checks step's worker finishes: the step completes only when the
 // story's manifest exists and validates. Then the whole checks directory is
 // frozen on the phase run, with any files QA changed outside its directories.
@@ -812,6 +1059,16 @@ export async function completeAuthorStep(input: {
     return { ok: false, message: "The user story is no longer available." }
   const read = await readStoryManifest(input.workspace, story)
   if (!read.ok) return read
+  const unreachable = await unreachableChecks(
+    input.workspace,
+    story,
+    read.manifest
+  )
+  if (unreachable.length)
+    return {
+      ok: false,
+      message: `These checks can't reach the app, so they could never verify their criteria:\n${unreachable.map((p) => `- ${p}`).join("\n")}`,
+    }
   const freeze = await snapshotChecks(input.workspace, story.checksDir)
   const after = input.before ? await worktreeChanges(input.workspace) : null
   const outsideWrites =
@@ -831,22 +1088,31 @@ export function authorStepNote(story: StoryChecks): string {
   return [
     "## Writing the acceptance checks",
     "Write checks for every acceptance criterion from the spec alone. Don't read or wait for the implementation: it doesn't exist yet, and checks shaped by the code tend to confirm the code instead of the criteria. Edit only the checks directory.",
+    "The app doesn't exist yet, so there's no browser in this step. For UI criteria, write Playwright specs from the spec using role and text locators, and mark anything that needs eyes on the result as `exploratory`.",
     `- Reuse the page objects, fixtures, and helpers already in \`${story.checksDir}/\`. Add methods to them rather than rewriting them: other stories' checks depend on them.`,
     `- Tag each test with \`@${story.storyRef}\` and its criterion id.`,
     `- Write the manifest at \`${story.manifestPath}\`. It maps each criterion id to its checks:`,
     "```json",
     `{ "criteria": {`,
-    `  "AC-1": [{ "id": "ac1-short-name", "kind": "automated", "command": "<the project's test command> --grep \\"@${story.storyRef}.*@AC-1\\"", "cwd": "", "timeoutMs": 120000 }],`,
-    `  "AC-2": [{ "id": "ac2-short-name", "kind": "exploratory", "note": "What to verify by hand in the running app" }]`,
+    `  "AC-1": [{ "id": "ac1-short-name", "kind": "automated", "runner": "playwright", "spec": "area/feature.spec.ts", "grep": "@AC-1"${story.recipe.services.length ? `, "services": ["${story.recipe.services[0].key}"]` : ""} }],`,
+    `  "AC-2": [{ "id": "ac2-short-name", "kind": "automated", "command": "<the project's test command> --grep \\"@${story.storyRef}.*@AC-2\\"", "cwd": "", "timeoutMs": 120000 }],`,
+    `  "AC-3": [{ "id": "ac3-short-name", "kind": "exploratory", "note": "What to verify by hand in the running app" }]`,
     "} }",
     "```",
-    "  An automated check is a command that exits 0 when the criterion holds. Select this story's tests by tag, not by file: a spec file holds several stories' tests. `cwd` is workspace-relative (\"\" for the root). Use `exploratory` only for what can't be checked mechanically (exact copy, visual layout); the test step verifies those in the running app.",
+    `  A Playwright check (\`"runner": "playwright"\`) names a spec file relative to \`${story.checksDir}/\` and has no command: the harness runs it, selecting this story's tests by tag (\`grep\` narrows further). It runs on the project's own Playwright when it has one, and on North Star's bundled Playwright otherwise, so don't add Playwright (or anything else) to the project. Any other automated check is a command that exits 0 when the criterion holds; select this story's tests by tag, not by file, since a spec file holds several stories' tests. \`cwd\` is workspace-relative ("" for the root). Use \`exploratory\` only for what can't be checked mechanically (exact copy, visual layout); the test step verifies those in the running app.`,
+    '- Playwright conventions: locate by `getByRole`, `getByLabel`, and `getByText`, not CSS selectors; navigate relative to `baseURL` (`page.goto("/login")`); one criterion per `test()`; and name the criterion in the title, e.g. `test("redirects to the dashboard @' +
+      story.storyRef +
+      ' @AC-1", …)`.',
+    '- An Electron app is checked with `_electron` from `@playwright/test`: `import electronPath from "electron"`, then `const app = await _electron.launch({ executablePath: electronPath, args: ["path/to/main.js"] })` and `const window = await app.firstWindow()`, and assert on `window` like a page. Pass `executablePath` so the project\'s own Electron runs. The check starts the app itself, so it needs no services and no browser.',
     ...(story.recipe.services.length
       ? [
-          `- A check that needs the running app lists the services it needs in \`"services"\` (from this workspace's app launch recipe: ${story.recipe.services.map((service) => `\`${service.key}\``).join(", ")}). \`run_checks\` starts them first, on free ports, and gives the check their URLs: \`BASE_URL\` (the first one), \`APP_<KEY>_URL\` and \`APP_<KEY>_PORT\` in its environment, and \`{port:<key>}\` in its command. Don't hard-code ports or start the app inside the check.`,
+          `- A check that needs the running app lists the services it needs in \`"services"\` (from this workspace's app launch recipe: ${story.recipe.services.map((service) => `\`${service.key}\``).join(", ")}). \`run_checks\` starts them first, on free ports. A Playwright check gets the first one as its \`baseURL\`; any check gets \`BASE_URL\` (the first one), \`APP_<KEY>_URL\` and \`APP_<KEY>_PORT\` in its environment, and a command check \`{port:<key>}\` in its command. Don't hard-code ports or start the app inside the check.`,
         ]
-      : []),
-    "- `run_checks` runs the manifest's automated checks. Use it to confirm each check runs and fails for the right reason: the feature isn't built yet, so failures are expected now.",
+      : [
+          `- This workspace has no app launch recipe, so \`run_checks\` starts nothing and gives Playwright no \`baseURL\`. A check that needs the running app starts it itself, through one shared fixture in \`${story.checksDir}/fixtures/\` (reuse it when it exists): a worker-scoped fixture that picks a free port (listen on port 0, read it, close), starts the app on it, waits until it answers over HTTP, provides that URL as \`baseURL\`, and stops the app when the worker ends. Specs import \`test\` and \`expect\` from that fixture and navigate relative to \`baseURL\` (\`page.goto("/")\`).`,
+          "- The fixture decides how to start the app when it runs, not now (the app isn't built yet): the project's start command with `PORT` set when there is one (a package.json `start` or `dev` script, or `node server.js`), and otherwise a small `node:http` server over the workspace's static files (index.html and its assets). Checks run with their `cwd` (the workspace root by default) as the current directory. Never hard-code a port, never read `BASE_URL` (nothing sets it), and don't open files with `file://`: the step can't finish with a check that can't reach the app.",
+        ]),
+    "- `run_checks` runs the manifest's automated checks. Use it to confirm each check runs and fails for the right reason: the feature isn't built yet, so assertion failures are expected now. A check reported as \"couldn't reach the app\" is not one of them: it never exercised its criterion, so fix it before you finish.",
     "- This step completes only when the manifest exists and validates. When it does, the checks directory is frozen: the builder may run your checks but not change them unnoticed.",
   ].join("\n")
 }
@@ -903,11 +1169,12 @@ export function verifyStepNote(input: {
   const lines = ["## QA checks"]
   if (story.reverify)
     lines.push(
-      "Before any exploratory testing, call `run_checks`. On this merged result it runs the automated checks of every user story in this milestone that has a manifest, so a later story's change to a shared page object that breaks an earlier story's checks shows up here."
+      "Run the checks: before anything else, call `run_checks`. On this merged result it runs the automated checks of every user story in this milestone that has a manifest, so a later story's change to a shared page object that breaks an earlier story's checks shows up here. Use the browser only to investigate a failure."
     )
   else if (input.frozen)
     lines.push(
-      `Start by calling \`run_checks\`: it runs the automated checks in \`${story.manifestPath}\` and records the results on this step. A criterion covered by an automated check is met only when that check passes here. Verify exploratory checks yourself in the running app.`
+      `Start by calling \`run_checks\`: it runs the automated checks in \`${story.manifestPath}\` and records the results on this step. A criterion covered by an automated check is met only when that check passes here.`,
+      "If a check fails because a locator doesn't match the real UI (not because the behavior is wrong), use the browser to find the right locator, fix the spec, and call `refreeze_checks` with that reason, then run it again. Then verify the exploratory criteria in the browser and save evidence."
     )
   else
     lines.push(

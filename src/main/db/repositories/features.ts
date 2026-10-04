@@ -198,7 +198,8 @@ function drive(value: string | null): FeatureDrive {
     pausedBy:
       parsed.pausedBy === "user" ||
       parsed.pausedBy === "budget" ||
-      parsed.pausedBy === "health"
+      parsed.pausedBy === "health" ||
+      parsed.pausedBy === "setup"
         ? parsed.pausedBy
         : null,
     healthMuted: Array.isArray(parsed.healthMuted)

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest"
 import {
   automatedChecks,
   DEFAULT_CHECK_TIMEOUT_MS,
+  localImports,
+  unreachableAppProblem,
   validateChecksManifest,
 } from "./checks-manifest"
 
@@ -44,6 +46,7 @@ describe("validateChecksManifest", () => {
             {
               id: "ac1-login-redirect",
               kind: "automated",
+              runner: "command",
               command: `npx playwright test --grep "@${storyRef}.*@AC-1"`,
               cwd: "",
               services: [],
@@ -168,5 +171,119 @@ describe("validateChecksManifest", () => {
     expect(result.ok).toBe(true)
     expect(result.warnings).toHaveLength(1)
     expect(result.warnings[0]).toMatch(/Check "a" doesn't select/)
+  })
+
+  describe("Playwright checks", () => {
+    const playwright = (check: Record<string, unknown>) =>
+      validate(
+        {
+          criteria: {
+            "AC-1": [
+              {
+                id: "ac1-login-redirect",
+                kind: "automated",
+                runner: "playwright",
+                ...check,
+              },
+            ],
+            "AC-2": [{ id: "ac2-copy", kind: "exploratory", note: "Copy" }],
+          },
+        },
+        ["web"]
+      )
+
+    it("accepts a spec, grep, and services", () => {
+      const result = playwright({
+        spec: "./auth/login.spec.ts",
+        grep: "redirects to dashboard",
+        services: ["web"],
+      })
+      expect(result.ok && result.manifest.criteria["AC-1"]).toEqual([
+        {
+          id: "ac1-login-redirect",
+          kind: "automated",
+          runner: "playwright",
+          spec: "auth/login.spec.ts",
+          grep: "redirects to dashboard",
+          cwd: "",
+          services: ["web"],
+          timeoutMs: DEFAULT_CHECK_TIMEOUT_MS,
+        },
+      ])
+      expect(result.warnings).toEqual([])
+    })
+
+    it("rejects a command alongside the runner", () => {
+      const result = playwright({
+        spec: "login.spec.ts",
+        command: "npx playwright test",
+      })
+      expect(result.ok).toBe(false)
+      if (!result.ok)
+        expect(result.errors[0]).toMatch(/can't also have a "command"/)
+    })
+
+    it("rejects a missing spec and one outside the checks directory", () => {
+      for (const [spec, message] of [
+        [undefined, /needs a "spec"/],
+        ["../src/app.spec.ts", /outside the checks directory/],
+        ["/abs/login.spec.ts", /outside the checks directory/],
+      ] as const) {
+        const result = playwright(spec === undefined ? {} : { spec })
+        expect(result.ok).toBe(false)
+        if (!result.ok) expect(result.errors[0]).toMatch(message)
+      }
+    })
+
+    it("rejects a grep that isn't a regular expression, and an unknown runner", () => {
+      const bad = playwright({ spec: "login.spec.ts", grep: "(" })
+      expect(!bad.ok && bad.errors[0]).toMatch(/isn't a regular expression/)
+      const unknown = playwright({ runner: "cypress", spec: "login.cy.ts" })
+      expect(!unknown.ok && unknown.errors[0]).toMatch(/unknown "runner"/)
+    })
+  })
+})
+
+describe("unreachableAppProblem (plan 109.07)", () => {
+  const problem = (specText: string, helperTexts: string[] = []) =>
+    unreachableAppProblem({
+      id: "ac1",
+      spec: "a.spec.ts",
+      specText,
+      helperTexts,
+    })
+
+  it("flags hard-coded ports, the recipe's variables, and relative navigation without a baseURL", () => {
+    expect(problem('await page.goto("http://localhost:3000/")')).toMatch(
+      /uses localhost:3000/
+    )
+    expect(problem("const base = process.env.APP_WEB_URL")).toMatch(
+      /reads process\.env\.APP_WEB_URL/
+    )
+    expect(problem('await page.goto("/")')).toMatch(/relative path/)
+    expect(problem("await request.get('/api/items')")).toMatch(/relative path/)
+  })
+
+  it("accepts a fixture that provides baseURL, and specs that never navigate", () => {
+    expect(
+      problem('await page.goto("/")', [
+        "export const test = base.extend({ baseURL: async ({}, use) => use(url) })",
+      ])
+    ).toBeNull()
+    expect(
+      problem('test.use({ baseURL: url })\nawait page.goto("/")')
+    ).toBeNull()
+    expect(
+      problem("const app = await _electron.launch({ args: ['.'] })")
+    ).toBeNull()
+    expect(problem("const url = `http://127.0.0.1:${port}`")).toBeNull()
+  })
+
+  it("lists a source's relative imports", () => {
+    expect(
+      localImports(
+        'import { test } from "../fixtures/app"\nimport x from "@playwright/test"\nconst y = require("./helpers.cjs")\nimport "./setup"'
+      )
+    ).toEqual(["../fixtures/app", "./helpers.cjs", "./setup"])
   })
 })

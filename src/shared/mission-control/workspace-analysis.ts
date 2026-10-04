@@ -129,6 +129,9 @@ export type Fix =
       probes: ProbeSpec[]
     }
   | { kind: "manual"; summary: string; steps: string[]; link?: string }
+  // Download Playwright's test browser into app data (plan 109.06). Applying
+  // it is the user's consent, remembered for every later feature.
+  | { kind: "download-test-browser"; summary: string; sizeMb: number | null }
 
 export interface Finding {
   // Stable across re-analysis, e.g. "worktree-env:.venv".
@@ -226,7 +229,7 @@ export interface ApplyAllItem {
   id: string
   findingKey: string
   title: string
-  kind: "settings" | "command" | "check"
+  kind: "settings" | "command" | "check" | "download"
   summary: string
   commands: CommandSpec[]
   // Guesses and replacements of user-authored settings start unchecked.

@@ -18,11 +18,16 @@ export const runChecksTool: Tool = {
     function: {
       name: "run_checks",
       description:
-        "Run this user story's automated acceptance checks from its check manifest, in this " +
-        "worktree. A failing check is rerun once and both attempts are recorded, so flaky " +
-        "checks show up. Results are recorded on this step by the harness; the proof is " +
-        "judged against them. Returns pass/fail per check and the output of failures. " +
-        "In a merge re-verification, runs the checks of every user story in the milestone.",
+        "The way to produce repeatable proof: run Playwright and command checks from this user " +
+        'story\'s check manifest, in this worktree. Playwright checks (`runner: "playwright"`) ' +
+        "run on the workspace's Playwright, or North Star's bundled one when the project has " +
+        "none, against the app services they declare (baseURL is set for you). A failing check " +
+        "is rerun once and both attempts are recorded, so flaky checks show up. Results are " +
+        "recorded on this step by the harness; the proof is judged against them. Returns " +
+        "pass/fail per check, each Playwright test's result, the output of failures, and where " +
+        "failure traces and screenshots were saved. In a merge re-verification, runs the checks " +
+        "of every user story in the milestone. When Playwright checks need a test browser that " +
+        "isn't installed yet, the call waits until the user provides one, then runs them.",
       parameters: {
         type: "object",
         properties: {

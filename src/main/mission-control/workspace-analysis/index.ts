@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto"
 import { existsSync } from "fs"
 import path from "path"
-import type { Feature, Workspace } from "../../db/types"
+import type { Feature, RigGraph, Workspace } from "../../db/types"
 import * as store from "../../db/repositories/workspace-analyses"
 import {
   ANALYZER_VERSION,
@@ -22,6 +22,7 @@ import {
   type CheckResults,
   type CurrentSettings,
 } from "./analyze"
+import { APP_LAUNCH_FINDING, appLaunchDraftsAtRef } from "./app-launch"
 import { applyPatch, validatePatch } from "./apply"
 import { assembleFindings, autoApplicable, evidenceHash } from "./assemble"
 import type { FindingDraft } from "./draft"
@@ -29,7 +30,14 @@ import { ECOSYSTEM_INFO, languageOf } from "./inventory"
 import { interpret, type Complete } from "./interpret"
 import { checkSetupCommand } from "./policy"
 import { RECIPE_VERSION } from "./recipes"
+import {
+  TEST_BROWSER_FINDING,
+  testBrowserDraft,
+  type WorkspaceBrowser,
+} from "./test-browser"
 import { toolEnv, warmShellPath } from "./tool-env"
+import type { TestBrowserState } from "../playwright-install"
+import { QA_ROLE } from "../qa-scope"
 
 // Workspace setup analysis (plan 106.11): one service behind Analyze
 // workspace, the checklist's fixes, Apply all, Run checks, and Start's
@@ -64,6 +72,8 @@ interface TerminalLike {
 export interface WorkspaceAnalysisDeps {
   terminals: TerminalLike
   getFeature(id: string): Feature | undefined
+  // The feature's live rig, for a draft that has no rig snapshot yet.
+  getRig?(id: string): RigGraph | null
   getWorkspace(id: string): Workspace | undefined
   updateWorkspace(
     id: string,
@@ -75,7 +85,21 @@ export interface WorkspaceAnalysisDeps {
   complete(): Complete | null
   onChanged(featureId: string): void
   onRunChanged(run: SetupRunView): void
+  // The test browser QA's Playwright checks need (plan 109.06). Absent, no
+  // test browser finding is made.
+  testBrowser?: TestBrowserDeps
   now?: () => number
+}
+
+export interface TestBrowserDeps {
+  state(): TestBrowserState
+  // Re-detect Chrome and the downloaded browser, without downloading.
+  refresh(): Promise<TestBrowserState>
+  // Download it (applying the fix is the user's consent).
+  install(): Promise<boolean>
+  onChanged(listener: (state: TestBrowserState) => void): () => void
+  // The workspace's own Playwright and its browser; null when it has none.
+  workspace(workspacePath: string): Promise<WorkspaceBrowser | null>
 }
 
 interface Pending {
@@ -110,8 +134,20 @@ export class WorkspaceAnalysisService {
   private readonly failures = new Map<string, WorkspaceAnalysis>()
   private readonly runs = new Map<string, InternalRun>()
   private readonly pending = new Map<string, Pending>()
+  // The workspace's own Playwright and its browser, by workspace path (null:
+  // it has none). Probed by analysis and Start; read by the live finding.
+  private readonly workspaceBrowsers = new Map<
+    string,
+    WorkspaceBrowser | null
+  >()
+  private readonly probing = new Map<string, Promise<void>>()
+  // Features whose analysis was read: re-read when the test browser changes.
+  private readonly watched = new Set<string>()
 
   constructor(private readonly deps: WorkspaceAnalysisDeps) {
+    deps.testBrowser?.onChanged(() => {
+      for (const featureId of this.watched) deps.onChanged(featureId)
+    })
     void warmShellPath()
     deps.terminals.on("data", ({ id, data }) => {
       const p = this.pending.get(id)
@@ -152,6 +188,51 @@ export class WorkspaceAnalysisService {
     }
   }
 
+  // ── the test browser (plan 109.06) ────────────────────────────────────────
+
+  // Re-detect the test browser and the workspace's own Playwright browser.
+  private refreshBrowser(workspacePath: string): Promise<void> {
+    const testBrowser = this.deps.testBrowser
+    if (!testBrowser) return Promise.resolve()
+    const existing = this.probing.get(workspacePath)
+    if (existing) return existing
+    const probe = (async () => {
+      await testBrowser.refresh().catch(() => null)
+      const own = await testBrowser.workspace(workspacePath).catch(() => null)
+      this.workspaceBrowsers.set(workspacePath, own)
+    })().finally(() => this.probing.delete(workspacePath))
+    this.probing.set(workspacePath, probe)
+    return probe
+  }
+
+  // The live test browser finding draft, or null (no QA seat, not probed
+  // yet, nothing known).
+  private browserDraft(
+    feature: Feature,
+    workspace: Workspace
+  ): FindingDraft | null {
+    const testBrowser = this.deps.testBrowser
+    if (!testBrowser) return null
+    // A draft has no rig snapshot yet (Start takes it): use the live rig.
+    const rig =
+      feature.rigSnapshot ??
+      (feature.rigId ? (this.deps.getRig?.(feature.rigId) ?? null) : null)
+    const qaSeat = !!rig?.seats.some((s) => s.role === QA_ROLE)
+    if (qaSeat && !this.workspaceBrowsers.has(workspace.path)) {
+      // First read since the app started: probe, then re-read.
+      if (!this.probing.has(workspace.path))
+        void this.refreshBrowser(workspace.path).then(() =>
+          this.deps.onChanged(feature.id)
+        )
+      return null
+    }
+    return testBrowserDraft({
+      qaSeat,
+      workspace: this.workspaceBrowsers.get(workspace.path),
+      bundled: testBrowser.state(),
+    })
+  }
+
   // The current analysis, resolved against the current settings. Null when
   // there is none for the feature's current workspace (changing the
   // workspace invalidates it).
@@ -169,8 +250,15 @@ export class WorkspaceAnalysisService {
     const failure = this.failures.get(featureId)
     if (!live && failure?.workspaceId === feature.workspaceId) return failure
     if (!stored || !workspace) return live
+    this.watched.add(featureId)
+    const browser = this.browserDraft(feature, workspace)
     const findings = assembleFindings({
-      drafts: stored.drafts as FindingDraft[],
+      drafts: [
+        ...(stored.drafts as FindingDraft[]).filter(
+          (d) => d.key !== TEST_BROWSER_FINDING
+        ),
+        ...(browser ? [browser] : []),
+      ],
       settings: this.settings(feature, workspace),
       dismissals: stored.dismissals,
     }).map((f) =>
@@ -203,6 +291,58 @@ export class WorkspaceAnalysisService {
       }
     }
     return this.get(featureId)
+  }
+
+  // The app launch finding for a branch's tip (plan 109.07): a milestone's
+  // earlier stories may have built the app on its integration branch, which
+  // the checkout this analysis reads doesn't have yet. A detected recipe
+  // joins the stored checklist so it can be applied there; null when nothing
+  // runnable was found.
+  async appLaunchAtRef(
+    featureId: string,
+    ref: string,
+    options: { record?: boolean } = {}
+  ): Promise<Finding | null> {
+    const { feature, workspace } = this.context(featureId)
+    const draft = (
+      await appLaunchDraftsAtRef({ workspace: workspace.path, ref })
+    ).find((d) => d.key === APP_LAUNCH_FINDING)
+    if (!draft) return null
+    const settings = this.settings(feature, workspace)
+    const stored = store.getStoredAnalysis(featureId)
+    const current = stored?.analysis.workspaceId === workspace.id
+    // Looking only (`record: false`), or nothing stored to add it to.
+    if (options.record === false || !stored || !current)
+      return (
+        assembleFindings({
+          drafts: [draft],
+          settings,
+          dismissals: current ? stored!.dismissals : {},
+        })[0] ?? null
+      )
+    const drafts = [
+      ...(stored.drafts as FindingDraft[]).filter(
+        (d) => d.key !== APP_LAUNCH_FINDING
+      ),
+      draft,
+    ]
+    store.saveStoredAnalysis(featureId, {
+      ...stored,
+      drafts,
+      analysis: {
+        ...stored.analysis,
+        findings: assembleFindings({
+          drafts,
+          settings,
+          dismissals: stored.dismissals,
+        }),
+      },
+    })
+    this.deps.onChanged(featureId)
+    return (
+      this.get(featureId)?.findings.find((f) => f.key === APP_LAUNCH_FINDING) ??
+      null
+    )
   }
 
   // ── analyzing ─────────────────────────────────────────────────────────────
@@ -316,6 +456,7 @@ export class WorkspaceAnalysisService {
     // The feature may have switched workspace meanwhile: discard.
     if (this.deps.getFeature(featureId)?.workspaceId !== workspace.id)
       throw new Error("The feature's workspace changed during analysis.")
+    await this.refreshBrowser(workspace.path)
 
     // Model findings from the last run carry over when the model isn't asked
     // again (re-analysis after a fix).
@@ -477,7 +618,11 @@ export class WorkspaceAnalysisService {
   ): WorkspaceAnalysis | null {
     const stored = store.getStoredAnalysis(featureId)
     if (!stored) throw new Error("Analyze the workspace first.")
-    const draft = (stored.drafts as FindingDraft[]).find((d) => d.key === key)
+    const { feature, workspace } = this.context(featureId)
+    const draft =
+      key === TEST_BROWSER_FINDING
+        ? this.browserDraft(feature, workspace)
+        : (stored.drafts as FindingDraft[]).find((d) => d.key === key)
     if (!draft) throw new Error("That finding is no longer current.")
     const dismissals = { ...stored.dismissals }
     if (dismissed) dismissals[key] = evidenceHash(draft)
@@ -584,6 +729,10 @@ export class WorkspaceAnalysisService {
     const fix = this.fixOf(finding, alternative)
     if (fix.kind === "manual")
       throw new Error("This one is done by hand; follow its steps.")
+    if (fix.kind === "download-test-browser") {
+      this.downloadTestBrowser()
+      return { analysis: this.get(featureId), run: null }
+    }
     if (fix.kind === "apply-settings") {
       this.applySettings(featureId, fix.patch, key)
       this.deps.onChanged(featureId)
@@ -595,6 +744,21 @@ export class WorkspaceAnalysisService {
       this.applySettings(featureId, fix.patch, key)
     const run = this.startRun(featureId, [{ finding, fix }])
     return { analysis: this.get(featureId), run }
+  }
+
+  // The download runs in the background; its progress and the finding's
+  // resolution arrive through the test browser's change events.
+  private downloadTestBrowser() {
+    const testBrowser = this.deps.testBrowser
+    if (!testBrowser) throw new Error("The test browser isn't available here.")
+    void testBrowser
+      .install()
+      .catch((error) =>
+        console.warn(
+          "[workspace-analysis] test browser download failed:",
+          error
+        )
+      )
   }
 
   // The review sheet for Apply all: every open fix, in execution order.
@@ -644,7 +808,9 @@ export class WorkspaceAnalysisService {
               ? "settings"
               : fix.kind === "run-checks"
                 ? "check"
-                : "command",
+                : fix.kind === "download-test-browser"
+                  ? "download"
+                  : "command",
           summary: fix.summary,
           commands,
           defaultSelected: f.confidence !== "guess" && !f.replacesUserSetting,
@@ -670,6 +836,8 @@ export class WorkspaceAnalysisService {
       const finding = this.finding(featureId, item.findingKey)
       if (finding.fix.kind === "apply-settings")
         this.applySettings(featureId, finding.fix.patch, finding.key)
+      else if (finding.fix.kind === "download-test-browser")
+        this.downloadTestBrowser()
       else {
         if (finding.fix.kind === "run-command" && finding.fix.patch)
           this.applySettings(featureId, finding.fix.patch, finding.key)
@@ -968,6 +1136,8 @@ export class WorkspaceAnalysisService {
       }
     }
     if (applied.length) this.deps.onChanged(featureId)
+    // The test browser is the machine's, not the workspace's: check it now.
+    await this.refreshBrowser(analysis.workspacePath)
     analysis = this.get(featureId)
     const open = (analysis?.findings ?? []).filter((f) => f.status === "open")
     const blockers = open

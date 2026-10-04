@@ -46,6 +46,10 @@ import {
 } from "../mission-control/map-tools"
 import * as proposalsRepo from "../db/repositories/proposals"
 import { locateEvidence, readEvidence } from "../mission-control/evidence"
+import {
+  installTestBrowser,
+  refreshTestBrowserState,
+} from "../mission-control/playwright-install"
 import * as seatMemoriesRepo from "../db/repositories/seat-memories"
 import {
   listSeatMemoriesForSeat,
@@ -450,6 +454,15 @@ export function registerMissionControlHandlers(
   // outside the app-data evidence directory.
   ipcMain.handle("missionControl:evidence:read", (_event, path: string) =>
     readEvidence(String(path))
+  )
+  // The bundled Playwright runner's test browser (plan 109.06): its state,
+  // and the user's consented one-time download. Changes are pushed as
+  // "missionControl:testBrowser:changed" from main/index.ts.
+  ipcMain.handle("missionControl:testBrowser:get", () =>
+    refreshTestBrowserState()
+  )
+  ipcMain.handle("missionControl:testBrowser:install", () =>
+    installTestBrowser()
   )
   ipcMain.handle(
     "missionControl:evidence:open",

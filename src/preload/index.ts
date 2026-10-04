@@ -104,6 +104,7 @@ import type {
   ProcessRunHistoryEntry,
 } from "../main/mission-control/playbook-import"
 import type { PlaybookDefaultDiff } from "../main/mission-control/playbook-defaults"
+import type { TestBrowserState } from "../main/mission-control/playwright-install"
 import type {
   MilestoneIntegrationStatus,
   UserStoryWorkspaceInfo,
@@ -973,6 +974,30 @@ const api = {
           "missionControl:evidence:open",
           path
         ) as Promise<void>,
+    },
+    // The test browser QA's Playwright checks use when there's no Chrome
+    // (plan 109.06): its state, the consented one-time download, and pushes
+    // as it changes (requested by a check, download progress, installed).
+    testBrowser: {
+      get: () =>
+        ipcRenderer.invoke(
+          "missionControl:testBrowser:get"
+        ) as Promise<TestBrowserState>,
+      install: () =>
+        ipcRenderer.invoke(
+          "missionControl:testBrowser:install"
+        ) as Promise<boolean>,
+      onChanged: (cb: (state: TestBrowserState) => void) => {
+        const listener = (_event: IpcRendererEvent, state: TestBrowserState) =>
+          cb(state)
+        ipcRenderer.on("missionControl:testBrowser:changed", listener)
+        return () => {
+          ipcRenderer.removeListener(
+            "missionControl:testBrowser:changed",
+            listener
+          )
+        }
+      },
     },
     // Playbooks and execution (plan 106.3).
     playbooks: {
@@ -2966,6 +2991,7 @@ export type {
   ApprovalCategory,
 } from "../main/settings/service"
 export type { LocalProfileCapabilities } from "../main/agent/env/types"
+export type { TestBrowserState } from "../main/mission-control/playwright-install"
 export type {
   SkillSourceRow,
   SkillSourceKind,

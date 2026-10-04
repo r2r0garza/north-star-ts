@@ -7,16 +7,34 @@
 export const DEFAULT_CHECK_TIMEOUT_MS = 5 * 60_000
 export const MAX_CHECK_TIMEOUT_MS = 30 * 60_000
 
-export interface AutomatedCheck {
+interface AutomatedBase {
   id: string
   kind: "automated"
-  command: string
   // Workspace-relative; "" is the workspace root.
   cwd: string
   // App services from the launch recipe (plan 109.03).
   services: string[]
   timeoutMs: number
 }
+
+// A command that exits 0 when the criterion holds.
+export interface CommandCheck extends AutomatedBase {
+  runner: "command"
+  command: string
+}
+
+// A Playwright spec run by the harness (plan 109.06): the workspace's own
+// Playwright when it has one, North Star's bundled runner otherwise.
+export interface PlaywrightCheck extends AutomatedBase {
+  runner: "playwright"
+  // Relative to the checks directory.
+  spec: string
+  // A regular expression narrowing the spec's tests (the story's tag is
+  // always required on top of it).
+  grep?: string
+}
+
+export type AutomatedCheck = CommandCheck | PlaywrightCheck
 
 export interface ExploratoryCheck {
   id: string
@@ -52,8 +70,15 @@ function normalizeCwd(value: string): string | null {
   return parts.join("/")
 }
 
+// A spec path relative to the checks directory, or null when it leaves it.
+function normalizeSpec(value: string): string | null {
+  const spec = normalizeCwd(value)
+  return spec ? spec : null
+}
+
 // Validate a manifest's text against the user story's criterion ids. Every
-// criterion needs at least one check; an automated check needs a command; ids
+// criterion needs at least one check; an automated check needs a command (or,
+// with `runner: "playwright"`, a spec and no command); ids
 // are unique across the manifest; a cwd stays inside the workspace. Services
 // must name services in the workspace's app launch recipe (`serviceKeys`).
 export function validateChecksManifest(input: {
@@ -144,9 +169,52 @@ export function validateChecksManifest(input: {
         )
         return
       }
+      const runner = item.runner ?? "command"
+      if (runner !== "command" && runner !== "playwright") {
+        errors.push(
+          `Check "${id}" has an unknown "runner" ${JSON.stringify(runner)}. Use "playwright" for a Playwright spec, or leave it out for a command.`
+        )
+        return
+      }
       const command =
         typeof item.command === "string" ? item.command.trim() : ""
-      if (!command) {
+      let spec = ""
+      let grep: string | undefined
+      if (runner === "playwright") {
+        if (item.command !== undefined) {
+          errors.push(
+            `Check "${id}" is a Playwright check (\`"runner": "playwright"\`), so it can't also have a "command": the harness runs the spec. Remove one or the other.`
+          )
+          return
+        }
+        const raw = typeof item.spec === "string" ? item.spec : ""
+        const normalized = raw.trim() ? normalizeSpec(raw) : null
+        if (!normalized) {
+          errors.push(
+            raw.trim()
+              ? `Playwright check "${id}" has a "spec" outside the checks directory. Give the spec file's path relative to the checks directory (e.g. "auth/login.spec.ts").`
+              : `Playwright check "${id}" needs a "spec": the spec file's path relative to the checks directory (e.g. "auth/login.spec.ts").`
+          )
+          return
+        }
+        spec = normalized
+        if (item.grep !== undefined) {
+          const pattern = typeof item.grep === "string" ? item.grep.trim() : ""
+          let valid = !!pattern
+          try {
+            if (valid) new RegExp(pattern)
+          } catch {
+            valid = false
+          }
+          if (!valid) {
+            errors.push(
+              `Playwright check "${id}" has a "grep" that isn't a regular expression. It narrows the spec's tests by title, e.g. "redirects to dashboard".`
+            )
+            return
+          }
+          grep = pattern
+        }
+      } else if (!command) {
         errors.push(`Automated check "${id}" needs a "command".`)
         return
       }
@@ -198,6 +266,20 @@ export function validateChecksManifest(input: {
         }
         timeoutMs = Math.round(item.timeoutMs)
       }
+      if (runner === "playwright") {
+        // The harness always selects the story's tag, so nothing to warn.
+        checks.push({
+          id,
+          kind: "automated",
+          runner,
+          spec,
+          ...(grep ? { grep } : {}),
+          cwd,
+          services,
+          timeoutMs,
+        })
+        return
+      }
       // A spec file holds several stories' tests, so a command should select
       // this story's by tag (or at least name a file).
       if (
@@ -207,7 +289,15 @@ export function validateChecksManifest(input: {
         warnings.push(
           `Check "${id}" doesn't select this story's tests: its command mentions neither the tag @${input.storyRef} nor a file, so it may run every story's checks.`
         )
-      checks.push({ id, kind: "automated", command, cwd, services, timeoutMs })
+      checks.push({
+        id,
+        kind: "automated",
+        runner: "command",
+        command,
+        cwd,
+        services,
+        timeoutMs,
+      })
     })
     parsed.set(criterion, checks)
   }
@@ -232,4 +322,48 @@ export function automatedChecks(
       .filter((c): c is AutomatedCheck => c.kind === "automated")
       .map((c) => ({ ...c, criterionId }))
   )
+}
+
+// ── can a check reach the app? (plan 109.07) ────────────────────────────────
+
+const LOOPBACK_PORT = /\b(?:localhost|127\.0\.0\.1|\[::1\]):\d{2,5}\b/
+const RECIPE_ENV = /process\.env\.(?:BASE_URL|APP_[A-Z0-9_]+_(?:URL|PORT))\b/
+const RELATIVE_NAVIGATION =
+  /\.(?:goto|get|post|put|patch|delete|head|fetch)\(\s*["'`]\//
+
+// Why a Playwright check without services can't reach the app in a workspace
+// with no app launch recipe, or null. Nothing starts the app for it and
+// Playwright gets no baseURL, so it must start the app itself: a relative
+// navigation needs a baseURL its fixture provides, and a hard-coded port or
+// the recipe's variables point at nothing. Static rules over the spec and the
+// local modules it imports.
+export function unreachableAppProblem(input: {
+  id: string
+  spec: string
+  // The spec's source and its local imports' sources.
+  specText: string
+  helperTexts: string[]
+}): string | null {
+  const all = [input.specText, ...input.helperTexts]
+  const port = all.map((text) => LOOPBACK_PORT.exec(text)?.[0]).find(Boolean)
+  if (port)
+    return `Playwright check "${input.id}" (${input.spec}) uses ${port}, but this workspace has no app launch recipe, so nothing listens there. Start the app in a fixture on a free port and navigate relative to the baseURL it provides.`
+  const env = all.map((text) => RECIPE_ENV.exec(text)?.[0]).find(Boolean)
+  if (env)
+    return `Playwright check "${input.id}" (${input.spec}) reads ${env}, but this workspace has no app launch recipe, so nothing sets it. Start the app in a fixture on a free port and navigate relative to the baseURL it provides.`
+  if (
+    RELATIVE_NAVIGATION.test(input.specText) &&
+    !all.some((text) => /\bbaseURL\b/.test(text))
+  )
+    return `Playwright check "${input.id}" (${input.spec}) navigates to a relative path, but this workspace has no app launch recipe, so Playwright gets no baseURL. Import \`test\` from a fixture that starts the app on a free port and provides \`baseURL\`.`
+  return null
+}
+
+// The relative module specifiers a source imports or requires.
+export function localImports(source: string): string[] {
+  const found = new Set<string>()
+  const pattern =
+    /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s+)["'](\.{1,2}\/[^"']+)["']/g
+  for (const match of source.matchAll(pattern)) found.add(match[1])
+  return [...found]
 }

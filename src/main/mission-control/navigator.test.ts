@@ -704,6 +704,87 @@ describe.skipIf(!sqliteLoads)("Navigator autopilot", () => {
     expect(failed[0].actions[0].detail).toContain("uncommitted changes")
   })
 
+  it("starts only the first story while the workspace is greenfield", async () => {
+    setup()
+    const root = repo()
+    const id = draftFeature(root)
+    const milestone = features.getFeatureGraph(id)!.milestones[0]
+    for (const key of ["a", "b"])
+      features.createUserStory({
+        milestoneId: milestone.id,
+        key,
+        title: key.toUpperCase(),
+        spec: { acceptance: ["works"] },
+      })
+    features.updateMilestone(milestone.id, {
+      playbookId: playbooks.createPlaybook({
+        name: "Bare",
+        altitude: "milestone",
+      }).id,
+    })
+    const started: string[] = []
+    navigator.stop()
+    navigator = makeNavigator({
+      startUserStory: async (userStoryId) => {
+        started.push(features.getUserStory(userStoryId)!.key)
+        throw new Error("stop here")
+      },
+      firstStoryAlone: async () => true,
+    })
+    await navigator.startDrive(id, { mode: "autopilot" })
+    await navigator.idle()
+    expect(started).toEqual(["a"])
+    const position = await navigator.position(id)
+    expect(position.deferred).toEqual([
+      {
+        userStory: expect.any(String),
+        reason: expect.stringMatching(/first user story builds alone/),
+      },
+    ])
+  })
+
+  it("pauses instead of retrying a start that needs an app launch recipe", async () => {
+    setup()
+    const root = repo()
+    const id = draftFeature(root)
+    const milestone = features.getFeatureGraph(id)!.milestones[0]
+    features.createUserStory({
+      milestoneId: milestone.id,
+      key: "a",
+      title: "A",
+      spec: { acceptance: ["works"] },
+    })
+    features.updateMilestone(milestone.id, {
+      playbookId: playbooks.createPlaybook({
+        name: "Bare",
+        altitude: "milestone",
+      }).id,
+    })
+    let attempts = 0
+    navigator.stop()
+    navigator = makeNavigator({
+      startUserStory: async () => {
+        attempts++
+        throw new Error(
+          "app_launch_required: User story a is verified by QA in the running app, but this workspace has no app launch recipe."
+        )
+      },
+    })
+    await navigator.startDrive(id, { mode: "autopilot" })
+    await navigator.idle()
+    expect(attempts).toBe(1)
+    const feature = features.getFeature(id)!
+    expect(feature.status).toBe("paused")
+    expect(feature.drive).toMatchObject({
+      pausedBy: "setup",
+      pauseReason: expect.stringMatching(/^User story a is verified by QA/),
+    })
+    expect(notices.some((n) => n.includes("paused"))).toBe(true)
+    clock += 61_000
+    await navigator.tick(id)
+    expect(attempts).toBe(1)
+  })
+
   it("doesn't start a story again while its worktree is still being prepared", async () => {
     setup()
     const root = repo()

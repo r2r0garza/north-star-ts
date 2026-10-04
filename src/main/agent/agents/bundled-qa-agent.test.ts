@@ -49,7 +49,14 @@ describe("bundled QA agent", () => {
     expect(prompt).toMatch(/reading code is never "met"/)
   })
 
-  it("doesn't mention tools later slices add", () => {
-    expect(prompt).not.toContain("run_checks")
+  it("explores with the browser and asserts with Playwright (plan 109.06)", () => {
+    expect(prompt).toMatch(/explore with the browser, assert with Playwright/)
+    expect(prompt).toMatch(/\| Playwright checks, run with `run_checks` \|/)
+    expect(prompt).toMatch(/must be marked `exploratory`/)
+    expect(prompt).toMatch(/`getByRole`, `getByLabel`, and `getByText`/)
+    expect(prompt).toMatch(/relative to `baseURL`/)
+    expect(prompt).toMatch(/One criterion per `test\(\)`/)
+    expect(prompt).toMatch(/_electron\.launch/)
+    expect(prompt).toMatch(/you must not add it/)
   })
 })

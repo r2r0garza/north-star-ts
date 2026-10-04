@@ -154,6 +154,16 @@ import {
 } from "./mission-control/sessions"
 import { installSeatBrowser } from "./mission-control/seat-browser"
 import { evidenceDir, setEvidenceRoot } from "./mission-control/evidence"
+import { getRigGraph } from "./db/repositories/rigs"
+import {
+  configurePlaywright,
+  getTestBrowserState,
+  installTestBrowser,
+  onTestBrowserChanged,
+  refreshTestBrowserState,
+  workspaceBrowserInstalled,
+  workspacePlaywright,
+} from "./mission-control/playwright-install"
 import { getAccount as getProviderAccount } from "./db/repositories/provider-accounts"
 import { DashboardService, DASHBOARD_REFRESH_KIND } from "./dashboards/service"
 import { registerDashboardHandlers } from "./ipc/dashboard-handlers"
@@ -294,6 +304,8 @@ const userStoryRunner: UserStoryRunner = new UserStoryRunner({
   workerProvider,
   onCancelled: (featureId) => seatSessions.cancelFeature(featureId),
   integration: milestoneIntegration,
+  appLaunchFinding: ({ feature, ref, record }) =>
+    workspaceAnalysis.appLaunchAtRef(feature.id, ref, { record }),
 })
 // The Navigator (plan 106.6): deterministic GPS for each feature. It ticks
 // on durable work events (debounced), drives Autopilot's mechanical steps, and
@@ -306,6 +318,7 @@ const milestoneNavigator: Navigator = new Navigator({
   startUserStory: (userStoryId, options) =>
     userStoryRunner.startUserStory(userStoryId, options),
   isStartingUserStory: (userStoryId) => userStoryRunner.isStarting(userStoryId),
+  firstStoryAlone: (feature) => userStoryRunner.firstStoryAlone(feature),
   preparingUserStories: (featureId) =>
     userStoryRunner.preparingUserStories(featureId),
   startHook: (input) => startHookRun(userStoryRunner, input),
@@ -404,6 +417,7 @@ const terminalService = new TerminalService()
 const workspaceAnalysis = new WorkspaceAnalysisService({
   terminals: terminalService,
   getFeature: (id) => getFeatureRow(id) ?? undefined,
+  getRig: getRigGraph,
   getWorkspace: getWorkspaceRow,
   updateWorkspace: (id, patch) => updateWorkspaceRow(id, patch),
   setOverlapPolicy: (featureId, value) =>
@@ -456,6 +470,21 @@ const workspaceAnalysis = new WorkspaceAnalysisService({
     if (wc && !wc.isDestroyed())
       wc.send("missionControl:analysis:runChanged", run)
   },
+  // QA's test browser (plan 109.06), checked with the workspace setup.
+  testBrowser: {
+    state: getTestBrowserState,
+    refresh: refreshTestBrowserState,
+    install: installTestBrowser,
+    onChanged: onTestBrowserChanged,
+    workspace: async (workspacePath) => {
+      const install = workspacePlaywright(workspacePath)
+      if (!install) return null
+      return {
+        version: install.version,
+        ...(await workspaceBrowserInstalled(install)),
+      }
+    },
+  },
 })
 // The agent's browser (secondary window + WebContentsView driven over CDP).
 // Owned here so runChat can hand each live turn a signal-bound handle; disposed
@@ -464,6 +493,14 @@ const browserManager = new BrowserManager()
 // Mission Control seats (plan 109.04) get their own isolated, local-only tabs
 // from the same manager; screenshots they take are kept as evidence in app data.
 setEvidenceRoot(join(app.getPath("userData"), "evidence"))
+// QA's Playwright checks (plan 109.06) run on this Electron as Node; the
+// bundled runner's browser, when downloaded with consent, lives in app data.
+configurePlaywright({
+  executable: process.execPath,
+  browsersPath: join(app.getPath("userData"), "playwright-browsers"),
+  consent: () => settingsService.getTestBrowserConsent(),
+  giveConsent: () => settingsService.setTestBrowserConsent(),
+})
 browserManager.setEvidenceRoot((phaseRunId) => evidenceDir(phaseRunId)!)
 installSeatBrowser({
   handle: (input) => browserManager.seatHandle(input),
@@ -523,6 +560,13 @@ browserManager.setOpenRequester(() => {
 browserManager.setAppPickModeEmitter((active) => {
   const wc = mainWindow?.webContents
   if (wc && !wc.isDestroyed()) wc.send("browser:pick-mode", active)
+})
+// The test browser's state (plan 109.06) for the Mission Control notice and
+// Settings → General → Browser: download requested, progress, done.
+onTestBrowserChanged((state) => {
+  const wc = mainWindow?.webContents
+  if (wc && !wc.isDestroyed())
+    wc.send("missionControl:testBrowser:changed", state)
 })
 browserManager.setAppTabsEmitter((tabs) => {
   const wc = mainWindow?.webContents

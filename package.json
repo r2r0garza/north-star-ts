@@ -31,7 +31,10 @@
       "**/node_modules/better-sqlite3/**",
       "**/node_modules/node-pty/**",
       "**/node_modules/@vscode/ripgrep/**",
-      "**/node_modules/@vscode/ripgrep-*/**"
+      "**/node_modules/@vscode/ripgrep-*/**",
+      "**/node_modules/@playwright/test/**",
+      "**/node_modules/playwright/**",
+      "**/node_modules/playwright-core/**"
     ],
     "mac": {
       "target": "dmg",
@@ -52,6 +55,7 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "@playwright/test": "1.63.0",
     "@shadcn/react": "^0.1.0",
     "@vscode/ripgrep": "^1.18.0",
     "@xterm/addon-fit": "^0.11.0",

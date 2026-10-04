@@ -805,7 +805,8 @@ export interface FeatureDrive {
   accountedAt: number | null
   // Why the feature is paused, when it is.
   pauseReason: string | null
-  pausedBy: "user" | "budget" | "health" | null
+  // "setup": a story couldn't start until the workspace is set up for it.
+  pausedBy: "user" | "budget" | "health" | "setup" | null
   // Health detectors the user muted for this feature (plan 106.8).
   healthMuted: string[]
 }
@@ -1322,6 +1323,28 @@ export interface CheckResult {
   durationMs: number
   outputTail: string
   ranAt: number
+  // A Playwright check (plan 109.06): which Playwright and browser ran it,
+  // its tests, and the traces and screenshots of failures (evidence files).
+  playwright?: {
+    source: "workspace" | "bundled"
+    version: string
+    browser: "workspace" | "chrome" | "installed" | "missing"
+    tests: Array<{
+      title: string
+      file: string
+      status: "passed" | "failed" | "timedOut" | "skipped" | "interrupted"
+      durationMs: number
+      error?: string
+    }>
+    artifacts: string[]
+  }
+  // Why the check couldn't run at all for a reason outside the app (no
+  // browser installed yet). Counts as not passed.
+  notVerifiable?: string
+  // The check never reached the app (connection refused, no baseURL): a
+  // setup problem, not evidence about the criterion (plan 109.07). Counts as
+  // not passed.
+  unreachable?: string
 }
 
 export interface PhaseRunQaChecks {

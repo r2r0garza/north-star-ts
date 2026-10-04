@@ -116,3 +116,16 @@ describe.skipIf(!sqliteLoads)("Reset to default", () => {
     expect(processes.getProcessDefinition(old.hooks[0].processId)).toBeFalsy()
   })
 })
+
+describe.skipIf(!sqliteLoads)("Create from default", () => {
+  it("routes rework autonomously in the user story default only", () => {
+    const flagApproval = (altitude: "user_story" | "milestone") =>
+      createDefaultPlaybook(altitude).hooks.map(
+        (hook) =>
+          processes.getProcessGraph(hook.processId)!.definition
+            .requireFlagApproval
+      )
+    expect(flagApproval("user_story")).toEqual([false])
+    expect(flagApproval("milestone").every(Boolean)).toBe(true)
+  })
+})

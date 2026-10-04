@@ -41,6 +41,43 @@ vi.mock("../db/repositories/workspaces", () => ({
   getWorkspace: () => ({ missionControl: { checksDir: "e2e" }, appLaunch }),
 }))
 
+// Overrides for the test browser tests; the real modules otherwise.
+const overrides = vi.hoisted(() => ({
+  runPlaywrightCheck: null as null | ((input: unknown) => Promise<unknown>),
+  waitForTestBrowser: null as
+    | null
+    | ((signal?: AbortSignal) => Promise<boolean>),
+  events: [] as Array<{ type: string; refId?: string | null }>,
+}))
+vi.mock("./playwright-runner", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./playwright-runner")>()
+  return {
+    ...actual,
+    runPlaywrightCheck: (
+      input: Parameters<typeof actual.runPlaywrightCheck>[0]
+    ) =>
+      overrides.runPlaywrightCheck
+        ? overrides.runPlaywrightCheck(input)
+        : actual.runPlaywrightCheck(input),
+  }
+})
+vi.mock("./playwright-install", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./playwright-install")>()
+  return {
+    ...actual,
+    waitForTestBrowser: (signal?: AbortSignal) =>
+      overrides.waitForTestBrowser
+        ? overrides.waitForTestBrowser(signal)
+        : actual.waitForTestBrowser(signal),
+  }
+})
+vi.mock("../db/repositories/mc-events", () => ({
+  recordEvent: (event: { type: string; refId?: string | null }) => {
+    overrides.events.push(event)
+    return true
+  },
+}))
+
 const stories = [
   {
     id: "s1",
@@ -57,15 +94,20 @@ const stories = [
 ]
 
 import {
+  authorStepNote,
   checksDriftBlock,
   completeAuthorStep,
   qaStepKind,
   refreezeQaChecks,
   runQaChecks,
   startVerifyStep,
+  storyChecks,
   summarizeCheckRun,
+  unreachableReason,
+  verifyStepNote,
 } from "./qa-checks"
 import { testAppServices } from "./app-launch"
+import { setEvidenceRoot } from "./evidence"
 import {
   appStartTool,
   appStatusTool,
@@ -158,6 +200,9 @@ beforeEach(async () => {
   } as unknown as ProcessRun
 })
 afterEach(async () => {
+  overrides.runPlaywrightCheck = null
+  overrides.waitForTestBrowser = null
+  overrides.events = []
   appLaunch = { services: [] }
   await testAppServices.clear()
   await rm(root, { recursive: true, force: true })
@@ -250,6 +295,190 @@ describe("the checks step", () => {
   })
 })
 
+describe("checks that can't reach the app (plan 109.07)", () => {
+  const playwrightManifest = JSON.stringify({
+    criteria: {
+      "AC-1": [
+        {
+          id: "ac1-add",
+          kind: "automated",
+          runner: "playwright",
+          spec: "specs/list.spec.ts",
+        },
+      ],
+      "AC-2": [{ id: "ac2-copy", kind: "exploratory", note: "Check the copy" }],
+    },
+  })
+  const complete = () =>
+    completeAuthorStep({
+      phaseRunId: "author",
+      link,
+      runId: "r1",
+      workspace: root,
+      before: null,
+    })
+
+  it("won't finish the checks step with no recipe and nothing starting the app", async () => {
+    write("e2e/stories/billing.m1.login.json", playwrightManifest)
+    write(
+      "e2e/specs/list.spec.ts",
+      'import { test } from "@playwright/test"\ntest("adds @billing.m1.login @AC-1", async ({ page }) => { await page.goto("/") })\n'
+    )
+    const relative = await complete()
+    expect(relative.ok).toBe(false)
+    if (!relative.ok)
+      expect(relative.message).toMatch(
+        /"ac1-add" \(specs\/list\.spec\.ts\) navigates to a relative path/
+      )
+    expect(phaseRuns.get("author")!.qaChecks).toBeNull()
+
+    write(
+      "e2e/specs/list.spec.ts",
+      'import { test } from "@playwright/test"\nconst url = process.env.BASE_URL ?? "http://127.0.0.1:3000"\ntest("adds @billing.m1.login @AC-1", async ({ page }) => { await page.goto(url) })\n'
+    )
+    const hardCoded = await complete()
+    expect(!hardCoded.ok && hardCoded.message).toMatch(/uses 127\.0\.0\.1:3000/)
+  })
+
+  it("finishes when a fixture starts the app and provides baseURL, or a recipe does", async () => {
+    write("e2e/stories/billing.m1.login.json", playwrightManifest)
+    write(
+      "e2e/fixtures/app.ts",
+      'import { test as base } from "@playwright/test"\nexport const test = base.extend({ baseURL: async ({}, use) => use(await startApp()) })\n'
+    )
+    write(
+      "e2e/specs/list.spec.ts",
+      'import { test } from "../fixtures/app"\ntest("adds @billing.m1.login @AC-1", async ({ page }) => { await page.goto("/") })\n'
+    )
+    expect((await complete()).ok).toBe(true)
+
+    write(
+      "e2e/specs/list.spec.ts",
+      'import { test } from "@playwright/test"\ntest("adds @billing.m1.login @AC-1", async ({ page }) => { await page.goto("/") })\n'
+    )
+    appLaunch = { services: [webService] }
+    const withRecipe = JSON.parse(playwrightManifest)
+    withRecipe.criteria["AC-1"][0].services = ["web"]
+    write("e2e/stories/billing.m1.login.json", JSON.stringify(withRecipe))
+    expect((await complete()).ok).toBe(true)
+  })
+
+  it("tells a check that never reached the app from one that failed", () => {
+    const failed = {
+      passed: false,
+      outputTail:
+        "Error: page.goto: net::ERR_CONNECTION_REFUSED at http://127.0.0.1:3000/",
+    }
+    expect(unreachableReason(failed, { services: [] })).toMatch(
+      /^Couldn't reach the app \(net::ERR_CONNECTION_REFUSED\).*no app launch recipe/
+    )
+    expect(
+      unreachableReason(
+        {
+          passed: false,
+          outputTail: "",
+          playwright: {
+            source: "bundled",
+            version: "1",
+            browser: "chrome",
+            artifacts: [],
+            tests: [
+              {
+                title: "t",
+                file: "f",
+                status: "failed",
+                durationMs: 1,
+                error:
+                  "page.goto: Protocol error (Page.navigate): Cannot navigate to invalid URL",
+              },
+            ],
+          },
+        },
+        { services: [webService] }
+      )
+    ).toMatch(/declares the services it needs/)
+    expect(
+      unreachableReason(
+        { passed: false, outputTail: "Expected: visible\nReceived: hidden" },
+        { services: [] }
+      )
+    ).toBeNull()
+    expect(
+      unreachableReason({ ...failed, passed: true }, { services: [] })
+    ).toBeNull()
+
+    const summary = summarizeCheckRun({
+      ok: true,
+      results: [
+        {
+          checkId: "ac1-add",
+          criterionId: "AC-1",
+          storyRef: "billing.m1.login",
+          attempt: 1,
+          ranAt: 0,
+          passed: false,
+          exitCode: 1,
+          timedOut: false,
+          durationMs: 900,
+          outputTail: failed.outputTail,
+          unreachable: unreachableReason(failed, { services: [] })!,
+        },
+      ],
+      exploratory: [],
+      problems: [],
+    })
+    expect(summary).toMatch(
+      /0 passed, 0 failed, 0 flaky, 1 couldn't reach the app/
+    )
+    expect(summary).toMatch(/ac1-add .*: couldn't reach the app/)
+  })
+})
+
+describe("the no-recipe kickoff (plan 109.07)", () => {
+  it("has QA start the app from a shared fixture instead of expecting a baseURL", () => {
+    const note = authorStepNote(storyChecks(link)!)
+    expect(note).toMatch(/no app launch recipe/)
+    expect(note).toMatch(/e2e\/fixtures\//)
+    expect(note).toMatch(/provides that URL as `baseURL`/)
+    expect(note).toMatch(/node:http/)
+    expect(note).toMatch(/couldn't reach the app" is not one of them/)
+    expect(note).not.toMatch(/A Playwright check gets the first one/)
+  })
+})
+
+describe("step kickoffs (plan 109.06)", () => {
+  it("the checks step writes Playwright specs blind, with no browser", () => {
+    appLaunch = { services: [webService] }
+    const note = authorStepNote(storyChecks(link)!)
+    expect(note).toMatch(/there's no browser in this step/)
+    expect(note).toMatch(
+      /write Playwright specs from the spec using role and text locators/
+    )
+    expect(note).toContain(
+      `"runner": "playwright", "spec": "area/feature.spec.ts", "grep": "@AC-1", "services": ["web"]`
+    )
+    expect(note).toMatch(
+      /don't add Playwright \(or anything else\) to the project/
+    )
+    expect(note).toMatch(/`getByRole`, `getByLabel`, and `getByText`/)
+    expect(note).toMatch(/_electron\.launch/)
+    expect(note).toMatch(
+      /A Playwright check gets the first one as its `baseURL`/
+    )
+  })
+
+  it("reverify runs the checks and uses the browser only for failures", () => {
+    const note = verifyStepNote({
+      story: { ...storyChecks(link)!, reverify: true },
+      frozen: true,
+      changed: [],
+      outsideWrites: [],
+    })
+    expect(note).toMatch(/call `run_checks`/)
+    expect(note).toMatch(/Use the browser only to investigate a failure\./)
+  })
+})
+
 describe("drift between the checks and test steps", () => {
   async function author() {
     write(
@@ -276,6 +505,13 @@ describe("drift between the checks and test steps", () => {
       resuming: false,
     })
     expect(note).toMatch(/Start by calling `run_checks`/)
+    // Explore with the browser, assert with Playwright (plan 109.06).
+    expect(note).toMatch(
+      /use the browser to find the right locator, fix the spec, and call `refreeze_checks`/
+    )
+    expect(note).toMatch(
+      /verify the exploratory criteria in the browser and save evidence/
+    )
     expect(note).not.toMatch(/changed after they were frozen/)
     expect(checksDriftBlock(phaseRuns.get("verify")!)).toBeNull()
   })
@@ -372,6 +608,94 @@ describe("run_checks", () => {
     const summary = summarizeCheckRun(outcome)
     expect(summary).toMatch(/1 passed, 1 failed, 0 flaky/)
     expect(summary).toMatch(/broken/)
+  })
+
+  describe("without a test browser (plan 109.06)", () => {
+    const playwrightRun = (browser: "missing" | "installed") => ({
+      passed: browser === "installed",
+      exitCode: browser === "installed" ? 0 : 1,
+      timedOut: false,
+      output: browser === "installed" ? "1 passed" : "Executable doesn't exist",
+      tests: [],
+      artifacts: [],
+      notVerifiable:
+        browser === "installed" ? null : "Browser not installed: …",
+      runner: { source: "bundled", version: "1.63.0", browser },
+    })
+    beforeEach(() => {
+      write("e2e/specs/ui.spec.ts", "// a browser test\n")
+      write(
+        "e2e/stories/billing.m1.login.json",
+        JSON.stringify({
+          criteria: {
+            "AC-1": [
+              {
+                id: "ac1-ui",
+                kind: "automated",
+                runner: "playwright",
+                spec: "specs/ui.spec.ts",
+              },
+            ],
+            "AC-2": [{ id: "ac2", kind: "automated", command: "echo ok" }],
+          },
+        })
+      )
+    })
+
+    it("waits for the browser, then runs only the checks that needed it again", async () => {
+      let browser: "missing" | "installed" = "missing"
+      const runs: string[] = []
+      overrides.runPlaywrightCheck = async () => {
+        runs.push(browser)
+        return playwrightRun(browser)
+      }
+      overrides.waitForTestBrowser = async () => {
+        browser = "installed"
+        return true
+      }
+      const outcome = await runAll()
+      expect(outcome.ok).toBe(true)
+      if (!outcome.ok) return
+      expect(runs).toEqual(["missing", "installed"])
+      // In manifest order, with only the second Playwright run recorded.
+      expect(
+        outcome.results.map((r) => [r.checkId, r.attempt, r.passed])
+      ).toEqual([
+        ["ac1-ui", 1, true],
+        ["ac2", 1, true],
+      ])
+      expect(outcome.results[0].notVerifiable).toBeUndefined()
+      expect(overrides.events).toEqual([
+        expect.objectContaining({
+          type: "test_browser_needed",
+          refId: "verify",
+        }),
+      ])
+    })
+
+    it("records the checks as not verifiable when stopped while waiting", async () => {
+      overrides.runPlaywrightCheck = async () => playwrightRun("missing")
+      overrides.waitForTestBrowser = async () => false
+      const outcome = await runAll()
+      expect(outcome.ok).toBe(true)
+      if (!outcome.ok) return
+      expect(
+        outcome.results.map((r) => [r.checkId, !!r.notVerifiable])
+      ).toEqual([
+        ["ac1-ui", true],
+        ["ac2", false],
+      ])
+    })
+
+    it("doesn't wait when the checks ran without a browser", async () => {
+      overrides.runPlaywrightCheck = async () => playwrightRun("installed")
+      overrides.waitForTestBrowser = async () => {
+        throw new Error("should not wait")
+      }
+      const outcome = await runAll()
+      expect(outcome.ok).toBe(true)
+      expect(overrides.events).toEqual([])
+    })
   })
 
   it("shows a flaky check: fails, then passes on the retry", async () => {
@@ -496,6 +820,91 @@ describe.skipIf(process.platform === "win32")("app services", () => {
     // One instance, reused by both checks, owned by the step.
     expect(testAppServices.size).toBe(1)
   })
+
+  it("runs a Playwright check against the started app and records its tests", async () => {
+    appLaunch = { services: [webService] }
+    const evidence = await mkdtemp(join(tmpdir(), "qa-evidence-"))
+    setEvidenceRoot(evidence)
+    try {
+      write(
+        "e2e/auth/home.spec.ts",
+        `import { test, expect } from "@playwright/test"
+test("serves the page @billing.m1.login @AC-1", async ({ request }) => {
+  expect(await (await request.get("/")).text()).toBe("hello")
+})
+test("shows the copy @billing.m1.login @AC-2", async ({ request }) => {
+  expect(await (await request.get("/")).text()).toBe("Welcome")
+})
+test("another story @billing.m1.logout", async () => { expect(1).toBe(2) })
+`
+      )
+      const check = (id: string, grep: string) => ({
+        id,
+        kind: "automated",
+        runner: "playwright",
+        spec: "auth/home.spec.ts",
+        grep,
+        services: ["web"],
+        timeoutMs: 60_000,
+      })
+      write(
+        "e2e/stories/billing.m1.login.json",
+        JSON.stringify({
+          criteria: {
+            "AC-1": [check("ac1-home", "@AC-1")],
+            "AC-2": [check("ac2-copy", "@AC-2")],
+          },
+        })
+      )
+      const outcome = await runQaChecks({
+        processRunId: "r1",
+        phaseRunId: "verify",
+        workspace: root,
+      })
+      expect(outcome.ok).toBe(true)
+      if (!outcome.ok) return
+      expect(
+        outcome.results.map((r) => [r.checkId, r.attempt, r.passed])
+      ).toEqual([
+        ["ac1-home", 1, true],
+        ["ac2-copy", 1, false],
+        ["ac2-copy", 2, false],
+      ])
+      const [pass, fail] = outcome.results
+      expect(pass.playwright).toMatchObject({
+        source: "bundled",
+        tests: [
+          {
+            title: "serves the page @billing.m1.login @AC-1",
+            status: "passed",
+          },
+        ],
+      })
+      expect(fail.playwright!.tests).toEqual([
+        expect.objectContaining({
+          status: "failed",
+          error: expect.stringMatching(/Welcome/),
+        }),
+      ])
+      // Failure traces land in the step's evidence directory.
+      expect(fail.playwright!.artifacts.length).toBeGreaterThan(0)
+      for (const artifact of fail.playwright!.artifacts)
+        expect(
+          artifact.startsWith(
+            join(evidence, "verify", "playwright", "ac2-copy-1")
+          )
+        ).toBe(true)
+      expect(phaseRuns.get("verify")!.qaChecks!.results).toHaveLength(3)
+      const summary = summarizeCheckRun(outcome)
+      expect(summary).toMatch(/1 passed, 1 failed/)
+      expect(summary).toMatch(
+        /✗ shows the copy @billing.m1.login @AC-2 \(failed\)/
+      )
+    } finally {
+      setEvidenceRoot(null)
+      await rm(evidence, { recursive: true, force: true })
+    }
+  }, 60_000)
 
   it("fails a check whose services won't start, with their output", async () => {
     appLaunch = {

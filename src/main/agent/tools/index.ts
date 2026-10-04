@@ -201,10 +201,22 @@ export const browserTools: Tool[] = [
 export const browserToolDefinitions = browserTools.map((t) => t.definition)
 // A Mission Control seat's browser (plan 109.04): no browser_handoff, since no
 // human is waiting in a headless phase. A login wall becomes an escalation or
-// a criterion that couldn't be verified.
-export const seatBrowserToolDefinitions = browserToolDefinitions.filter(
-  (d) => d.function.name !== browserHandoffTool.definition.function.name
-)
+// a criterion that couldn't be verified. Each description also says what the
+// browser is for there (plan 109.06): models pick a tool at the point of use,
+// so the rule "explore with the browser, assert with Playwright" lives here.
+export const SEAT_BROWSER_ROUTING =
+  "In Mission Control, use the browser for exploring and evidence. To prove a criterion, write a check and run it with run_checks."
+export const seatBrowserToolDefinitions = browserToolDefinitions
+  .filter(
+    (d) => d.function.name !== browserHandoffTool.definition.function.name
+  )
+  .map((d) => ({
+    ...d,
+    function: {
+      ...d.function,
+      description: `${d.function.description} ${SEAT_BROWSER_ROUTING}`,
+    },
+  }))
 
 // Web tools — headless web access, offered in every mode independent of the
 // workspace or the visible browser (a Chat session can search/fetch too).

@@ -231,6 +231,7 @@ import { updateWorkspace } from "../db/repositories/workspaces"
 import { installSeatSessions, SeatSessionService } from "./sessions"
 import * as seatSessionsRepo from "../db/repositories/seat-sessions"
 import type { AgentDefinition } from "../agent/agents/types"
+import type { Finding } from "../../shared/mission-control/workspace-analysis"
 
 const enqueued: string[] = []
 const enqueuedInputs: unknown[] = []
@@ -918,6 +919,121 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
     expect(enqueued).toHaveLength(0)
   })
 
+  describe("app launch preflight", () => {
+    const detected = (status: Finding["status"]) =>
+      ({
+        key: "app-launch:recipe",
+        title: "Seats can't start the app yet",
+        status,
+        fix: {
+          kind: "apply-settings",
+          summary: "Start `node server.js` on a free port",
+          patch: {
+            appLaunch: {
+              add: [
+                {
+                  key: "web",
+                  label: "Node server (server.js)",
+                  command: "node server.js",
+                  cwd: "",
+                  port: "auto",
+                  ready: { http: "/" },
+                },
+              ],
+            },
+          },
+        },
+      }) as unknown as Finding
+
+    function gatedRunner(finding: () => Finding | null) {
+      const lookups: Array<{ featureId: string; ref: string }> = []
+      const gated = new UserStoryRunner({
+        startProcessRun: (input) => service.startRun(input),
+        cancelTask: () => {},
+        loadAgents: async () => AGENTS as unknown as AgentDefinition[],
+        appLaunchFinding: async ({ feature, ref }) => {
+          lookups.push({ featureId: feature.id, ref })
+          return finding()
+        },
+      })
+      return { gated, lookups }
+    }
+
+    it("refuses a QA-verified story while a detected recipe isn't saved, and starts once it's dismissed", async () => {
+      const rig = orchestratedRig()
+      const { feature, userStory } = billingFeature(rig.id)
+      let status: Finding["status"] = "open"
+      const { gated, lookups } = gatedRunner(() => detected(status))
+
+      await expect(gated.startUserStory(userStory.id)).rejects.toThrow(
+        /^app_launch_required: User story invoice-model .*`node server\.js`/
+      )
+      expect(lookups).toEqual([{ featureId: feature.id, ref: "HEAD" }])
+      expect(features.getUserStory(userStory.id)!.attempts).toBe(0)
+      expect(enqueued).toHaveLength(0)
+
+      status = "dismissed"
+      await gated.startUserStory(userStory.id)
+      expect(features.getUserStory(userStory.id)!.status).toBe("running")
+    })
+
+    it("starts greenfield stories, where nothing runnable is detected yet", async () => {
+      const rig = orchestratedRig()
+      const { userStory } = billingFeature(rig.id)
+      const { gated, lookups } = gatedRunner(() => null)
+      await gated.startUserStory(userStory.id)
+      expect(lookups).toHaveLength(1)
+      expect(features.getUserStory(userStory.id)!.status).toBe("running")
+    })
+
+    it("builds the feature's first story alone until something runs (greenfield)", async () => {
+      const rig = orchestratedRig()
+      const { feature, userStory } = billingFeature(rig.id)
+      let found: Finding | null = null
+      const { gated, lookups } = gatedRunner(() => found)
+      const current = () => features.getFeature(feature.id)!
+
+      expect(await gated.firstStoryAlone(current())).toBe(true)
+      expect(lookups).toEqual([{ featureId: feature.id, ref: "HEAD" }])
+      // Something runnable (dismissed or not): the usual dispatch applies.
+      found = detected("dismissed")
+      expect(await gated.firstStoryAlone(current())).toBe(false)
+      // Once a story has landed, never again.
+      found = null
+      features.setUserStoryExecution(
+        userStory.id,
+        { status: "done" },
+        "done",
+        "test"
+      )
+      expect(await gated.firstStoryAlone(current())).toBe(false)
+    })
+
+    it("doesn't look when the workspace already has a recipe", async () => {
+      const rig = orchestratedRig()
+      const { feature, userStory } = billingFeature(rig.id)
+      updateWorkspace(feature.workspaceId!, {
+        appLaunch: {
+          services: [
+            {
+              key: "web",
+              label: "Web",
+              command: "node server.js",
+              cwd: "",
+              port: "auto",
+              ready: { http: "/" },
+              source: "user",
+            },
+          ],
+        },
+      })
+      const { gated, lookups } = gatedRunner(() => detected("open"))
+      await gated.startUserStory(userStory.id)
+      expect(lookups).toHaveLength(0)
+      expect(features.getUserStory(userStory.id)!.status).toBe("running")
+    })
+  })
+
   it("tells a phase past its time limit to wrap up, and stops it at twice the limit", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
     try {
@@ -1049,7 +1165,7 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
     }
   )
 
-  it("gives seat work steps an isolated browser and closes it when each step ends (plan 109.04)", async () => {
+  it("gives seat work steps an isolated browser and closes it when each step ends (plans 109.04, 109.06)", async () => {
     installSeatBrowser({
       handle: (input) => {
         seatBrowserInputs.push(input)
@@ -1069,18 +1185,26 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
     const workers = loopCalls.filter(
       (c) => !c.userMessage?.startsWith("# Review the")
     )
-    expect(workers.map((c) => c.seatBrowser?.label)).toEqual([
-      "builder@implementation · billing.milestone-1.invoice-model",
-      "qa@implementation · billing.milestone-1.invoice-model",
-      "builder@implementation · billing.milestone-1.invoice-model",
-      "qa@implementation · billing.milestone-1.invoice-model",
+    // QA's checks step gets no browser: there's no app yet, and its checks
+    // come from the spec alone. The test step gets one.
+    expect(
+      workers.map((c) => [c.qaChecks ?? null, c.seatBrowser?.label ?? null])
+    ).toEqual([
+      [null, "builder@implementation · billing.milestone-1.invoice-model"],
+      ["author", null],
+      [null, "builder@implementation · billing.milestone-1.invoice-model"],
+      ["verify", "qa@implementation · billing.milestone-1.invoice-model"],
     ])
+    expect(workers[1].sectionContent).not.toContain("## Your browser")
     // One tab per phase run, each released when its step ended.
-    const phaseRunIds = workers.map((c) => c.seatBrowser!.phaseRunId)
-    expect(new Set(phaseRunIds).size).toBe(4)
+    const browsing = workers.filter((c) => c.seatBrowser)
+    const phaseRunIds = browsing.map((c) => c.seatBrowser!.phaseRunId)
+    expect(new Set(phaseRunIds).size).toBe(3)
     expect([...seatBrowserReleases].sort()).toEqual([...phaseRunIds].sort())
     // Nothing started, so only loopback origins are open to it.
-    expect(workers.every((c) => c.seatBrowser!.origins.length === 0)).toBe(true)
+    expect(browsing.every((c) => c.seatBrowser!.origins.length === 0)).toBe(
+      true
+    )
     expect(workers[3].sectionContent).toContain("## Your browser")
   })
 
@@ -1097,8 +1221,18 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
     expect(workers[3].sectionContent).not.toContain("## Your browser")
   })
 
-  it("applies a QA send-back on Autopilot, and asks the user otherwise", async () => {
-    for (const mode of ["autopilot", "manual"] as const) {
+  it("applies a QA send-back on Autopilot or by default, and asks the user when the playbook requires it", async () => {
+    // The default user story playbook routes rework autonomously; the last
+    // case turns flag confirmation back on, as the Process builder toggle does.
+    for (const [mode, requireApproval] of [
+      ["autopilot", false],
+      ["manual", false],
+      ["manual", true],
+    ] as const) {
+      if (requireApproval)
+        db.prepare(
+          "UPDATE process_definitions SET require_flag_approval = 1"
+        ).run()
       const rig = orchestratedRig()
       const { userStory } = billingFeature(rig.id)
       const featureId = features.getMilestone(userStory.milestoneId)!.featureId
@@ -1112,7 +1246,7 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
       await drive(playbookRun.processRunId!)
       const taskId = processes.getProcessRun(playbookRun.processRunId!)!.taskId!
       const pending = listApprovals({ taskId, status: "pending" })
-      if (mode === "autopilot") {
+      if (mode === "autopilot" || !requireApproval) {
         expect(pending).toEqual([])
         expect(features.getUserStory(userStory.id)!.status).toBe("done")
       } else {

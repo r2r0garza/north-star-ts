@@ -9,12 +9,14 @@ import type {
   Evidence,
 } from "../../../shared/mission-control/workspace-analysis"
 import type { FindingDraft } from "./draft"
-import type { EcosystemId, ProjectRoot } from "./inventory"
+import { git } from "./exec"
+import { detectProjects, type EcosystemId, type ProjectRoot } from "./inventory"
 
 // The app launch finding (plan 109.03): from evidence in the workspace,
 // propose how Mission Control seats start the app. package.json scripts
 // (`dev`, `start`, `preview`) with the framework's way of taking a port, a
-// Procfile's web process, and Django's runserver. A docker-compose file is
+// Procfile's web process, a plain Node server file that reads PORT, and
+// Django's runserver. A docker-compose file is
 // pointed out but not proposed: its fixed ports and container names collide
 // across parallel worktrees. Like setup steps, the recipe persists commands,
 // so it's always applied explicitly (never on its own at Start).
@@ -147,6 +149,48 @@ function procfileProposal(
   }
 }
 
+// A dependency-free Node server (`node server.js`) with no package script to
+// start it. Only one that takes its port from PORT: a fixed port collides
+// across parallel worktrees.
+const NODE_ENTRIES = ["server.js", "server.mjs", "server.cjs", "index.js"]
+
+async function nodeServerProposal(
+  root: ProjectRoot,
+  files: Set<string>,
+  read: Read
+): Promise<Proposal | null> {
+  for (const name of NODE_ENTRIES) {
+    const file = path.posix.join(root.dir, name)
+    if (!files.has(file)) continue
+    const source = await read(file)
+    if (
+      !source ||
+      !/\.listen\s*\(/.test(source) ||
+      !/process\.env\.PORT\b|process\.env\[["']PORT["']\]/.test(source)
+    )
+      continue
+    return {
+      service: {
+        key: serviceKeyFrom(root.dir ? path.posix.basename(root.dir) : "web"),
+        label: `Node server (${name})`,
+        command: `node ${name}`,
+        cwd: root.dir,
+        port: "auto",
+        ready: { http: "/" },
+      },
+      evidence: [
+        {
+          kind: "file",
+          label: `${file} starts an HTTP server on process.env.PORT`,
+          path: file,
+        },
+      ],
+      confidence: "likely",
+    }
+  }
+  return null
+}
+
 function djangoProposal(
   root: ProjectRoot,
   workspace: string,
@@ -181,7 +225,13 @@ export async function appLaunchDrafts(input: {
   read: Read
 }): Promise<FindingDraft[]> {
   const proposals: Proposal[] = []
-  for (const root of input.roots) {
+  const files = new Set(input.files)
+  // A workspace with no manifest at all (plain HTML and a server.js) has no
+  // project root; its top level can still be an app.
+  const roots: ProjectRoot[] = input.roots.length
+    ? input.roots
+    : [{ dir: "", ecosystems: [] } as unknown as ProjectRoot]
+  for (const root of roots) {
     if (proposals.length >= MAX_SERVICES) break
     const at = (name: string) => path.posix.join(root.dir, name)
     const proposal =
@@ -195,7 +245,8 @@ export async function appLaunchDrafts(input: {
             input.workspace,
             await input.read(at("manage.py"))
           )
-        : null)
+        : null) ??
+      (await nodeServerProposal(root, files, input.read))
     if (proposal) proposals.push(proposal)
   }
   // Keys stay unique across roots ("web", "web-2").
@@ -262,4 +313,39 @@ export async function appLaunchDrafts(input: {
       },
     })
   return drafts
+}
+
+const MAX_REF_FILES = 20_000
+
+// The app launch drafts for a branch's tip rather than the checkout (plan
+// 109.07): a milestone's earlier stories land on its integration branch, so
+// the app a later story tests may exist only there. Workspace-relative, like
+// the checkout's analysis. Empty when the ref can't be read.
+export async function appLaunchDraftsAtRef(input: {
+  workspace: string
+  ref: string
+}): Promise<FindingDraft[]> {
+  const listed = await git(
+    input.workspace,
+    ["ls-tree", "-r", "-z", "--name-only", input.ref],
+    30_000
+  )
+  if (!listed.ok) return []
+  const files = listed.stdout
+    .split("\0")
+    .filter(Boolean)
+    .slice(0, MAX_REF_FILES)
+  const known = new Set(files)
+  const read = async (file: string) => {
+    if (!known.has(file)) return null
+    const shown = await git(input.workspace, ["show", `${input.ref}:./${file}`])
+    return shown.ok ? shown.stdout : null
+  }
+  const inventory = await detectProjects(files, read)
+  return appLaunchDrafts({
+    workspace: input.workspace,
+    roots: inventory.roots,
+    files,
+    read,
+  })
 }

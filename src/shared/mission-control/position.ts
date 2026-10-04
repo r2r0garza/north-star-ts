@@ -113,6 +113,10 @@ export interface PositionInput {
     // Another playbook run occupies the (non-git) workspace.
     busy: boolean
     reason?: string
+    // Nothing in the workspace runs yet and QA will need the app (plan
+    // 109.07): the first user story builds alone, so it can make the app
+    // runnable before stories that need it start.
+    firstStoryAlone?: boolean
   }
   pods: Array<{ key: string; builderSeats: number }>
   // The seat the Navigator directs: the driving pod's lead.
@@ -1021,6 +1025,14 @@ function computeCapacity(input: PositionInput): Position["capacity"] {
     }
   }
   const isolated = runningUserStoryRuns.filter((run) => run.isolated).length
+  if (input.workspace.firstStoryAlone)
+    return {
+      concurrencyFree: Math.max(0, 1 - isolated),
+      podsFree,
+      mode: "git",
+      reason:
+        "nothing in the workspace runs yet, so the first user story builds alone to make the app runnable",
+    }
   const free = Math.max(0, input.limits.maxConcurrentUserStories - isolated)
   return {
     concurrencyFree: free,

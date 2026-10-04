@@ -416,6 +416,19 @@ describe("settings service — browser (tabbed browser, plan: Phase 4)", () => {
     expect(service.getBrowser().revealMissionControl).toBe(false)
   })
 
+  it("remembers consent to download the test browser (plan 109.06)", () => {
+    expect(service.getTestBrowserConsent()).toBe(false)
+    service.setTestBrowserConsent()
+    service._resetCacheForTests()
+    expect(service.getTestBrowserConsent()).toBe(true)
+    // Saving the browser switches leaves it alone.
+    service.setBrowser({
+      revealOnAgentUse: "never",
+      revealMissionControl: false,
+    })
+    expect(service.getTestBrowserConsent()).toBe(true)
+  })
+
   it("round-trips a persisted change to never", () => {
     service.setBrowser({
       revealOnAgentUse: "never",

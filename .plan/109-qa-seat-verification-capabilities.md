@@ -1,6 +1,6 @@
 # PR109: QA seats that verify independently — checks, running apps, and a seat browser
 
-> Status: **IN PROGRESS** (parent; delivered as `109.01`–`109.06`; `109.01`–`109.05` done 2026-10-03). Follow-up to `106.3` (playbooks and proofs), `106.5` (worktrees), and `106.11`
+> Status: **DONE** (2026-10-03; parent, delivered as `109.01`–`109.06`). Follow-up to `106.3` (playbooks and proofs), `106.5` (worktrees), and `106.11`
 > (worktree setup). Uses the current names: Features, Milestones, User stories.
 
 ## Context
