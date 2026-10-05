@@ -35,6 +35,9 @@ describe("read_skill", () => {
     )
     expect(result).toContain("INSTRUCTION: # Test")
     expect(result).toContain("Skill resource root: skill://dashboard/")
+    expect(result).toContain(
+      "Shell commands may use it too, e.g. `python3 skill://dashboard/scripts/tool.py`"
+    )
     expect(result).toContain("references/")
     expect(result).toContain("references/template.html")
   })

@@ -1232,6 +1232,28 @@ describe.skipIf(!sqliteLoads)("scheduler — failed phase", () => {
     })
   })
 
+  it("marks a phase run as reviewing only while its validator runs", async () => {
+    const pid = buildProcess({
+      phases: [{ key: "a", validator: true }],
+    })
+    const runPhase: RunPhase = async () => ({ content: "needs review" })
+    let duringReview: number | null | undefined
+    const validate: Validate = async ({ phaseRun }) => {
+      duringReview = processes.getPhaseRun(phaseRun.id)?.reviewStartedAt
+      return { approved: true }
+    }
+    const { ctx, runId } = makeCtx(pid, runPhase, { validate })
+
+    await runScheduler(ctx)
+
+    expect(duringReview).toEqual(expect.any(Number))
+    const [phaseRun] = processes.listPhaseRuns({ runId })
+    expect(phaseRun).toMatchObject({
+      status: "completed",
+      reviewStartedAt: null,
+    })
+  })
+
   it("preserves injected reviewer failure context at the validator boundary", async () => {
     const pid = buildProcess({
       phases: [{ key: "a", validator: true }],
@@ -2917,6 +2939,32 @@ describe.skipIf(!sqliteLoads)("recorded phase completion contracts", () => {
       expect(rows.some((r) => r.status === "pending")).toBe(true)
     }
   )
+
+  it("captures freeform and validated phase results explicitly", async () => {
+    const freeformId = buildProcess({ phases: [{ key: "freeform" }] })
+    const freeform = makeCtx(freeformId, async () => ({
+      content: "final answer",
+    }))
+    await runScheduler(freeform.ctx)
+    expect(
+      processes.listPhaseRuns({ runId: freeform.runId })[0].resultContent
+    ).toBe("final answer")
+
+    const { id } = validatedProcess()
+    const validated = makeCtx(id, async ({ attemptId }) => ({
+      content: JSON.stringify({
+        version: 1,
+        attemptId,
+        status: "completed",
+        output: "semantic result",
+        evidence: "checked",
+      }),
+    }))
+    await runScheduler(validated.ctx)
+    expect(
+      processes.listPhaseRuns({ runId: validated.runId })[0].resultContent
+    ).toBe("semantic result")
+  })
 
   it("requires the configured file, then accepts a recovered worker on restart", async () => {
     const { id } = validatedProcess(["report.txt"])

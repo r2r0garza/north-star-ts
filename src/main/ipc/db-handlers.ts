@@ -13,6 +13,8 @@ import {
   dashboards,
 } from "../db/repositories"
 import type {
+  GeneratedFilesRule,
+  WorktreeSetup,
   Conversation,
   Mode,
   TaskStatus,
@@ -20,13 +22,13 @@ import type {
   EdgeTrigger,
   PhaseGatePolicy,
   PhaseRouting,
+  PhaseContextScope,
   ProcessRunStatus,
   ProcessRuntimeConfig,
 } from "../db/types"
 import type { IndexService } from "../index/service"
 import type { TaskRunner } from "../tasks/runner"
-import { getIndexing } from "../settings/service"
-import { getRunByWorkspace } from "../db/repositories/index-runs"
+import { autoIndexWorkspace } from "../index/auto-index"
 import { deleteConversationWithArtifacts } from "../conversations/lifecycle"
 
 // Kick off auto-indexing when a conversation gains a workspace in an indexable
@@ -42,18 +44,12 @@ function maybeAutoIndex(
   if (!service || !conversation.workspaceId) return
   if (conversation.mode !== "interactive" && conversation.mode !== "north_star")
     return
-  if (!getIndexing().autoIndexNewWorkspaces) return
-  const run = getRunByWorkspace(conversation.workspaceId)
-  if (run && !run.enabled) return
-  try {
-    service.ensureRunning(
-      conversation.workspaceId,
-      conversation.mode === "north_star" ? "high" : "low"
-    )
-    void watcher?.start(conversation.workspaceId)
-  } catch (err) {
-    console.error("auto-index trigger failed:", err)
-  }
+  autoIndexWorkspace(
+    conversation.workspaceId,
+    conversation.mode === "north_star" ? "high" : "low",
+    service,
+    watcher
+  )
 }
 
 // Registers every `db:` IPC channel. Call after app.whenReady() so the DB
@@ -216,8 +212,15 @@ export function registerDbHandlers(
   )
   ipcMain.handle(
     "db:workspaces:update",
-    (_e, id: string, patch: { name?: string }) =>
-      workspaces.updateWorkspace(id, patch)
+    (
+      _e,
+      id: string,
+      patch: {
+        name?: string
+        generatedFiles?: GeneratedFilesRule[]
+        worktreeSetup?: WorktreeSetup
+      }
+    ) => workspaces.updateWorkspace(id, patch)
   )
   ipcMain.handle("db:workspaces:delete", async (_e, id: string) => {
     await indexWatcher?.stop(id)
@@ -383,6 +386,8 @@ export function registerDbHandlers(
         validatorMaxIterations?: number
         validatorAgent?: string | null
         subprocessId?: string | null
+        proofStep?: boolean
+        contextScope?: PhaseContextScope
         position: number
       }
     ) => processes.createPhase(input)
@@ -407,6 +412,8 @@ export function registerDbHandlers(
         validatorMaxIterations?: number
         validatorAgent?: string | null
         subprocessId?: string | null
+        proofStep?: boolean
+        contextScope?: PhaseContextScope
         position?: number
       }
     ) => processes.updatePhase(id, patch)
@@ -421,7 +428,8 @@ export function registerDbHandlers(
       _e,
       input: {
         phaseId: string
-        agentName: string
+        agentName?: string | null
+        seatRole?: string | null
         skills?: string[] | null
         tools?: string[] | null
         runtimeConfig?: ProcessRuntimeConfig | null

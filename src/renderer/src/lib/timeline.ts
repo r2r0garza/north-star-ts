@@ -1,5 +1,10 @@
 import type { Message as DbMessage } from "@/types"
-import { isCommandCompletionEvent } from "../../../shared/runtime-messages"
+import {
+  formatSeatMessageEvent,
+  isCommandCompletionEvent,
+  isRefocusEvent,
+  isSeatMessageEvent,
+} from "../../../shared/runtime-messages"
 
 // The transcript is rendered from a timeline of items rather than a flat list of
 // messages, so tool activity can be interleaved with text in the order it
@@ -59,6 +64,9 @@ export type TimelineItem =
       role: "user" | "assistant"
       content: string
       createdAt: number
+      // Injected runtime context rendered as a chip, not a bubble (a
+      // Mission Control Refocus reminder, plan 106.7).
+      notice?: "refocus"
     }
   | { kind: "tools"; key: string; calls: ToolUse[] }
 
@@ -287,8 +295,13 @@ export function buildTimeline(rows: DbMessage[]): TimelineItem[] {
           kind: "text",
           key: m.id,
           role: "user",
-          content: m.content,
+          // Seat mail (plan 106.4) is runtime input, not the user's speech:
+          // show it attributed to its sender rather than as raw envelope text.
+          content: isSeatMessageEvent(m.content)
+            ? formatSeatMessageEvent(m.content)
+            : m.content,
           createdAt: m.createdAt,
+          ...(isRefocusEvent(m.content) ? { notice: "refocus" as const } : {}),
         })
       }
       continue

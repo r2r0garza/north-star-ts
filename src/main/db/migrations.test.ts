@@ -92,7 +92,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(45)
+    expect(db.pragma("user_version", { simple: true })).toBe(64)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
@@ -389,6 +389,32 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     db.close()
   })
 
+  it("replaces a prerelease-shaped workspace_analyses table (plan 106.11)", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    db.exec(`
+      DROP TABLE workspace_analyses;
+      CREATE TABLE workspace_analyses (feature_id TEXT PRIMARY KEY, result TEXT);
+      INSERT INTO workspace_analyses VALUES ('f', '{}');
+    `)
+
+    runMigrations(db)
+
+    const columns = (
+      db.pragma("table_info(workspace_analyses)") as Array<{ name: string }>
+    ).map((c) => c.name)
+    expect(columns).toEqual(
+      expect.arrayContaining([
+        "data",
+        "dismissals",
+        "check_results",
+        "approvals",
+      ])
+    )
+    db.close()
+  })
+
   it("migrates Codex CLI aliases and legacy defaults (v32)", () => {
     const db = new Database(":memory:")
     db.exec(`
@@ -650,7 +676,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
 
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(45)
+    expect(db.pragma("user_version", { simple: true })).toBe(64)
     expect(
       (db.pragma("table_info(process_phases)") as Array<{ name: string }>).map(
         (c) => c.name
@@ -868,7 +894,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(45)
+    expect(db.pragma("user_version", { simple: true })).toBe(64)
 
     // Reaped: orphan + its nested descendant, and all their state.
     const taskIds = (
@@ -890,6 +916,18 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
 
     // No dangling references after FKs are re-enabled.
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
+    db.close()
+  })
+})
+
+describe.skipIf(!sqliteLoads)("result content migration", () => {
+  it("adds a nullable result_content snapshot to phase runs", () => {
+    const db = new Database(":memory:")
+    runMigrations(db)
+    const columns = (
+      db.pragma("table_info(process_phase_runs)") as Array<{ name: string }>
+    ).map((column) => column.name)
+    expect(columns).toContain("result_content")
     db.close()
   })
 })
@@ -921,3 +959,499 @@ describe.skipIf(!sqliteLoads)("completion policy migration", () => {
     db.close()
   })
 })
+
+describe.skipIf(!sqliteLoads)(
+  "mission control playbooks migration (v49)",
+  () => {
+    it("rebuilds phase agents with a nullable agent name and keeps their rows", () => {
+      const db = new Database(":memory:")
+      db.pragma("foreign_keys = ON")
+      runMigrations(db)
+      db.pragma("foreign_keys = OFF")
+      db.exec(`
+      DROP TABLE process_phase_agents;
+      CREATE TABLE process_phase_agents (
+        id TEXT PRIMARY KEY,
+        phase_id TEXT NOT NULL REFERENCES process_phases(id) ON DELETE CASCADE,
+        agent_name TEXT NOT NULL,
+        skills TEXT,
+        tools TEXT,
+        position INTEGER NOT NULL
+      );
+      INSERT INTO process_definitions (id, name, created_at, updated_at) VALUES ('d', 'D', 0, 0);
+      INSERT INTO process_phases (id, process_id, key, name, position) VALUES ('p', 'd', 'k', 'K', 0);
+      INSERT INTO process_phase_agents (id, phase_id, agent_name, skills, tools, position)
+        VALUES ('a', 'p', 'coder', '["x"]', NULL, 0);
+      PRAGMA user_version = 48;
+    `)
+      db.pragma("foreign_keys = ON")
+
+      runMigrations(db)
+
+      expect(db.pragma("user_version", { simple: true })).toBe(64)
+      const columns = db.pragma("table_info(process_phase_agents)") as Array<{
+        name: string
+        notnull: number
+      }>
+      expect(columns.find((c) => c.name === "agent_name")?.notnull).toBe(0)
+      expect(columns.map((c) => c.name)).toEqual(
+        expect.arrayContaining(["seat_role", "runtime_config"])
+      )
+      expect(
+        db.prepare("SELECT agent_name, skills FROM process_phase_agents").get()
+      ).toEqual({ agent_name: "coder", skills: '["x"]' })
+      for (const [table, column] of [
+        ["process_phases", "proof_step"],
+        ["process_runs", "seat_bindings"],
+        ["process_runs", "mission_control"],
+        ["process_phase_runs", "seat_address"],
+      ])
+        expect(
+          (db.pragma(`table_info(${table})`) as Array<{ name: string }>).map(
+            (c) => c.name
+          )
+        ).toContain(column)
+      for (const table of ["playbooks", "playbook_hooks", "playbook_runs"])
+        expect(
+          db
+            .prepare(
+              "SELECT name FROM sqlite_master WHERE type='table' AND name=?"
+            )
+            .get(table)
+        ).toBeTruthy()
+      expect(db.pragma("foreign_key_check")).toHaveLength(0)
+      db.close()
+    })
+  }
+)
+
+describe.skipIf(!sqliteLoads)("mission control comms migration (v50)", () => {
+  it("adds seat sessions, threads, messages, and the phase context mode", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    for (const table of ["seat_sessions", "seat_threads", "seat_messages"])
+      expect(
+        db
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?"
+          )
+          .get(table)
+      ).toBeTruthy()
+    db.exec(
+      "INSERT INTO process_definitions (id, name, created_at, updated_at) VALUES ('d', 'D', 0, 0); INSERT INTO process_phases (id, process_id, key, name, position) VALUES ('p', 'd', 'k', 'K', 0);"
+    )
+    expect(
+      db
+        .prepare("SELECT context_mode FROM process_phases WHERE id = 'p'")
+        .pluck()
+        .get()
+    ).toBe("step")
+    db.close()
+  })
+
+  it("self-heals a database stamped at v50 without the comms tables", () => {
+    const db = new Database(":memory:")
+    runMigrations(db, { through: 50 })
+    db.exec(
+      "DROP TABLE seat_messages; DROP TABLE seat_threads; DROP TABLE seat_sessions;"
+    )
+    runMigrations(db)
+    expect(
+      db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='seat_messages'"
+        )
+        .get()
+    ).toBeTruthy()
+    db.close()
+  })
+})
+
+describe.skipIf(!sqliteLoads)("context scopes migration (v51)", () => {
+  it("remaps step scopes and gives existing seat sessions the feature scope", () => {
+    const db = new Database(":memory:")
+    runMigrations(db, { through: 50 })
+    // A v50 database shaped like the first 106.4 build.
+    db.exec(`
+      DROP TABLE seat_sessions;
+      CREATE TABLE seat_sessions (
+        id TEXT PRIMARY KEY, initiative_id TEXT NOT NULL, seat_address TEXT NOT NULL,
+        generation INTEGER NOT NULL, conversation_id TEXT, status TEXT NOT NULL,
+        handoff_summary TEXT, rotation_reason TEXT, failure_count INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL, last_activity_at INTEGER, rotated_at INTEGER,
+        UNIQUE (initiative_id, seat_address, generation)
+      );
+      INSERT INTO initiatives (id, key, name, intent, definition_of_done, status, budgets, created_at, updated_at)
+        VALUES ('i', 'k', 'I', '', '', 'active', '{}', 0, 0);
+      INSERT INTO seat_sessions (id, initiative_id, seat_address, generation, status, created_at)
+        VALUES ('s', 'i', 'qa@implementation', 1, 'idle', 0);
+      INSERT INTO process_definitions (id, name, created_at, updated_at) VALUES ('d', 'D', 0, 0);
+      INSERT INTO process_phases (id, process_id, key, name, position, context_mode) VALUES
+        ('a', 'd', 'a', 'A', 0, 'fresh'), ('b', 'd', 'b', 'B', 1, 'seat_session');
+    `)
+    runMigrations(db)
+    expect(db.pragma("user_version", { simple: true })).toBe(64)
+    // v51 moved them to the initiative scope; v54 renamed it to feature.
+    expect(
+      db
+        .prepare("SELECT context_mode FROM process_phases ORDER BY position")
+        .pluck()
+        .all()
+    ).toEqual(["step", "feature"])
+    expect(
+      db
+        .prepare(
+          "SELECT feature_id, scope, scope_key, playbook_run_id FROM seat_sessions"
+        )
+        .get()
+    ).toEqual({
+      feature_id: "i",
+      scope: "feature",
+      scope_key: "feature",
+      playbook_run_id: null,
+    })
+    expect(db.pragma("foreign_key_check")).toHaveLength(0)
+    db.close()
+  })
+})
+
+describe.skipIf(!sqliteLoads)("navigator migration (v53)", () => {
+  it("adds drive state, DoD reviews, proposals, and ticks to a v52 database", () => {
+    const db = new Database(":memory:")
+    runMigrations(db, { through: 52 })
+    db.exec(`
+      INSERT INTO initiatives (id, key, name, intent, definition_of_done, status, budgets, created_at, updated_at)
+        VALUES ('i', 'k', 'I', '', '', 'active', '{"maxConcurrentSlices":2}', 0, 0);
+      INSERT INTO missions (id, initiative_id, key, name, outcome, status, position)
+        VALUES ('m', 'i', 'm', 'M', '', 'planned', 0);
+    `)
+    runMigrations(db, { through: 53 })
+    expect(db.pragma("user_version", { simple: true })).toBe(53)
+    expect(db.prepare("SELECT drive, budgets FROM initiatives").get()).toEqual({
+      drive: "{}",
+      budgets: '{"maxConcurrentSlices":2}',
+    })
+    expect(
+      db.prepare("SELECT dod_review FROM missions").pluck().get()
+    ).toBeNull()
+    db.prepare(
+      "INSERT INTO plan_proposals (id, initiative_id, mission_id, kind, changes, proposer, created_at) VALUES ('p', 'i', 'm', 'slice', '[]', 'lead@orch', 0)"
+    ).run()
+    db.prepare(
+      "INSERT INTO navigator_ticks (id, initiative_id, position_hash, summary, created_at) VALUES ('t', 'i', 'h', 's', 0)"
+    ).run()
+    // Both belong to the initiative and go with it.
+    db.pragma("foreign_keys = ON")
+    db.prepare("DELETE FROM initiatives").run()
+    expect(
+      db.prepare("SELECT COUNT(*) FROM plan_proposals").pluck().get()
+    ).toBe(0)
+    expect(
+      db.prepare("SELECT COUNT(*) FROM navigator_ticks").pluck().get()
+    ).toBe(0)
+    db.close()
+  })
+})
+
+describe.skipIf(!sqliteLoads)("work terms migration (v54)", () => {
+  it("renames initiatives, missions, and slices, their columns, and stored terms", () => {
+    const db = new Database(":memory:")
+    runMigrations(db, { through: 53 })
+    db.exec(`
+      INSERT INTO initiatives (id, key, name, intent, definition_of_done, status, budgets, rig_snapshot, created_at, updated_at)
+        VALUES ('i', 'billing', 'Billing', 'Slice the invoices', '', 'active',
+          '{"maxConcurrentSlices":2,"maxPlanRevisionsPerMission":3}',
+          '{"seats":[{"decisionRights":["assign_slice","accept_proof"]}]}', 0, 0);
+      INSERT INTO missions (id, initiative_id, key, name, outcome, status, position)
+        VALUES ('m', 'i', 'mission-1', 'First mission', '', 'active', 0);
+      INSERT INTO slices (id, mission_id, key, title, spec, status, position)
+        VALUES ('a', 'm', 'invoice-api', 'Invoice API', '{"goal":"a slice of work"}', 'ready', 0),
+               ('b', 'm', 'invoice-ui', 'Invoice UI', '{}', 'draft', 1);
+      INSERT INTO slice_edges (id, mission_id, from_slice_id, to_slice_id) VALUES ('e', 'm', 'a', 'b');
+      INSERT INTO work_revisions (id, initiative_id, target_kind, target_id, actor, change, created_at)
+        VALUES ('r', 'i', 'slice', 'a', 'user',
+          '{"op":"add_slice","mission":"mission-1","slice":{"key":"invoice-api","title":"Invoice API"}}', 0);
+      INSERT INTO plan_proposals (id, initiative_id, mission_id, kind, changes, proposer, created_at)
+        VALUES ('p', 'i', 'm', 'slice', '[{"op":"split_slice","slice":"invoice-api","into":[]}]', 'lead@orch', 0);
+      INSERT INTO navigator_ticks (id, initiative_id, position_hash, summary, decision_keys, created_at)
+        VALUES ('t', 'i', 'h', 'Slice a failed.', '["slice_failed:a:2"]', 0);
+      INSERT INTO playbooks (id, name, altitude, created_at, updated_at) VALUES ('pb', 'P', 'mission', 0, 0);
+      INSERT INTO playbook_runs (id, playbook_id, hook, initiative_id, mission_id, slice_id, status, created_at)
+        VALUES ('run', 'pb', 'after_all_slices', 'i', 'm', 'a', 'running', 0);
+      INSERT INTO seat_sessions (id, initiative_id, seat_address, scope, scope_key, generation, status, created_at)
+        VALUES ('s1', 'i', 'lead@orch', 'initiative', 'initiative', 1, 'idle', 0),
+               ('s2', 'i', 'qa@impl', 'slice', 'run', 1, 'idle', 0);
+      INSERT INTO seat_threads (id, initiative_id, anchor_kind, anchor_id, subject, created_at)
+        VALUES ('th', 'i', 'slice', 'a', 'About the slice', 0);
+      INSERT INTO merge_queue (id, mission_id, slice_id, status, slice_head, proof_accepted_at, created_at, updated_at)
+        VALUES ('q', 'm', 'a', 'queued', 'abc', 0, 0, 0);
+    `)
+
+    runMigrations(db)
+
+    expect(db.pragma("user_version", { simple: true })).toBe(64)
+    const tables = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+      .pluck()
+      .all() as string[]
+    expect(tables).toEqual(
+      expect.arrayContaining([
+        "features",
+        "milestones",
+        "user_stories",
+        "user_story_edges",
+      ])
+    )
+    for (const old of ["initiatives", "missions", "slices", "slice_edges"])
+      expect(tables).not.toContain(old)
+    const oldNames = db
+      .prepare("SELECT name, sql FROM sqlite_master WHERE sql IS NOT NULL")
+      .all()
+      .filter((row) =>
+        /initiative|slice|\bmissions?\b|mission_id/i.test(
+          (row as { sql: string }).sql
+        )
+      )
+    expect(oldNames).toEqual([])
+
+    expect(
+      db.prepare("SELECT intent, budgets, rig_snapshot FROM features").get()
+    ).toEqual({
+      intent: "Slice the invoices",
+      budgets:
+        '{"maxConcurrentUserStories":2,"maxPlanRevisionsPerMilestone":3}',
+      rig_snapshot:
+        '{"seats":[{"decisionRights":["assign_user_story","accept_proof"]}]}',
+    })
+    expect(
+      db.prepare("SELECT feature_id, key, name FROM milestones").get()
+    ).toEqual({
+      feature_id: "i",
+      key: "mission-1",
+      name: "First mission",
+    })
+    expect(
+      db
+        .prepare("SELECT milestone_id, spec FROM user_stories WHERE id = 'a'")
+        .get()
+    ).toEqual({
+      milestone_id: "m",
+      spec: '{"goal":"a slice of work"}',
+    })
+    expect(
+      db
+        .prepare(
+          "SELECT from_user_story_id, to_user_story_id FROM user_story_edges"
+        )
+        .get()
+    ).toEqual({
+      from_user_story_id: "a",
+      to_user_story_id: "b",
+    })
+    expect(
+      db.prepare("SELECT target_kind, change FROM work_revisions").get()
+    ).toEqual({
+      target_kind: "user_story",
+      change:
+        '{"op":"add_user_story","milestone":"mission-1","userStory":{"key":"invoice-api","title":"Invoice API"}}',
+    })
+    expect(
+      db.prepare("SELECT kind, changes FROM plan_proposals").get()
+    ).toEqual({
+      kind: "user_story",
+      changes:
+        '[{"op":"split_user_story","userStory":"invoice-api","into":[]}]',
+    })
+    expect(
+      db.prepare("SELECT summary, decision_keys FROM navigator_ticks").get()
+    ).toEqual({
+      summary: "Slice a failed.",
+      decision_keys: '["user_story_failed:a:2"]',
+    })
+    expect(db.prepare("SELECT altitude FROM playbooks").pluck().get()).toBe(
+      "milestone"
+    )
+    expect(
+      db
+        .prepare(
+          "SELECT hook, feature_id, milestone_id, user_story_id FROM playbook_runs"
+        )
+        .get()
+    ).toEqual({
+      hook: "after_all_user_stories",
+      feature_id: "i",
+      milestone_id: "m",
+      user_story_id: "a",
+    })
+    expect(
+      db.prepare("SELECT scope, scope_key FROM seat_sessions ORDER BY id").all()
+    ).toEqual([
+      { scope: "feature", scope_key: "feature" },
+      { scope: "user_story", scope_key: "run" },
+    ])
+    expect(
+      db.prepare("SELECT anchor_kind, subject FROM seat_threads").get()
+    ).toEqual({
+      anchor_kind: "user_story",
+      subject: "About the slice",
+    })
+    expect(
+      db
+        .prepare(
+          "SELECT milestone_id, user_story_id, user_story_head FROM merge_queue"
+        )
+        .get()
+    ).toEqual({
+      milestone_id: "m",
+      user_story_id: "a",
+      user_story_head: "abc",
+    })
+    expect(db.pragma("foreign_key_check")).toHaveLength(0)
+
+    // Cascades still follow the renamed references.
+    db.pragma("foreign_keys = ON")
+    db.prepare("DELETE FROM features").run()
+    for (const table of [
+      "milestones",
+      "user_stories",
+      "user_story_edges",
+      "seat_sessions",
+      "merge_queue",
+    ])
+      expect(db.prepare(`SELECT COUNT(*) FROM ${table}`).pluck().get()).toBe(0)
+
+    // Running it again changes nothing.
+    runMigrations(db)
+    expect(db.pragma("user_version", { simple: true })).toBe(64)
+    db.close()
+  })
+})
+
+describe("python extractor migration (v56)", () => {
+  it("marks already-indexed Python files for re-extraction, and nothing else", () => {
+    const db = new Database(":memory:")
+    runMigrations(db, { through: 55 })
+    const now = Date.now()
+    db.prepare(
+      "INSERT INTO workspaces (id, path, name, created_at, updated_at) VALUES ('w', '/w', 'w', ?, ?)"
+    ).run(now, now)
+    const file = db.prepare(
+      "INSERT INTO index_files (id, workspace_id, path, ext, size, mtime, hash, indexed_stage, updated_at) VALUES (?, 'w', ?, ?, 1, 1, 'h', 'symbols', ?)"
+    )
+    file.run("py", "src/runtime.py", ".py", now)
+    file.run("pyi", "src/stubs.pyi", ".pyi", now)
+    file.run("ts", "web/app.ts", ".ts", now)
+
+    runMigrations(db)
+
+    const stages = Object.fromEntries(
+      (
+        db.prepare("SELECT id, indexed_stage FROM index_files").all() as Array<{
+          id: string
+          indexed_stage: string
+        }>
+      ).map((row) => [row.id, row.indexed_stage])
+    )
+    expect(stages).toEqual({ py: "file_map", pyi: "file_map", ts: "symbols" })
+  })
+})
+
+describe.skipIf(!sqliteLoads)(
+  "Mission Control worktree workspaces migration (v57)",
+  () => {
+    it("moves worktree conversations and runs onto their feature's workspace and deletes the rows", () => {
+      const db = new Database(":memory:")
+      runMigrations(db, { through: 56 })
+      const now = Date.now()
+      const worktrees = "/Users/me/Library/App/mission-control/worktrees"
+      const workspace = db.prepare(
+        "INSERT INTO workspaces (id, path, name, created_at, updated_at, hidden) VALUES (?, ?, ?, ?, ?, ?)"
+      )
+      workspace.run("main", "/code/app", "app", now, now, 0)
+      workspace.run("story", `${worktrees}/f1/us-1-1-abc`, "us-1", now, now, 1)
+      workspace.run(
+        "sub",
+        `${worktrees}/f1/us-2-1-def/web`,
+        "us-2",
+        now,
+        now,
+        0
+      )
+      workspace.run(
+        "orphan",
+        `${worktrees}/gone/us-3-1-ghi`,
+        "us-3",
+        now,
+        now,
+        1
+      )
+      workspace.run("pinned", `${worktrees}/f1/us-4-1-jkl`, "us-4", now, now, 1)
+      db.prepare(
+        "INSERT INTO features (id, key, name, intent, definition_of_done, workspace_id, status, created_at, updated_at) VALUES ('f1', 'app', 'App', '', '', 'main', 'active', ?, ?)"
+      ).run(now, now)
+      // A project pointed at a worktree keeps it.
+      db.prepare(
+        "INSERT INTO projects (id, name, workspace_id, created_at, updated_at) VALUES ('p', 'P', 'pinned', ?, ?)"
+      ).run(now, now)
+      const conversation = db.prepare(
+        "INSERT INTO conversations (id, mode, workspace_id, created_at, updated_at) VALUES (?, 'interactive', ?, ?, ?)"
+      )
+      conversation.run("c-story", "story", now, now)
+      conversation.run("c-sub", "sub", now, now)
+      conversation.run("c-orphan", "orphan", now, now)
+      conversation.run("c-main", "main", now, now)
+      const run = db.prepare(
+        "INSERT INTO process_runs (id, workspace_id, status, created_at) VALUES (?, ?, 'completed', ?)"
+      )
+      run.run("r-story", "story", now)
+      run.run("r-orphan", "orphan", now)
+      db.prepare(
+        "INSERT INTO index_runs (id, workspace_id, enabled, stage, priority, files_scanned, files_total, created_at, updated_at) VALUES ('ir', 'story', 1, 'file_map', 'low', 0, 0, ?, ?)"
+      ).run(now, now)
+
+      runMigrations(db)
+
+      expect(
+        db.prepare("SELECT id FROM workspaces ORDER BY id").pluck().all()
+      ).toEqual(["main", "pinned"])
+      const place = (table: string, id: string) =>
+        db
+          .prepare(
+            `SELECT workspace_id, working_directory FROM ${table} WHERE id = ?`
+          )
+          .get(id)
+      expect(place("conversations", "c-story")).toEqual({
+        workspace_id: "main",
+        working_directory: `${worktrees}/f1/us-1-1-abc`,
+      })
+      expect(place("conversations", "c-sub")).toEqual({
+        workspace_id: "main",
+        working_directory: `${worktrees}/f1/us-2-1-def/web`,
+      })
+      // Its feature is gone: no workspace to move to, but it keeps its folder.
+      expect(place("conversations", "c-orphan")).toEqual({
+        workspace_id: null,
+        working_directory: `${worktrees}/gone/us-3-1-ghi`,
+      })
+      expect(place("conversations", "c-main")).toEqual({
+        workspace_id: "main",
+        working_directory: null,
+      })
+      expect(place("process_runs", "r-story")).toEqual({
+        workspace_id: "main",
+        working_directory: `${worktrees}/f1/us-1-1-abc`,
+      })
+      expect(place("process_runs", "r-orphan")).toEqual({
+        workspace_id: null,
+        working_directory: `${worktrees}/gone/us-3-1-ghi`,
+      })
+      expect(db.prepare("SELECT COUNT(*) FROM index_runs").pluck().get()).toBe(
+        0
+      )
+      db.pragma("foreign_keys = ON")
+      expect(db.pragma("foreign_key_check")).toEqual([])
+      db.close()
+    })
+  }
+)

@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import Database from "better-sqlite3"
 import { randomUUID } from "crypto"
-import { mkdtemp, rm, writeFile, mkdir } from "fs/promises"
+import { mkdtemp, realpath, rm, writeFile, mkdir } from "fs/promises"
+import { execFileSync } from "child_process"
 import { tmpdir } from "os"
 import { join } from "path"
 import { runMigrations } from "../../db/migrations"
@@ -64,7 +65,8 @@ beforeEach(async () => {
   db = new Database(":memory:")
   db.pragma("foreign_keys = ON")
   runMigrations(db)
-  root = await mkdtemp(join(tmpdir(), "idxq-"))
+  // Real path: git reports resolved paths (macOS tmpdir is a symlink).
+  root = await realpath(await mkdtemp(join(tmpdir(), "idxq-")))
   makeWorkspace()
 })
 afterEach(async () => {
@@ -79,6 +81,35 @@ describe.skipIf(!sqliteLoads)("index_query_tool", () => {
     const out = await run({ op: "find_symbol", query: "Widget" })
     expect(out).toContain("class Widget")
     expect(out).toContain("src/widget.ts:2")
+  })
+
+  it("answers from the main checkout's index inside a git worktree", async () => {
+    await mkdir(join(root, "src"))
+    await writeFile(join(root, "src", "widget.ts"), `\nexport class Widget {}`)
+    const git = (...args: string[]) =>
+      execFileSync("git", args, { cwd: root, stdio: "pipe" })
+    git("init", "-q")
+    git("-c", "user.email=t@t", "-c", "user.name=t", "add", ".")
+    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init")
+    await buildIndex()
+    // A user story's worktree: registered as a workspace (as a Process run
+    // does) but never indexed itself.
+    const worktree = join(root, "..", `${root.split("/").pop()}-story`)
+    git("worktree", "add", "-q", worktree)
+    const now = Date.now()
+    db.prepare(
+      "INSERT INTO workspaces (id, path, name, created_at, updated_at) VALUES (?, ?, 'story', ?, ?)"
+    ).run(randomUUID(), worktree, now, now)
+    try {
+      const out = await indexQueryTool.execute(
+        { op: "find_symbol", query: "Widget" },
+        { workspace: worktree, conversationId: "c1" }
+      )
+      expect(out).toContain("src/widget.ts:2")
+      expect(out).toContain("index of the repository's main checkout")
+    } finally {
+      await rm(worktree, { recursive: true, force: true })
+    }
   })
 
   it("find_symbol filters by kind", async () => {

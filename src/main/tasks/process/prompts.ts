@@ -33,6 +33,16 @@ function flagForReworkSection(upstream: UpstreamResult[]): string {
 
 // The message seeded into a phase's worker conversation. Deliberately plain: the
 // agent's own .agent.md body is the system prompt; this is the task briefing.
+// Every Process worker runs headless: no ask_user_question tool, and nobody reads
+// its final message live. Without saying so, models end with "want me to …?"
+// offers that can never be answered. Appended to every worker briefing.
+export const UNATTENDED_WORK_NOTE =
+  "## Working unattended\n" +
+  "No one will reply to you during this phase, and your final message is not " +
+  "read as a conversation. Do not ask questions or offer optional follow-ups " +
+  "(\"should I…?\", \"say the word and I'll…\"). Make reasonable decisions, do " +
+  "everything your task asks, and state any assumptions in your final summary."
+
 export function kickoffPrompt(input: {
   phase: ProcessPhase
   objective: string
@@ -73,6 +83,8 @@ export function kickoffPrompt(input: {
     `Carry out the "${phase.name}" phase toward the overall objective. When done, ` +
       `summarize what you produced so the next phase can build on it.`
   )
+  lines.push("")
+  lines.push(UNATTENDED_WORK_NOTE)
   const flag = flagForReworkSection(upstream)
   if (flag) {
     lines.push("")
@@ -138,6 +150,8 @@ export function eachSubtaskKickoffPrompt(input: {
     `Carry out the "${phase.name}" phase for this one sub-task toward the overall ` +
       `objective. When done, summarize what you produced.`
   )
+  lines.push("")
+  lines.push(UNATTENDED_WORK_NOTE)
   if (sourcePhaseKey) {
     lines.push("")
     lines.push(

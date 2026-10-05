@@ -171,11 +171,23 @@ describe.skipIf(!gitAvailable)("GitService", () => {
   })
 
   it("sorts the current branch first and caps branch listings", async () => {
-    git(repo, "branch", "zebra")
-    git(repo, "branch", "Alpha")
-    for (let index = 0; index < 205; index++) {
-      git(repo, "branch", `many/${String(index).padStart(3, "0")}`)
-    }
+    // One update-ref call, not 207 `git branch` spawns: spawning each one
+    // took ~4.5s under full-suite load, against the 5s test timeout.
+    const head = gitOutput(repo, "rev-parse", "HEAD")
+    const names = [
+      "zebra",
+      "Alpha",
+      ...Array.from(
+        { length: 205 },
+        (_, index) => `many/${String(index).padStart(3, "0")}`
+      ),
+    ]
+    execFileSync("git", ["update-ref", "--stdin"], {
+      cwd: repo,
+      input: names
+        .map((name) => `create refs/heads/${name} ${head}\n`)
+        .join(""),
+    })
 
     const branches = await new GitService(repo).branches()
 

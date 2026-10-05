@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto"
 import { readFile, stat } from "fs/promises"
 import { basename, dirname, isAbsolute } from "path"
-import { SHUTDOWN_ABORT_REASON } from "./abort"
+import { SHUTDOWN_ABORT_REASON, stopNote } from "./abort"
 import { askUser } from "./questions/broker"
 import {
   toolDefinitions,
@@ -24,6 +24,9 @@ import { terminateOwnedCommandSessions } from "./tools/command_session_tools"
 import type { BrowserHandle } from "../browser/manager"
 import { TOOL_EFFECTS, type ToolImage } from "./tools/types"
 import { readFileTool } from "./tools/read_file_tool"
+import { CHAT_SHELL_TOOL_NAMES, chatShellContext } from "./tools/chat_shell"
+import { toolError } from "./tools/output"
+import type { ToolContext } from "./tools/types"
 import {
   readDocumentTool,
   supportedDocumentKind,
@@ -85,11 +88,32 @@ import {
 } from "./subagents/worktrees"
 import { containerNameForConversation } from "./env/container"
 import { flagForReworkTool } from "./tools/flag_for_rework"
+import { recordProofTool } from "./tools/record_proof"
+import { seatCommsTools } from "./tools/seat_comms_tools"
+import { mapTools } from "./tools/map_tools"
+import { isLeadSeat } from "../mission-control/map-tools"
+import { allowedForSeatProfile } from "./seat-tool-profile"
+import { deliverQueued } from "../mission-control/inbox"
+import type { SeatTurnIdentity } from "../mission-control/seat-turns"
 import { dashboardWriteTool } from "./tools/dashboard_write"
 import { dashboardReadTool } from "./tools/dashboard_read"
 import { loadSystemPrompt } from "./system-prompt"
 import { logSystemPrompt } from "./prompt-log"
 import { buildIndexSummary } from "../index/summary"
+import { takeConversationNotes } from "../db/repositories/conversation-notes"
+import {
+  afterSeatTurn,
+  parseRefocusTrigger,
+  recordRefocusDelivered,
+  refocusInterval,
+  renderRefocusEvent,
+  REFOCUS_NOTE_SOURCE,
+} from "../mission-control/refocus"
+import {
+  recordSeatLessons,
+  seatMemorySection,
+} from "../mission-control/seat-memory"
+import { indexedWorkspaceFor } from "../index/indexed-workspace"
 import {
   contextBuilder,
   SECTION_PRIORITY,
@@ -107,6 +131,7 @@ import { repairDanglingToolCalls } from "./repair"
 import { offeredToolNames, unavailableToolResult } from "./tool-availability"
 import { createEnvironment } from "./env"
 import { LocalEnvironment } from "./env/local"
+import { CHAT_VENV_PROMPT, resolveChatVenvOverlay } from "../python/chat-venv"
 import type { Environment } from "./env/types"
 import * as settingsService from "../settings/service"
 import {
@@ -120,8 +145,19 @@ import {
   createCompletionRoundWithRetry,
   ModelRequestRetryExhaustedError,
   ModelResponseValidationError,
+  StreamStalledError,
+  streamUsageRequested,
+  withStreamUsage,
   type CompletionRound,
+  type ModelResponseAttemptDiagnostics,
 } from "./model-request-retry"
+import {
+  measureRequest,
+  measureResponse,
+  REQUEST_SIZE_ESTIMATOR,
+  type RequestSize,
+} from "./context/request-size"
+import { contextUsageLog, type ContextUsageOutcome } from "./context/usage-log"
 import { generateTitle } from "./title"
 export { generateTitle } from "./title"
 import { sanitizeFailureContext } from "../tasks/process/failure-sanitizer"
@@ -155,7 +191,7 @@ import {
   setConversationTitleIfUntitled,
 } from "../db/repositories/conversations"
 import { actionAllowlist } from "../db/repositories"
-import { getWorkspace } from "../db/repositories/workspaces"
+import { getWorkspace, workingDirectoryOf } from "../db/repositories/workspaces"
 import { getProject } from "../db/repositories/projects"
 import { getAccount } from "../db/repositories/provider-accounts"
 import {
@@ -229,6 +265,26 @@ export { SHUTDOWN_ABORT_REASON }
 // writes. A turn that still hits the ceiling is detected via finish_reason below
 // and surfaced as a clean, retryable error rather than a cryptic JSON parse throw.
 const MAX_OUTPUT_TOKENS = 8192
+// Reasoning models (e.g. DeepSeek via OpenRouter) count hidden reasoning against
+// the cap, so a long investigation can spend all 8192 tokens before emitting any
+// text or tool call. Such a round is re-issued at the next step up instead of
+// failing the turn; the base cap stays low so ordinary turns aren't affected.
+const OUTPUT_TOKEN_STEPS = [MAX_OUTPUT_TOKENS, 16_384, 32_768] as const
+// How many times a round whose stream hung is re-issued before the turn fails.
+const MAX_STREAM_STALLS = 2
+
+export function nextOutputTokenCap(current: number): number | null {
+  return OUTPUT_TOKEN_STEPS.find((step) => step > current) ?? null
+}
+
+// A provider that rejects the raised cap (the model's own output ceiling is
+// lower) — keep the original output-limit failure rather than this error.
+function rejectsOutputCap(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /max_(completion_)?tokens|max.{0,20}output.{0,20}tokens|maximum.{0,40}tokens/i.test(
+    message
+  )
+}
 const CHILD_APPROVAL_TIMEOUT_MS = 10 * 60_000
 
 // Operating rules injected as a high-priority context section when a turn is in
@@ -372,7 +428,7 @@ export interface ChatResult {
   // human-readable error text.
   errorCode?: "execution_backend_unavailable"
   // True when the turn was cancelled by the user's Stop button (a clean stop,
-  // not an error). The "⏹ Stopped by user." note is already persisted.
+  // not an error). The stop note (see stopNote) is already persisted.
   stopped?: boolean
   // Only meaningful alongside `error`: true when the failure was a transient
   // infrastructure hiccup (gateway 5xx, network/timeout) worth a backoff retry.
@@ -511,15 +567,48 @@ function appendCommandCompletionEvents(input: {
   return true
 }
 
+// DeepSeek's native tool-call markup (DSML, and its tool-call block tokens),
+// which providers normally convert into structured tool calls. Seen as text
+// only when conversion failed, e.g. a call cut off at the output cap.
+const UNPARSED_TOOL_CALL =
+  /<[｜|]\s*DSML\s*[｜|]\s*(?:invoke|function_calls|parameter)|<[｜|]tool[▁_ ]call/i
+
 function validateModelRoundForLoop(input: {
   round: CompletionRound
   commandCompletionPending: boolean
+  canRaiseOutputCap: boolean
 }): void {
   const structuredToolCalls = accumulateToolCalls(input.round.toolFragments)
   const recovered = extractTextToolCalls(input.round.text)
   const text = recovered.text.trim()
   const hasToolCalls =
     structuredToolCalls.length > 0 || recovered.toolCalls.length > 0
+  // Cut off at the cap: ask the loop to re-issue the round with a higher cap.
+  // Partial text isn't a usable answer either — it may be a tool call the
+  // provider couldn't parse because it was truncated (nav-test-5: QA's final
+  // "answer" was half a DSML exec_command, so the phase ended without a
+  // proof). At the top step, fall through to the existing handling.
+  if (
+    input.round.finishReason === "length" &&
+    input.canRaiseOutputCap &&
+    !input.commandCompletionPending
+  ) {
+    throw new ModelResponseValidationError(
+      "The model hit the output limit before finishing its response.",
+      { retryable: false, outputLimit: true }
+    )
+  }
+  // Tool-call markup that reached us as text (the provider didn't turn it into
+  // a structured call) is a failed call, never a final answer.
+  if (!hasToolCalls && UNPARSED_TOOL_CALL.test(input.round.text)) {
+    const truncated = input.round.finishReason === "length"
+    throw new ModelResponseValidationError(
+      truncated
+        ? "The model hit the output limit in the middle of a tool call."
+        : "The model's tool call arrived as unparsed text instead of a tool call.",
+      { retryable: !truncated }
+    )
+  }
   if (text || hasToolCalls || input.commandCompletionPending) return
 
   if (input.round.finishReason === "length") {
@@ -755,6 +844,12 @@ export interface RunAgentLoopOptions {
   // resumed task doesn't re-request an already-decided action — advisory, never a
   // gate bypass.
   taskId?: string
+  // Interactive chat (runChat) and the subagents it spawns, at any depth: put
+  // the app's Python venv first on PATH for this turn's local commands, unless
+  // the workspace has its own Python environment. Every other caller (Mission
+  // Control, Playbooks, background tasks) leaves it off, and so do subagents
+  // spawned from them, since they inherit the parent's value.
+  chatPythonVenv?: boolean
   // Start this turn in plan mode: the agent may read/search and write only its
   // plan file (write_plan), and must call present_plan for approval before it can
   // touch the workspace. Session-only (the renderer passes it per send; not
@@ -794,6 +889,20 @@ export interface RunAgentLoopOptions {
   processPhaseRunId?: string
   // Process-only format instruction, refreshed even when resuming a transcript.
   processCompletionInstruction?: string
+  // Mission Control (plan 106.3): this worker runs a playbook's proof step, so
+  // it is offered record_proof. The tool re-derives the user story, criteria, and
+  // seats from the run itself; this flag only controls the offer.
+  processProofStep?: boolean
+  // Mission Control seat turn (plan 106.4): who is speaking on the rig and
+  // what the turn may do. Offers the Comms tools (except answer-only), delivers
+  // the seat's queued mail at each tool-round boundary, and — for a turn woken
+  // by mail (consult / answer_only) — narrows the toolset to read/search tools
+  // so a message can never cause a side effect.
+  missionControlSeat?: SeatTurnIdentity
+  // Extra system-block context sections supplied by the caller — e.g. the
+  // Mission Control seat context (charter, cultures, intent chain). Budgeted
+  // by the ContextBuilder like every other section.
+  extraContextSections?: ContextSection[]
   // Withhold the ask_user_question tool: this turn has NO interactive user to
   // answer a clarifying question, so offering the tool only lets the worker stall
   // until it's interrupted. Set by every Process worker fork (phase / decompose /
@@ -825,10 +934,8 @@ function resolveConversationDir(
   conversation: Conversation | undefined
 ): string | undefined {
   if (!conversation) return undefined
-  if (conversation.workspaceId) {
-    const ws = getWorkspace(conversation.workspaceId)
-    if (ws?.path) return ws.path
-  }
+  const own = workingDirectoryOf(conversation)
+  if (own) return own
   if (conversation.projectId) {
     const project = getProject(conversation.projectId)
     if (project?.workspaceId) {
@@ -1219,7 +1326,37 @@ export async function runAgentLoop(
       ? agentFiltered.filter((d) => opts.allowedToolNames!.has(d.function.name))
       : agentFiltered
   }
-  const buildTools = () =>
+  // A seat turn woken by mail may read and search but never mutate, execute,
+  // delegate, or reach out (plan 106.4 decision 4): keep only local read-only
+  // tools. MCP tools have no declared effects, so they are dropped too.
+  const seatProfile = opts.missionControlSeat?.profile
+  const readOnlyExtras = new Set([readSkillTool.definition.function.name])
+  const buildTools = () => {
+    const offered = buildBaseTools()
+    return (
+      seatProfile
+        ? offered.filter((d) =>
+            allowedForSeatProfile(d.function.name, seatProfile, readOnlyExtras)
+          )
+        : offered
+    ).concat(
+      // Comms (plan 106.4): process-structural like record_proof, so no agent
+      // or seat narrowing removes it. An answer-only wake answers in its final
+      // message instead.
+      seatProfile && seatProfile !== "answer_only" && !planMode
+        ? seatCommsTools.map((tool) => tool.definition)
+        : [],
+      // Map tools (plan 106.6): pod leads only. Rights are enforced when the
+      // tool runs, so a lead without a right still sees why it was refused.
+      seatProfile &&
+        seatProfile !== "answer_only" &&
+        !planMode &&
+        isLeadSeat(opts.missionControlSeat!)
+        ? mapTools.map((tool) => tool.definition)
+        : []
+    )
+  }
+  const buildBaseTools = () =>
     applyAgentTools([
       ...(hasWorkspace
         ? planMode
@@ -1227,11 +1364,22 @@ export async function runAgentLoop(
               (d) => !MUTATING_TOOL_NAMES.has(d.function.name)
             )
           : toolDefinitions
-        : hasAttachments
-          ? attachedDocuments.length > 0
-            ? [readFileTool.definition, readDocumentTool.definition]
-            : [readFileTool.definition]
-          : []),
+        : [
+            // Chat: read_file for attachments and skill:// resources, and the
+            // command tools, which run in the conversation's scratch dir
+            // (tools/chat_shell.ts).
+            ...(hasAttachments || skills.length > 0
+              ? [readFileTool.definition]
+              : []),
+            ...(hasAttachments && attachedDocuments.length > 0
+              ? [readDocumentTool.definition]
+              : []),
+            ...(planMode
+              ? []
+              : toolDefinitions.filter((d) =>
+                  CHAT_SHELL_TOOL_NAMES.has(d.function.name)
+                )),
+          ]),
       ...(showTodos
         ? // run_todos_in_background delegates to a background writer, so it's
           // withheld in plan mode along with the direct FS tools.
@@ -1282,13 +1430,22 @@ export async function runAgentLoop(
       // phase/decompose/validate worker), where it can only stall until interrupted.
       ...(opts.suppressUserQuestions ? [] : [askUserQuestionTool.definition]),
       readSkillTool.definition,
-    ]).concat(
-      // MCP tools bypass the built-in-category allowlist (applyAgentTools): MCP
-      // access is governed by the agent's separate `mcpServers` field, already
-      // resolved into `mcpTools`. Withheld in plan mode like spawn (a remote call
-      // is a side effect); regained the moment a plan is approved.
-      planMode ? [] : mcpTools
-    )
+    ])
+      .concat(
+        // MCP tools bypass the built-in-category allowlist (applyAgentTools): MCP
+        // access is governed by the agent's separate `mcpServers` field, already
+        // resolved into `mcpTools`. Withheld in plan mode like spawn (a remote call
+        // is a side effect); regained the moment a plan is approved.
+        planMode ? [] : mcpTools
+      )
+      .concat(
+        // record_proof (plan 106.3): process-structural like flag_for_rework, and
+        // offered only to a Mission Control proof step, so no agent or seat tool
+        // narrowing may remove it.
+        opts.processProofStep && opts.processRunId && !planMode
+          ? [recordProofTool.definition]
+          : []
+      )
   // The non-droppable base prompt (mode prompt). Everything else is a droppable
   // context SECTION handed to the ContextBuilder, which budgets + composes them
   // into the system block under one global budget with an explicit drop order
@@ -1325,7 +1482,38 @@ export async function runAgentLoop(
     opts.processCompletionInstruction
       ? `\n\n${opts.processCompletionInstruction}`
       : "")
-  const sections: ContextSection[] = []
+  const sections: ContextSection[] = [...(opts.extraContextSections ?? [])]
+
+  const chatVenvOverlay = opts.chatPythonVenv
+    ? await resolveChatVenvOverlay(hasWorkspace ? workspace : undefined)
+    : null
+  if (chatVenvOverlay) {
+    sections.push({
+      name: "python_venv",
+      priority: SECTION_PRIORITY.environment,
+      content: CHAT_VENV_PROMPT,
+      provenance: {
+        trust: "system",
+        channel: "runtime",
+        source: "chat_python_venv",
+      },
+    })
+  }
+
+  // Seat memory (plan 106.7): the seat's active lessons, after its charter.
+  // Injecting records an exposure, so a retraction can find this session.
+  const seatIdentity =
+    opts.missionControlSeat && (opts.agentDepth ?? 0) === 0
+      ? opts.missionControlSeat
+      : null
+  if (seatIdentity) {
+    try {
+      const lessons = seatMemorySection(seatIdentity, conversationId)
+      if (lessons) sections.push(lessons)
+    } catch (err) {
+      console.warn("[seat-memory] injection failed:", err)
+    }
+  }
 
   // Environment orientation: date + model always, and (when a workspace exists)
   // platform + workspace path + a git block for a real repo. Assembled fresh each
@@ -1515,7 +1703,16 @@ export async function runAgentLoop(
   // Workspace-index summary (plan 008): cheap structured orientation. Advisory,
   // most droppable. Gated by the "use index for context" setting + a workspace.
   if (useIndex && conversation?.workspaceId) {
-    const indexSummary = buildIndexSummary(conversation.workspaceId)
+    // A Mission Control worker works in a worktree but belongs to its feature's
+    // workspace, so this is the indexed checkout. A workspace the user picked
+    // may itself be an unindexed git worktree; summarize its main checkout then.
+    const workspacePath = getWorkspace(conversation.workspaceId)?.path
+    const indexed = workspacePath
+      ? await indexedWorkspaceFor(workspacePath)
+      : null
+    const indexSummary = buildIndexSummary(
+      indexed?.workspace.id ?? conversation.workspaceId
+    )
     if (indexSummary) {
       sections.push({
         name: "index",
@@ -1565,6 +1762,8 @@ export async function runAgentLoop(
   // Recording it would double the reference log and spend a second extraction
   // call on text the retry is about to record anyway.
   let turnWillRetry = false
+  // Where this turn begins in the transcript, for seat lesson extraction.
+  const turnStartSeq = getMaxMessageSeq(conversationId)
   if (userMessage !== undefined) {
     let userContent = userMessage || "What files are in the workspace?"
     let modelContent =
@@ -1622,6 +1821,17 @@ export async function runAgentLoop(
         break
       }
     }
+  }
+
+  // Seat mail held for this seat while its next playbook step was pending
+  // (plan 106.4) lands at the start of that step, after its kickoff.
+  if (seatProfile && seatProfile !== "answer_only") {
+    const mail = deliverQueued({
+      identity: opts.missionControlSeat!,
+      conversationId,
+      wakeTaskId: null,
+    })
+    if (mail) messages.push({ role: "user", content: mail.content })
   }
 
   for (const name of forcedSkills.names) {
@@ -1760,7 +1970,12 @@ export async function runAgentLoop(
         envConfig.kind === "local"
           ? (envConfig.profile ?? "host-access")
           : "host-access"
-      env = await createEnvironment(workspace!, conversationId, envConfig)
+      env = await createEnvironment(
+        workspace!,
+        conversationId,
+        envConfig,
+        chatVenvOverlay ?? undefined
+      )
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err)
       return failTurn(
@@ -1771,7 +1986,9 @@ export async function runAgentLoop(
       )
     }
   } else {
-    env = new LocalEnvironment("")
+    env = new LocalEnvironment("", "host-access", {
+      envOverlay: chatVenvOverlay ?? undefined,
+    })
   }
 
   try {
@@ -1780,6 +1997,82 @@ export async function runAgentLoop(
     // new turn — we insert a paragraph break before the later turn's first
     // token so the two pieces don't run together in the bubble.
     let streamedText = false
+
+    // Refocus (plan 106.7): a working seat is re-shown why its work exists
+    // every N model rounds of one step. Any other reminder (compaction,
+    // drift) restarts the count.
+    const refocusEvery =
+      seatIdentity?.profile === "work"
+        ? refocusInterval(seatIdentity.featureId)
+        : 0
+    let roundsSinceRefocus = 0
+    // Per-round context usage log (plan 108). Measurement only: it never
+    // changes the request and never fails the turn.
+    let modelRound = 0
+    const logContextUsage = (input: {
+      requestSize: RequestSize | null
+      roundId: string
+      attempt: number
+      outcome: ContextUsageOutcome
+      diagnostics: ModelResponseAttemptDiagnostics | null
+      responseEstimate: number | null
+      finishReason: string | null
+    }) => {
+      const size = input.requestSize
+      if (!size) return
+      try {
+        const reported = input.diagnostics?.usage?.promptTokens ?? null
+        void contextUsageLog.append({
+          at: new Date().toISOString(),
+          conversationId,
+          taskId: taskId ?? null,
+          agentDepth: opts.agentDepth ?? 0,
+          turnStartSeq,
+          round: modelRound,
+          roundId: input.roundId,
+          attempt: input.attempt,
+          provider: llm.provider ?? null,
+          accountId: llm.accountId,
+          model: llm.model,
+          mode: conversation?.mode ?? "chat",
+          seat: seatIdentity
+            ? {
+                address: seatIdentity.address,
+                profile: seatIdentity.profile,
+                featureId: seatIdentity.featureId,
+                anchor: seatIdentity.anchor,
+              }
+            : null,
+          request: {
+            reported,
+            estimated: size.total,
+            estimator: REQUEST_SIZE_ESTIMATOR,
+            ratio:
+              reported !== null && size.total > 0
+                ? Math.round((reported / size.total) * 1000) / 1000
+                : null,
+            usageRequested: streamUsageRequested(llm),
+            byRole: size.byRole,
+            toolDefs: size.toolDefs,
+            messageCount: size.messageCount,
+            largest: size.largestMessage,
+          },
+          response: {
+            reported: input.diagnostics?.usage?.completionTokens ?? null,
+            estimated: input.responseEstimate,
+            finishReason: input.finishReason,
+          },
+          outcome: input.outcome,
+        })
+      } catch (error) {
+        console.warn("[ctx] context usage logging failed:", error)
+      }
+    }
+    const deliverRefocus = (content: string) => {
+      appendMessage({ conversationId, role: "user", content })
+      messages.push({ role: "user", content })
+      roundsSinceRefocus = 0
+    }
 
     // Agentic loop: call the model, run any tools it asks for, repeat until the
     // model returns a turn with no tool calls (the final answer). No round-trip
@@ -1795,139 +2088,300 @@ export async function runAgentLoop(
         appendMessage({
           conversationId,
           role: "assistant",
-          content: "⏹ Stopped by user.",
+          content: stopNote(abort.signal),
         })
         return { stopped: true }
       }
+
+      // Notes that arrived mid-turn (a user's nudge, or Mission Control
+      // telling a long phase to wrap up) join before the next model round.
+      for (const note of takeConversationNotes(conversationId)) {
+        if (note.source === REFOCUS_NOTE_SOURCE) {
+          // Only a seat turn can be refocused; anywhere else it's dropped.
+          const trigger = parseRefocusTrigger(note.body)
+          const content =
+            trigger && seatIdentity
+              ? renderRefocusEvent(seatIdentity, trigger)
+              : null
+          if (content) {
+            deliverRefocus(content)
+            recordRefocusDelivered(
+              seatIdentity!,
+              trigger!,
+              conversationId,
+              note.id
+            )
+          }
+          continue
+        }
+        const content = `${note.source === "user" ? "Note from the user while you work" : "Note from Mission Control"}:\n\n${note.body}`
+        appendMessage({ conversationId, role: "user", content })
+        messages.push({ role: "user", content })
+      }
+      if (refocusEvery > 0 && roundsSinceRefocus >= refocusEvery) {
+        const trigger = { kind: "interval" as const, rounds: refocusEvery }
+        const content = renderRefocusEvent(seatIdentity!, trigger)
+        if (content) {
+          deliverRefocus(content)
+          recordRefocusDelivered(seatIdentity!, trigger, conversationId, null)
+        } else roundsSinceRefocus = 0
+      }
+      roundsSinceRefocus++
 
       // Recompute the toolset from the live plan-mode flag: an approval during
       // the previous iteration's present_plan call flips planMode off, so this
       // round-trip regains the full filesystem toolset.
       const tools = buildTools()
       const offeredNames = offeredToolNames(tools)
-      const logicalRoundId = `after-seq:${getMaxMessageSeq(conversationId)}`
-
-      const round = await createCompletionRoundWithRetry({
-        conversationId,
-        logicalRoundId,
-        signal: abort.signal,
-        isTransientError,
-        validateRound: (round) =>
-          validateModelRoundForLoop({
-            round,
-            commandCompletionPending: commandCompletionInbox.hasPending(
-              commandCompletionOwner
-            ),
-          }),
-        requestIdentity: {
-          accountId: llm.accountId,
-          modelId: llm.model,
-          apiMode: llm.apiMode,
-        },
-        recoverVisibleText: (rawText) => extractTextToolCalls(rawText).text,
-        onAttemptEvent: (() => {
-          let attemptText = ""
-          let withheldText = false
-          let visibleText = false
-          return (event) => {
-            if (event.type === "start") {
-              attemptText = ""
-              withheldText = false
-              visibleText = false
-              onEvent({
-                type: "stream_attempt",
-                phase: "start",
-                attemptId: event.attemptId,
-                attempt: event.attempt,
-              })
-              return
-            }
-            if (event.type === "text") {
-              attemptText += event.delta
-              const trimmed = attemptText.trimStart()
-              const mayBeTextToolCall =
-                !streamedText &&
-                ("[TOOL_CALL:".startsWith(trimmed) ||
-                  trimmed.startsWith("[TOOL_CALL:"))
-              if (mayBeTextToolCall) {
-                withheldText = true
-                return
-              }
-              const visiblePiece = withheldText ? attemptText : event.delta
-              withheldText = false
-              if (!visibleText && streamedText) {
-                onEvent({
-                  type: "token",
-                  delta: "\n\n",
-                  attemptId: event.attemptId,
-                })
-              }
-              visibleText = true
-              onEvent({
-                type: "token",
-                delta: visiblePiece,
-                attemptId: event.attemptId,
-              })
-              return
-            }
-            if (event.type === "commit") {
-              const recovered = extractTextToolCalls(attemptText)
-              if (
-                withheldText &&
-                recovered.toolCalls.length === 0 &&
-                recovered.text
-              ) {
-                if (streamedText) {
+      const baseRoundId = `after-seq:${getMaxMessageSeq(conversationId)}`
+      let logicalRoundId = baseRoundId
+      let outputCap: number = MAX_OUTPUT_TOKENS
+      // Each re-issue (a higher cap, a hung stream) gets a fresh logical id,
+      // so its own transient-retry budget.
+      let stalls = 0
+      const roundId = () =>
+        [
+          baseRoundId,
+          ...(outputCap > MAX_OUTPUT_TOKENS ? [`cap-${outputCap}`] : []),
+          ...(stalls ? [`stall-${stalls}`] : []),
+        ].join(":")
+      // The current attempt's connection, so a hung one can be closed without
+      // stopping the turn.
+      const current: { abort: AbortController | null } = { abort: null }
+      modelRound += 1
+      let requestSize: RequestSize | null = null
+      try {
+        requestSize = measureRequest(messages, tools)
+      } catch (error) {
+        console.warn("[ctx] request measurement failed:", error)
+      }
+      // The transport attempt in flight, and whether its line is written: a
+      // rolled-back attempt logs itself; one that throws without a rollback
+      // (an abort) is logged by the catch below.
+      let attempt = 0
+      let attemptLogged = false
+      const logFailedAttempt = (error: unknown, retrying: boolean) => {
+        attemptLogged = true
+        logContextUsage({
+          requestSize,
+          roundId: logicalRoundId,
+          attempt,
+          outcome: abort.signal.aborted
+            ? "aborted"
+            : error instanceof StreamStalledError
+              ? "stalled"
+              : error instanceof ModelResponseValidationError &&
+                  error.outputLimit
+                ? "truncated"
+                : retrying
+                  ? "retry"
+                  : "error",
+          diagnostics:
+            error instanceof ModelResponseValidationError
+              ? (error.diagnostics ?? null)
+              : null,
+          responseEstimate: null,
+          finishReason:
+            error instanceof ModelResponseValidationError
+              ? (error.diagnostics?.finishReason ?? null)
+              : null,
+        })
+      }
+      let round: CompletionRound
+      for (;;) {
+        const nextCap = nextOutputTokenCap(outputCap)
+        try {
+          round = await createCompletionRoundWithRetry({
+            conversationId,
+            logicalRoundId,
+            signal: abort.signal,
+            isTransientError,
+            validateRound: (round) =>
+              validateModelRoundForLoop({
+                round,
+                commandCompletionPending: commandCompletionInbox.hasPending(
+                  commandCompletionOwner
+                ),
+                canRaiseOutputCap: nextCap !== null,
+              }),
+            requestIdentity: {
+              accountId: llm.accountId,
+              modelId: llm.model,
+              apiMode: llm.apiMode,
+            },
+            recoverVisibleText: (rawText) => extractTextToolCalls(rawText).text,
+            onAttemptEvent: (() => {
+              let attemptText = ""
+              let withheldText = false
+              let visibleText = false
+              return (event) => {
+                if (event.type === "start") {
+                  attempt = event.attempt
+                  attemptLogged = false
+                  attemptText = ""
+                  withheldText = false
+                  visibleText = false
+                  onEvent({
+                    type: "stream_attempt",
+                    phase: "start",
+                    attemptId: event.attemptId,
+                    attempt: event.attempt,
+                  })
+                  return
+                }
+                if (event.type === "text") {
+                  attemptText += event.delta
+                  const trimmed = attemptText.trimStart()
+                  const mayBeTextToolCall =
+                    !streamedText &&
+                    ("[TOOL_CALL:".startsWith(trimmed) ||
+                      trimmed.startsWith("[TOOL_CALL:"))
+                  if (mayBeTextToolCall) {
+                    withheldText = true
+                    return
+                  }
+                  const visiblePiece = withheldText ? attemptText : event.delta
+                  withheldText = false
+                  if (!visibleText && streamedText) {
+                    onEvent({
+                      type: "token",
+                      delta: "\n\n",
+                      attemptId: event.attemptId,
+                    })
+                  }
+                  visibleText = true
                   onEvent({
                     type: "token",
-                    delta: "\n\n",
+                    delta: visiblePiece,
                     attemptId: event.attemptId,
                   })
+                  return
                 }
+                if (event.type === "commit") {
+                  const recovered = extractTextToolCalls(attemptText)
+                  if (
+                    withheldText &&
+                    recovered.toolCalls.length === 0 &&
+                    recovered.text
+                  ) {
+                    if (streamedText) {
+                      onEvent({
+                        type: "token",
+                        delta: "\n\n",
+                        attemptId: event.attemptId,
+                      })
+                    }
+                    onEvent({
+                      type: "token",
+                      delta: recovered.text,
+                      attemptId: event.attemptId,
+                    })
+                    visibleText = true
+                  }
+                  streamedText ||= visibleText
+                  onEvent({
+                    type: "stream_attempt",
+                    phase: "commit",
+                    attemptId: event.attemptId,
+                  })
+                  return
+                }
+                logFailedAttempt(event.error, event.retrying)
                 onEvent({
-                  type: "token",
-                  delta: recovered.text,
+                  type: "stream_attempt",
+                  phase: "rollback",
                   attemptId: event.attemptId,
+                  retrying: event.retrying,
                 })
-                visibleText = true
               }
-              streamedText ||= visibleText
-              onEvent({
-                type: "stream_attempt",
-                phase: "commit",
-                attemptId: event.attemptId,
-              })
-              return
+            })(),
+            request: () => {
+              const controller = new AbortController()
+              if (abort.signal.aborted) controller.abort(abort.signal.reason)
+              else
+                abort.signal.addEventListener(
+                  "abort",
+                  () => controller.abort(abort.signal.reason),
+                  { once: true }
+                )
+              current.abort = controller
+              return withStreamUsage(llm, (streamOptions) =>
+                createCompletion(
+                  llm.client,
+                  llm.model,
+                  outputCap,
+                  {
+                    messages,
+                    tools,
+                    stream: true,
+                    ...(streamOptions ? { stream_options: streamOptions } : {}),
+                  },
+                  [
+                    undefined,
+                    // The attempt's abort signal (chained to the turn's). On the
+                    // OpenAI-backed path the SDK forwards it to fetch. On the
+                    // Portkey path, breaking the iterator cancels the body.
+                    { signal: controller.signal },
+                  ],
+                  llm.apiMode
+                )
+              )
+            },
+          })
+          break
+        } catch (error) {
+          if (!attemptLogged) logFailedAttempt(error, false)
+          if (error instanceof StreamStalledError && !abort.signal.aborted) {
+            // Close the hung connection, then re-issue the round.
+            current.abort?.abort(error)
+            if (stalls < MAX_STREAM_STALLS) {
+              stalls += 1
+              logicalRoundId = roundId()
+              continue
             }
-            onEvent({
-              type: "stream_attempt",
-              phase: "rollback",
-              attemptId: event.attemptId,
-              retrying: event.retrying,
-            })
           }
-        })(),
-        request: () =>
-          createCompletion(
-            llm.client,
-            llm.model,
-            MAX_OUTPUT_TOKENS,
-            { messages, tools, stream: true },
-            [
-              undefined,
-              // The abort signal. On the OpenAI-backed path the SDK forwards it to
-              // fetch. On the Portkey path, breaking the iterator cancels the body.
-              { signal: abort.signal },
-            ],
-            llm.apiMode
-          ),
-      })
+          const truncated =
+            error instanceof ModelResponseValidationError && error.outputLimit
+          if (truncated && nextCap !== null && !abort.signal.aborted) {
+            // A fresh logical round id gives the re-issued round its own
+            // transient-retry budget; the truncated one's budget is spent.
+            outputCap = nextCap
+            logicalRoundId = roundId()
+            continue
+          }
+          if (outputCap > MAX_OUTPUT_TOKENS && rejectsOutputCap(error))
+            throw new ModelResponseValidationError(
+              "The model hit the output limit before returning a usable answer, and the provider rejected a higher output cap.",
+              { retryable: false }
+            )
+          throw error
+        }
+      }
 
       // Reassemble the streamed turn only after the request has completed. Each
       // failed transport/stream attempt buffers and discards its partial text and
       // tool fragments, so a retry cannot execute an abandoned partial tool call
       // or duplicate partial prose in the live UI.
       const usage = round.diagnostics.usage
+      logContextUsage({
+        requestSize,
+        roundId: logicalRoundId,
+        attempt,
+        outcome: abort.signal.aborted
+          ? "aborted"
+          : round.finishReason === "length"
+            ? "truncated"
+            : "ok",
+        diagnostics: round.diagnostics,
+        responseEstimate: measureResponse(
+          round.text,
+          round.toolFragments.map((fragment) => ({
+            name: fragment.function?.name ?? "",
+            arguments: fragment.function?.arguments ?? "",
+          }))
+        ),
+        finishReason: round.finishReason,
+      })
       if (usage) {
         hasTurnUsage = true
         turnUsage.promptTokens += usage.promptTokens ?? 0
@@ -1952,8 +2406,8 @@ export async function runAgentLoop(
           conversationId,
           role: "assistant",
           content: text
-            ? `${text}\n\n⏹ Stopped by user.`
-            : "⏹ Stopped by user.",
+            ? `${text}\n\n${stopNote(abort.signal)}`
+            : stopNote(abort.signal),
         })
         return { stopped: true }
       }
@@ -2004,7 +2458,7 @@ export async function runAgentLoop(
             appendMessage({
               conversationId,
               role: "assistant",
-              content: "⏹ Stopped by user.",
+              content: stopNote(abort.signal),
             })
             return { stopped: true }
           }
@@ -2400,6 +2854,7 @@ export async function runAgentLoop(
                     ),
                     skillResourceRoots,
                     parentSignal: callSignal,
+                    parentChatPythonVenv: opts.chatPythonVenv,
                     parentAutoMode: autoMode,
                     subscribeParentAutoMode: (subscriber) => {
                       autoModeSubscribers.add(subscriber)
@@ -2428,6 +2883,7 @@ export async function runAgentLoop(
                     agentDir,
                     parentConversation: conversation,
                     parentSignal: callSignal,
+                    parentChatPythonVenv: opts.chatPythonVenv,
                     depth: (opts.agentDepth ?? 0) + 1,
                     ancestors: [
                       ...(opts.agentAncestors ?? []),
@@ -2442,6 +2898,7 @@ export async function runAgentLoop(
             commandCompletionOwner,
             processRunId: opts.processRunId,
             processPhaseRunId: opts.processPhaseRunId,
+            missionControlSeat: opts.missionControlSeat,
           }
           // MCP tool calls (mcp__<server>__<tool>) route to the connection pool via
           // the manager, not the static tool registry. Gate first: calling a
@@ -2480,7 +2937,9 @@ export async function runAgentLoop(
             result =
               call.name === readSkillTool.definition.function.name
                 ? await readSkillTool.execute(args, ctx)
-                : await runTool(call.name, args, ctx)
+                : !hasWorkspace && CHAT_SHELL_TOOL_NAMES.has(call.name)
+                  ? await runChatShellTool(call.name, args, ctx)
+                  : await runTool(call.name, args, ctx)
           }
           // Keep the actual gate result, including recovered successes and the
           // reason for a block, instead of a tool's generic blocked message.
@@ -2503,6 +2962,17 @@ export async function runAgentLoop(
         owner: commandCompletionOwner,
         events: commandCompletionInbox.drain(commandCompletionOwner),
       })
+      // Seat mail that arrived while this seat was busy (plan 106.4) lands
+      // here, at the tool-round boundary, as one tagged turn. The claim and the
+      // transcript row commit together, so it is delivered exactly once.
+      if (seatProfile && seatProfile !== "answer_only") {
+        const mail = deliverQueued({
+          identity: opts.missionControlSeat!,
+          conversationId,
+          wakeTaskId: null,
+        })
+        if (mail) messages.push({ role: "user", content: mail.content })
+      }
 
       // If any tool produced an image this round (browser_screenshot), inject it
       // as a user message with image content parts so the vision model sees it on
@@ -2535,7 +3005,7 @@ export async function runAgentLoop(
       appendMessage({
         conversationId,
         role: "assistant",
-        content: "⏹ Stopped by user.",
+        content: stopNote(abort.signal),
       })
       return { stopped: true }
     }
@@ -2603,6 +3073,20 @@ export async function runAgentLoop(
         : undefined
     return failTurn(conversationId, message, retryable, undefined, failure)
   } finally {
+    // A seat turn (plan 106.7): its conversation may now be long enough to
+    // compact (the next turn then gets a Refocus), and a working turn may
+    // have taught the seat a lesson worth keeping for its successors.
+    if (!turnWillRetry && seatIdentity) {
+      afterSeatTurn(conversationId)
+      if (seatIdentity.profile === "work" && !abort.signal.aborted)
+        void recordSeatLessons({
+          identity: seatIdentity,
+          conversationId,
+          sinceSeq: turnStartSeq,
+        }).catch((err) =>
+          console.warn("[seat-memory] lesson record failed:", err)
+        )
+    }
     // Record the turn for automatic memory on EVERY terminal path, not only the
     // clean final-answer one. Turns that end in a user stop, an output-cap
     // truncation, or a thrown model error still carry durable user-stated facts,
@@ -2681,6 +3165,25 @@ async function childInstructionResource(input: {
   return readFile(path, "utf8")
 }
 
+// A Chat command tool, run with its context rooted in the conversation's
+// scratch dir (see tools/chat_shell.ts).
+async function runChatShellTool(
+  name: string,
+  args: Record<string, unknown>,
+  ctx: ToolContext
+): Promise<string> {
+  let shellCtx: ToolContext
+  try {
+    shellCtx = await chatShellContext(ctx)
+  } catch (err) {
+    return toolError(
+      "no_workspace",
+      err instanceof Error ? err.message : String(err)
+    )
+  }
+  return runTool(name, args, shellCtx)
+}
+
 async function spawnSubagentBatch(input: {
   input: SpawnSubagentsInput
   parentConversation: Conversation | undefined
@@ -2690,6 +3193,8 @@ async function spawnSubagentBatch(input: {
   parentToolNames: Set<string>
   skillResourceRoots: Record<string, string>
   parentSignal: AbortSignal
+  // A chat's subagents share its Python venv; see RunAgentLoopOptions.
+  parentChatPythonVenv?: boolean
   parentAutoMode: boolean
   subscribeParentAutoMode: (
     subscriber: (enabled: boolean) => void
@@ -2820,6 +3325,7 @@ async function spawnSubagentBatch(input: {
     const worker = createConversation({
       mode: input.parentConversation?.mode ?? "interactive",
       workspaceId: input.parentConversation?.workspaceId ?? null,
+      workingDirectory: input.parentConversation?.workingDirectory ?? null,
       accountId: input.parentConversation?.accountId ?? null,
       modelId: input.parentConversation?.modelId ?? null,
       agentName: agent?.name ?? null,
@@ -2931,6 +3437,7 @@ async function spawnSubagentBatch(input: {
         agentAncestors: input.ancestors,
         suppressUserQuestions: true,
         subagentRun: true,
+        chatPythonVenv: input.parentChatPythonVenv,
         repositoryLeaseToken: lease?.token,
         beforeApproval: (signal) => approvalCoordinator.acquire(signal),
         onApprovalWaitingChange: (waiting) => {
@@ -3067,6 +3574,8 @@ async function spawnSubagent(input: {
   agentDir?: string
   parentConversation: Conversation | undefined
   parentSignal: AbortSignal
+  // A chat's subagents share its Python venv; see RunAgentLoopOptions.
+  parentChatPythonVenv?: boolean
   depth: number
   ancestors: string[]
 }): Promise<{ content?: string; error?: string; stopped?: boolean }> {
@@ -3084,6 +3593,7 @@ async function spawnSubagent(input: {
   const worker = createConversation({
     mode: input.parentConversation?.mode ?? "interactive",
     workspaceId: input.parentConversation?.workspaceId ?? null,
+    workingDirectory: input.parentConversation?.workingDirectory ?? null,
     accountId: input.parentConversation?.accountId ?? null,
     modelId: input.parentConversation?.modelId ?? null,
     agentName: child.name,
@@ -3131,6 +3641,7 @@ async function spawnSubagent(input: {
       agentAncestors: input.ancestors,
       suppressUserQuestions: true,
       subagentRun: true,
+      chatPythonVenv: input.parentChatPythonVenv,
     })
     if (result.stopped || childAbort.signal.aborted) return { stopped: true }
     if (result.error) return { error: result.error }
@@ -3193,6 +3704,7 @@ export async function runChat(
       // directly and intentionally do not consult this conversation preference.
       conversationSubagentsEnabled:
         settingsService.getConversations().allowConversationSubagents,
+      chatPythonVenv: true,
       onEvent,
       abort,
       enqueueTask,

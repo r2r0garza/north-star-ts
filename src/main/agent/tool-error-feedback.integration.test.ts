@@ -23,10 +23,20 @@ vi.mock("electron", () => ({
   },
 }))
 vi.mock("./memory/service", () => ({ recordMemoryTurn: vi.fn(async () => {}) }))
+// Chat Python venv: no real interpreter in tests. Only turns that set
+// chatPythonVenv ever consult it.
+vi.mock("../python/chat-venv", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../python/chat-venv")>()),
+  resolveChatVenvOverlay: async () => ({
+    prependPath: ["/venv/bin"],
+    vars: { VIRTUAL_ENV: "/venv" },
+  }),
+}))
 
 type CompletionRequest = {
   messages: any[]
   tools: string[]
+  maxTokens: number
 }
 
 const scriptedCompletions: Array<
@@ -46,12 +56,13 @@ vi.mock("./providers", () => {
     createCompletion: async (
       _client: unknown,
       _model: string,
-      _maxTokens: number,
+      maxTokens: number,
       base: { messages: any[]; tools: Array<{ function: { name: string } }> }
     ) => {
       const snapshot = structuredClone({
         messages: base.messages,
         tools: base.tools.map((tool) => tool.function.name),
+        maxTokens,
       })
       completionRequests.push(snapshot)
       const next = scriptedCompletions.shift()
@@ -66,6 +77,11 @@ vi.mock("./providers", () => {
 })
 
 import { createConversation } from "../db/repositories/conversations"
+import { MODEL_STREAM_IDLE } from "./model-request-retry"
+import {
+  addConversationNote,
+  takeConversationNotes,
+} from "../db/repositories/conversation-notes"
 import { appendMessage, listMessages } from "../db/repositories/messages"
 import {
   listToolCallLifecycle,
@@ -136,6 +152,20 @@ function streamText(content: string): AsyncIterable<any> {
     }
   })()
 }
+
+function streamTextEnding(
+  content: string,
+  finishReason: string
+): AsyncIterable<any> {
+  return (async function* () {
+    yield { choices: [{ delta: { content }, finish_reason: finishReason }] }
+  })()
+}
+
+// nav-test-5's QA reply: a DSML tool call cut off mid-parameter, which the
+// provider passed through as text.
+const TRUNCATED_DSML =
+  'Let me verify the last rewrite path.\n<｜DSML｜ invoke name="exec_command">\n<｜DSML｜ parameter name="command" string="true">cd repo && python - <<\'PY\'\nco.create("run-1", not_before='
 
 function streamEmpty(finishReason: string | null): AsyncIterable<any> {
   return (async function* () {
@@ -977,11 +1007,216 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
     })
   })
 
-  it("fails empty length responses without an automatic retry", async () => {
+  describe("hung streams", () => {
+    const saved = { ...MODEL_STREAM_IDLE }
+    beforeEach(() => {
+      MODEL_STREAM_IDLE.firstChunkMs = 40
+      MODEL_STREAM_IDLE.betweenChunksMs = 40
+    })
+    afterEach(() => Object.assign(MODEL_STREAM_IDLE, saved))
+
+    const hanging = (firstChunk?: string): AsyncIterable<any> =>
+      (async function* () {
+        if (firstChunk)
+          yield {
+            choices: [{ delta: { content: firstChunk }, finish_reason: null }],
+          }
+        await new Promise(() => {})
+      })()
+
+    it("re-issues a round whose stream never sends anything", async () => {
+      const workspace = await makeWorkspace()
+      const conversation = createConversation({ mode: "interactive" })
+      scriptedCompletions.push(
+        () => hanging(),
+        () => streamText("Recovered.")
+      )
+      const result = await runAgentLoop({
+        conversationId: conversation.id,
+        workspace,
+        userMessage: "go",
+        abort: new AbortController(),
+        onEvent: () => {},
+      })
+      expect(result).toEqual({ content: "Recovered." })
+      expect(completionRequests).toHaveLength(2)
+      expect(getBudget(conversation.id, "after-seq:1:stall-1")).toMatchObject({
+        status: "completed",
+      })
+    })
+
+    it("discards a stream that stops mid-reply and re-issues the round", async () => {
+      const workspace = await makeWorkspace()
+      const conversation = createConversation({ mode: "interactive" })
+      scriptedCompletions.push(
+        () => hanging("Half an ans"),
+        () => streamText("Whole answer.")
+      )
+      const result = await runAgentLoop({
+        conversationId: conversation.id,
+        workspace,
+        userMessage: "go",
+        abort: new AbortController(),
+        onEvent: () => {},
+      })
+      expect(result).toEqual({ content: "Whole answer." })
+    })
+
+    it("fails the turn when the stream stays hung through every re-issue", async () => {
+      const workspace = await makeWorkspace()
+      const conversation = createConversation({ mode: "interactive" })
+      scriptedCompletions.push(
+        () => hanging(),
+        () => hanging(),
+        () => hanging()
+      )
+      const result = await runAgentLoop({
+        conversationId: conversation.id,
+        workspace,
+        userMessage: "go",
+        abort: new AbortController(),
+        onEvent: () => {},
+      })
+      expect(result.error).toContain("looks hung")
+      expect(completionRequests).toHaveLength(3)
+    })
+  })
+
+  it("delivers a note left mid-turn before the next model round, once", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+    addConversationNote(
+      conversation.id,
+      "Stop investigating and write the plan.",
+      "user"
+    )
+
+    scriptedCompletions.push(() => streamText("Plan written."))
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "refine the story",
+      abort: new AbortController(),
+      onEvent: () => {},
+    })
+
+    expect(result).toEqual({ content: "Plan written." })
+    const last = completionRequests[0].messages.at(-1)
+    expect(last).toMatchObject({ role: "user" })
+    expect(String(last.content)).toContain(
+      "Note from the user while you work:\n\nStop investigating and write the plan."
+    )
+    expect(takeConversationNotes(conversation.id)).toEqual([])
+  })
+
+  it("re-issues an empty length response with a higher output cap", async () => {
     const workspace = await makeWorkspace()
     const conversation = createConversation({ mode: "interactive" })
 
-    scriptedCompletions.push(() => streamEmpty("length"))
+    scriptedCompletions.push(
+      () => streamEmpty("length"),
+      () => streamText("Done after raising the cap.")
+    )
+
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "finish the task",
+      abort: new AbortController(),
+      onEvent: () => {},
+    })
+
+    expect(result).toEqual({ content: "Done after raising the cap." })
+    expect(completionRequests.map((r) => r.maxTokens)).toEqual([8192, 16_384])
+    expect(getBudget(conversation.id, "after-seq:1")).toMatchObject({
+      status: "exhausted",
+      attemptsConsumed: 1,
+    })
+  })
+
+  it("re-issues a truncated text reply instead of taking it as the answer", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+
+    scriptedCompletions.push(
+      () => streamTextEnding(TRUNCATED_DSML, "length"),
+      () => streamText("Verified: the schedule survives every rewrite path.")
+    )
+
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "verify the story",
+      abort: new AbortController(),
+      onEvent: () => {},
+    })
+
+    expect(result).toEqual({
+      content: "Verified: the schedule survives every rewrite path.",
+    })
+    expect(completionRequests.map((r) => r.maxTokens)).toEqual([8192, 16_384])
+  })
+
+  it("fails a reply that is still a truncated tool call at the top cap", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+
+    scriptedCompletions.push(
+      () => streamTextEnding(TRUNCATED_DSML, "length"),
+      () => streamTextEnding(TRUNCATED_DSML, "length"),
+      () => streamTextEnding(TRUNCATED_DSML, "length")
+    )
+
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "verify the story",
+      abort: new AbortController(),
+      onEvent: () => {},
+    })
+
+    expect(result.error).toContain("in the middle of a tool call")
+    expect(result.retryable).toBe(false)
+  })
+
+  it("retries a tool call that arrived as unparsed text", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+
+    scriptedCompletions.push(
+      () =>
+        streamTextEnding(
+          '<｜DSML｜ invoke name="list_files_tool">\n<｜DSML｜ parameter name="path" string="true">.</｜DSML｜ parameter>\n</｜DSML｜ invoke>',
+          "stop"
+        ),
+      () => streamText("Done.")
+    )
+
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "list the files",
+      abort: new AbortController(),
+      onEvent: () => {},
+    })
+
+    expect(result).toEqual({ content: "Done." })
+    expect(completionRequests).toHaveLength(2)
+    expect(getBudget(conversation.id, "after-seq:1")).toMatchObject({
+      status: "completed",
+      attemptsConsumed: 2,
+    })
+  })
+
+  it("fails empty length responses once the output cap can't go higher", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+
+    scriptedCompletions.push(
+      () => streamEmpty("length"),
+      () => streamEmpty("length"),
+      () => streamEmpty("length")
+    )
 
     const result = await runAgentLoop({
       conversationId: conversation.id,
@@ -993,11 +1228,37 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
 
     expect(result.error).toContain("output limit")
     expect(result.retryable).toBe(false)
-    expect(completionRequests).toHaveLength(1)
-    expect(getBudget(conversation.id, "after-seq:1")).toMatchObject({
+    expect(completionRequests.map((r) => r.maxTokens)).toEqual([
+      8192, 16_384, 32_768,
+    ])
+    expect(getBudget(conversation.id, "after-seq:1:cap-32768")).toMatchObject({
       status: "exhausted",
       attemptsConsumed: 1,
     })
+  })
+
+  it("keeps the output-limit failure when the provider rejects a higher cap", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+
+    scriptedCompletions.push(
+      () => streamEmpty("length"),
+      () => {
+        throw new Error("max_tokens is too large: 16384")
+      }
+    )
+
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "finish the task",
+      abort: new AbortController(),
+      onEvent: () => {},
+    })
+
+    expect(result.error).toContain("rejected a higher output cap")
+    expect(result.retryable).toBe(false)
+    expect(completionRequests).toHaveLength(2)
   })
 
   it.each([
@@ -1115,6 +1376,87 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
       ).toEqual({ content: "Done." })
     }
   )
+
+  it.each([
+    { label: "passes a chat's Python venv to its subagents", chat: true },
+    { label: "keeps the venv from subagents of other runs", chat: false },
+  ])("$label", async ({ chat }) => {
+    const workspace = await makeWorkspace()
+    const agentsDir = join(workspace, ".cowork", "agents")
+    await mkdir(agentsDir, { recursive: true })
+    await writeFile(
+      join(agentsDir, "parent.agent.md"),
+      [
+        "---",
+        "name: parent",
+        "description: Delegates work.",
+        "tools: [agent]",
+        "children: [child]",
+        "user-invocable: true",
+        "---",
+        "Delegate suitable work.",
+      ].join("\n"),
+      "utf-8"
+    )
+    await writeFile(
+      join(agentsDir, "child.agent.md"),
+      [
+        "---",
+        "name: child",
+        "description: Handles delegated work.",
+        "tools: [read]",
+        "---",
+        "Read files and report back.",
+      ].join("\n"),
+      "utf-8"
+    )
+    const conversation = createConversation({
+      mode: "interactive",
+      agentName: "parent",
+    })
+    // Record rather than assert inside the callbacks: a throw in the child's
+    // completion is caught by the child loop and would not fail the test.
+    const sawVenvNote: boolean[] = []
+    const recordVenvNote = (request: CompletionRequest) =>
+      sawVenvNote.push(
+        (
+          request.messages.find((message) => message.role === "system")
+            ?.content as string
+        ).includes("## Python packages")
+      )
+
+    scriptedCompletions.push((request) => {
+      recordVenvNote(request)
+      return streamToolCalls([
+        {
+          id: "spawn-1",
+          name: "spawn_subagent",
+          arguments: JSON.stringify({ agent_name: "child", prompt: "Go." }),
+        },
+      ])
+    })
+    scriptedCompletions.push((request) => {
+      recordVenvNote(request)
+      return streamText("Child done.")
+    })
+    scriptedCompletions.push(() => streamText("Done."))
+
+    expect(
+      await runAgentLoop({
+        conversationId: conversation.id,
+        workspace,
+        agentDir: workspace,
+        userMessage: "Handle this task.",
+        abort: new AbortController(),
+        conversationSubagentsEnabled: true,
+        chatPythonVenv: chat,
+        onEvent: () => {},
+      })
+    ).toEqual({ content: "Done." })
+    expect(scriptedCompletions).toHaveLength(0)
+    // [parent's first request, child's request]
+    expect(sawVenvNote).toEqual([chat, chat])
+  })
 
   // Plan 033.4 offering policy: dashboard_read rides with dashboard_write in
   // non-Chat modes but stays offered in plan mode; custom agents opt in through
@@ -1810,11 +2152,15 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
     })
   })
 
-  it("exhausts a durable budget without a transient retry for truncated tool calls", async () => {
+  it("raises the cap for truncated tool calls, then fails at the top step", async () => {
     const workspace = await makeWorkspace()
     const conversation = createConversation({ mode: "interactive" })
 
-    scriptedCompletions.push(() => streamLengthToolCall())
+    scriptedCompletions.push(
+      () => streamLengthToolCall(),
+      () => streamLengthToolCall(),
+      () => streamLengthToolCall()
+    )
 
     const result = await runAgentLoop({
       conversationId: conversation.id,
@@ -1828,8 +2174,11 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
       "The model's response was truncated before the tool call completed"
     )
     expect(result.retryable).toBe(false)
-    expect(completionRequests).toHaveLength(1)
-    expect(getBudget(conversation.id, "after-seq:1")).toMatchObject({
+    // Re-issued at each higher cap before giving up at the top step.
+    expect(completionRequests.map((r) => r.maxTokens)).toEqual([
+      8192, 16_384, 32_768,
+    ])
+    expect(getBudget(conversation.id, "after-seq:1:cap-32768")).toMatchObject({
       status: "exhausted",
       attemptsConsumed: 1,
     })

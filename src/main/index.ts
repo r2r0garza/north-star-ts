@@ -18,6 +18,7 @@ import { config as loadEnv } from "dotenv"
 loadEnv({ path: join(app.getAppPath(), ".env.local") })
 
 import {
+  runAgentLoop,
   runChat,
   resolveApproval,
   resolveQuestion,
@@ -52,6 +53,7 @@ import { assertSkillSecurity } from "./agent/skills/security"
 import {
   agentSources,
   agentSourceEntries as getAgentSourceEntries,
+  initUserAgents,
   userAgentsDir,
 } from "./agent/agents/sources"
 import {
@@ -74,7 +76,15 @@ import type {
   AgentTree,
   AgentFolder,
 } from "./agent/agents/types"
-import { listWorkspaces } from "./db/repositories/workspaces"
+import {
+  getWorkspace as getWorkspaceRow,
+  listWorkspaces,
+  updateWorkspace as updateWorkspaceRow,
+} from "./db/repositories/workspaces"
+import { getFeature as getFeatureRow } from "./db/repositories/features"
+import { WorkspaceAnalysisService } from "./mission-control/workspace-analysis"
+import { registerWorkspaceAnalysisHandlers } from "./ipc/workspace-analysis-handlers"
+import { resolveLlm, createCompletion } from "./agent/providers"
 import * as settingsService from "./settings/service"
 import { listWorkspaceFiles } from "./files/list"
 import { listWorkspaceDirectory } from "./files/tree"
@@ -99,6 +109,7 @@ import { generateCommitMessage } from "./git/commit-message"
 import { openInIde } from "./ide/open"
 import { resolveInWorkspaceReal } from "./agent/tools/workspace"
 import { registerDbHandlers } from "./ipc/db-handlers"
+import { autoIndexWorkspace } from "./index/auto-index"
 import { registerSettingsHandlers } from "./ipc/settings-handlers"
 import {
   refreshCodexSubscriptionModelsOnStartup,
@@ -114,8 +125,36 @@ import { IndexWatcher } from "./index/watcher"
 import { SummaryService, SUMMARIZE_KIND } from "./summaries/service"
 import { ProcessService, PROCESS_RUN_KIND } from "./tasks/process/service"
 import { registerProcessHandlers } from "./ipc/process-handlers"
+import { UserStoryRunner } from "./mission-control/user-story-runner"
+import { MilestoneIntegration } from "./mission-control/integration"
+import {
+  startConflictResolution,
+  startHookRun,
+} from "./mission-control/hook-runner"
+import { installNavigator, Navigator } from "./mission-control/navigator"
+import { installMapTools, MapToolService } from "./mission-control/map-tools"
+import { onWorkChanged } from "./mission-control/work-events"
+import {
+  installSeatSummarizer,
+  onConversationCompacted,
+  signalDrift,
+} from "./mission-control/refocus"
+import {
+  HealthMonitor,
+  installHealthMonitor,
+} from "./mission-control/health/monitor"
+import { onEventRecorded } from "./db/repositories/mc-events"
+import { installSeatComms, SeatComms } from "./mission-control/comms"
+import { onCommsChanged } from "./mission-control/comms-events"
+import {
+  installSeatSessions,
+  SEAT_WAKE_KIND,
+  SeatSessionService,
+} from "./mission-control/sessions"
+import { getAccount as getProviderAccount } from "./db/repositories/provider-accounts"
 import { DashboardService, DASHBOARD_REFRESH_KIND } from "./dashboards/service"
 import { registerDashboardHandlers } from "./ipc/dashboard-handlers"
+import { registerMissionControlHandlers } from "./ipc/mission-control-handlers"
 import { BrowserManager } from "./browser/manager"
 import { registerTerminalHandlers } from "./ipc/terminal-handlers"
 import { registerFileWatchHandlers } from "./ipc/file-handlers"
@@ -137,6 +176,7 @@ import {
   startPlanMaintenance,
   stopPlanMaintenance,
 } from "./agent/tools/plan-file"
+import { ensureChatVenv } from "./python/chat-venv"
 
 // The durable task runner — a singleton owned by the main process. Started in
 // app.whenReady (after the DB handlers register) and stopped on will-quit.
@@ -147,14 +187,273 @@ const indexService = new IndexService(taskRunner)
 const indexWatcher = new IndexWatcher(taskRunner, indexService)
 // The rolling conversation summarizer (plan 019), driven as a task kind on the
 // runner. Holds the runner reference so the post-turn trigger can enqueue.
-const summaryService = new SummaryService(taskRunner)
+const summaryService = new SummaryService(taskRunner, onConversationCompacted)
+// Seat conversations compact like chats (plan 106.7): a long seat session is
+// summarized after its turns, and its next turn gets a Refocus.
+installSeatSummarizer((conversationId) =>
+  summaryService.maybeSummarize(conversationId)
+)
 // The Process engine (plan 025), driven as the deterministic `process_run` task
 // kind. Holds the runner reference so startRun can enqueue the orchestrator task.
 const processService = new ProcessService(taskRunner)
+// Mission Control user story execution (plan 106.3): launches playbooks as Process
+// runs and applies each run's terminal outcome to its user story exactly once.
+// The provider a Mission Control worker runs on for an account selection (null
+// = the global default).
+function workerProvider(accountId: string | null): string | null {
+  const id = accountId ?? settingsService.getLlm().activeAccountId
+  return id ? (getProviderAccount(id)?.provider ?? null) : null
+}
+// Mission Control seat sessions and Comms (plan 106.4). Wake turns run as the
+// durable `seat_wake` task kind; each is one headless agent turn in the seat's
+// home conversation, with the read/search-only profile the service picks.
+const seatSessions = new SeatSessionService({
+  runTurn: async (input) => {
+    const abort = new AbortController()
+    if (input.signal.aborted) abort.abort(input.signal.reason)
+    else
+      input.signal.addEventListener(
+        "abort",
+        () => abort.abort(input.signal.reason),
+        { once: true }
+      )
+    return runAgentLoop({
+      conversationId: input.conversationId,
+      workspace: input.workspace,
+      agentDir: input.workspace,
+      abort,
+      agentOverride: input.agentOverride,
+      extraContextSections: input.contextSections,
+      missionControlSeat: input.seat,
+      // Headless: nobody is there to answer a clarifying question.
+      suppressUserQuestions: true,
+      onEvent: () => {},
+    })
+  },
+  loadAgents: (workspace) => loadAgents(agentSources(workspace)),
+  enqueueWake: (input) =>
+    taskRunner.enqueueKind({
+      kind: SEAT_WAKE_KIND,
+      title: input.title,
+      input: {
+        featureId: input.featureId,
+        address: input.address,
+        ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+      },
+    }),
+  cancelTask: (taskId) => taskRunner.cancel(taskId),
+})
+const seatComms = new SeatComms({
+  dispatch: (featureId, address) => seatSessions.dispatch(featureId, address),
+  notifyUser: (title, body) => {
+    if (!Notification.isSupported()) return
+    new Notification({ title, body, silent: false }).show()
+  },
+  mailRefusal: (feature, address) => {
+    const rig = feature.rigSnapshot
+    const seat = rig?.seats.find(
+      (candidate) =>
+        `${candidate.key}@${rig.pods.find((pod) => pod.id === candidate.podId)?.key}` ===
+        address
+    )
+    const provider = workerProvider(
+      seat?.runtimeConfig?.worker?.accountId ?? null
+    )
+    return provider === "claude_code" || provider === "codex_cli"
+      ? `${address} runs on the ${provider === "claude_code" ? "Claude Code" : "Codex"} CLI, which runs its own loop and cannot receive Comms messages yet.`
+      : null
+  },
+})
+installSeatSessions(seatSessions)
+installSeatComms(seatComms)
+// Milestone integration (plan 106.5): a worktree per user story attempt under app
+// data, the per-milestone merge queue, and merge-policy landing. Conflicts run
+// the milestone playbook's after_each_user_story hook through the user story runner.
+const milestoneIntegration: MilestoneIntegration = new MilestoneIntegration({
+  worktreeRoot: () =>
+    join(app.getPath("userData"), "mission-control", "worktrees"),
+  startResolution: (input) => startConflictResolution(userStoryRunner, input),
+  notifyUser: (title, body) => {
+    if (!Notification.isSupported()) return
+    new Notification({ title, body, silent: false }).show()
+  },
+  onChanged: (featureId) => {
+    const wc = mainWindow?.webContents
+    if (wc && !wc.isDestroyed())
+      wc.send("missionControl:integration:changed", featureId)
+    milestoneNavigator.poke(featureId)
+  },
+})
+const userStoryRunner: UserStoryRunner = new UserStoryRunner({
+  startProcessRun: (input) => processService.startRun(input),
+  cancelTask: (taskId) => taskRunner.cancel(taskId),
+  loadAgents: (workspace) => loadAgents(agentSources(workspace)),
+  workerProvider,
+  onCancelled: (featureId) => seatSessions.cancelFeature(featureId),
+  integration: milestoneIntegration,
+})
+// The Navigator (plan 106.6): deterministic GPS for each feature. It ticks
+// on durable work events (debounced), drives Autopilot's mechanical steps, and
+// directs the lead seat; its state is all SQLite, so it resumes on boot.
+function notifyUser(title: string, body: string): void {
+  if (!Notification.isSupported()) return
+  new Notification({ title, body, silent: false }).show()
+}
+const milestoneNavigator: Navigator = new Navigator({
+  startUserStory: (userStoryId, options) =>
+    userStoryRunner.startUserStory(userStoryId, options),
+  isStartingUserStory: (userStoryId) => userStoryRunner.isStarting(userStoryId),
+  preparingUserStories: (featureId) =>
+    userStoryRunner.preparingUserStories(featureId),
+  startHook: (input) => startHookRun(userStoryRunner, input),
+  cancelPlaybookRun: (id) => userStoryRunner.cancelPlaybookRun(id),
+  workspaceMode: (feature) => milestoneIntegration.workspaceMode(feature),
+  advanceMilestone: (milestoneId) =>
+    milestoneIntegration.advanceMilestone(milestoneId),
+  kickMerges: (milestoneId) => void milestoneIntegration.kick(milestoneId),
+  completeMilestone: async (milestoneId) => {
+    await milestoneIntegration.markMerged(milestoneId, "navigator")
+  },
+  direct: (input) => {
+    const result = seatComms.direct(input)
+    if (!result.ok) throw new Error(result.message)
+  },
+  notifyUser,
+  onResumed: (featureId) => {
+    seatSessions.dispatchFeature(featureId)
+    healthMonitor.onResumed(featureId)
+  },
+  onCancelled: (featureId) => seatSessions.cancelFeature(featureId),
+  onChanged: (featureId) => {
+    const wc = mainWindow?.webContents
+    if (wc && !wc.isDestroyed())
+      wc.send("missionControl:navigator:changed", featureId)
+  },
+  // Seats orient through index_query_tool; without this, a feature's workspace
+  // was only indexed if the user happened to open a chat in it.
+  onFeatureStarted: (feature) => {
+    if (feature.workspaceId)
+      autoIndexWorkspace(
+        feature.workspaceId,
+        "high",
+        indexService,
+        indexWatcher
+      )
+  },
+})
+installNavigator(milestoneNavigator)
+// Health (plan 106.8): progress vs ceremony, pathology detectors, alerts to
+// the context-bearing seat, Refocus for the offenders, and auto-pause.
+const healthMonitor: HealthMonitor = new HealthMonitor({
+  notifyUser,
+  alert: (input) => {
+    const result = seatComms.alert(input)
+    if (!result.ok) throw new Error(result.message)
+  },
+  pause: (featureId, reason) =>
+    void milestoneNavigator.pause(featureId, reason, "health"),
+  refocus: (conversationId, signal) => signalDrift(conversationId, signal),
+  onChanged: (featureId) => {
+    const wc = mainWindow?.webContents
+    if (wc && !wc.isDestroyed())
+      wc.send("missionControl:health:changed", featureId)
+  },
+})
+installHealthMonitor(healthMonitor)
+// Lead seats' map tools (plan 106.6), decision-rights gated server-side.
+installMapTools(
+  new MapToolService({
+    position: (featureId) => milestoneNavigator.position(featureId),
+    startUserStory: (userStoryId, options) =>
+      userStoryRunner.startUserStory(userStoryId, options),
+    cancelUserStory: (userStoryId) =>
+      userStoryRunner.cancelUserStory(userStoryId),
+    completeMilestone: async (milestoneId) => {
+      await milestoneIntegration.markMerged(milestoneId, "navigator")
+    },
+  })
+)
+onWorkChanged((featureId) => {
+  milestoneNavigator.poke(featureId)
+  healthMonitor.poke(featureId)
+})
+onEventRecorded((featureId) => healthMonitor.poke(featureId))
+processService.onRunSettled((processRunId) => {
+  userStoryRunner.settle(processRunId)
+  // Mail held while the run still had steps for its seats can now wake them.
+  seatSessions.onProcessRunActivity(processRunId)
+})
+// A seat whose last playbook step just settled may have held mail waiting.
+taskRunner.subscribe((_taskId, event) => {
+  if (
+    event.type === "process_phase" &&
+    ["completed", "failed", "cancelled", "skipped"].includes(event.status)
+  )
+    seatSessions.onProcessRunActivity(event.runId)
+})
 // Deterministic dashboard refresh (plan 033.3): re-runs each widget's stored
 // recipe headless. Holds the runner reference so ensureRefresh can enqueue.
 const dashboardService = new DashboardService(taskRunner)
 const terminalService = new TerminalService()
+
+// Workspace setup findings (plan 106.11): Analyze workspace, the checklist's
+// fixes (run in the integrated terminal), and Start's preflight.
+const workspaceAnalysis = new WorkspaceAnalysisService({
+  terminals: terminalService,
+  getFeature: (id) => getFeatureRow(id) ?? undefined,
+  getWorkspace: getWorkspaceRow,
+  updateWorkspace: (id, patch) => updateWorkspaceRow(id, patch),
+  setOverlapPolicy: (featureId, value) =>
+    milestoneNavigator.setOverlapPolicy(featureId, value),
+  // One bounded, non-streaming call to the active provider; null when none
+  // is configured (the built-in checks still run).
+  complete: () => {
+    let resolved: ReturnType<typeof resolveLlm>
+    try {
+      resolved = resolveLlm()
+    } catch {
+      return null
+    }
+    const { client, model, apiMode } = resolved
+    return async (system, user, signal) => {
+      const res = (await createCompletion(
+        client,
+        model,
+        4000,
+        {
+          messages: [
+            { role: "system", content: system },
+            { role: "user", content: user },
+          ],
+        },
+        [undefined, { signal }],
+        apiMode
+      )) as { choices?: { message?: { content?: unknown } }[] }
+      const content = res.choices?.[0]?.message?.content
+      return typeof content === "string"
+        ? content
+        : Array.isArray(content)
+          ? content
+              .map((part) =>
+                typeof part === "object" && part && "text" in part
+                  ? String((part as { text: unknown }).text)
+                  : ""
+              )
+              .join("")
+          : ""
+    }
+  },
+  onChanged: (featureId) => {
+    const wc = mainWindow?.webContents
+    if (wc && !wc.isDestroyed())
+      wc.send("missionControl:analysis:changed", featureId)
+  },
+  onRunChanged: (run) => {
+    const wc = mainWindow?.webContents
+    if (wc && !wc.isDestroyed())
+      wc.send("missionControl:analysis:runChanged", run)
+  },
+})
 // The agent's browser (secondary window + WebContentsView driven over CDP).
 // Owned here so runChat can hand each live turn a signal-bound handle; disposed
 // on will-quit. Lazily creates its window on first agent use.
@@ -1032,12 +1331,14 @@ ipcMain.handle(
     try {
       const bytes = await readFile(abs)
       const truncated = bytes.byteLength > FILE_READ_TEXT_LIMIT
-      const slice = truncated ? bytes.subarray(0, FILE_READ_TEXT_LIMIT) : bytes
-      if (isBinaryBuffer(slice)) {
+      const userStory = truncated
+        ? bytes.subarray(0, FILE_READ_TEXT_LIMIT)
+        : bytes
+      if (isBinaryBuffer(userStory)) {
         return { content: null, truncated, error: null, kind: "binary" }
       }
       return {
-        content: slice.toString("utf8"),
+        content: userStory.toString("utf8"),
         truncated,
         error: null,
         kind: "text",
@@ -1101,7 +1402,8 @@ for (const action of ["switchBranch", "createBranch"] as const) {
         return { ok: false, error: "Enter a branch name." }
       }
       const blocker = await repositoryDelegationLeases.blocker(workspace.trim())
-      if (blocker) return { ok: false, error: `repository_busy: ${blocker.label}` }
+      if (blocker)
+        return { ok: false, error: `repository_busy: ${blocker.label}` }
       return new GitService(workspace.trim())[action](branch)
     }
   )
@@ -1134,7 +1436,8 @@ ipcMain.handle(
       return { ok: false, error: "Enter a commit message." }
     }
     const blocker = await repositoryDelegationLeases.blocker(workspace.trim())
-    if (blocker) return { ok: false, error: `repository_busy: ${blocker.label}` }
+    if (blocker)
+      return { ok: false, error: `repository_busy: ${blocker.label}` }
     return new GitService(workspace.trim()).commitSelected(paths, message)
   }
 )
@@ -1293,11 +1596,12 @@ app.whenReady().then(async () => {
   // consults the registry to decide which orphaned kinds auto-resume.
   // todo_run: a handed-off todo list. Auto-resume so a long list survives a
   // restart and continues (plan 016).
-  taskRunner.registerKind("todo_run", { autoResume: true })
+  taskRunner.registerKind("todo_run", { autoResume: true, lane: "work" })
   // workspace_index: deterministic (no LLM) executor; auto-resume so a paused or
   // crash-interrupted index continues from its cursor on next boot (plan 008).
   taskRunner.registerKind("workspace_index", {
     autoResume: true,
+    lane: "background",
     // Observable/cancellable via the indexing panel, and born source-less by
     // design — exempt from the plan 022 orphan reaper.
     hasIndependentSurface: true,
@@ -1312,6 +1616,7 @@ app.whenReady().then(async () => {
   // worker conversation) at the next boot rather than letting them accumulate.
   taskRunner.registerKind(SUMMARIZE_KIND, {
     autoResume: false,
+    lane: "background",
     run: summaryService.execute,
   })
   // process_run: the DAG orchestrator (plan 025). Deterministic executor seam —
@@ -1323,6 +1628,7 @@ app.whenReady().then(async () => {
   // and is observable via the 026 monitor, so it's exempt from the 022 reaper.
   taskRunner.registerKind(PROCESS_RUN_KIND, {
     autoResume: true,
+    lane: "work",
     hasIndependentSurface: true,
     run: processService.execute,
   })
@@ -1332,8 +1638,19 @@ app.whenReady().then(async () => {
   // resume across a restart. hasIndependentSurface: born source-less (driven from
   // the Dashboards view, not a conversation) and observable there, so it's exempt
   // from the plan 022 orphan reaper.
+  // seat_wake (plan 106.4): one headless turn delivering a seat's mail.
+  // autoResume so a quit mid-delivery resumes the same turn (the delivery is
+  // already in the transcript, never re-claimed); hasIndependentSurface: born
+  // source-less and observable in Comms, so exempt from the 022 reaper.
+  taskRunner.registerKind(SEAT_WAKE_KIND, {
+    autoResume: true,
+    lane: "work",
+    hasIndependentSurface: true,
+    run: seatSessions.execute,
+  })
   taskRunner.registerKind(DASHBOARD_REFRESH_KIND, {
     autoResume: false,
+    lane: "background",
     hasIndependentSurface: true,
     run: dashboardService.execute,
   })
@@ -1342,13 +1659,45 @@ app.whenReady().then(async () => {
   registerProcessHandlers(taskRunner, processService)
   registerIndexHandlers(taskRunner, indexService, indexWatcher)
   registerDashboardHandlers(taskRunner, dashboardService)
+  registerMissionControlHandlers(
+    userStoryRunner,
+    seatComms,
+    seatSessions,
+    milestoneIntegration,
+    milestoneNavigator,
+    healthMonitor,
+    (folder) => openInIde(folder, folder, settingsService.getIde().ide),
+    workspaceAnalysis
+  )
+  registerWorkspaceAnalysisHandlers(workspaceAnalysis)
+  // Sweep orphaned Mission Control worktrees and resume merge queues. Queue
+  // work (including merges the reconcile below enqueues) waits for the sweep.
+  void milestoneIntegration
+    .reconcile()
+    .catch((err) => console.warn("[integration] reconcile failed:", err))
+  // Apply outcomes for playbook runs whose Process run settled while the app
+  // was down (idempotent; in-flight runs resume through the task runner).
+  userStoryRunner.reconcile()
+  // Mail that was queued when the app stopped gets moving again (plan 106.4).
+  seatSessions.dispatchAll()
+  onCommsChanged((featureId) => {
+    const wc = mainWindow?.webContents
+    if (wc && !wc.isDestroyed())
+      wc.send("missionControl:comms:changed", featureId)
+    // Escalations and acknowledgements change what waits on the user.
+    milestoneNavigator.poke(featureId)
+  })
+  // Every active feature resumes from its durable position.
+  milestoneNavigator.start()
+  healthMonitor.start()
   registerTerminalHandlers(terminalService)
   registerFileWatchHandlers()
   await indexWatcher.setEnabled(settingsService.getIndexing().watchWorkspaces)
-  // Materialize the user-level skills dir (~/.<system>/skills) and, on first
-  // launch only, seed it with the app-bundled skills so users get editable
-  // copies of the built-ins.
+  // Materialize ~/.<system>/skills and ~/.<system>/agents, copying in any
+  // app-bundled built-in not seeded before (tracked per entry, so user edits and
+  // deletions stick). See config/bundled-seed.ts.
   initUserSkills()
+  initUserAgents()
   void reconcilePendingMemoryOnStartup().catch((err) =>
     console.warn("[memory] startup reconcile failed:", err)
   )
@@ -1363,6 +1712,13 @@ app.whenReady().then(async () => {
   startMemoryMaintenance()
   await startPlanMaintenance()
   createWindow()
+  // Interactive chat's Python venv (~/.<system-slug>/venv): check or create it in
+  // the background so launch never waits on it. Chat turns await the same
+  // promise, so the first turn can't race the creation.
+  void ensureChatVenv().then((status) => {
+    if (status.state === "unavailable")
+      console.warn(`[python] chat venv unavailable: ${status.reason}`)
+  })
 
   app.on("activate", () => {
     // macOS: re-create a window when the dock icon is clicked and none are open.
@@ -1410,6 +1766,11 @@ app.on("will-quit", () => {
   stopPlanMaintenance()
   void indexWatcher.stopAll()
   void taskRunner.stop()
+  // No new merge starts; one in flight either finishes its compare-and-swap
+  // or leaves the branch untouched, and the next boot's reconcile resumes.
+  milestoneIntegration.stop()
+  milestoneNavigator.stop()
+  healthMonitor.stop()
   browserManager.dispose()
   terminalService.dispose()
   // Disconnect every pooled MCP client (stops spawned stdio processes / closes

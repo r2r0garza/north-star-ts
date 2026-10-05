@@ -19,6 +19,10 @@ import {
   MODEL_RESPONSE_DIAGNOSTIC_MAX_BYTES,
   ModelRequestRetryExhaustedError,
   ModelResponseValidationError,
+  mayRejectStreamOptions,
+  streamUsageRequested,
+  testStreamUsage,
+  withStreamUsage,
   type RetryClock,
 } from "./model-request-retry"
 
@@ -447,6 +451,7 @@ describe.skipIf(!sqliteLoads)("model request retry coordinator", () => {
         type: "rollback",
         attemptId: "after-seq:9:attempt:1",
         retrying: true,
+        error: expect.objectContaining({ message: "socket died" }),
       },
       { type: "start", attemptId: "after-seq:9:attempt:2", attempt: 2 },
       {
@@ -826,5 +831,174 @@ describe.skipIf(!sqliteLoads)("model request retry coordinator", () => {
     ).toBeLessThanOrEqual(MODEL_RESPONSE_DIAGNOSTIC_MAX_BYTES)
     expect(diagnostic.providerRequestId.length).toBeLessThanOrEqual(160)
     expect(diagnostic.request.accountId.length).toBeLessThanOrEqual(160)
+  })
+})
+
+describe.skipIf(!sqliteLoads)("streamed usage reporting (plan 108)", () => {
+  it("picks up the trailing usage chunk that has an empty choices array", async () => {
+    const round = await createCompletionRoundWithRetry({
+      conversationId,
+      logicalRoundId: "after-seq:usage-tail",
+      signal: new AbortController().signal,
+      clock: makeClock(),
+      isTransientError: () => false,
+      request: async () =>
+        (async function* () {
+          yield {
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: "call_1",
+                      function: { name: "list_files", arguments: "{}" },
+                    },
+                  ],
+                },
+                finish_reason: "tool_calls",
+              },
+            ],
+          }
+          yield {
+            choices: [],
+            usage: { prompt_tokens: 1200, completion_tokens: 30 },
+          }
+        })(),
+    })
+
+    expect(round.finishReason).toBe("tool_calls")
+    expect(round.toolFragments).toHaveLength(1)
+    expect(round.diagnostics.usage).toEqual({
+      promptTokens: 1200,
+      completionTokens: 30,
+      totalTokens: undefined,
+    })
+  })
+
+  it("reads Responses-shaped input/output usage", async () => {
+    const round = await createCompletionRoundWithRetry({
+      conversationId,
+      logicalRoundId: "after-seq:usage-responses",
+      signal: new AbortController().signal,
+      clock: makeClock(),
+      isTransientError: () => false,
+      request: async () =>
+        streamChunk({
+          usage: { input_tokens: 900, output_tokens: 12, total_tokens: 912 },
+          choices: [{ delta: { content: "hi" }, finish_reason: "stop" }],
+        }),
+    })
+
+    expect(round.diagnostics.usage).toEqual({
+      promptTokens: 900,
+      completionTokens: 12,
+      totalTokens: 912,
+    })
+  })
+})
+
+describe("stream_options fallback (plan 108)", () => {
+  beforeEach(() => testStreamUsage.reset())
+
+  function badRequest(message: string): Error & { status: number } {
+    return Object.assign(new Error(message), { status: 400 })
+  }
+
+  it("treats any 400/422, or an unstatused error naming stream_options, as a possible refusal", () => {
+    expect(mayRejectStreamOptions(badRequest("400 Bad Request"))).toBe(true)
+    expect(
+      mayRejectStreamOptions(
+        Object.assign(new Error("Unprocessable"), { status: 422 })
+      )
+    ).toBe(true)
+    expect(
+      mayRejectStreamOptions(new Error("unknown field stream_options"))
+    ).toBe(true)
+    expect(mayRejectStreamOptions(new Error("fetch failed"))).toBe(false)
+    for (const status of [401, 404, 429, 502]) {
+      expect(
+        mayRejectStreamOptions(
+          Object.assign(new Error("stream_options"), { status })
+        )
+      ).toBe(false)
+    }
+  })
+
+  it("asks for usage only on Chat Completions accounts", async () => {
+    const sent: unknown[] = []
+    await withStreamUsage(
+      { accountId: "a", apiMode: "codex_responses" },
+      async (options) => sent.push(options)
+    )
+    await withStreamUsage(
+      { accountId: "a", apiMode: "completions" },
+      async (options) => sent.push(options)
+    )
+    expect(sent).toEqual([undefined, { include_usage: true }])
+  })
+
+  it("retries once without stream_options and remembers the account", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const identity = { accountId: "bridge", apiMode: "completions" as const }
+    const sent: unknown[] = []
+    const send = async (options: unknown) => {
+      sent.push(options)
+      if (options) throw badRequest("400 unknown parameter: stream_options")
+      return "stream"
+    }
+
+    await expect(withStreamUsage(identity, send)).resolves.toBe("stream")
+    expect(sent).toEqual([{ include_usage: true }, undefined])
+    expect(streamUsageRequested(identity)).toBe(false)
+
+    await withStreamUsage(identity, send)
+    expect(sent).toEqual([{ include_usage: true }, undefined, undefined])
+    // Other accounts still ask.
+    expect(
+      streamUsageRequested({ accountId: "other", apiMode: "completions" })
+    ).toBe(true)
+    warn.mockRestore()
+  })
+
+  it("falls back on a bare 400 that never names stream_options", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {})
+    const identity = { accountId: "vague", apiMode: "completions" as const }
+    const sent: unknown[] = []
+    await expect(
+      withStreamUsage(identity, async (options) => {
+        sent.push(options)
+        if (options) throw badRequest("400 Bad Request")
+        return "stream"
+      })
+    ).resolves.toBe("stream")
+    expect(sent).toEqual([{ include_usage: true }, undefined])
+    expect(streamUsageRequested(identity)).toBe(false)
+  })
+
+  it("throws the retry's error and keeps asking when the request itself is bad", async () => {
+    const identity = { accountId: "bad", apiMode: "completions" as const }
+    const sent: unknown[] = []
+    await expect(
+      withStreamUsage(identity, async (options) => {
+        sent.push(options)
+        throw badRequest(options ? "400 first" : "400 invalid messages")
+      })
+    ).rejects.toThrow("invalid messages")
+    expect(sent).toEqual([{ include_usage: true }, undefined])
+    expect(streamUsageRequested(identity)).toBe(true)
+  })
+
+  it("rethrows other failures without a retry", async () => {
+    const identity = { accountId: "auth", apiMode: "completions" as const }
+    const sent: unknown[] = []
+    await expect(
+      withStreamUsage(identity, async (options) => {
+        sent.push(options)
+        throw Object.assign(new Error("invalid api key"), { status: 401 })
+      })
+    ).rejects.toThrow("invalid api key")
+    expect(sent).toEqual([{ include_usage: true }])
+    expect(streamUsageRequested(identity)).toBe(true)
   })
 })

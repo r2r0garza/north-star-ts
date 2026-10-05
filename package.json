@@ -1,6 +1,6 @@
 {
   "name": "north-star",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "private": true,
   "main": "./out/main/index.js",
   "scripts": {
@@ -23,6 +23,7 @@
     "files": [
       "out/**/*",
       "skills/**/*",
+      "agents/**/*",
       "prompts/**/*",
       "package.json"
     ],
@@ -65,6 +66,7 @@
     "date-fns": "^4.4.0",
     "dotenv": "^17.4.2",
     "embla-carousel-react": "^8.6.0",
+    "gpt-tokenizer": "^4.0.0",
     "highlight.js": "^11.11.1",
     "ignore": "^7.0.5",
     "input-otp": "^1.4.2",

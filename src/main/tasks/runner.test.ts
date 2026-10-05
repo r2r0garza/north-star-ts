@@ -1062,6 +1062,73 @@ describe.skipIf(!sqliteLoads)(
   }
 )
 
+describe.skipIf(!sqliteLoads)("TaskRunner — lanes", () => {
+  // Kinds that hold their slot until released, so the test can see how many
+  // run at once in each lane.
+  function gatedKinds(runner: TaskRunner) {
+    const active = { work: 0, background: 0 }
+    const peak = { work: 0, background: 0 }
+    const release: Array<() => void> = []
+    const gated = (lane: "work" | "background") => ({
+      autoResume: false,
+      lane,
+      run: async () => {
+        active[lane]++
+        peak[lane] = Math.max(peak[lane], active[lane])
+        await new Promise<void>((resolve) => release.push(resolve))
+        active[lane]--
+        return { content: "done" }
+      },
+    })
+    runner.registerKind("story", gated("work"))
+    runner.registerKind("upkeep", gated("background"))
+    return {
+      peak,
+      releaseAll: async () => {
+        while (release.length || active.work || active.background) {
+          release.splice(0).forEach((resolve) => resolve())
+          await new Promise((r) => setTimeout(r, 5))
+        }
+      },
+    }
+  }
+
+  it("runs work beyond two at once, and background upkeep never takes a work slot", async () => {
+    const runner = new TaskRunner()
+    const { peak, releaseAll } = gatedKinds(runner)
+    await runner.start()
+    runner.enqueueKind({ kind: "upkeep", input: {} })
+    runner.enqueueKind({ kind: "upkeep", input: {} })
+    for (let i = 0; i < 3; i++) runner.enqueueKind({ kind: "story", input: {} })
+    await new Promise((r) => setTimeout(r, 30))
+
+    expect(peak).toEqual({ work: 3, background: 1 })
+    await releaseAll()
+    await settle()
+    await runner.stop()
+  })
+
+  it("holds a lane at its size", async () => {
+    const runner = new TaskRunner({ lanes: { work: 2 } })
+    const { peak, releaseAll } = gatedKinds(runner)
+    await runner.start()
+    const tasks = Array.from({ length: 3 }, () =>
+      runner.enqueueKind({ kind: "story", input: {} })
+    )
+    await new Promise((r) => setTimeout(r, 30))
+    expect(peak.work).toBe(2)
+
+    await releaseAll()
+    await settle()
+    expect(tasks.map((t) => getTask(t.id)?.status)).toEqual([
+      "completed",
+      "completed",
+      "completed",
+    ])
+    await runner.stop()
+  })
+})
+
 describe.skipIf(!sqliteLoads)(
   "TaskRunner — deterministic executor seam (plan 008)",
   () => {

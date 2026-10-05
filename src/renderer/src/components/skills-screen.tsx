@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import type { ReactNode } from "react"
 import {
-  ArrowLeft,
   ChevronRight,
   FolderOpen,
   Plus,
@@ -36,9 +35,11 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Markdown } from "@/components/markdown"
+import { ScreenHeader } from "@/components/screen-header"
 import { SkillUploadModal } from "@/components/skill-upload-modal"
 import { toast } from "sonner"
 import type { SkillFolder, SkillMetadata, SkillTree } from "@/types"
+import { WorkspaceSectionLabel } from "@/components/workspace-label"
 
 // The Skills view — an in-panel destination (rendered in the center region of
 // the app shell, beside the still-visible sidebar) for browsing, editing,
@@ -154,8 +155,8 @@ export function SkillsScreen({ onClose }: { onClose: () => void }) {
     ]
   }, [tree])
 
-  const loadTree = useCallback(() => {
-    window.cowork.skills.tree().then(setTree)
+  const loadTree = useCallback(async () => {
+    setTree(await window.cowork.skills.tree())
   }, [])
 
   // Load on mount. The component is mounted only while the Skills view is open
@@ -287,7 +288,7 @@ export function SkillsScreen({ onClose }: { onClose: () => void }) {
         description: mode.description.trim(),
         body: mode.body,
       })
-      loadTree()
+      await loadTree()
       setSelectedKey(skillKey(mode.dir, name))
       setMode({ kind: "view" })
       setDraft(null)
@@ -308,12 +309,13 @@ export function SkillsScreen({ onClose }: { onClose: () => void }) {
   // After the modal imports a skill: refresh the tree, select the new skill (its
   // folder name is the last segment of the returned <dir>/<name>/SKILL.md path),
   // and drop to View.
-  function onImported(newPath: string, dir: string) {
+  async function onImported(newPath: string, dir: string) {
     const name = newPath
       .replace(/[/\\]SKILL\.md$/, "")
       .split(/[/\\]/)
       .pop()!
-    loadTree()
+    // Await the refresh so the vanished-selection guard sees the new skill.
+    await loadTree()
     setSelectedKey(skillKey(dir, name))
     setMode({ kind: "view" })
     setDraft(null)
@@ -343,28 +345,24 @@ export function SkillsScreen({ onClose }: { onClose: () => void }) {
       data-slot="skills-screen"
       className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background pt-11 text-sm text-foreground"
     >
-      {/* Header row (matches the app's h-11 top bar; the Shell drag bar sits
-          above via pt-11). */}
-      <div className="flex h-11 shrink-0 items-center justify-between border-b px-4">
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close skills"
-          className="group/back flex items-center gap-2 rounded-md text-left"
-        >
-          <ArrowLeft className="size-4 text-muted-foreground transition-colors group-hover/back:text-foreground" />
-          <h1 className="font-heading text-base font-medium">Skills</h1>
-        </button>
-        <Button variant="ghost" size="icon-sm" onClick={onClose}>
-          <XIcon />
-          <span className="sr-only">Close</span>
-        </Button>
-      </div>
+      <ScreenHeader
+        title={
+          mode.kind === "create"
+            ? "New skill"
+            : selected
+              ? selected.name
+              : "Skills"
+        }
+        onBack={mode.kind === "create" || selected ? backToCards : onClose}
+        backLabel={
+          mode.kind === "create" || selected ? "Back to skills" : "Close skills"
+        }
+        onClose={onClose}
+      />
 
       {mode.kind === "create" ? (
         <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-          <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-4">
-            <p className="truncate font-medium">New skill</p>
+          <div className="flex h-12 shrink-0 items-center justify-end gap-2 border-b px-4">
             <div className="flex shrink-0 items-center gap-2">
               <Button
                 variant="outline"
@@ -445,22 +443,9 @@ export function SkillsScreen({ onClose }: { onClose: () => void }) {
       ) : selected ? (
         <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-4">
-            <div className="flex min-w-0 flex-1 items-center gap-2">
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                onClick={backToCards}
-                aria-label="Back to skills"
-              >
-                <ArrowLeft />
-              </Button>
-              <div className="min-w-0">
-                <p className="truncate font-medium">{selected.name}</p>
-                <p className="truncate font-mono text-xs text-muted-foreground">
-                  {selected.path}
-                </p>
-              </div>
-            </div>
+            <p className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
+              {selected.path}
+            </p>
             <div className="flex shrink-0 items-center gap-2">
               {mode.kind === "edit" ? (
                 <>
@@ -825,7 +810,7 @@ function WorkspaceSection({
           className="group/ws flex w-full items-center gap-1.5 rounded-md px-2 py-2 text-left hover:bg-accent disabled:hover:bg-transparent"
         >
           <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/ws:rotate-90" />
-          <span className="truncate font-medium">{ws.label}</span>
+          <WorkspaceSectionLabel label={ws.label} path={ws.path} />
           <span className="ml-auto shrink-0 text-xs text-muted-foreground">
             {wsSkills.length}
           </span>

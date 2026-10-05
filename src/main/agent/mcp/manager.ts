@@ -2,6 +2,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js"
+import { homedir } from "os"
+import path from "path"
 import type { McpServer } from "../../db/types"
 import type { ToolEffects } from "../tools/types"
 import { utf8SafePrefix } from "../tools/output"
@@ -824,11 +826,28 @@ function hasHeaders(server: McpServer): boolean {
 }
 
 // The env a spawned stdio server inherits: the current process env (PATH, HOME,
-// …). Configured env vars are merged over this in connect().
-function getInheritedEnv(): Record<string, string> {
+// …). GUI-launched macOS apps often miss user-managed Node bin directories, so
+// add the common locations before configured env vars are merged in connect().
+export function getInheritedEnv(
+  source: NodeJS.ProcessEnv = process.env,
+  platform = process.platform,
+  home = homedir()
+): Record<string, string> {
   const env: Record<string, string> = {}
-  for (const [k, v] of Object.entries(process.env)) {
+  for (const [k, v] of Object.entries(source)) {
     if (typeof v === "string") env[k] = v
+  }
+  if (platform === "darwin") {
+    const paths = (env.PATH ?? "").split(path.delimiter).filter(Boolean)
+    for (const dir of [
+      path.join(home, ".local", "bin"),
+      path.join(home, ".npm-global", "bin"),
+      "/opt/homebrew/bin",
+      "/usr/local/bin",
+    ]) {
+      if (!paths.includes(dir)) paths.push(dir)
+    }
+    env.PATH = paths.join(path.delimiter)
   }
   return env
 }

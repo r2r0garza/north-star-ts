@@ -16,6 +16,9 @@ import type {
   TaskEvent,
   TaskStatus,
   Todo,
+  GeneratedFilesRule,
+  WorktreeSetup,
+  WorktreeSetupStep,
   Workspace,
   ProcessDefinition,
   ProcessGraph,
@@ -29,6 +32,7 @@ import type {
   ProcessRunStatus,
   PhaseRunStatus,
   PhaseRouting,
+  PhaseContextScope,
   PhaseCompletionContract,
   PhaseGatePolicy,
   EdgeTrigger,
@@ -39,10 +43,67 @@ import type {
   ExternalAgentModelMapping,
   ExternalAgentModelSourceKind,
   SubagentArtifact,
+  Rig,
+  RigGraph,
+  RigPod,
+  RigSeat,
+  RigOversight,
+  RigDiagnostic,
+  RigDecisionRight,
+  Feature,
+  FeatureGraph,
+  Milestone,
+  UserStory,
+  UserStoryEdge,
+  UserStorySpec,
+  WorkRevision,
+  Playbook,
+  PlaybookAltitude,
+  PlaybookHook,
+  PlaybookHookName,
+  PlaybookRun,
+  SeatMessage,
+  SeatSession,
+  SeatThread,
+  PlaybookRunStatus,
+  PlaybookWithHooks,
+  SeatBinding,
+  SeatBindingsSnapshot,
+  UserStoryProof,
+  ProofCriterionStatus,
+  MissionControlRunLink,
+  MergePolicyMode,
+  MilestoneLanding,
+  DriveMode,
+  NavigatorTick,
+  PlanProposal,
+  SeatMemory,
+  SeatMemoryRetraction,
+  HealthSignal,
 } from "../main/db/types"
+import type { Position } from "../shared/mission-control/position"
+import type {
+  ApplyAllItem,
+  SetupRunView,
+  WorkspaceAnalysis,
+} from "../shared/mission-control/workspace-analysis"
+import type {
+  HealthAnchors,
+  HealthReport,
+} from "../main/mission-control/health/monitor"
+import type { FollowupTarget } from "../shared/mission-control/plan-changes"
 import type { ActionKind } from "../main/agent/approval/types"
 import type { PickedElement } from "../main/browser/types"
 import type { GitDiffResult } from "../main/git/diff"
+import type { SeatOverview } from "../main/mission-control/sessions"
+import type {
+  PlaybookAgentRole,
+  ProcessRunHistoryEntry,
+} from "../main/mission-control/playbook-import"
+import type {
+  MilestoneIntegrationStatus,
+  UserStoryWorkspaceInfo,
+} from "../main/mission-control/integration"
 import type {
   GitActionResult,
   GitBranchActionResult,
@@ -67,6 +128,7 @@ import type {
   NotificationSettings,
   OnboardingSettings,
   ConversationSettings,
+  SidebarSettings,
   LocalRuntimeProfile,
 } from "../main/settings/service"
 import type {
@@ -449,6 +511,19 @@ const api = {
       workspacePath?: string | null
       runtimeConfig?: ProcessRuntimeConfig | null
     }) => ipcRenderer.invoke("process:startRun", input) as Promise<ProcessRun>,
+    // Quick run (plan 106.9): the seat roles a definition needs bound, and a
+    // run with no feature whose roles bind to the picked agents (role → ref).
+    quickRunRoles: (processId: string) =>
+      ipcRenderer.invoke("process:quickRunRoles", processId) as Promise<
+        string[]
+      >,
+    quickRun: (input: {
+      processId: string
+      objective: string
+      workspacePath: string
+      runtimeConfig?: ProcessRuntimeConfig | null
+      roleAgents?: Record<string, string>
+    }) => ipcRenderer.invoke("process:quickRun", input) as Promise<ProcessRun>,
     // Cancel a run (aborts its backing task; running phases unwind).
     cancel: (processRunId: string) =>
       ipcRenderer.invoke("process:cancel", processRunId) as Promise<void>,
@@ -576,6 +651,869 @@ const api = {
   },
   // List the user-invocable custom agents (name + description) for the composer's
   // agent picker. Pass the active workspace so workspace-level agents are included.
+  missionControl: {
+    features: {
+      list: () =>
+        ipcRenderer.invoke("missionControl:features:list") as Promise<
+          Feature[]
+        >,
+      get: (id: string) =>
+        ipcRenderer.invoke(
+          "missionControl:features:get",
+          id
+        ) as Promise<FeatureGraph | null>,
+      create: (input: {
+        key: string
+        name: string
+        intent: string
+        definitionOfDone: string
+        rigId?: string | null
+        workspaceId?: string | null
+        projectId?: string | null
+        defaultPodKey?: string | null
+      }) =>
+        ipcRenderer.invoke(
+          "missionControl:features:create",
+          input
+        ) as Promise<FeatureGraph>,
+      update: (
+        id: string,
+        patch: Partial<
+          Pick<
+            Feature,
+            | "key"
+            | "name"
+            | "intent"
+            | "definitionOfDone"
+            | "rigId"
+            | "workspaceId"
+            | "projectId"
+            | "defaultPodKey"
+            | "playbookId"
+          >
+        >,
+        reason?: string
+      ) =>
+        ipcRenderer.invoke(
+          "missionControl:features:update",
+          id,
+          patch,
+          "user",
+          reason
+        ) as Promise<FeatureGraph>,
+      delete: (id: string) =>
+        ipcRenderer.invoke("missionControl:features:delete", id) as Promise<{
+          keptBranches: string[]
+        }>,
+      start: (id: string) =>
+        ipcRenderer.invoke(
+          "missionControl:features:start",
+          id
+        ) as Promise<FeatureGraph>,
+      reseat: (id: string, reason?: string) =>
+        ipcRenderer.invoke(
+          "missionControl:features:reseat",
+          id,
+          reason
+        ) as Promise<FeatureGraph>,
+    },
+    milestones: {
+      create: (input: {
+        featureId: string
+        key: string
+        name: string
+        outcome: string
+        definitionOfDone?: string
+      }) =>
+        ipcRenderer.invoke(
+          "missionControl:milestones:create",
+          input
+        ) as Promise<FeatureGraph>,
+      update: (
+        id: string,
+        patch: Partial<
+          Pick<
+            Milestone,
+            | "key"
+            | "name"
+            | "outcome"
+            | "definitionOfDone"
+            | "position"
+            | "playbookId"
+          >
+        >,
+        reason?: string
+      ) =>
+        ipcRenderer.invoke(
+          "missionControl:milestones:update",
+          id,
+          patch,
+          "user",
+          reason
+        ) as Promise<FeatureGraph>,
+      delete: (id: string, reason?: string) =>
+        ipcRenderer.invoke(
+          "missionControl:milestones:delete",
+          id,
+          "user",
+          reason
+        ) as Promise<FeatureGraph>,
+    },
+    userStories: {
+      create: (input: {
+        milestoneId: string
+        key: string
+        title: string
+        spec?: Partial<UserStorySpec>
+        podKey?: string | null
+      }) =>
+        ipcRenderer.invoke(
+          "missionControl:userStories:create",
+          input
+        ) as Promise<FeatureGraph>,
+      update: (
+        id: string,
+        patch: Partial<
+          Pick<
+            UserStory,
+            "key" | "title" | "spec" | "podKey" | "position" | "playbookId"
+          >
+        >,
+        reason?: string
+      ) =>
+        ipcRenderer.invoke(
+          "missionControl:userStories:update",
+          id,
+          patch,
+          "user",
+          reason
+        ) as Promise<FeatureGraph>,
+      delete: (id: string, reason?: string) =>
+        ipcRenderer.invoke(
+          "missionControl:userStories:delete",
+          id,
+          "user",
+          reason
+        ) as Promise<FeatureGraph>,
+    },
+    userStoryEdges: {
+      set: (
+        milestoneId: string,
+        edges: Array<{ fromUserStoryId: string; toUserStoryId: string }>,
+        reason?: string
+      ) =>
+        ipcRenderer.invoke(
+          "missionControl:userStoryEdges:set",
+          milestoneId,
+          edges,
+          "user",
+          reason
+        ) as Promise<FeatureGraph>,
+    },
+    revisions: {
+      list: (featureId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:revisions:list",
+          featureId
+        ) as Promise<WorkRevision[]>,
+    },
+    rigs: {
+      list: () =>
+        ipcRenderer.invoke("missionControl:rigs:list") as Promise<Rig[]>,
+      get: (id: string) =>
+        ipcRenderer.invoke("missionControl:rigs:get", id) as Promise<
+          (RigGraph & { diagnostics: RigDiagnostic[] }) | null
+        >,
+      create: (input: {
+        name: string
+        description?: string | null
+        cultureMd?: string
+      }) =>
+        ipcRenderer.invoke("missionControl:rigs:create", input) as Promise<Rig>,
+      update: (
+        id: string,
+        patch: {
+          name?: string
+          description?: string | null
+          cultureMd?: string
+        }
+      ) =>
+        ipcRenderer.invoke(
+          "missionControl:rigs:update",
+          id,
+          patch
+        ) as Promise<Rig>,
+      delete: (id: string) =>
+        ipcRenderer.invoke("missionControl:rigs:delete", id) as Promise<void>,
+      duplicate: (id: string, name?: string) =>
+        ipcRenderer.invoke(
+          "missionControl:rigs:duplicate",
+          id,
+          name
+        ) as Promise<RigGraph>,
+      // `includeMemories` adds the rig's active seat lessons (plan 106.7).
+      export: (
+        id: string,
+        workspace?: string,
+        options?: { includeMemories?: boolean }
+      ) =>
+        ipcRenderer.invoke(
+          "missionControl:rigs:export",
+          id,
+          workspace,
+          options
+        ) as Promise<{ canceled: boolean; path?: string }>,
+      import: (workspace?: string) =>
+        ipcRenderer.invoke("missionControl:rigs:import", workspace) as Promise<{
+          canceled: boolean
+          rigId?: string
+          warnings?: string[]
+        }>,
+    },
+    pods: {
+      create: (input: {
+        rigId: string
+        key: string
+        name: string
+        missionStatement?: string
+        cultureMd?: string
+        position?: number
+      }) =>
+        ipcRenderer.invoke(
+          "missionControl:pods:create",
+          input
+        ) as Promise<RigPod>,
+      update: (
+        id: string,
+        patch: Partial<
+          Pick<
+            RigPod,
+            | "key"
+            | "name"
+            | "missionStatement"
+            | "cultureMd"
+            | "leadSeatId"
+            | "position"
+          >
+        >
+      ) =>
+        ipcRenderer.invoke(
+          "missionControl:pods:update",
+          id,
+          patch
+        ) as Promise<RigPod>,
+      delete: (id: string) =>
+        ipcRenderer.invoke("missionControl:pods:delete", id) as Promise<void>,
+      reorder: (rigId: string, ids: string[]) =>
+        ipcRenderer.invoke(
+          "missionControl:pods:reorder",
+          rigId,
+          ids
+        ) as Promise<RigPod[]>,
+    },
+    seats: {
+      create: (input: {
+        podId: string
+        key: string
+        role: string
+        charter?: string
+        agentRefId?: string | null
+        agentLabel?: string | null
+        skills?: string[] | null
+        tools?: string[] | null
+        mcpServers?: string[] | null
+        decisionRights?: RigDecisionRight[]
+        runtimeConfig?: ProcessRuntimeConfig | null
+        position?: number
+      }) =>
+        ipcRenderer.invoke(
+          "missionControl:seats:create",
+          input
+        ) as Promise<RigSeat>,
+      update: (id: string, patch: Partial<Omit<RigSeat, "id" | "podId">>) =>
+        ipcRenderer.invoke(
+          "missionControl:seats:update",
+          id,
+          patch
+        ) as Promise<RigSeat>,
+      delete: (id: string) =>
+        ipcRenderer.invoke("missionControl:seats:delete", id) as Promise<void>,
+      reorder: (podId: string, ids: string[]) =>
+        ipcRenderer.invoke(
+          "missionControl:seats:reorder",
+          podId,
+          ids
+        ) as Promise<RigSeat[]>,
+    },
+    oversight: {
+      set: (
+        rigId: string,
+        edges: Array<{ overseerPodId: string; overseenPodId: string }>
+      ) =>
+        ipcRenderer.invoke(
+          "missionControl:oversight:set",
+          rigId,
+          edges
+        ) as Promise<RigOversight[]>,
+    },
+    // Playbooks and execution (plan 106.3).
+    playbooks: {
+      list: () =>
+        ipcRenderer.invoke("missionControl:playbooks:list") as Promise<
+          PlaybookWithHooks[]
+        >,
+      processIds: () =>
+        ipcRenderer.invoke("missionControl:playbooks:processIds") as Promise<
+          string[]
+        >,
+      create: (input: {
+        name: string
+        altitude: PlaybookAltitude
+        description?: string
+      }) =>
+        ipcRenderer.invoke(
+          "missionControl:playbooks:create",
+          input
+        ) as Promise<PlaybookWithHooks>,
+      createDefault: (altitude: PlaybookAltitude) =>
+        ipcRenderer.invoke(
+          "missionControl:playbooks:createDefault",
+          altitude
+        ) as Promise<PlaybookWithHooks>,
+      update: (
+        id: string,
+        patch: { name?: string; description?: string | null }
+      ) =>
+        ipcRenderer.invoke(
+          "missionControl:playbooks:update",
+          id,
+          patch
+        ) as Promise<PlaybookWithHooks>,
+      delete: (id: string) =>
+        ipcRenderer.invoke(
+          "missionControl:playbooks:delete",
+          id
+        ) as Promise<void>,
+      createHookProcess: (id: string, hook: PlaybookHookName) =>
+        ipcRenderer.invoke(
+          "missionControl:playbooks:createHookProcess",
+          id,
+          hook
+        ) as Promise<PlaybookWithHooks>,
+      removeHook: (id: string, hook: PlaybookHookName) =>
+        ipcRenderer.invoke(
+          "missionControl:playbooks:removeHook",
+          id,
+          hook
+        ) as Promise<PlaybookWithHooks>,
+      // Processes sunset (plan 106.9).
+      importProcess: (processId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:playbooks:importProcess",
+          processId
+        ) as Promise<PlaybookWithHooks>,
+      roleConversion: (processId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:playbooks:roleConversion",
+          processId
+        ) as Promise<PlaybookAgentRole[]>,
+      convertRoles: (input: {
+        processId: string
+        mapping: Record<string, string>
+        rigId?: string | null
+      }) =>
+        ipcRenderer.invoke(
+          "missionControl:playbooks:convertRoles",
+          input
+        ) as Promise<{ converted: number; missingRoles: string[] }>,
+      history: () =>
+        ipcRenderer.invoke("missionControl:playbooks:history") as Promise<
+          ProcessRunHistoryEntry[]
+        >,
+    },
+    playbookRuns: {
+      list: (filter: {
+        featureId?: string
+        milestoneId?: string
+        userStoryId?: string
+        status?: PlaybookRunStatus
+      }) =>
+        ipcRenderer.invoke(
+          "missionControl:playbookRuns:list",
+          filter
+        ) as Promise<PlaybookRun[]>,
+      cancel: (id: string) =>
+        ipcRenderer.invoke(
+          "missionControl:playbookRuns:cancel",
+          id
+        ) as Promise<void>,
+    },
+    execution: {
+      // allowTouchOverlap: run even though a user story with overlapping touch
+      // hints is still building (plan 106.5).
+      runUserStory: (
+        userStoryId: string,
+        options?: { allowTouchOverlap?: boolean }
+      ) =>
+        ipcRenderer.invoke(
+          "missionControl:userStories:run",
+          userStoryId,
+          options
+        ) as Promise<PlaybookRun>,
+      // A note the running phase reads before its next model round; returns
+      // the phases nudged.
+      nudgeUserStory: (userStoryId: string, text: string) =>
+        ipcRenderer.invoke(
+          "missionControl:userStories:nudge",
+          userStoryId,
+          text
+        ) as Promise<string[]>,
+      cancelUserStory: (userStoryId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:userStories:cancel",
+          userStoryId
+        ) as Promise<void>,
+      runHook: (input: {
+        featureId: string
+        milestoneId?: string | null
+        hook: PlaybookHookName
+      }) =>
+        ipcRenderer.invoke(
+          "missionControl:hooks:run",
+          input
+        ) as Promise<PlaybookRun>,
+    },
+    // Milestone integration (plan 106.5): worktrees, the merge queue, and the
+    // milestone's merge policy.
+    integration: {
+      status: (milestoneId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:integration:status",
+          milestoneId
+        ) as Promise<MilestoneIntegrationStatus>,
+      setPolicy: (milestoneId: string, mode: MergePolicyMode) =>
+        ipcRenderer.invoke(
+          "missionControl:integration:setPolicy",
+          milestoneId,
+          mode
+        ) as Promise<FeatureGraph>,
+      // The explicit approval: bound to the base and head the user reviewed.
+      // `localMerge` merges a manual-policy milestone here, with the same approval.
+      land: (
+        milestoneId: string,
+        approval: { baseOid: string; headOid: string },
+        options?: { localMerge?: boolean }
+      ) =>
+        ipcRenderer.invoke(
+          "missionControl:integration:land",
+          milestoneId,
+          approval,
+          options
+        ) as Promise<MilestoneLanding>,
+      markMerged: (milestoneId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:integration:markMerged",
+          milestoneId
+        ) as Promise<MilestoneLanding>,
+      retry: (entryId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:integration:retry",
+          entryId
+        ) as Promise<void>,
+      resolve: (entryId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:integration:resolve",
+          entryId
+        ) as Promise<void>,
+      abandon: (entryId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:integration:abandon",
+          entryId
+        ) as Promise<void>,
+      userStoryInfo: (userStoryId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:integration:userStoryInfo",
+          userStoryId
+        ) as Promise<UserStoryWorkspaceInfo>,
+      userStoryDiff: (userStoryId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:integration:userStoryDiff",
+          userStoryId
+        ) as Promise<{ diff: string; truncated: boolean }>,
+      openWorktree: (userStoryId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:integration:openWorktree",
+          userStoryId
+        ) as Promise<string>,
+      // Fires with the feature id whenever a merge queue, user story worktree,
+      // or milestone landing changes.
+      onChanged: (cb: (featureId: string) => void) => {
+        const listener = (_event: IpcRendererEvent, featureId: string) =>
+          cb(featureId)
+        ipcRenderer.on("missionControl:integration:changed", listener)
+        return () => {
+          ipcRenderer.removeListener(
+            "missionControl:integration:changed",
+            listener
+          )
+        }
+      },
+    },
+    // Comms and seat sessions (plan 106.4). Read-only for agent threads; the
+    // one write is Steer, an explicit message from user@rig.
+    comms: {
+      list: (featureId: string) =>
+        ipcRenderer.invoke("missionControl:comms:list", featureId) as Promise<{
+          threads: SeatThread[]
+          messages: SeatMessage[]
+        }>,
+      seats: (featureId: string) =>
+        ipcRenderer.invoke("missionControl:comms:seats", featureId) as Promise<
+          SeatOverview[]
+        >,
+      steer: (input: {
+        featureId: string
+        to: string
+        body: string
+        direct?: boolean
+      }) =>
+        ipcRenderer.invoke(
+          "missionControl:comms:steer",
+          input
+        ) as Promise<SeatMessage>,
+      rotate: (sessionId: string, reason?: string) =>
+        ipcRenderer.invoke(
+          "missionControl:comms:rotate",
+          sessionId,
+          reason
+        ) as Promise<SeatSession | null>,
+      // The user read an escalation (or other mail to user@rig).
+      acknowledge: (messageId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:comms:acknowledge",
+          messageId
+        ) as Promise<boolean>,
+      // Answer mail sent to user@rig in its own thread.
+      reply: (messageId: string, body: string) =>
+        ipcRenderer.invoke(
+          "missionControl:comms:reply",
+          messageId,
+          body
+        ) as Promise<SeatMessage>,
+      // Fires with the feature id whenever its mail or seat sessions change.
+      onChanged: (cb: (featureId: string) => void) => {
+        const listener = (_event: IpcRendererEvent, featureId: string) =>
+          cb(featureId)
+        ipcRenderer.on("missionControl:comms:changed", listener)
+        return () =>
+          ipcRenderer.removeListener("missionControl:comms:changed", listener)
+      },
+    },
+    // Workspace setup findings (plan 106.11). Findings are named by key; the
+    // renderer never sends commands or settings.
+    analysis: {
+      get: (featureId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:analysis:get",
+          featureId
+        ) as Promise<WorkspaceAnalysis | null>,
+      checkFreshness: (featureId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:analysis:checkFreshness",
+          featureId
+        ) as Promise<WorkspaceAnalysis | null>,
+      analyze: (featureId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:analysis:analyze",
+          featureId
+        ) as Promise<WorkspaceAnalysis | null>,
+      cancel: (featureId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:analysis:cancel",
+          featureId
+        ) as Promise<void>,
+      applyFix: (featureId: string, key: string, alternative?: number | null) =>
+        ipcRenderer.invoke(
+          "missionControl:analysis:applyFix",
+          featureId,
+          key,
+          alternative ?? null
+        ) as Promise<{
+          analysis: WorkspaceAnalysis | null
+          run: SetupRunView | null
+        }>,
+      previewApplyAll: (featureId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:analysis:previewApplyAll",
+          featureId
+        ) as Promise<ApplyAllItem[]>,
+      applyAll: (featureId: string, selected: string[]) =>
+        ipcRenderer.invoke(
+          "missionControl:analysis:applyAll",
+          featureId,
+          selected
+        ) as Promise<{
+          analysis: WorkspaceAnalysis | null
+          run: SetupRunView | null
+        }>,
+      dismiss: (featureId: string, key: string, dismissed = true) =>
+        ipcRenderer.invoke(
+          "missionControl:analysis:dismiss",
+          featureId,
+          key,
+          dismissed
+        ) as Promise<WorkspaceAnalysis | null>,
+      run: (featureId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:analysis:run",
+          featureId
+        ) as Promise<SetupRunView | null>,
+      cancelRun: (runId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:analysis:cancelRun",
+          runId
+        ) as Promise<void>,
+      // Fires with the feature id whenever its analysis changes.
+      onChanged: (cb: (featureId: string) => void) => {
+        const listener = (_event: IpcRendererEvent, featureId: string) =>
+          cb(featureId)
+        ipcRenderer.on("missionControl:analysis:changed", listener)
+        return () => {
+          ipcRenderer.removeListener(
+            "missionControl:analysis:changed",
+            listener
+          )
+        }
+      },
+      onRunChanged: (cb: (run: SetupRunView) => void) => {
+        const listener = (_event: IpcRendererEvent, run: SetupRunView) =>
+          cb(run)
+        ipcRenderer.on("missionControl:analysis:runChanged", listener)
+        return () => {
+          ipcRenderer.removeListener(
+            "missionControl:analysis:runChanged",
+            listener
+          )
+        }
+      },
+    },
+    // The Navigator and drive controls (plan 106.6).
+    drive: {
+      // Runs the workspace preflight first (plan 106.11); when it finds
+      // blockers the feature stays a draft and `preflight.blocked` is true.
+      start: (
+        id: string,
+        options: {
+          mode: DriveMode
+          autoApplyPlan?: boolean
+          skipPreflight?: boolean
+          // The setup review was answered; don't pause for it again.
+          reviewed?: boolean
+        }
+      ) =>
+        ipcRenderer.invoke(
+          "missionControl:drive:start",
+          id,
+          options
+        ) as Promise<{
+          graph: FeatureGraph
+          planningError: string | null
+          preflight: {
+            blocked: boolean
+            applied: string[]
+            blockers: string[]
+            // Setup to review before starting; not started when non-empty.
+            review: string[]
+          }
+        }>,
+      pause: (id: string, reason?: string) =>
+        ipcRenderer.invoke(
+          "missionControl:drive:pause",
+          id,
+          reason
+        ) as Promise<FeatureGraph>,
+      resume: (id: string) =>
+        ipcRenderer.invoke(
+          "missionControl:drive:resume",
+          id
+        ) as Promise<FeatureGraph>,
+      cancel: (id: string) =>
+        ipcRenderer.invoke(
+          "missionControl:drive:cancel",
+          id
+        ) as Promise<FeatureGraph>,
+      // A completed feature takes more milestones: it reopens paused.
+      reopen: (id: string) =>
+        ipcRenderer.invoke(
+          "missionControl:drive:reopen",
+          id
+        ) as Promise<FeatureGraph>,
+      setMode: (id: string, mode: DriveMode) =>
+        ipcRenderer.invoke(
+          "missionControl:drive:setMode",
+          id,
+          mode
+        ) as Promise<FeatureGraph>,
+      setAutoApplyPlan: (id: string, value: boolean) =>
+        ipcRenderer.invoke(
+          "missionControl:drive:setAutoApplyPlan",
+          id,
+          value
+        ) as Promise<FeatureGraph>,
+      // "wait" runs overlapping user stories one at a time; "parallel" leaves
+      // collisions to the merge queue. Takes effect at the next dispatch.
+      setOverlapPolicy: (id: string, value: "wait" | "parallel") =>
+        ipcRenderer.invoke(
+          "missionControl:drive:setOverlapPolicy",
+          id,
+          value
+        ) as Promise<FeatureGraph>,
+      // null removes a budget (back to its default).
+      setBudgets: (id: string, patch: Record<string, number | null>) =>
+        ipcRenderer.invoke(
+          "missionControl:budgets:set",
+          id,
+          patch
+        ) as Promise<FeatureGraph>,
+    },
+    navigator: {
+      position: (featureId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:navigator:position",
+          featureId
+        ) as Promise<Position>,
+      ticks: (featureId: string, limit?: number) =>
+        ipcRenderer.invoke(
+          "missionControl:navigator:ticks",
+          featureId,
+          limit
+        ) as Promise<NavigatorTick[]>,
+      // Fires with the feature id after every recorded Navigator tick.
+      onChanged: (cb: (featureId: string) => void) => {
+        const listener = (_event: IpcRendererEvent, featureId: string) =>
+          cb(featureId)
+        ipcRenderer.on("missionControl:navigator:changed", listener)
+        return () =>
+          ipcRenderer.removeListener(
+            "missionControl:navigator:changed",
+            listener
+          )
+      },
+    },
+    // Health (plan 106.8): progress vs ceremony, detector signals, and their
+    // lifecycle. Thresholds are feature budgets (drive.setBudgets).
+    health: {
+      report: (featureId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:health:report",
+          featureId
+        ) as Promise<HealthReport>,
+      // User story / milestone id → worst live severity, for health dots.
+      anchors: (featureId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:health:anchors",
+          featureId
+        ) as Promise<HealthAnchors>,
+      setSignalStatus: (
+        signalId: string,
+        action: "acknowledge" | "resolve" | "mute" | "unmute"
+      ) =>
+        ipcRenderer.invoke(
+          "missionControl:health:setSignalStatus",
+          signalId,
+          action
+        ) as Promise<HealthSignal>,
+      muteDetector: (featureId: string, detector: string, muted: boolean) =>
+        ipcRenderer.invoke(
+          "missionControl:health:muteDetector",
+          featureId,
+          detector,
+          muted
+        ) as Promise<HealthReport>,
+      // Fires with the feature id whenever its signals change.
+      onChanged: (cb: (featureId: string) => void) => {
+        const listener = (_event: IpcRendererEvent, featureId: string) =>
+          cb(featureId)
+        ipcRenderer.on("missionControl:health:changed", listener)
+        return () =>
+          ipcRenderer.removeListener("missionControl:health:changed", listener)
+      },
+    },
+    // Seat memory (plan 106.7): review, share, and retract a seat's lessons.
+    seatMemory: {
+      // Without a seat address, every lesson in the rig.
+      list: (rigId: string, seatAddress?: string) =>
+        ipcRenderer.invoke(
+          "missionControl:seatMemory:list",
+          rigId,
+          seatAddress
+        ) as Promise<SeatMemory[]>,
+      pendingCount: (rigId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:seatMemory:pendingCount",
+          rigId
+        ) as Promise<number>,
+      review: (id: string, decision: "approve" | "reject", content?: string) =>
+        ipcRenderer.invoke(
+          "missionControl:seatMemory:review",
+          id,
+          decision,
+          content
+        ) as Promise<SeatMemory | null>,
+      share: (id: string, targetAddress: string) =>
+        ipcRenderer.invoke(
+          "missionControl:seatMemory:share",
+          id,
+          targetAddress
+        ) as Promise<SeatMemory>,
+      retract: (id: string, reason: string) =>
+        ipcRenderer.invoke(
+          "missionControl:seatMemory:retract",
+          id,
+          reason
+        ) as Promise<SeatMemoryRetraction>,
+    },
+    proposals: {
+      // Land a follow-up (plan 106.7). `target` null uses its default (a later
+      // milestone); the milestone in flight needs `allowCurrent`.
+      applyFollowup: (
+        id: string,
+        target: FollowupTarget | null,
+        options?: { allowCurrent?: boolean }
+      ) =>
+        ipcRenderer.invoke(
+          "missionControl:proposals:applyFollowup",
+          id,
+          target,
+          options
+        ) as Promise<FeatureGraph>,
+      list: (featureId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:proposals:list",
+          featureId
+        ) as Promise<PlanProposal[]>,
+      // `partial` applies the changes that still apply and skips the rest.
+      apply: (id: string, options?: { partial?: boolean }) =>
+        ipcRenderer.invoke(
+          "missionControl:proposals:apply",
+          id,
+          options
+        ) as Promise<FeatureGraph>,
+      // The user's definition-of-done judgment for a milestone.
+      judgeMilestone: (milestoneId: string, summary: string) =>
+        ipcRenderer.invoke(
+          "missionControl:milestones:judgeDone",
+          milestoneId,
+          summary
+        ) as Promise<FeatureGraph>,
+      reject: (id: string, note: string) =>
+        ipcRenderer.invoke(
+          "missionControl:proposals:reject",
+          id,
+          note
+        ) as Promise<FeatureGraph>,
+    },
+  },
   agents: {
     list: (workspace?: string) =>
       ipcRenderer.invoke("agents:list", workspace) as Promise<AgentSummary[]>,
@@ -1025,7 +1963,15 @@ const api = {
           path,
           name
         ) as Promise<Workspace>,
-      update: (id: string, patch: { name?: string }) =>
+      // generatedFiles: files the merge queue regenerates instead of merging.
+      update: (
+        id: string,
+        patch: {
+          name?: string
+          generatedFiles?: GeneratedFilesRule[]
+          worktreeSetup?: WorktreeSetup
+        }
+      ) =>
         ipcRenderer.invoke(
           "db:workspaces:update",
           id,
@@ -1193,6 +2139,8 @@ const api = {
             validatorMaxIterations?: number
             validatorAgent?: string | null
             subprocessId?: string | null
+            proofStep?: boolean
+            contextScope?: PhaseContextScope
             runtimeConfig?: ProcessRuntimeConfig | null
             position?: number
           }
@@ -1208,7 +2156,8 @@ const api = {
       agents: {
         create: (input: {
           phaseId: string
-          agentName: string
+          agentName?: string | null
+          seatRole?: string | null
           skills?: string[] | null
           tools?: string[] | null
           runtimeConfig?: ProcessRuntimeConfig | null
@@ -1498,6 +2447,14 @@ const api = {
         "settings:setConversations",
         next
       ) as Promise<ConversationSettings>,
+    // Which sidebar destinations show (plan 106.9: legacy Processes).
+    getSidebar: () =>
+      ipcRenderer.invoke("settings:getSidebar") as Promise<SidebarSettings>,
+    setSidebar: (next: SidebarSettings) =>
+      ipcRenderer.invoke(
+        "settings:setSidebar",
+        next
+      ) as Promise<SidebarSettings>,
     // The selectable IDEs (id + label) for the Settings dropdown. Static list;
     // mirrored from the main-process IDE registry so the renderer needs no import.
     ideOptions: () =>
@@ -1819,6 +2776,9 @@ export type {
   TaskStatus,
   Todo,
   TodoStatus,
+  GeneratedFilesRule,
+  WorktreeSetup,
+  WorktreeSetupStep,
   Workspace,
   SubagentArtifact,
   ProcessDefinition,
@@ -1845,7 +2805,94 @@ export type {
   DashboardWidgetData,
   DashboardWidgetType,
   DashboardWidgetDataStatus,
+  Rig,
+  RigGraph,
+  RigPod,
+  RigSeat,
+  RigOversight,
+  RigDiagnostic,
+  RigDecisionRight,
+  Feature,
+  FeatureGraph,
+  Milestone,
+  UserStory,
+  UserStoryEdge,
+  UserStorySpec,
+  WorkRevision,
+  Playbook,
+  PlaybookAltitude,
+  PlaybookHook,
+  PlaybookHookName,
+  PlaybookRun,
+  PlaybookRunStatus,
+  PlaybookWithHooks,
+  SeatBinding,
+  SeatBindingsSnapshot,
+  UserStoryProof,
+  ProofCriterionStatus,
+  MissionControlRunLink,
+  MergePolicyMode,
+  MergeQueueEntry,
+  MergeQueueStatus,
+  MilestoneLanding,
+  PhaseContextScope,
+  SeatSession,
+  SeatSessionStatus,
+  SeatThread,
+  SeatThreadAnchorKind,
+  SeatMessage,
+  SeatMessageKind,
+  SeatMessageStatus,
+  DriveMode,
+  FeatureDrive,
+  MilestoneDodReview,
+  NavigatorTick,
+  NavigatorTickAction,
+  PlanProposal,
+  SeatMemory,
+  SeatMemoryKind,
+  SeatMemoryStatus,
+  SeatMemoryRetraction,
+  HealthSignal,
+  HealthSignalStatus,
+  HealthSeverity,
+  HealthEvidence,
+  HealthAnchorKind,
 } from "../main/db/types"
+export type {
+  HealthReport,
+  HealthAnchors,
+  HealthStatus,
+} from "../main/mission-control/health/monitor"
+export type {
+  HealthWindow,
+  SeriesPoint,
+  BreakdownRow,
+  Throughput,
+} from "../main/mission-control/health/metrics"
+export type {
+  Position,
+  Decision,
+  DecisionAction,
+  DecisionKind,
+  Maneuver,
+} from "../shared/mission-control/position"
+export type { BudgetMeter, BudgetKey } from "../shared/mission-control/budgets"
+export type {
+  ApplyAllItem,
+  Evidence,
+  Finding,
+  FindingCategory,
+  Fix,
+  Readiness,
+  SetupRunView,
+  WorkspaceAnalysis,
+} from "../shared/mission-control/workspace-analysis"
+export type {
+  PlanChange,
+  FollowupTarget,
+  ProposalFollowup,
+} from "../shared/mission-control/plan-changes"
 export type {
   ProcessImportResult,
   ProcessRunIncidentExport,
@@ -1874,6 +2921,7 @@ export type {
   NotificationSettings,
   OnboardingSettings,
   ConversationSettings,
+  SidebarSettings,
   Backend,
   LocalRuntimeProfile,
   FilePermission,
@@ -1929,6 +2977,17 @@ export type { IndexStatus } from "../main/ipc/index-handlers"
 export type { ApproveResult } from "../main/dashboards/service"
 export type { PickedElement } from "../main/browser/types"
 export type { GitDiffResult } from "../main/git/diff"
+export type { SeatOverview } from "../main/mission-control/sessions"
+export type {
+  PlaybookAgentRole,
+  ProcessRunHistoryEntry,
+} from "../main/mission-control/playbook-import"
+export type {
+  MilestoneIntegrationStatus,
+  PolicyOption,
+  UserStoryWorkspaceInfo,
+} from "../main/mission-control/integration"
+export type { LandingSummary } from "../main/mission-control/milestone-git"
 export type {
   GitAction,
   GitActionResult,

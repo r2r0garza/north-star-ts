@@ -1612,6 +1612,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       runsValidator &&
       phaseRun.taskId !== null &&
       validatorReviewRetryRequested(phaseRun.id)
+    let resultContent = phaseRun.resultContent
     const failContract = (
       error: unknown,
       code = "phase_completion_invalid"
@@ -1673,6 +1674,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
           outcome: receipt.outcome,
           workspace: ctx.workspace,
         })
+        resultContent = receipt.outcome.output
       } catch (err) {
         failContract(err)
         return
@@ -1745,6 +1747,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
         if (contract.policy === "validated") {
           try {
             const outcome = parsePhaseOutcome(result.content, attemptId)
+            resultContent = outcome.output
             // Persist the declaration even when a configured file check fails.
             processes.updatePhaseRun(phaseRun.id, {
               completionReceipt: {
@@ -1776,6 +1779,8 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
             failContract(err)
             return
           }
+        } else {
+          resultContent = result.content ?? null
         }
         if (result.outputIdentity != null) {
           processes.updatePhaseRun(phaseRun.id, {
@@ -1792,12 +1797,18 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       if (runsValidator) {
         const outputIdentity =
           processes.getPhaseRun(phaseRun.id)?.outputIdentity ?? null
-        const verdict = await ctx.validate!({
-          phase,
-          phaseRun,
-          outputIdentity,
-          signal: ctx.signal,
-        })
+        processes.updatePhaseRun(phaseRun.id, { reviewStartedAt: Date.now() })
+        let verdict: Awaited<ReturnType<NonNullable<typeof ctx.validate>>>
+        try {
+          verdict = await ctx.validate!({
+            phase,
+            phaseRun,
+            outputIdentity,
+            signal: ctx.signal,
+          })
+        } finally {
+          processes.updatePhaseRun(phaseRun.id, { reviewStartedAt: null })
+        }
         if (verdict.stopped || ctx.signal.aborted) {
           settleStoppedPhaseRun(phase, phaseRun.id)
           return
@@ -1878,6 +1889,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
         status: "completed",
         error: null,
         failure: null,
+        resultContent,
         finishedAt: Date.now(),
         iteration: attempt,
       })
@@ -1974,6 +1986,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       status: "completed",
       error: null,
       failure: null,
+      resultContent: result.content ?? null,
       finishedAt: Date.now(),
     })
     emitPhase(phase, phaseRun.id, "completed")

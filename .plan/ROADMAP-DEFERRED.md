@@ -1,5 +1,26 @@
 # Roadmap — Deferred
 
+- **`105` — Required skills for individual Process phases.** Let an agent phase explicitly activate one
+  required skill for every worker invocation, distinct from the phase-agent skill allowlist. Validate pool
+  compatibility, fail before the LLM call when the skill is unavailable, snapshot resolved identity, and
+  never offer or propagate the setting on sub-process or deterministic command phases.
+- **`069` — Process intake policies and inspectable assumptions.** Give each Process an explicit run-
+  entry contract instead of injecting a mandatory Planning phase: **Proceed with assumptions**
+  (default, no preflight gate), **Approve initial plan** (side-effect-free execution brief + one durable
+  approval/revision loop), or **Strict input contract** (definition-authored required fields validated
+  before enqueue). Snapshot supplied inputs on the run; inject intake guidance, definition of done, and
+  a shared materiality/authority interruption rule into phase kickoffs. Add a durable, run-scoped
+  assumptions log with origin/confidence/impact/status and monitor UI. Human clarification pauses and
+  resumes the correct worker; it remains distinct from internal Agent exchanges (`039`). Split strict
+  deterministic intake first, then assumptions/questions, then approve-plan preflight.
+- **`084` — Process import account-remapping UX.** Analyze imported Process runtime selections before
+  writing, distinguish locally resolved, matchable, ambiguous, and unresolved provider/model references,
+  and let the user map each unresolved reference to a local account/model or choose inheritance. Keep
+  account IDs machine-local, preserve portable import/export intent, and avoid raw account-ID failures.
+- **`085` — Process template library.** Add a small, polished built-in catalog of portable starter
+  Processes backed by the existing import/create validation path. Let users preview and instantiate
+  useful workflows without starting from a blank graph; templates inherit runtime by default and never
+  hard-code local provider-account IDs.
 - **`104` — Deterministic command phases.** Let a Process phase execute a persisted, user-reviewed
   workspace command directly through the existing Environment and command-policy boundary, without an LLM
   worker call. Persist bounded structured results for downstream phases and the monitor, and do not blindly
@@ -41,14 +62,6 @@
   versioned review and exact-revision installation through `077`/`028`; a separate user setting disables
   both hidden detection and recommendations without affecting explicit skill authoring. Do not require
   three global repetitions or classify every conversational utterance.
-- **`070` — Pods: autonomous agent teams with mutable work graphs. DEFERRED SEED.** A Pod is not a
-  saved roster or a loose Process: it owns an objective and may create, split, assign, cancel,
-  reprioritize, and revisit work within a charter, budget, and externally defined completion contract.
-  Reuse the task/agent runtime, `069` intake/assumptions, and `039` result/exchange foundations; net-new
-  concepts are the durable mutable work board, bounded coordinator replan loop, independent completion
-  evaluator, and charter enforcement. Activate only after `069`/`039` land, three concrete objectives
-  demonstrate runtime topology change beyond Process fan-out/rework, and a bounded prototype materially
-  outperforms the equivalent Process without unacceptable cost, thrash, or user confusion.
 - **`066` — Notebook editing and cell execution.** Depends on `063`'s safe reader and a reviewed
   Environment-backed kernel contract. Adds revision-safe structured cell edits and separately
   execution-gated cell runs with Stop/timeouts/output caps; never installs kernels or treats notebook

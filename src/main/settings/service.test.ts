@@ -468,3 +468,23 @@ describe("settings service — onboarding", () => {
     expect(service.getOnboarding()).toEqual({ hideStartupGuide: false })
   })
 })
+
+describe("settings service — sidebar", () => {
+  it("hides the legacy Processes button by default", () => {
+    expect(service.getSidebar()).toEqual({ showLegacyProcesses: false })
+  })
+
+  it("round-trips the Processes switch", () => {
+    service.setSidebar({ showLegacyProcesses: true })
+    service._resetCacheForTests()
+    expect(service.getSidebar()).toEqual({ showLegacyProcesses: true })
+  })
+
+  it("falls back to hidden for corrupt or unknown values", () => {
+    store.set("sidebar", JSON.stringify({ showLegacyProcesses: "yes" }))
+    expect(service.getSidebar()).toEqual({ showLegacyProcesses: false })
+    service._resetCacheForTests()
+    store.set("sidebar", "{not json")
+    expect(service.getSidebar()).toEqual({ showLegacyProcesses: false })
+  })
+})

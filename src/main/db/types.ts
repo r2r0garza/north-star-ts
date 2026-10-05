@@ -3,6 +3,16 @@
 // Preload imports these with `import type` so the renderer gets exact types
 // without pulling better-sqlite3 into the preload bundle.
 
+import type {
+  FollowupTarget,
+  PlanChange,
+  ProposalFollowup,
+  ProposalKind,
+  ProposalStatus,
+} from "../../shared/mission-control/plan-changes"
+import type { UserStoryNarrative } from "../../shared/mission-control/story"
+import type { OverlapPolicy } from "../../shared/mission-control/waves"
+
 // A conversation's view/mode. One per view: Chat / Interactive / North Star.
 export type Mode = "chat" | "interactive" | "north_star"
 
@@ -38,10 +48,60 @@ export interface ToolCallRecord {
   arguments: string
 }
 
+// Files a repository generates rather than writes by hand (a code index, a
+// lockfile, codegen output), and the command that rebuilds them. When a
+// Mission Control merge conflicts only on such files, the merge queue runs the
+// command instead of asking the integrator to merge them by hand.
+export interface GeneratedFilesRule {
+  // Repository-relative globs, e.g. ".code-index/**" or "**/package-lock.json".
+  paths: string[]
+  // Run from the repository root with a shell; it rewrites the files.
+  command: string
+}
+
+// How a Mission Control worktree of this workspace gets a working
+// environment: a fresh worktree has only tracked files, so ignored ones
+// (.venv, node_modules) are missing and agents went looking for a test runner.
+export interface WorktreeSetup {
+  // Workspace-relative paths symlinked from the main checkout, e.g. ".venv".
+  linkPaths: string[]
+  // Run in order in each new worktree, e.g. an install step per project root
+  // (plan 106.11). A failed step stops the ones after it.
+  steps: WorktreeSetupStep[]
+}
+
+export interface WorktreeSetupStep {
+  // Stable, so workspace analysis findings can refer to the step.
+  id: string
+  label: string
+  // One command, run with a shell.
+  command: string
+  // Workspace-relative directory to run in; "" is the workspace root.
+  cwd: string
+  // Who wrote it: the user, or an applied workspace-analysis finding.
+  source: "user" | "analysis"
+  findingKey?: string
+  // "python-shared-venv": a built-in step (plan 106.11). The worktree gets a
+  // thin venv of its own that reuses the main checkout's installed packages
+  // and puts the worktree's own source first, so there's nothing to download
+  // and imports get the story's code, not the main checkout's. `command` is
+  // then only a description.
+  kind?: "command" | "python-shared-venv"
+  // For python-shared-venv: the venv directory (relative to cwd), the full
+  // setup to run when the main checkout has no usable venv, and the install
+  // to run on top when the worktree's dependencies differ from the main
+  // checkout's (a merged story added one).
+  venv?: string
+  fallback?: Array<{ label: string; command: string }>
+  refresh?: Array<{ label: string; command: string }>
+}
+
 export interface Workspace {
   id: string
   path: string
   name: string | null
+  generatedFiles: GeneratedFilesRule[]
+  worktreeSetup: WorktreeSetup
   createdAt: number
   updatedAt: number
 }
@@ -65,6 +125,10 @@ export interface Conversation {
   mode: Mode
   title: string | null
   workspaceId: string | null
+  // The directory the conversation works in when it isn't its workspace's own
+  // folder: a Mission Control user story's git worktree of that workspace.
+  // Null = the workspace's path. Resolve with workingDirectoryOf.
+  workingDirectory?: string | null
   // The project this conversation belongs to (SCHEMA_V12), or null for the "No
   // Project" bucket. ON DELETE SET NULL — deleting a project keeps its
   // conversations, moving them to "No Project".
@@ -243,7 +307,7 @@ export interface FailureContext {
 // The workspace index (plan 008). Deterministic, incremental, resumable.
 
 // The stage a run has reached. Stages enrich cumulatively; `symbols`/`embeddings`
-// are schema-reserved (slice 1 builds file_map + metadata).
+// are schema-reserved (user story 1 builds file_map + metadata).
 export type IndexStage = "file_map" | "metadata" | "symbols" | "embeddings"
 
 // Indexing priority: North Star = high (prefer index before deep execution),
@@ -294,7 +358,7 @@ export interface IndexMetadata {
   updatedAt: number
 }
 
-// Stage 3: a symbol/import extracted from a file (unpopulated in slice 1).
+// Stage 3: a symbol/import extracted from a file (unpopulated in user story 1).
 export interface IndexSymbol {
   id: string
   workspaceId: string
@@ -600,10 +664,419 @@ export type ProcessRuntimeConfig = Partial<
   Record<ProcessRuntimeSlot, ProcessRuntimeSelection>
 >
 
+export const RIG_DECISION_RIGHTS = [
+  "assign_user_story",
+  "revise_plan",
+  "accept_proof",
+  "merge",
+  "escalate_to_user",
+  "approve_followup",
+] as const
+
+export type RigDecisionRight = (typeof RIG_DECISION_RIGHTS)[number]
+
+export interface Rig {
+  id: string
+  name: string
+  description: string | null
+  cultureMd: string
+  createdAt: number
+  updatedAt: number
+}
+
+export interface RigPod {
+  id: string
+  rigId: string
+  key: string
+  name: string
+  missionStatement: string
+  cultureMd: string
+  leadSeatId: string | null
+  position: number
+}
+
+export interface RigSeat {
+  id: string
+  podId: string
+  key: string
+  role: string
+  charter: string
+  agentRefId: string | null
+  agentLabel: string | null
+  skills: string[] | null
+  tools: string[] | null
+  mcpServers: string[] | null
+  decisionRights: RigDecisionRight[]
+  runtimeConfig: ProcessRuntimeConfig | null
+  position: number
+}
+
+export interface RigOversight {
+  id: string
+  rigId: string
+  overseerPodId: string
+  overseenPodId: string
+}
+
+export interface RigGraph {
+  rig: Rig
+  pods: RigPod[]
+  seats: RigSeat[]
+  oversight: RigOversight[]
+}
+
+export interface RigDiagnostic {
+  severity: "warning" | "error"
+  code: string
+  message: string
+  entityId?: string
+}
+
+export type FeatureStatus =
+  | "draft"
+  | "active"
+  | "paused"
+  | "completed"
+  | "cancelled"
+  | "failed"
+export type MilestoneStatus =
+  | "planned"
+  | "active"
+  | "integrating"
+  | "review"
+  | "completed"
+  | "cancelled"
+  | "failed"
+export type UserStoryStatus =
+  | "draft"
+  | "ready"
+  | "blocked"
+  | "running"
+  | "proving"
+  | "integrating"
+  | "done"
+  | "failed"
+  | "cancelled"
+
+export interface UserStorySpec {
+  // "As a …, I want …, so that …" — optional; null for technical work.
+  story: UserStoryNarrative | null
+  goal: string
+  acceptance: string[]
+  outOfScope: string[]
+  touchHints: string[]
+  notes: string
+  // Runs after every other user story in its milestone, including ones added
+  // later (an integration proof, docs). Nothing may depend on it.
+  runsLast: boolean
+}
+
+// How the Navigator drives a feature (plan 106.6): manual shows "next up"
+// only; copilot directs the lead seat, which acts through map tools; autopilot
+// dispatches mechanical steps itself and hands judgment to the lead.
+export type DriveMode = "manual" | "copilot" | "autopilot"
+
+export interface FeatureDrive {
+  // Apply the feature planning proposal without waiting for the user.
+  autoApplyPlan: boolean
+  // User stories whose touch hints overlap: "wait" runs them one at a time;
+  // "parallel" runs them together and lets the merge queue handle collisions.
+  overlapPolicy: OverlapPolicy
+  // Wall-clock time spent driving (copilot/autopilot while active). Accrued in
+  // small increments, so time the app was closed or asleep is never counted.
+  activeMs: number
+  accountedAt: number | null
+  // Why the feature is paused, when it is.
+  pauseReason: string | null
+  pausedBy: "user" | "budget" | "health" | null
+  // Health detectors the user muted for this feature (plan 106.8).
+  healthMuted: string[]
+}
+
+export interface Feature {
+  id: string
+  key: string
+  name: string
+  intent: string
+  definitionOfDone: string
+  rigId: string | null
+  rigSnapshot: RigGraph | null
+  workspaceId: string | null
+  projectId: string | null
+  defaultPodKey: string | null
+  playbookId: string | null
+  driveMode: DriveMode
+  budgets: Record<string, unknown>
+  // Navigator drive bookkeeping (plan 106.6).
+  drive: FeatureDrive
+  status: FeatureStatus
+  taskId: string | null
+  createdAt: number
+  updatedAt: number
+  startedAt: number | null
+  finishedAt: number | null
+}
+
+export interface Milestone {
+  id: string
+  featureId: string
+  key: string
+  name: string
+  outcome: string
+  definitionOfDone: string
+  playbookId: string | null
+  mergePolicy: MilestoneMergePolicy
+  integrationBranch: string | null
+  // Integration (plan 106.5): the user's branch and commit at milestone start,
+  // and the repository the integration branch lives in.
+  baseRef: string | null
+  baseOid: string | null
+  repoRoot: string | null
+  landing: MilestoneLanding | null
+  // The lead's judgment that the milestone meets its definition of done (106.6).
+  dodReview: MilestoneDodReview | null
+  status: MilestoneStatus
+  position: number
+  startedAt: number | null
+  finishedAt: number | null
+}
+
+export type MergePolicyMode = "manual" | "local_merge" | "open_pr"
+
+export interface MilestoneDodReview {
+  by: string
+  summary: string
+  at: number
+}
+
+export interface MilestoneMergePolicy {
+  mode: MergePolicyMode
+}
+
+// How a milestone's integration branch reached the base branch (plan 106.5).
+export interface MilestoneLanding {
+  mode: MergePolicyMode
+  // "user" = an explicit approval or "mark merged"; "detected" = Milestone
+  // Control saw the integration head become reachable from the base branch.
+  // "navigator": the Navigator completed a milestone with nothing to land after
+  // the lead's definition-of-done review (plan 106.6).
+  completedBy: "user" | "detected" | "navigator"
+  at: number
+  base: string
+  baseOid: string | null
+  head: string
+  mergeCommit?: string
+  fastForward?: boolean
+  prUrl?: string
+}
+
+export type MergeQueueStatus =
+  | "queued"
+  | "merging"
+  | "merged"
+  | "conflict"
+  | "resolving"
+  | "cancelled"
+
+export interface MergeQueueEntry {
+  id: string
+  milestoneId: string
+  userStoryId: string
+  playbookRunId: string | null
+  status: MergeQueueStatus
+  attempt: number
+  userStoryHead: string | null
+  conflictFiles: string[]
+  mergeCommit: string | null
+  touchedFiles: string[]
+  // Touched files no touch hint covers: the drift signal for 106.8.
+  outsideHints: string[]
+  note: string | null
+  escalated: boolean
+  resolutionRunId: string | null
+  resolutionWorktree: string | null
+  resolutionStartOid: string | null
+  resolutionAttempts: number
+  proofAcceptedAt: number
+  createdAt: number
+  updatedAt: number
+  startedAt: number | null
+  finishedAt: number | null
+}
+
+export interface UserStory {
+  id: string
+  milestoneId: string
+  key: string
+  title: string
+  spec: UserStorySpec
+  proof: unknown | null
+  podKey: string | null
+  playbookId: string | null
+  status: UserStoryStatus
+  processRunId: string | null
+  branch: string | null
+  // The current attempt's worktree and the integration commit it started from.
+  worktreePath: string | null
+  baseOid: string | null
+  attempts: number
+  origin: "user" | "agent"
+  position: number
+  startedAt: number | null
+  finishedAt: number | null
+}
+
+export interface UserStoryEdge {
+  id: string
+  milestoneId: string
+  fromUserStoryId: string
+  toUserStoryId: string
+}
+
+export interface WorkRevision {
+  id: string
+  featureId: string
+  targetKind: "feature" | "milestone" | "user_story" | "edge"
+  targetId: string
+  actor: string
+  change: { op: string; before?: unknown; after?: unknown }
+  reason: string | null
+  createdAt: number
+}
+
+export interface FeatureGraph {
+  feature: Feature
+  milestones: Milestone[]
+  userStories: UserStory[]
+  edges: UserStoryEdge[]
+  revisions: WorkRevision[]
+  rigDrifted: boolean
+}
+
+export type PlaybookAltitude = "user_story" | "milestone" | "feature"
+export type PlaybookHookName =
+  | "run"
+  | "before_user_stories"
+  | "after_each_user_story"
+  | "after_all_user_stories"
+  | "plan"
+  | "between_milestones"
+  | "on_complete"
+
+export interface Playbook {
+  id: string
+  name: string
+  altitude: PlaybookAltitude
+  description: string | null
+  createdAt: number
+  updatedAt: number
+}
+
+export interface PlaybookHook {
+  id: string
+  playbookId: string
+  hook: PlaybookHookName
+  processId: string
+  // False for a Process imported as a playbook (plan 106.9): the definition
+  // stays the user's, so deleting the playbook leaves it in place.
+  ownsProcess: boolean
+}
+
+export interface PlaybookWithHooks extends Playbook {
+  hooks: PlaybookHook[]
+}
+
+export type PlaybookRunStatus = "running" | "completed" | "failed" | "cancelled"
+
+export interface PlaybookRun {
+  id: string
+  playbookId: string | null
+  hook: PlaybookHookName
+  featureId: string
+  milestoneId: string | null
+  userStoryId: string | null
+  processRunId: string | null
+  status: PlaybookRunStatus
+  proof: UserStoryProof | null
+  proofRevisions: number
+  outcomeReason: string | null
+  // Set when the run works in its own worktree rather than the workspace.
+  worktreePath: string | null
+  createdAt: number
+  finishedAt: number | null
+}
+
+export interface MissionControlRunLink {
+  featureId: string
+  milestoneId: string | null
+  userStoryId: string | null
+  playbookRunId: string
+  hook: PlaybookHookName
+}
+
+// One resolved seat, frozen at run start. Workers read only this snapshot, never
+// the live rig, so rig edits mid-run cannot change who does the work.
+export interface SeatBinding {
+  address: string
+  role: string
+  seatId: string
+  podKey: string
+  podName: string
+  agentName: string
+  agentLabel: string
+  charter: string
+  podMission: string
+  podCulture: string
+  decisionRights: RigDecisionRight[]
+  skills: string[] | null
+  tools: string[] | null
+  mcpServers: string[] | null
+  runtime: ProcessRuntimeSelection | null
+}
+
+export interface SeatBindingsSnapshot {
+  version: 1
+  rigName: string
+  rigCulture: string
+  podKey: string
+  // Role → candidate seat addresses, in routing order.
+  roles: Record<string, string[]>
+  seats: Record<string, SeatBinding>
+  // Static Refocus intent chain (feature → milestone → user story).
+  intentChain: string
+}
+
+export type ProofCriterionStatus = "met" | "not_met" | "not_verifiable"
+
+export interface UserStoryProof {
+  version: 1
+  criteria: Array<{
+    id: string
+    status: ProofCriterionStatus
+    evidence: string
+    artifacts?: string[]
+    reason?: string
+  }>
+  verdict: "accepted" | "rejected"
+  verifiedBy:
+    | { kind: "seat"; address: string }
+    | { kind: "command"; phaseKey: string }
+  builderAddresses: string[]
+  processRunId: string
+  acceptedAt: number | null
+  warnings?: string[]
+}
+
 export interface ProcessRuntimeSnapshotSelection {
   accountId: string | null
   modelId: string | null
-  source: "phase_agent" | "phase" | "run" | "source_conversation" | "default"
+  source:
+    | "phase_agent"
+    | "seat"
+    | "phase"
+    | "run"
+    | "source_conversation"
+    | "default"
 }
 
 export type ProcessRuntimeSnapshot = Partial<
@@ -643,16 +1116,31 @@ export interface ProcessPhase {
   // exclusive with fan_out (and the agent pool is unused) — validated in the repo.
   // Null = an ordinary agent phase.
   subprocessId: string | null
+  // Mission Control proof step (plan 106.3): only this phase's worker is offered
+  // record_proof, and only inside a user story run. Ignored by legacy Processes.
+  proofStep?: boolean
+  // Mission Control (plan 106.4): how long a seat-role step's conversation
+  // lives. `step`: a new worker for this step (106.3). `user_story`: one session per
+  // seat for this user story (or hook) run, shared by the seat's steps and mail,
+  // closed when the run ends. `feature`: the seat's long-lived session,
+  // carried across user stories. Ignored for agent-name phases and legacy Processes.
+  // Stored in process_phases.context_mode.
+  contextScope?: PhaseContextScope
   runtimeConfig?: ProcessRuntimeConfig | null
   position: number
 }
 
+export type PhaseContextScope = "step" | "user_story" | "feature"
+
 // tools/skills are tri-state JSON overrides: null = use the agent's own
 // definition; [] = none; [list] = exactly these (matches .agent.md frontmatter).
+// Exactly one of agentName / seatRole is set (repo-validated). A seat-role row
+// (plan 106.3) binds at run start against the feature's rig snapshot.
 export interface ProcessPhaseAgent {
   id: string
   phaseId: string
-  agentName: string
+  agentName: string | null
+  seatRole?: string | null
   skills: string[] | null
   tools: string[] | null
   runtimeConfig?: ProcessRuntimeConfig | null
@@ -678,19 +1166,27 @@ export interface ProcessRun {
   // conversation to inherit a workspace from, so it carries its own. Null = the
   // run resolves its workspace from the source conversation (or none).
   workspaceId: string | null
+  // Where the run's workers actually work when it isn't the workspace's own
+  // folder: a Mission Control user story's git worktree of `workspaceId`. The
+  // worktree is never a workspace of its own. Null = the workspace's path.
+  workingDirectory?: string | null
   // The process_run task that drives this run (holds the runner slot, anchors
   // approval gates + checkpoints). SET NULL if the task is deleted.
   taskId: string | null
   objective: string | null
   // Short, LLM-generated display title summarizing the objective (like a
   // conversation's title). Null for pre-existing runs and until generation lands
-  // — the renderer falls back to an objective slice.
+  // — the renderer falls back to an objective user story.
   title: string | null
   // A NESTED run's caller (plan 038.1): the sub-process phase-run that started
   // this run. Null for a top-level run. Lets the monitor nest the child run under
   // the phase and crash-resume re-attach (find-by-parent) instead of restarting.
   parentPhaseRunId: string | null
   runtimeConfig?: ProcessRuntimeConfig | null
+  // Mission Control runs only (plan 106.3): the immutable seat bindings resolved
+  // at run start, and the container this run executes for. Null for Processes.
+  seatBindings?: SeatBindingsSnapshot | null
+  missionControl?: MissionControlRunLink | null
   status: ProcessRunStatus
   startedAt: number | null
   finishedAt: number | null
@@ -725,6 +1221,12 @@ export interface ProcessPhaseRun {
   // has sent this phase-run back. Kept SEPARATE from reworkRound (which drives the
   // 029 count-based gate re-detection and must not be perturbed). Default 0.
   validatorRound: number
+  // Frozen output captured when this phase-run successfully completes. Downstream
+  // phases consume this rather than the mutable worker conversation transcript.
+  resultContent: string | null
+  // When the validator review of the worker's output started; null when no
+  // review is in flight. The phase stays `running` meanwhile.
+  reviewStartedAt: number | null
   // Stable identity of the current completed worker output reviewed by a
   // validator. Cleared on reset/rework and stamped after each successful worker
   // completion so stale reviewer results cannot settle a replacement output.
@@ -734,6 +1236,9 @@ export interface ProcessPhaseRun {
   // set for on_each_subtask consumer instances. Lets flag-back reset only the
   // instance tied to a reworked source sub-task (per-child, not the whole batch).
   sourceChildRunId: string | null
+  // The seat that ran this phase-run's worker (plan 106.3). Null outside
+  // Mission Control and for agent-name-bound phases.
+  seatAddress?: string | null
   runtimeSnapshot?: ProcessRuntimeSnapshot | null
 }
 
@@ -851,4 +1356,268 @@ export interface DashboardGraph {
   dashboard: Dashboard
   widgets: DashboardWidget[]
   data: DashboardWidgetData[]
+}
+
+// ── Mission Control seat sessions and Comms (plan 106.4) ────────────────────
+
+export type SeatSessionStatus = "idle" | "busy" | "rotated" | "closed"
+
+// feature: the seat's long-lived session. user story: one session for one
+// playbook run (a user story attempt or a hook run), closed when the run ends.
+export type SeatSessionScope = "feature" | "user_story"
+
+export interface SeatSession {
+  id: string
+  featureId: string
+  seatAddress: string
+  scope: SeatSessionScope
+  // The playbook run a user story session belongs to (null for feature scope).
+  playbookRunId: string | null
+  generation: number
+  conversationId: string | null
+  status: SeatSessionStatus
+  handoffSummary: string | null
+  rotationReason: string | null
+  failureCount: number
+  createdAt: number
+  lastActivityAt: number | null
+  rotatedAt: number | null
+}
+
+export type SeatThreadAnchorKind = "user_story" | "milestone" | "proposal"
+
+export interface SeatThread {
+  id: string
+  featureId: string
+  anchorKind: SeatThreadAnchorKind | null
+  anchorId: string | null
+  subject: string
+  createdAt: number
+}
+
+export type SeatMessageKind =
+  | "message"
+  | "direction"
+  | "steer"
+  | "escalation"
+  | "alert"
+
+export type SeatMessageStatus =
+  | "queued"
+  | "delivered"
+  | "replied"
+  | "acknowledged"
+  | "expired"
+  | "refused"
+
+export interface SeatMessage {
+  id: string
+  threadId: string
+  featureId: string
+  fromAddress: string
+  toAddress: string
+  inReplyTo: string | null
+  hop: number
+  body: string
+  kind: SeatMessageKind
+  status: SeatMessageStatus
+  expectsReply: boolean
+  needsDecision: RigDecisionRight | null
+  refusalReason: string | null
+  // Delivered as an answer-only wake of a finished fresh worker.
+  answerOnly: boolean
+  wakeTaskId: string | null
+  // Where the tagged turn landed, for "open in seat transcript".
+  deliveredConversationId: string | null
+  deliveredMessageId: string | null
+  createdAt: number
+  deliveredAt: number | null
+}
+
+// ── Mission Control Navigator (plan 106.6) ─────────────────────────────────
+
+export interface PlanProposal {
+  id: string
+  featureId: string
+  // The milestone the change set was made against (the active one), if any.
+  milestoneId: string | null
+  kind: ProposalKind
+  changes: PlanChange[]
+  // Seat address (or "navigator@rig") that proposed it.
+  proposer: string
+  reason: string
+  // Set for kind "followup" (plan 106.7); its changes stay empty until applied.
+  followup: ProposalFollowup | null
+  status: ProposalStatus
+  resolvedBy: string | null
+  resolutionNote: string | null
+  createdAt: number
+  resolvedAt: number | null
+  // Pending proposals only, computed on read: changes that no longer apply to
+  // the plan as it is now, by index.
+  problems?: Array<{ index: number; error: string }>
+  // Pending follow-ups only, computed on read: where applying lands it unless
+  // the user picks another place.
+  defaultTarget?: FollowupTarget
+}
+
+// Seat memory (plan 106.7): a short lesson attached to a seat of a rig, injected
+// into every later turn in that seat once active. Never written by a tool:
+// lessons are extracted after seat turns, reviewed by the user, shared only by
+// the user (a copy that keeps its lineage), and retracted with every copy.
+export type SeatMemoryKind = "lesson" | "convention" | "pitfall"
+export type SeatMemoryStatus = "pending_review" | "active" | "retracted"
+// learned: extracted from a seat turn; shared: copied from another seat's
+// lesson (derivedFrom); imported: arrived with a rig template.
+export type SeatMemorySource = "learned" | "shared" | "imported"
+
+export interface SeatMemory {
+  id: string
+  rigId: string
+  seatAddress: string
+  content: string
+  kind: SeatMemoryKind
+  status: SeatMemoryStatus
+  source: SeatMemorySource
+  originFeatureId: string | null
+  originConversationId: string | null
+  originSessionId: string | null
+  originUserStoryId: string | null
+  originMessageId: string | null
+  derivedFrom: string | null
+  useCount: number
+  lastUsedAt: number | null
+  createdAt: number
+  reviewedAt: number | null
+  retractedAt: number | null
+  retractReason: string | null
+  // Computed on read for the Memory tab.
+  exposureCount?: number
+  originLabel?: string | null
+}
+
+export interface SeatMemoryExposure {
+  memoryId: string
+  conversationId: string
+  featureId: string | null
+  seatAddress: string
+  injectedAt: number
+}
+
+// What retracting a lesson did: every copy it retracted, and the live seat
+// sessions that had been shown one and were told to disregard it.
+export interface SeatMemoryRetraction {
+  retracted: SeatMemory[]
+  exposedConversations: number
+  notified: Array<{ featureId: string; address: string }>
+}
+
+export interface NavigatorTickAction {
+  kind:
+    | "start_user_story"
+    | "retry_user_story"
+    | "run_hook"
+    | "apply_plan"
+    | "advance_milestone"
+    | "complete_milestone"
+    | "complete_feature"
+    | "kick_merges"
+    | "auto_pause"
+    | "direction"
+    | "notify"
+  target: string | null
+  ok: boolean
+  detail: string
+}
+
+export interface NavigatorTick {
+  id: string
+  featureId: string
+  positionHash: string
+  // One line: where the feature is and what is next.
+  summary: string
+  actions: NavigatorTickAction[]
+  decisionKeys: string[]
+  // Compact state for "what changed" in the next direction.
+  state: NavigatorTickState
+  createdAt: number
+}
+
+export interface NavigatorTickState {
+  milestoneId?: string | null
+  milestoneStatus?: string | null
+  // user story key → status, for the active milestone.
+  userStories?: Record<string, string>
+}
+
+// ── Mission Control health (plan 106.8) ────────────────────────────────────
+
+// Progress moves the map; ceremony is ritual around the work; neutral events
+// are recorded for context (a run started, the drive resumed) but weigh nothing.
+export type McEventClass = "progress" | "ceremony" | "neutral"
+
+export interface McEvent {
+  id: string
+  featureId: string
+  milestoneId: string | null
+  userStoryId: string | null
+  seatAddress: string | null
+  class: McEventClass
+  type: string
+  weight: number
+  // The row this event was derived from (message, revision, proof, merge
+  // entry…); unique per type, so a replayed write records nothing twice.
+  refId: string | null
+  detail: Record<string, unknown> | null
+  createdAt: number
+}
+
+export type HealthSeverity = "info" | "warn" | "critical"
+
+export type HealthSignalStatus = "open" | "acknowledged" | "resolved" | "muted"
+
+export type HealthAnchorKind =
+  | "feature"
+  | "milestone"
+  | "user_story"
+  | "seat"
+  | "thread"
+
+// One concrete thing a signal rests on, for the evidence drill-down.
+export interface HealthEvidence {
+  kind: "event" | "message" | "proof" | "file" | "failure"
+  label: string
+  at: number | null
+  refId?: string
+  // Where the user can open it.
+  link?: { kind: "user_story" | "milestone" | "thread"; id: string }
+}
+
+export interface HealthSignal {
+  id: string
+  featureId: string
+  detector: string
+  anchorKind: HealthAnchorKind
+  anchorId: string
+  anchorLabel: string
+  severity: HealthSeverity
+  status: HealthSignalStatus
+  summary: string
+  evidence: HealthEvidence[]
+  fireCount: number
+  firstSeenAt: number
+  lastSeenAt: number
+  // When the warn-level alert went out (user + context-bearing seat).
+  alertedAt: number | null
+  alertedTo: string | null
+  // When the critical response ran (auto-pause).
+  criticalAt: number | null
+  acknowledgedAt: number | null
+  resolvedAt: number | null
+  // Refocus requests this signal made, where they went, and how many times
+  // the drift continued after one was delivered.
+  refocusCount: number
+  lastRefocusAt: number | null
+  refocusConversations: string[]
+  ignoredCount: number
 }

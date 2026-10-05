@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { McpServer } from "../../db/types"
 import {
   flattenContent,
+  getInheritedEnv,
   MCP_DISCOVERY_DESCRIPTION_MAX_BYTES,
   MCP_DISCOVERY_MAX_TOOLS_PER_SERVER,
   MCP_DISCOVERY_SCHEMA_MAX_BYTES,
@@ -247,6 +248,31 @@ describe("MCP discovery lifecycle and definition bounds", () => {
     expect(errors.join("\n")).toContain("per-server discovery limit")
     expect(errors.join("\n")).toContain("description")
     expect(errors.join("\n")).toContain("input schema")
+  })
+})
+
+describe("MCP spawned environment", () => {
+  it("adds common macOS Node bin directories without replacing PATH", () => {
+    const env = getInheritedEnv(
+      { PATH: "/usr/bin", CUSTOM: "value" },
+      "darwin",
+      "/Users/tester"
+    )
+
+    expect(env.CUSTOM).toBe("value")
+    expect(env.PATH?.split(":")).toEqual([
+      "/usr/bin",
+      "/Users/tester/.local/bin",
+      "/Users/tester/.npm-global/bin",
+      "/opt/homebrew/bin",
+      "/usr/local/bin",
+    ])
+  })
+
+  it("leaves PATH unchanged on non-macOS platforms", () => {
+    expect(getInheritedEnv({ PATH: "/usr/bin" }, "linux", "/home/tester")).toEqual(
+      { PATH: "/usr/bin" }
+    )
   })
 })
 

@@ -17,6 +17,7 @@ import type {
   IdeSettings,
   NotificationSettings,
   OnboardingSettings,
+  SidebarSettings,
   ConversationSettings,
 } from "../settings/service"
 
@@ -127,6 +128,10 @@ export function registerSettingsHandlers(
   ipcMain.handle(
     "settings:setConversations",
     (_e, next: ConversationSettings) => settingsService.setConversations(next)
+  )
+  ipcMain.handle("settings:getSidebar", () => settingsService.getSidebar())
+  ipcMain.handle("settings:setSidebar", (_e, next: SidebarSettings) =>
+    settingsService.setSidebar(next)
   )
   // Static IDE registry (id + label) for the Settings dropdown.
   ipcMain.handle("settings:getIdeOptions", () =>

@@ -7,6 +7,8 @@ export type TerminalProfile = {
 
 export type TerminalSessionView = {
   id: string
+  // The owner: a conversation id, or another owner such as
+  // "mission-control:<featureId>" for workspace setup runs (plan 106.11).
   conversationId: string
   profileId: string
   title: string
@@ -14,6 +16,9 @@ export type TerminalSessionView = {
   status: "running" | "exited"
   exitCode?: number | null
   signal?: number | null
+  // Set on a one-command session (runCommand): the command it runs. The
+  // session ends when the command does.
+  command?: string
 }
 
 export type TerminalDataEvent = {

@@ -1277,3 +1277,352 @@ CREATE TABLE IF NOT EXISTS subagent_artifacts (
 CREATE INDEX IF NOT EXISTS idx_subagent_artifacts_repository_status
   ON subagent_artifacts(repository_id, status, created_at);
 `
+
+// v46: Mission Control rig definitions (plan 106.1). Enum-like values remain
+// bare TEXT and are validated by the repository, matching the Process schema.
+export const SCHEMA_V46 = `
+CREATE TABLE IF NOT EXISTS rigs (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  description TEXT,
+  culture_md  TEXT NOT NULL DEFAULT '',
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS rig_pods (
+  id                TEXT PRIMARY KEY,
+  rig_id            TEXT NOT NULL REFERENCES rigs(id) ON DELETE CASCADE,
+  key               TEXT NOT NULL,
+  name              TEXT NOT NULL,
+  mission_statement TEXT NOT NULL DEFAULT '',
+  culture_md        TEXT NOT NULL DEFAULT '',
+  lead_seat_id      TEXT,
+  position          INTEGER NOT NULL,
+  UNIQUE (rig_id, key)
+);
+CREATE INDEX IF NOT EXISTS idx_rig_pods_rig_position ON rig_pods(rig_id, position);
+
+CREATE TABLE IF NOT EXISTS rig_seats (
+  id              TEXT PRIMARY KEY,
+  pod_id          TEXT NOT NULL REFERENCES rig_pods(id) ON DELETE CASCADE,
+  key             TEXT NOT NULL,
+  role            TEXT NOT NULL,
+  charter         TEXT NOT NULL DEFAULT '',
+  agent_ref_id    TEXT,
+  agent_label     TEXT,
+  skills          TEXT,
+  tools           TEXT,
+  mcp_servers     TEXT,
+  decision_rights TEXT NOT NULL DEFAULT '[]',
+  runtime_config  TEXT,
+  position        INTEGER NOT NULL,
+  UNIQUE (pod_id, key)
+);
+CREATE INDEX IF NOT EXISTS idx_rig_seats_pod_position ON rig_seats(pod_id, position);
+
+CREATE TABLE IF NOT EXISTS rig_oversight (
+  id              TEXT PRIMARY KEY,
+  rig_id          TEXT NOT NULL REFERENCES rigs(id) ON DELETE CASCADE,
+  overseer_pod_id TEXT NOT NULL REFERENCES rig_pods(id) ON DELETE CASCADE,
+  overseen_pod_id TEXT NOT NULL REFERENCES rig_pods(id) ON DELETE CASCADE,
+  UNIQUE (overseer_pod_id, overseen_pod_id)
+);
+CREATE INDEX IF NOT EXISTS idx_rig_oversight_rig ON rig_oversight(rig_id);
+`
+
+// v47: Mission Control work hierarchy (plan 106.2).
+export const SCHEMA_V47 = `
+CREATE TABLE IF NOT EXISTS initiatives (
+  id TEXT PRIMARY KEY, key TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+  intent TEXT NOT NULL, definition_of_done TEXT NOT NULL,
+  rig_id TEXT REFERENCES rigs(id) ON DELETE SET NULL, rig_snapshot TEXT,
+  workspace_id TEXT REFERENCES workspaces(id) ON DELETE SET NULL,
+  project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+  default_pod_key TEXT, playbook_id TEXT,
+  drive_mode TEXT NOT NULL DEFAULT 'manual', budgets TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL, task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  started_at INTEGER, finished_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_initiatives_updated ON initiatives(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_initiatives_project ON initiatives(project_id);
+
+CREATE TABLE IF NOT EXISTS missions (
+  id TEXT PRIMARY KEY, initiative_id TEXT NOT NULL REFERENCES initiatives(id) ON DELETE CASCADE,
+  key TEXT NOT NULL, name TEXT NOT NULL, outcome TEXT NOT NULL,
+  definition_of_done TEXT NOT NULL DEFAULT '', playbook_id TEXT,
+  merge_policy TEXT NOT NULL DEFAULT '{"mode":"manual"}', integration_branch TEXT,
+  status TEXT NOT NULL, position INTEGER NOT NULL, started_at INTEGER, finished_at INTEGER,
+  UNIQUE (initiative_id, key)
+);
+CREATE INDEX IF NOT EXISTS idx_missions_initiative_position ON missions(initiative_id, position);
+
+CREATE TABLE IF NOT EXISTS slices (
+  id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+  key TEXT NOT NULL, title TEXT NOT NULL, spec TEXT NOT NULL, proof TEXT,
+  pod_key TEXT, playbook_id TEXT, status TEXT NOT NULL,
+  process_run_id TEXT REFERENCES process_runs(id) ON DELETE SET NULL,
+  branch TEXT, attempts INTEGER NOT NULL DEFAULT 0, origin TEXT NOT NULL DEFAULT 'user',
+  position INTEGER NOT NULL, started_at INTEGER, finished_at INTEGER,
+  UNIQUE (mission_id, key)
+);
+CREATE INDEX IF NOT EXISTS idx_slices_mission_position ON slices(mission_id, position);
+
+CREATE TABLE IF NOT EXISTS slice_edges (
+  id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+  from_slice_id TEXT NOT NULL REFERENCES slices(id) ON DELETE CASCADE,
+  to_slice_id TEXT NOT NULL REFERENCES slices(id) ON DELETE CASCADE,
+  UNIQUE (from_slice_id, to_slice_id)
+);
+CREATE INDEX IF NOT EXISTS idx_slice_edges_mission ON slice_edges(mission_id);
+
+CREATE TABLE IF NOT EXISTS work_revisions (
+  id TEXT PRIMARY KEY, initiative_id TEXT NOT NULL REFERENCES initiatives(id) ON DELETE CASCADE,
+  target_kind TEXT NOT NULL, target_id TEXT NOT NULL, actor TEXT NOT NULL,
+  change TEXT NOT NULL, reason TEXT, created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_work_revisions_initiative_created ON work_revisions(initiative_id, created_at DESC);
+`
+
+// v48: freeze each successful Process phase's explicit output at completion.
+// Downstream phases consume this snapshot instead of re-reading a mutable worker
+// transcript, which may receive later messages from validation or Comms.
+export const SCHEMA_V48 = `
+ALTER TABLE process_phase_runs ADD COLUMN result_content TEXT;
+`
+
+// v49: Mission Control playbooks (plan 106.3). A playbook is a Process
+// definition with an altitude; each hook points at the definition it runs.
+// playbook_runs links one hook execution to its container and Process run, and
+// is the idempotency key for applying a slice outcome exactly once.
+export const SCHEMA_V49_TABLES = `
+CREATE TABLE IF NOT EXISTS playbooks (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  altitude    TEXT NOT NULL,
+  description TEXT,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS playbook_hooks (
+  id          TEXT PRIMARY KEY,
+  playbook_id TEXT NOT NULL REFERENCES playbooks(id) ON DELETE CASCADE,
+  hook        TEXT NOT NULL,
+  process_id  TEXT NOT NULL REFERENCES process_definitions(id) ON DELETE RESTRICT,
+  UNIQUE (playbook_id, hook)
+);
+CREATE INDEX IF NOT EXISTS idx_playbook_hooks_process ON playbook_hooks(process_id);
+CREATE TABLE IF NOT EXISTS playbook_runs (
+  id              TEXT PRIMARY KEY,
+  playbook_id     TEXT REFERENCES playbooks(id) ON DELETE SET NULL,
+  hook            TEXT NOT NULL,
+  initiative_id   TEXT NOT NULL REFERENCES initiatives(id) ON DELETE CASCADE,
+  mission_id      TEXT REFERENCES missions(id) ON DELETE CASCADE,
+  slice_id        TEXT REFERENCES slices(id) ON DELETE CASCADE,
+  process_run_id  TEXT REFERENCES process_runs(id) ON DELETE SET NULL,
+  status          TEXT NOT NULL,
+  proof           TEXT,
+  proof_revisions INTEGER NOT NULL DEFAULT 0,
+  outcome_reason  TEXT,
+  created_at      INTEGER NOT NULL,
+  finished_at     INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_playbook_runs_initiative ON playbook_runs(initiative_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_playbook_runs_slice ON playbook_runs(slice_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_playbook_runs_process_run ON playbook_runs(process_run_id);
+`
+
+// process_phase_agents.agent_name was NOT NULL; a seat-role-bound row has no
+// agent name, so rebuild the table (the provider_accounts_v43 pattern) with a
+// nullable agent_name and a seat_role column. Exactly one of the two is set,
+// enforced by the repository.
+export const SCHEMA_V49_PHASE_AGENTS = `
+CREATE TABLE process_phase_agents_v49 (
+  id             TEXT PRIMARY KEY,
+  phase_id       TEXT NOT NULL REFERENCES process_phases(id) ON DELETE CASCADE,
+  agent_name     TEXT,
+  seat_role      TEXT,
+  skills         TEXT,
+  tools          TEXT,
+  runtime_config TEXT,
+  position       INTEGER NOT NULL
+);
+INSERT INTO process_phase_agents_v49
+  (id, phase_id, agent_name, seat_role, skills, tools, runtime_config, position)
+SELECT id, phase_id, agent_name, NULL, skills, tools, runtime_config, position
+FROM process_phase_agents;
+DROP TABLE process_phase_agents;
+ALTER TABLE process_phase_agents_v49 RENAME TO process_phase_agents;
+CREATE INDEX IF NOT EXISTS idx_process_phase_agents_phase ON process_phase_agents(phase_id);
+`
+
+// v50: Mission Control seat sessions and Comms (plan 106.4). A seat session is
+// one long-lived conversation per (initiative, seat), rotated into numbered
+// generations. seat_messages is the durable, addressable bus: every message is
+// attributable, bounded, and visible in the Comms feed, including refusals.
+// process_phases.context_mode picks whether a playbook step runs in a fresh
+// worker or as a turn in its seat's session.
+export const SCHEMA_V50_TABLES = `
+CREATE TABLE IF NOT EXISTS seat_sessions (
+  id               TEXT PRIMARY KEY,
+  initiative_id    TEXT NOT NULL REFERENCES initiatives(id) ON DELETE CASCADE,
+  seat_address     TEXT NOT NULL,
+  generation       INTEGER NOT NULL,
+  conversation_id  TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+  status           TEXT NOT NULL,
+  handoff_summary  TEXT,
+  rotation_reason  TEXT,
+  failure_count    INTEGER NOT NULL DEFAULT 0,
+  created_at       INTEGER NOT NULL,
+  last_activity_at INTEGER,
+  rotated_at       INTEGER,
+  UNIQUE (initiative_id, seat_address, generation)
+);
+CREATE INDEX IF NOT EXISTS idx_seat_sessions_conversation ON seat_sessions(conversation_id);
+CREATE TABLE IF NOT EXISTS seat_threads (
+  id            TEXT PRIMARY KEY,
+  initiative_id TEXT NOT NULL REFERENCES initiatives(id) ON DELETE CASCADE,
+  anchor_kind   TEXT,
+  anchor_id     TEXT,
+  subject       TEXT NOT NULL,
+  created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_seat_threads_initiative ON seat_threads(initiative_id, created_at);
+CREATE TABLE IF NOT EXISTS seat_messages (
+  id                        TEXT PRIMARY KEY,
+  thread_id                 TEXT NOT NULL REFERENCES seat_threads(id) ON DELETE CASCADE,
+  initiative_id             TEXT NOT NULL REFERENCES initiatives(id) ON DELETE CASCADE,
+  from_address              TEXT NOT NULL,
+  to_address                TEXT NOT NULL,
+  in_reply_to               TEXT REFERENCES seat_messages(id) ON DELETE SET NULL,
+  hop                       INTEGER NOT NULL DEFAULT 0,
+  body                      TEXT NOT NULL,
+  kind                      TEXT NOT NULL DEFAULT 'message',
+  status                    TEXT NOT NULL,
+  expects_reply             INTEGER NOT NULL DEFAULT 0,
+  needs_decision            TEXT,
+  refusal_reason            TEXT,
+  answer_only               INTEGER NOT NULL DEFAULT 0,
+  wake_task_id              TEXT,
+  delivered_conversation_id TEXT,
+  delivered_message_id      TEXT,
+  created_at                INTEGER NOT NULL,
+  delivered_at              INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_seat_messages_to ON seat_messages(initiative_id, to_address, status);
+CREATE INDEX IF NOT EXISTS idx_seat_messages_thread ON seat_messages(thread_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_seat_messages_wake ON seat_messages(wake_task_id);
+`
+
+// v51: context scopes (plan 106.4). A playbook step's conversation lives for
+// one step, one slice run, or the whole initiative; the stored values move from
+// fresh/seat_session to step/initiative. Seat sessions gain a scope: a slice
+// session belongs to one playbook run (scope_key = its id) and generations are
+// numbered per scope. process_phases.context_mode keeps its column name.
+export const SCHEMA_V51_SEAT_SESSIONS = `
+CREATE TABLE seat_sessions_v51 (
+  id               TEXT PRIMARY KEY,
+  initiative_id    TEXT NOT NULL REFERENCES initiatives(id) ON DELETE CASCADE,
+  seat_address     TEXT NOT NULL,
+  scope            TEXT NOT NULL DEFAULT 'initiative',
+  scope_key        TEXT NOT NULL DEFAULT 'initiative',
+  playbook_run_id  TEXT REFERENCES playbook_runs(id) ON DELETE SET NULL,
+  generation       INTEGER NOT NULL,
+  conversation_id  TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+  status           TEXT NOT NULL,
+  handoff_summary  TEXT,
+  rotation_reason  TEXT,
+  failure_count    INTEGER NOT NULL DEFAULT 0,
+  created_at       INTEGER NOT NULL,
+  last_activity_at INTEGER,
+  rotated_at       INTEGER,
+  UNIQUE (initiative_id, seat_address, scope_key, generation)
+);
+INSERT INTO seat_sessions_v51
+  (id, initiative_id, seat_address, scope, scope_key, playbook_run_id, generation, conversation_id, status, handoff_summary, rotation_reason, failure_count, created_at, last_activity_at, rotated_at)
+SELECT id, initiative_id, seat_address, 'initiative', 'initiative', NULL, generation, conversation_id, status, handoff_summary, rotation_reason, failure_count, created_at, last_activity_at, rotated_at
+FROM seat_sessions;
+DROP TABLE seat_sessions;
+ALTER TABLE seat_sessions_v51 RENAME TO seat_sessions;
+CREATE INDEX IF NOT EXISTS idx_seat_sessions_conversation ON seat_sessions(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_seat_sessions_run ON seat_sessions(playbook_run_id);
+`
+
+export const SCHEMA_V51_CONTEXT_SCOPES = `
+UPDATE process_phases SET context_mode = 'step' WHERE context_mode = 'fresh';
+UPDATE process_phases SET context_mode = 'initiative' WHERE context_mode = 'seat_session';
+`
+
+// v52: Mission Control integration (plan 106.5). A mission records the base
+// branch and commit it started from, its repository, and how it landed. A slice
+// records the worktree and integration commit its current attempt started
+// from. merge_queue makes the serialized, dependency-ordered merge of finished
+// slices into the integration branch restart-safe. playbook_runs.worktree_path
+// marks runs isolated in their own worktree (they don't take the workspace's
+// single-flight slot). workspaces.hidden keeps Mission Control's worktree
+// folders out of the user's workspace lists.
+export const SCHEMA_V52_MERGE_QUEUE = `
+CREATE TABLE IF NOT EXISTS merge_queue (
+  id                   TEXT PRIMARY KEY,
+  mission_id           TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+  slice_id             TEXT NOT NULL REFERENCES slices(id) ON DELETE CASCADE,
+  playbook_run_id      TEXT REFERENCES playbook_runs(id) ON DELETE SET NULL,
+  status               TEXT NOT NULL,
+  attempt              INTEGER NOT NULL DEFAULT 0,
+  slice_head           TEXT,
+  conflict_files       TEXT NOT NULL DEFAULT '[]',
+  merge_commit         TEXT,
+  touched_files        TEXT NOT NULL DEFAULT '[]',
+  outside_hints        TEXT NOT NULL DEFAULT '[]',
+  note                 TEXT,
+  escalated            INTEGER NOT NULL DEFAULT 0,
+  resolution_run_id    TEXT REFERENCES playbook_runs(id) ON DELETE SET NULL,
+  resolution_worktree  TEXT,
+  resolution_start_oid TEXT,
+  resolution_attempts  INTEGER NOT NULL DEFAULT 0,
+  proof_accepted_at    INTEGER NOT NULL,
+  created_at           INTEGER NOT NULL,
+  updated_at           INTEGER NOT NULL,
+  started_at           INTEGER,
+  finished_at          INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_merge_queue_mission ON merge_queue(mission_id, status);
+CREATE INDEX IF NOT EXISTS idx_merge_queue_slice ON merge_queue(slice_id);
+CREATE INDEX IF NOT EXISTS idx_merge_queue_resolution ON merge_queue(resolution_run_id);
+`
+
+// v53: the Navigator (plan 106.6). initiatives.drive holds drive bookkeeping
+// (auto-apply planning, accrued active time, pause reason). missions.dod_review
+// records the lead's judgment that a mission meets its definition of done.
+// plan_proposals is the channel for every plan change outside a seat's rights;
+// navigator_ticks is the audit log of what the Navigator saw and did.
+export const SCHEMA_V53_NAVIGATOR = `
+CREATE TABLE IF NOT EXISTS plan_proposals (
+  id              TEXT PRIMARY KEY,
+  initiative_id   TEXT NOT NULL REFERENCES initiatives(id) ON DELETE CASCADE,
+  mission_id      TEXT REFERENCES missions(id) ON DELETE SET NULL,
+  kind            TEXT NOT NULL,
+  changes         TEXT NOT NULL,
+  proposer        TEXT NOT NULL,
+  reason          TEXT NOT NULL DEFAULT '',
+  status          TEXT NOT NULL DEFAULT 'pending',
+  resolved_by     TEXT,
+  resolution_note TEXT,
+  created_at      INTEGER NOT NULL,
+  resolved_at     INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_plan_proposals_initiative ON plan_proposals(initiative_id, status, created_at);
+
+CREATE TABLE IF NOT EXISTS navigator_ticks (
+  id            TEXT PRIMARY KEY,
+  initiative_id TEXT NOT NULL REFERENCES initiatives(id) ON DELETE CASCADE,
+  position_hash TEXT NOT NULL,
+  summary       TEXT NOT NULL,
+  actions       TEXT NOT NULL DEFAULT '[]',
+  decision_keys TEXT NOT NULL DEFAULT '[]',
+  state         TEXT NOT NULL DEFAULT '{}',
+  created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_navigator_ticks_initiative ON navigator_ticks(initiative_id, created_at DESC);
+`

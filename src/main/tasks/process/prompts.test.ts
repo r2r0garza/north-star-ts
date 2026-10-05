@@ -5,6 +5,8 @@ import {
   decompositionRetryNote,
   fanOutDecomposePrompt,
   kickoffPrompt,
+  eachSubtaskKickoffPrompt,
+  UNATTENDED_WORK_NOTE,
   validatorPrompt,
   parseVerdict,
 } from "./prompts"
@@ -308,5 +310,21 @@ describe("parseVerdict (plan 031.1)", () => {
     expect(parseVerdict("")).toBeNull()
     // An object without an `approved` field is not a verdict.
     expect(parseVerdict('{"status": "done"}')).toBeNull()
+  })
+})
+
+describe("unattended workers", () => {
+  it("tells every kickoff that nobody will answer questions", () => {
+    expect(kickoffPrompt({ phase, objective: "ship it", upstream: [] })).toContain(
+      UNATTENDED_WORK_NOTE
+    )
+    expect(
+      eachSubtaskKickoffPrompt({
+        phase,
+        objective: "ship it",
+        sourcePhaseName: "Split",
+        subtaskContent: "part one",
+      })
+    ).toContain(UNATTENDED_WORK_NOTE)
   })
 })

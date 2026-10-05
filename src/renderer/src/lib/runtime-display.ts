@@ -15,6 +15,7 @@ export interface RuntimeBadgeDisplay {
 const SOURCE_LABELS: Record<ProcessRuntimeSnapshotSelection["source"], string> =
   {
     phase_agent: "Phase agent override",
+    seat: "Mission Control seat",
     phase: "Phase override",
     run: "Run default",
     source_conversation: "Source conversation",

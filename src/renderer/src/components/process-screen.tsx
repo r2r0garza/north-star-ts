@@ -9,6 +9,7 @@ import {
 } from "react"
 import {
   ArrowLeft,
+  BookOpen,
   Bot,
   ChevronRight,
   Circle,
@@ -29,6 +30,7 @@ import {
   SkipForward,
   Trash2,
   Upload,
+  UserRound,
   XIcon,
 } from "lucide-react"
 import {
@@ -48,6 +50,10 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable"
 import { CSS } from "@dnd-kit/utilities"
+import {
+  CONTEXT_SCOPES,
+  ContextScopeHelpButton,
+} from "@/components/mission-control/context-scope-help"
 import {
   Dialog,
   DialogContent,
@@ -138,6 +144,7 @@ import type {
   AccountWithModels,
   EdgeTrigger,
   PhaseGatePolicy,
+  PhaseContextScope,
   PhaseRouting,
   PhaseRunStatus,
   ProcessDefinition,
@@ -155,6 +162,7 @@ import type {
   TaskEventPayload,
   TaskLiveEvent,
   GitDiffResult,
+  PlaybookWithHooks,
 } from "@/types"
 
 // The durable approval row's `request` blob for a process gate (mirrors
@@ -285,7 +293,7 @@ function runtimeLabel(
   return `${account?.account.displayName ?? selection.accountId} / ${model?.modelName ?? selection.modelId}`
 }
 
-function nextRuntimeConfig(
+export function nextRuntimeConfig(
   current: ProcessRuntimeConfig | null | undefined,
   slot: ProcessRuntimeSlot,
   selection: ProcessRuntimeSelection | null
@@ -310,7 +318,7 @@ type RuntimePickerGroup = {
   items: RuntimePickerItem[]
 }
 
-function RuntimePicker({
+export function RuntimePicker({
   label,
   providers,
   value,
@@ -549,7 +557,52 @@ function AgentIdentityBadge({
           )}
         </Badge>
       </TooltipTrigger>
-      <TooltipContent>{details ? `${display.name} · ${details}` : display.name}</TooltipContent>
+      <TooltipContent>
+        {details ? `${display.name} · ${details}` : display.name}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+// A seat-role pool row (plan 106.3): bound to a Mission Control seat when a
+// playbook runs, so there is no concrete agent (or runtime) to show here.
+function SeatRoleBadge({
+  role,
+  onRemove,
+}: {
+  role: string
+  onRemove?: () => void
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Badge
+          variant={onRemove ? "secondary" : "outline"}
+          className={cn(
+            "max-w-full gap-1.5 pr-1 pl-2",
+            onRemove ? "py-1" : "h-5 text-[10px]"
+          )}
+        >
+          <UserRound className="size-3 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 truncate font-medium">{role}</span>
+          <span className="shrink-0 border-l border-foreground/10 pl-1.5 text-[10px] font-normal text-muted-foreground">
+            seat role
+          </span>
+          {onRemove && (
+            <button
+              type="button"
+              onClick={onRemove}
+              className="shrink-0 rounded-sm p-0.5 transition-colors hover:bg-background/60 hover:text-foreground"
+              aria-label={`Remove seat role ${role}`}
+            >
+              <XIcon className="size-3" />
+            </button>
+          )}
+        </Badge>
+      </TooltipTrigger>
+      <TooltipContent>
+        {`Bound at run start to the seat with role "${role}" in the user story's pod`}
+      </TooltipContent>
     </Tooltip>
   )
 }
@@ -583,7 +636,18 @@ export function RuntimeBadge({ phaseRun }: { phaseRun: ProcessPhaseRun }) {
   )
 }
 
-export function ProcessScreen({ onClose }: { onClose: () => void }) {
+export function ProcessScreen({
+  onClose,
+  embedded = false,
+  onPlaybookCreated,
+}: {
+  onClose: () => void
+  // Inside Mission Control's Playbooks tab (plan 106.9): no screen header and
+  // no Esc-to-close — the tab owns navigation.
+  embedded?: boolean
+  // After "Use as user story playbook" creates (or finds) the playbook.
+  onPlaybookCreated?: (playbook: PlaybookWithHooks) => void
+}) {
   const [definitions, setDefinitions] = useState<ProcessDefinition[] | null>(
     null
   )
@@ -601,10 +665,20 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
   )
   // Free-text filter over the process cards (matches name + description).
   const [query, setQuery] = useState("")
+  // Definitions Mission Control playbooks run as hook step groups (plan
+  // 106.3). Hidden by default so the two surfaces don't compete.
+  const [playbookProcessIds, setPlaybookProcessIds] = useState<Set<string>>(
+    new Set()
+  )
+  const [showPlaybookSteps, setShowPlaybookSteps] = useState(false)
 
   const loadDefinitions = useCallback(async () => {
-    const list = await window.cowork.db.processes.list()
+    const [list, playbookIds] = await Promise.all([
+      window.cowork.db.processes.list(),
+      window.cowork.missionControl.playbooks.processIds().catch(() => []),
+    ])
     setDefinitions(list)
+    setPlaybookProcessIds(new Set(playbookIds))
   }, [])
 
   // Load on mount. The component is mounted only while the Process view is open
@@ -624,6 +698,7 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
   // Esc closes the view, dropping the user back to their last open conversation.
   // Matches the sidebar-navigation behavior.
   useEffect(() => {
+    if (embedded) return
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault()
@@ -632,7 +707,7 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [onClose])
+  }, [embedded, onClose])
 
   // Guard against acting on a definition that vanished from a refreshed list.
   useEffect(() => {
@@ -657,6 +732,7 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
     if (!definitions) return []
     const q = query.trim().toLowerCase()
     return [...definitions]
+      .filter((d) => showPlaybookSteps || !playbookProcessIds.has(d.id))
       .filter(
         (d) =>
           !q ||
@@ -666,14 +742,16 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
       .sort((a, b) =>
         a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
       )
-  }, [definitions, query])
+  }, [definitions, query, playbookProcessIds, showPlaybookSteps])
 
   async function createDefinition() {
     try {
       const def = await window.cowork.db.processes.create({
         name: "New Process",
       })
-      loadDefinitions()
+      // Await the refresh: the vanished-definition guard would otherwise see
+      // the stale list and clear the selection before the builder opens.
+      await loadDefinitions()
       setSelectedId(def.id)
       setPane("builder")
       setActiveRunId(null)
@@ -713,6 +791,23 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
     }
   }
 
+  // The same definition, run by a Mission Control user story playbook (plan
+  // 106.9). No copy: edits here show up in the playbook.
+  async function useAsPlaybook(definition: ProcessDefinition) {
+    try {
+      const playbook =
+        await window.cowork.missionControl.playbooks.importProcess(
+          definition.id
+        )
+      toast.success(`“${playbook.name}” is a user story playbook`, {
+        description: "Find it in Mission Control → Playbooks.",
+      })
+      onPlaybookCreated?.(playbook)
+    } catch (err) {
+      toast.error(`Could not create the playbook: ${err}`)
+    }
+  }
+
   // Return from a builder/run takeover to the card browser.
   function backToCards() {
     setSelectedId(null)
@@ -740,25 +835,30 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
   return (
     <div
       data-slot="process-screen"
-      className="flex min-h-0 flex-1 flex-col bg-background pt-11 text-sm text-foreground"
+      className={cn(
+        "flex min-h-0 flex-1 flex-col bg-background text-sm text-foreground",
+        !embedded && "pt-11"
+      )}
     >
       {/* Header row (matches the app's h-11 top bar; the Shell drag bar sits
           above via pt-11). */}
-      <div className="flex h-11 shrink-0 items-center justify-between border-b px-4">
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close processes"
-          className="group/back flex items-center gap-2 rounded-md text-left"
-        >
-          <ArrowLeft className="size-4 text-muted-foreground transition-colors group-hover/back:text-foreground" />
-          <h1 className="font-heading text-base font-medium">Processes</h1>
-        </button>
-        <Button variant="ghost" size="icon-sm" onClick={onClose}>
-          <XIcon />
-          <span className="sr-only">Close</span>
-        </Button>
-      </div>
+      {!embedded && (
+        <div className="flex h-11 shrink-0 items-center justify-between border-b px-4">
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close processes"
+            className="group/back flex items-center gap-2 rounded-md text-left"
+          >
+            <ArrowLeft className="size-4 text-muted-foreground transition-colors group-hover/back:text-foreground" />
+            <h1 className="font-heading text-base font-medium">Processes</h1>
+          </button>
+          <Button variant="ghost" size="icon-sm" onClick={onClose}>
+            <XIcon />
+            <span className="sr-only">Close</span>
+          </Button>
+        </div>
+      )}
 
       {selected ? (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -852,12 +952,25 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
             </div>
           </div>
 
-          <div className="shrink-0 border-b px-4 py-2">
-            <FilterInput
-              value={query}
-              onChange={setQuery}
-              placeholder="Filter processes…"
-            />
+          <div className="flex shrink-0 items-center gap-2 border-b px-4 py-2">
+            <div className="min-w-0 flex-1">
+              <FilterInput
+                value={query}
+                onChange={setQuery}
+                placeholder="Filter processes…"
+              />
+            </div>
+            {playbookProcessIds.size > 0 && (
+              <Button
+                type="button"
+                size="xs"
+                variant={showPlaybookSteps ? "secondary" : "outline"}
+                aria-pressed={showPlaybookSteps}
+                onClick={() => setShowPlaybookSteps((value) => !value)}
+              >
+                Show playbook steps
+              </Button>
+            )}
           </div>
 
           <ScrollArea className="min-h-0 flex-1">
@@ -886,6 +999,7 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
                         setActiveRunId(null)
                       }}
                       onExport={() => exportDefinition(d)}
+                      onUseAsPlaybook={() => void useAsPlaybook(d)}
                       onDelete={() => setPendingDelete(d)}
                     />
                   ))}
@@ -972,11 +1086,13 @@ function ProcessCard({
   definition,
   onOpen,
   onExport,
+  onUseAsPlaybook,
   onDelete,
 }: {
   definition: ProcessDefinition
   onOpen: () => void
   onExport: () => void
+  onUseAsPlaybook: () => void
   onDelete: () => void
 }) {
   return (
@@ -1007,6 +1123,22 @@ function ProcessCard({
           >
             <Download className="size-3.5" />
           </button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-label={`Use ${definition.name} as a user story playbook`}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onUseAsPlaybook()
+                }}
+                className="rounded p-1 text-muted-foreground opacity-0 transition-opacity group-hover/card:opacity-100 hover:bg-muted hover:text-foreground focus:opacity-100"
+              >
+                <BookOpen className="size-3.5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Use as user story playbook</TooltipContent>
+          </Tooltip>
           <button
             type="button"
             aria-label={`Delete ${definition.name}`}
@@ -1332,6 +1464,12 @@ function PhaseCard({
   const upstreamCandidates = phases.filter((p) => p.id !== phase.id)
   // Agents not already in the pool, for the add dropdown.
   const poolNames = new Set(pool.map((a) => a.agentName))
+  const poolRoles = new Set(pool.map((a) => a.seatRole).filter(Boolean))
+  const [seatRoleDraft, setSeatRoleDraft] = useState("")
+  // The Context dropdown's own tooltip shows only while the list is closed;
+  // once open, each option carries its own tooltip instead.
+  const [scopeListOpen, setScopeListOpen] = useState(false)
+  const [scopeHintOpen, setScopeHintOpen] = useState(false)
   const addable = agents.filter((a) => !poolNames.has(agentValue(a)))
   const agentsByValue = useMemo(
     () => new Map(agents.map((agent) => [agentValue(agent), agent])),
@@ -1447,6 +1585,8 @@ function PhaseCard({
     validatorMaxIterations?: number
     validatorAgent?: string | null
     subprocessId?: string | null
+    proofStep?: boolean
+    contextScope?: PhaseContextScope
     runtimeConfig?: ProcessRuntimeConfig | null
   }) {
     try {
@@ -1477,6 +1617,22 @@ function PhaseCard({
       onChanged()
     } catch (err) {
       toast.error(`Could not add agent: ${err}`)
+    }
+  }
+
+  async function addSeatRole() {
+    const seatRole = seatRoleDraft.trim().toLowerCase()
+    if (!seatRole || poolRoles.has(seatRole)) return
+    try {
+      await window.cowork.db.processes.agents.create({
+        phaseId: phase.id,
+        seatRole,
+        position: pool.length,
+      })
+      setSeatRoleDraft("")
+      onChanged()
+    } catch (err) {
+      toast.error(`Could not add seat role: ${err}`)
     }
   }
 
@@ -1597,6 +1753,33 @@ function PhaseCard({
                   </TooltipContent>
                 </Tooltip>
               )}
+              {phase.proofStep && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Badge variant="outline" className="text-[10px]">
+                      proof
+                    </Badge>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    Records the user story proof when run as a Mission Control
+                    playbook
+                  </TooltipContent>
+                </Tooltip>
+              )}
+              {phase.contextScope &&
+                phase.contextScope !== "step" &&
+                poolRoles.size > 0 && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Badge variant="outline" className="text-[10px]">
+                        {CONTEXT_SCOPES[phase.contextScope].badge}
+                      </Badge>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {CONTEXT_SCOPES[phase.contextScope].help}
+                    </TooltipContent>
+                  </Tooltip>
+                )}
               {phase.dotFolder && (
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -1678,8 +1861,8 @@ function PhaseCard({
                 </span>
               </TooltipTrigger>
               <TooltipContent>
-                Phase key (auto-derived from the name; used in run events and the
-                dot-folder path)
+                Phase key (auto-derived from the name; used in run events and
+                the dot-folder path)
               </TooltipContent>
             </Tooltip>
           </div>
@@ -1712,15 +1895,18 @@ function PhaseCard({
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="legacy">End of turn</SelectItem>
-                    <SelectItem value="validated">Validate completion</SelectItem>
+                    <SelectItem value="validated">
+                      Validate completion
+                    </SelectItem>
                   </SelectContent>
                 </Select>
               </label>
               <p className="text-muted-foreground">
                 {phase.completionContract?.policy === "validated"
                   ? "Requires a completed, blocked, or failed outcome with evidence."
-                  : "A phase succeeds when its turn ends."} Changes apply to new
-                runs. Existing runs retain their recorded policy.
+                  : "A phase succeeds when its turn ends."}{" "}
+                Changes apply to new runs. Existing runs retain their recorded
+                policy.
               </p>
             </div>
           )}
@@ -1787,8 +1973,8 @@ function PhaseCard({
                 </label>
               </TooltipTrigger>
               <TooltipContent>
-                Single uses the first agent in the pool. Dispatch routes each task to
-                the best-matched agent in the pool.
+                Single uses the first agent in the pool. Dispatch routes each
+                task to the best-matched agent in the pool.
               </TooltipContent>
             </Tooltip>
             <Tooltip>
@@ -1812,8 +1998,8 @@ function PhaseCard({
                 </label>
               </TooltipTrigger>
               <TooltipContent>
-                Auto releases downstream phases when this phase completes. Approve
-                waits for human approval before releasing them.
+                Auto releases downstream phases when this phase completes.
+                Approve waits for human approval before releasing them.
               </TooltipContent>
             </Tooltip>
             <Tooltip>
@@ -1870,6 +2056,76 @@ function PhaseCard({
                 {`Steer this phase's agent to write artifacts under a .${phase.key}/ folder`}
               </TooltipContent>
             </Tooltip>
+            {!phase.fanOut && !phase.subprocessId && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <label className="flex items-center gap-2 text-xs">
+                    <span className="text-muted-foreground">Proof step</span>
+                    <Switch
+                      checked={phase.proofStep ?? false}
+                      onCheckedChange={(v) => patchPhase({ proofStep: v })}
+                    />
+                  </label>
+                </TooltipTrigger>
+                <TooltipContent>
+                  In a Mission Control user story run, this phase records the
+                  verified proof. Ignored by ordinary Process runs.
+                </TooltipContent>
+              </Tooltip>
+            )}
+            {/* Mission Control context scope (plan 106.4): only meaningful for
+            a seat-role step; fan-out children always start fresh. Each option
+            explains itself in a tooltip to its right, so nothing covers the
+            open list. */}
+            {poolRoles.size > 0 && !phase.fanOut && !phase.subprocessId && (
+              <div className="flex items-center gap-2 text-xs">
+                <ContextScopeHelpButton />
+                <span className="-ml-1 text-muted-foreground">Context</span>
+                <Select
+                  value={phase.contextScope ?? "step"}
+                  onValueChange={(v) =>
+                    patchPhase({ contextScope: v as PhaseContextScope })
+                  }
+                  open={scopeListOpen}
+                  onOpenChange={(open) => {
+                    setScopeListOpen(open)
+                    if (open) setScopeHintOpen(false)
+                  }}
+                >
+                  <Tooltip
+                    open={scopeHintOpen && !scopeListOpen}
+                    onOpenChange={(open) =>
+                      setScopeHintOpen(open && !scopeListOpen)
+                    }
+                  >
+                    <TooltipTrigger asChild>
+                      <SelectTrigger size="sm" className="text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                    </TooltipTrigger>
+                    <TooltipContent side="right" sideOffset={8}>
+                      {CONTEXT_SCOPES[phase.contextScope ?? "step"].help}
+                    </TooltipContent>
+                  </Tooltip>
+                  <SelectContent>
+                    {(Object.keys(CONTEXT_SCOPES) as PhaseContextScope[]).map(
+                      (scope) => (
+                        <Tooltip key={scope}>
+                          <TooltipTrigger asChild>
+                            <SelectItem value={scope}>
+                              {CONTEXT_SCOPES[scope].label}
+                            </SelectItem>
+                          </TooltipTrigger>
+                          <TooltipContent side="right" sideOffset={8}>
+                            {CONTEXT_SCOPES[scope].help}
+                          </TooltipContent>
+                        </Tooltip>
+                      )
+                    )}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             {/* Per-phase VALIDATOR (plan 031.1): a second agent reviews this phase's
             output and sends it back with feedback until it passes, bounded. Not
             offered for a fan-out phase (sub-DAG review is plan 031.2) or a
@@ -1895,8 +2151,8 @@ function PhaseCard({
                   </label>
                 </TooltipTrigger>
                 <TooltipContent>
-                  After this phase completes, a second agent reviews its output and
-                  can send it back with feedback (bounded)
+                  After this phase completes, a second agent reviews its output
+                  and can send it back with feedback (bounded)
                 </TooltipContent>
               </Tooltip>
             )}
@@ -1925,8 +2181,8 @@ function PhaseCard({
                     </label>
                   </TooltipTrigger>
                   <TooltipContent>
-                    Max times a reviewer can send this phase back for changes (0 =
-                    unlimited)
+                    Max times a reviewer can send this phase back for changes (0
+                    = unlimited)
                   </TooltipContent>
                 </Tooltip>
               )}
@@ -1940,124 +2196,134 @@ function PhaseCard({
                 <TooltipTrigger asChild>
                   <label className="flex items-center gap-2 text-xs">
                     <span className="text-muted-foreground">Reviewer</span>
-                <Combobox
-                  items={filteredReviewerAgentItems}
-                  value={selectedReviewerAgent}
-                  inputValue={reviewerAgentSearchQuery}
-                  isItemEqualToValue={(a, b) => a?.value === b?.value}
-                  onInputValueChange={(next) =>
-                    setReviewerAgentSearchQuery(next)
-                  }
-                  onOpenChange={(open) => {
-                    if (!open) setReviewerAgentSearchQuery("")
-                  }}
-                  onValueChange={(item: { value: string } | null) => {
-                    setReviewerAgentSearchQuery("")
-                    if (!item) return
-                    void patchPhase({
-                      validatorAgent:
-                        item.value === OWN_AGENT ? null : item.value,
-                    })
-                  }}
-                >
-                  <ComboboxTrigger className="flex h-7 max-w-64 min-w-44 items-center justify-between gap-1 rounded-[min(var(--radius-md),10px)] border border-input bg-transparent px-2.5 text-xs transition-colors hover:bg-accent/50 dark:bg-input/30">
-                    <ComboboxValue>
-                      {(item: (typeof reviewerAgentItems)[number] | null) => (
-                        <span className="truncate">
-                          {item?.label ?? "Phase's own agent"}
-                        </span>
-                      )}
-                    </ComboboxValue>
-                  </ComboboxTrigger>
-                  <ComboboxContent className="w-80 min-w-80">
-                    <ComboboxInput
-                      placeholder="Search reviewer agents…"
-                      showTrigger={false}
-                    />
-                    {reviewerAgentSourceFilters.length > 1 && (
-                      <div className="flex flex-wrap gap-1 border-b border-border/60 p-1">
-                        <Button
-                          type="button"
-                          variant={
-                            !reviewerAgentSourceFilter ? "secondary" : "ghost"
-                          }
-                          size="xs"
-                          onClick={() => setReviewerAgentSourceFilter(null)}
-                        >
-                          All
-                        </Button>
-                        {reviewerAgentSourceFilters.map((source) => (
-                          <Button
-                            key={source.id}
-                            type="button"
-                            variant={
-                              reviewerAgentSourceFilter === source.id
-                                ? "secondary"
-                                : "ghost"
-                            }
-                            size="xs"
-                            onClick={() =>
-                              setReviewerAgentSourceFilter(source.id)
-                            }
-                          >
-                            {source.label}
-                          </Button>
-                        ))}
-                      </div>
-                    )}
-                    <ComboboxEmpty>No agents found.</ComboboxEmpty>
-                    <ComboboxList>
-                      {(item: (typeof filteredReviewerAgentItems)[number]) => (
-                        <ComboboxItem key={item.value} value={item}>
-                          <span className="flex min-w-0 flex-col gap-0.5">
-                            <span className="truncate">{item.label}</span>
-                            {(item.description ||
-                              ("source" in item && item.source)) && (
-                              <span className="line-clamp-2 text-[10px] text-muted-foreground">
-                                {[
-                                  item.description,
-                                  "source" in item ? item.source : undefined,
-                                ]
-                                  .filter(Boolean)
-                                  .join(" · ")}
+                    <Combobox
+                      items={filteredReviewerAgentItems}
+                      value={selectedReviewerAgent}
+                      inputValue={reviewerAgentSearchQuery}
+                      isItemEqualToValue={(a, b) => a?.value === b?.value}
+                      onInputValueChange={(next) =>
+                        setReviewerAgentSearchQuery(next)
+                      }
+                      onOpenChange={(open) => {
+                        if (!open) setReviewerAgentSearchQuery("")
+                      }}
+                      onValueChange={(item: { value: string } | null) => {
+                        setReviewerAgentSearchQuery("")
+                        if (!item) return
+                        void patchPhase({
+                          validatorAgent:
+                            item.value === OWN_AGENT ? null : item.value,
+                        })
+                      }}
+                    >
+                      <ComboboxTrigger className="flex h-7 max-w-64 min-w-44 items-center justify-between gap-1 rounded-[min(var(--radius-md),10px)] border border-input bg-transparent px-2.5 text-xs transition-colors hover:bg-accent/50 dark:bg-input/30">
+                        <ComboboxValue>
+                          {(
+                            item: (typeof reviewerAgentItems)[number] | null
+                          ) => (
+                            <span className="truncate">
+                              {item?.label ?? "Phase's own agent"}
+                            </span>
+                          )}
+                        </ComboboxValue>
+                      </ComboboxTrigger>
+                      <ComboboxContent className="w-80 min-w-80">
+                        <ComboboxInput
+                          placeholder="Search reviewer agents…"
+                          showTrigger={false}
+                        />
+                        {reviewerAgentSourceFilters.length > 1 && (
+                          <div className="flex flex-wrap gap-1 border-b border-border/60 p-1">
+                            <Button
+                              type="button"
+                              variant={
+                                !reviewerAgentSourceFilter
+                                  ? "secondary"
+                                  : "ghost"
+                              }
+                              size="xs"
+                              onClick={() => setReviewerAgentSourceFilter(null)}
+                            >
+                              All
+                            </Button>
+                            {reviewerAgentSourceFilters.map((source) => (
+                              <Button
+                                key={source.id}
+                                type="button"
+                                variant={
+                                  reviewerAgentSourceFilter === source.id
+                                    ? "secondary"
+                                    : "ghost"
+                                }
+                                size="xs"
+                                onClick={() =>
+                                  setReviewerAgentSourceFilter(source.id)
+                                }
+                              >
+                                {source.label}
+                              </Button>
+                            ))}
+                          </div>
+                        )}
+                        <ComboboxEmpty>No agents found.</ComboboxEmpty>
+                        <ComboboxList>
+                          {(
+                            item: (typeof filteredReviewerAgentItems)[number]
+                          ) => (
+                            <ComboboxItem key={item.value} value={item}>
+                              <span className="flex min-w-0 flex-col gap-0.5">
+                                <span className="truncate">{item.label}</span>
+                                {(item.description ||
+                                  ("source" in item && item.source)) && (
+                                  <span className="line-clamp-2 text-[10px] text-muted-foreground">
+                                    {[
+                                      item.description,
+                                      "source" in item
+                                        ? item.source
+                                        : undefined,
+                                    ]
+                                      .filter(Boolean)
+                                      .join(" · ")}
+                                  </span>
+                                )}
                               </span>
-                            )}
-                          </span>
-                        </ComboboxItem>
-                      )}
-                    </ComboboxList>
-                  </ComboboxContent>
-                </Combobox>
+                            </ComboboxItem>
+                          )}
+                        </ComboboxList>
+                      </ComboboxContent>
+                    </Combobox>
                   </label>
                 </TooltipTrigger>
                 <TooltipContent>
-                  The agent that reviews this phase&apos;s output. Defaults to the
-                  phase&apos;s own first pool agent.
+                  The agent that reviews this phase&apos;s output. Defaults to
+                  the phase&apos;s own first pool agent.
                 </TooltipContent>
               </Tooltip>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <label className="flex items-center gap-2 text-xs">
-                    <span className="text-muted-foreground">Max iterations</span>
-                <Input
-                  type="number"
-                  min={1}
-                  className="h-7 w-16 text-xs"
-                  // A legacy 0 (the engine's "use default" sentinel) reads as 3 here so
-                  // the control never shows 0; the floor is 1 (never zero reviews).
-                  value={
-                    phase.validatorMaxIterations < 1
-                      ? 3
-                      : phase.validatorMaxIterations
-                  }
-                  onChange={(e) => {
-                    const n = Math.max(
-                      1,
-                      Math.floor(Number(e.target.value) || 1)
-                    )
-                    patchPhase({ validatorMaxIterations: n })
-                  }}
-                />
+                    <span className="text-muted-foreground">
+                      Max iterations
+                    </span>
+                    <Input
+                      type="number"
+                      min={1}
+                      className="h-7 w-16 text-xs"
+                      // A legacy 0 (the engine's "use default" sentinel) reads as 3 here so
+                      // the control never shows 0; the floor is 1 (never zero reviews).
+                      value={
+                        phase.validatorMaxIterations < 1
+                          ? 3
+                          : phase.validatorMaxIterations
+                      }
+                      onChange={(e) => {
+                        const n = Math.max(
+                          1,
+                          Math.floor(Number(e.target.value) || 1)
+                        )
+                        patchPhase({ validatorMaxIterations: n })
+                      }}
+                    />
                   </label>
                 </TooltipTrigger>
                 <TooltipContent>
@@ -2076,26 +2342,26 @@ function PhaseCard({
                 <TooltipTrigger asChild>
                   <label className="flex items-center gap-2 text-xs">
                     <span className="text-muted-foreground">Runs process</span>
-                <Select
-                  value={phase.subprocessId}
-                  onValueChange={(v) =>
-                    patchPhase({
-                      subprocessId: v === NO_SUBPROCESS ? null : v,
-                    })
-                  }
-                >
-                  <SelectTrigger size="sm" className="text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={NO_SUBPROCESS}>None</SelectItem>
-                    {subprocessCandidates.map((d) => (
-                      <SelectItem key={d.id} value={d.id}>
-                        {d.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                    <Select
+                      value={phase.subprocessId}
+                      onValueChange={(v) =>
+                        patchPhase({
+                          subprocessId: v === NO_SUBPROCESS ? null : v,
+                        })
+                      }
+                    >
+                      <SelectTrigger size="sm" className="text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={NO_SUBPROCESS}>None</SelectItem>
+                        {subprocessCandidates.map((d) => (
+                          <SelectItem key={d.id} value={d.id}>
+                            {d.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </label>
                 </TooltipTrigger>
                 <TooltipContent>
@@ -2131,6 +2397,14 @@ function PhaseCard({
                 )}
               >
                 {pool.map((a) => {
+                  if (a.seatRole || !a.agentName)
+                    return (
+                      <SeatRoleBadge
+                        key={a.id}
+                        role={a.seatRole ?? "unassigned"}
+                        onRemove={() => removePoolAgent(a.id)}
+                      />
+                    )
                   const catalogAgent = agentsByValue.get(a.agentName)
                   const badge = (
                     <AgentIdentityBadge
@@ -2260,6 +2534,34 @@ function PhaseCard({
                   </span>
                 )
               )}
+              {/* Seat role (plan 106.3): bind this phase to a Mission Control
+              seat by role instead of a named agent. Resolved at run start. */}
+              <form
+                className="flex items-center gap-1.5"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  void addSeatRole()
+                }}
+              >
+                <Input
+                  value={seatRoleDraft}
+                  onChange={(event) => setSeatRoleDraft(event.target.value)}
+                  placeholder="Add seat role… (e.g. builder, qa)"
+                  aria-label="Seat role"
+                  className="h-7 text-xs"
+                />
+                <Button
+                  type="submit"
+                  variant="outline"
+                  size="xs"
+                  disabled={
+                    !seatRoleDraft.trim() ||
+                    poolRoles.has(seatRoleDraft.trim().toLowerCase())
+                  }
+                >
+                  Add role
+                </Button>
+              </form>
             </div>
           )}
 
@@ -2359,16 +2661,21 @@ function phaseRunsForDisplay(
   )
 }
 
-function RunMonitor({
+export function RunMonitor({
   definition,
   activeRunId,
   providerModels,
   onSelectRun,
+  embedded = false,
 }: {
   definition: ProcessDefinition
   activeRunId: string | null
   providerModels: AccountWithModels[]
   onSelectRun: (runId: string) => void
+  // Embedded in Mission Control (plan 106.3): the container owns starting,
+  // retrying, and cancelling runs, so the run list, New Run, Cancel, and
+  // Restart are hidden. Phase cards, transcripts, gates, and Pause remain.
+  embedded?: boolean
 }) {
   const [runs, setRuns] = useState<ProcessRun[] | null>(null)
   const [run, setRun] = useState<ProcessRun | null>(null)
@@ -2809,7 +3116,7 @@ function RunMonitor({
   const runActive = run ? ACTIVE_RUN_STATUSES.has(run.status) : false
 
   // No runs yet — an actionable empty state (the modal renders below either way).
-  if (runs.length === 0) {
+  if (runs.length === 0 && !embedded) {
     return (
       <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
         <p className="text-sm text-muted-foreground">No runs yet.</p>
@@ -2840,29 +3147,38 @@ function RunMonitor({
     <div className="flex min-h-0 flex-1 flex-col">
       {/* Run selector + controls. */}
       <div className="flex shrink-0 items-center gap-2 border-b px-4 py-2">
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          onClick={() => setNewRunOpen(true)}
-          disabled={noPhases}
-          title={noPhases ? "Add a phase in the Builder first" : undefined}
-        >
-          <Plus className="size-3.5" />
-          New Run
-        </Button>
-        <Select value={activeRunId ?? ""} onValueChange={onSelectRun}>
-          <SelectTrigger size="sm" className="min-w-0 flex-1">
-            <SelectValue placeholder="Select a run" />
-          </SelectTrigger>
-          <SelectContent>
-            {runs.map((r) => (
-              <SelectItem key={r.id} value={r.id}>
-                {runLabel(r)}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        {!embedded && (
+          <>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => setNewRunOpen(true)}
+              disabled={noPhases}
+              title={noPhases ? "Add a phase in the Builder first" : undefined}
+            >
+              <Plus className="size-3.5" />
+              New Run
+            </Button>
+            <Select value={activeRunId ?? ""} onValueChange={onSelectRun}>
+              <SelectTrigger size="sm" className="min-w-0 flex-1">
+                <SelectValue placeholder="Select a run" />
+              </SelectTrigger>
+              <SelectContent>
+                {runs.map((r) => (
+                  <SelectItem key={r.id} value={r.id}>
+                    {runLabel(r)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </>
+        )}
+        {embedded && run && (
+          <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+            {runLabel(run)}
+          </span>
+        )}
         {run && <RunStatusBadge status={run.status} />}
         {run && runActive && (
           <>
@@ -2876,14 +3192,16 @@ function RunMonitor({
               <Pause className="size-3.5" />
               Pause
             </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="destructive"
-              onClick={() => window.cowork.process.cancel(run.id)}
-            >
-              Cancel
-            </Button>
+            {!embedded && (
+              <Button
+                type="button"
+                size="sm"
+                variant="destructive"
+                onClick={() => window.cowork.process.cancel(run.id)}
+              >
+                Cancel
+              </Button>
+            )}
           </>
         )}
         {/* A failed run can retry from its failure frontier: the failed phase(s)
@@ -2899,15 +3217,17 @@ function RunMonitor({
               <Download className="size-3.5" />
               Export Incident
             </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={() => window.cowork.process.restart(run.id)}
-            >
-              <RotateCcw className="size-3.5" />
-              Restart run
-            </Button>
+            {!embedded && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => window.cowork.process.restart(run.id)}
+              >
+                <RotateCcw className="size-3.5" />
+                Restart run
+              </Button>
+            )}
           </>
         )}
       </div>
@@ -3165,11 +3485,28 @@ function PhaseRunItem({
       >
         <StatusIcon status={displayStatus} />
         <span className="min-w-0 flex-1 truncate font-medium">{name}</span>
-        {phaseRun.agentName && (
-          <AgentIdentityBadge value={phaseRun.agentName} />
+        {phaseRun.seatAddress ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Badge variant="outline" className="h-5 gap-1 text-[10px]">
+                <UserRound className="size-3 text-muted-foreground" />
+                {phaseRun.seatAddress}
+              </Badge>
+            </TooltipTrigger>
+            <TooltipContent>
+              Mission Control seat that ran this phase
+            </TooltipContent>
+          </Tooltip>
+        ) : (
+          phaseRun.agentName && (
+            <AgentIdentityBadge value={phaseRun.agentName} />
+          )
         )}
         <RuntimeBadge phaseRun={phaseRun} />
-        <PhaseStatusLabel status={displayStatus} />
+        <PhaseStatusLabel
+          status={displayStatus}
+          reviewStartedAt={phaseRun.reviewStartedAt}
+        />
       </div>
 
       <PhaseCompletionEvidence receipt={phaseRun.completionReceipt} />
@@ -4439,7 +4776,10 @@ function SubProcessNestedRun({
                   <span className="min-w-0 flex-1 truncate">{runName}</span>
                   {pr.agentName && <AgentIdentityBadge value={pr.agentName} />}
                   <RuntimeBadge phaseRun={pr} />
-                  <PhaseStatusLabel status={displayStatus} />
+                  <PhaseStatusLabel
+                    status={displayStatus}
+                    reviewStartedAt={pr.reviewStartedAt}
+                  />
                 </div>
                 {/* An approve gate raised inside this nested run (plan 038.2). */}
                 {gateInfo && (
@@ -4874,7 +5214,7 @@ export function recoverProcessMonitorGates(input: {
 
 function runLabel(run: ProcessRun): string {
   const when = run.startedAt ?? run.createdAt
-  // Prefer the generated title; fall back to an objective slice for pre-existing
+  // Prefer the generated title; fall back to an objective user story for pre-existing
   // (title-less) runs.
   const obj = run.objective?.trim()
   const label = run.title?.trim() || (obj ? obj.slice(0, 40) : "")
@@ -4912,10 +5252,28 @@ const PHASE_STATUS_LABEL: Record<PhaseRunStatus, string> = {
   skipped: "Skipped",
 }
 
-function PhaseStatusLabel({ status }: { status: PhaseRunStatus }) {
+// A running phase whose worker has finished and whose validator is reviewing
+// the output reads "Reviewing", so a finished-looking transcript isn't taken
+// for a stuck phase.
+export function phaseStatusText(
+  status: PhaseRunStatus,
+  reviewStartedAt?: number | null
+): string {
+  return status === "running" && reviewStartedAt
+    ? "Reviewing"
+    : PHASE_STATUS_LABEL[status]
+}
+
+function PhaseStatusLabel({
+  status,
+  reviewStartedAt,
+}: {
+  status: PhaseRunStatus
+  reviewStartedAt?: number | null
+}) {
   return (
     <span className="shrink-0 text-xs text-muted-foreground">
-      {PHASE_STATUS_LABEL[status]}
+      {phaseStatusText(status, reviewStartedAt)}
     </span>
   )
 }

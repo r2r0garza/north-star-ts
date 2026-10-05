@@ -143,6 +143,164 @@ export function factTokens(text: string): Set<string> {
   return new Set(tokens)
 }
 
+// Words that carry meaning inside a fact but say nothing about what a category
+// is *about*. Kept apart from STOPWORDS so the similarity scoring the merge
+// guards depend on is unaffected by tuning this list.
+const TOPIC_STOPWORDS = new Set([
+  "project",
+  "projects",
+  "use",
+  "uses",
+  "used",
+  "using",
+  "should",
+  "must",
+  "always",
+  "never",
+  "not",
+  "no",
+  "file",
+  "files",
+  "prefer",
+  "prefers",
+  "preferred",
+  "workspace",
+  "repo",
+  "repository",
+  "all",
+  "any",
+  "each",
+  "only",
+  "also",
+  "via",
+  "like",
+  "need",
+  "needs",
+  "want",
+  "wants",
+  "instead",
+  "before",
+  "after",
+  "if",
+  "but",
+  "so",
+  "our",
+  "we",
+  "you",
+  "your",
+  "my",
+  "me",
+  "new",
+  "other",
+  "same",
+  "some",
+  "more",
+  "most",
+])
+
+// Tokens in reading order, with a flag for whether each may form a topic. The
+// raw order is kept so bigrams pair words that were actually adjacent — not
+// words a dropped stopword happened to separate.
+function topicTokens(text: string): { token: string; kept: boolean }[] {
+  return text
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((token) => token.length > 0)
+    .map((token) => ({
+      token,
+      kept:
+        token.length >= 2 &&
+        !/^\d+$/.test(token) &&
+        !STOPWORDS.has(token) &&
+        !TOPIC_STOPWORDS.has(token),
+    }))
+}
+
+// A short, deterministic list of what a set of facts is about, for a memory
+// skill's description. Lexical on purpose: no model call, no failure mode, and
+// equal inputs render byte-identical output, so an unchanged category never
+// rewrites its file.
+//
+// A term counts once per fact, weighted by how often that fact was confirmed.
+// Terms seen in a single fact are dropped (that is a fact, not a topic). A
+// recurring bigram is preferred over its words: a unigram scores only on the
+// occurrences that sit outside a recurring bigram, so a word that only ever
+// appears inside one drops out on its own.
+export function deriveTopics(facts: MemoryFact[], limit: number): string[] {
+  if (limit <= 0) return []
+  const parsed = facts.map((fact) => ({
+    tokens: topicTokens(fact.text),
+    weight: Math.log2(1 + Math.max(1, fact.confirmations)),
+  }))
+
+  const tally = (
+    scores: Map<string, { score: number; facts: number }>,
+    terms: Set<string>,
+    weight: number
+  ) => {
+    for (const term of terms) {
+      const entry = scores.get(term) ?? { score: 0, facts: 0 }
+      entry.score += weight
+      entry.facts += 1
+      scores.set(term, entry)
+    }
+  }
+
+  const bigramScores = new Map<string, { score: number; facts: number }>()
+  for (const { tokens, weight } of parsed) {
+    const terms = new Set<string>()
+    for (let i = 0; i + 1 < tokens.length; i++) {
+      const left = tokens[i]
+      const right = tokens[i + 1]
+      if (left.kept && right.kept && left.token !== right.token) {
+        terms.add(`${left.token} ${right.token}`)
+      }
+    }
+    tally(bigramScores, terms, weight)
+  }
+  const recurring = new Set(
+    [...bigramScores]
+      .filter(([, entry]) => entry.facts >= 2)
+      .map(([term]) => term)
+  )
+
+  const unigramScores = new Map<string, { score: number; facts: number }>()
+  for (const { tokens, weight } of parsed) {
+    const covered = new Set<number>()
+    for (let i = 0; i + 1 < tokens.length; i++) {
+      if (recurring.has(`${tokens[i].token} ${tokens[i + 1].token}`)) {
+        covered.add(i)
+        covered.add(i + 1)
+      }
+    }
+    const terms = new Set<string>()
+    tokens.forEach(({ token, kept }, index) => {
+      if (kept && !covered.has(index)) terms.add(token)
+    })
+    tally(unigramScores, terms, weight)
+  }
+
+  // Rounded so floating-point summation order — which follows input order —
+  // cannot reorder two equally-scored terms.
+  const candidates = [
+    ...[...recurring].map((term) => [term, bigramScores.get(term)!] as const),
+    ...[...unigramScores].filter(([, entry]) => entry.facts >= 2),
+  ].map(([term, entry]) => ({
+    term,
+    score: Math.round(entry.score * 1e6) / 1e6,
+  }))
+  candidates.sort((a, b) =>
+    a.score === b.score
+      ? a.term < b.term
+        ? -1
+        : a.term > b.term
+          ? 1
+          : 0
+      : b.score - a.score
+  )
+  return candidates.slice(0, limit).map((entry) => entry.term)
+}
+
 // Sørensen–Dice over token sets. Cheap, symmetric, and forgiving of the word
 // order changes that make a restatement look novel to byte equality.
 export function factSimilarity(a: string, b: string): number {

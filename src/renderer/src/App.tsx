@@ -869,7 +869,10 @@ function App(
       }
       setLockedWorkspace(locked)
       if (!locked) {
-        if (convo?.workspaceId) {
+        // A Mission Control worker works in a worktree of its workspace.
+        if (convo?.workingDirectory) {
+          setWorkspace(convo.workingDirectory)
+        } else if (convo?.workspaceId) {
           const ws = await window.cowork.db.workspaces.list()
           const match = ws.find((w) => w.id === convo.workspaceId)
           if (!cancelled) setWorkspace(match?.path ?? "")
@@ -3266,6 +3269,7 @@ function App(
                 questions={liveQuestion.questions}
                 onSubmit={answerQuestion}
                 onCancel={questionCancellable ? cancelQuestion : undefined}
+                collapsible
               />
             </div>
           )}

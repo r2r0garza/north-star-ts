@@ -66,7 +66,7 @@ describe.skipIf(!sqliteLoads)("v15 migration", () => {
   })
 
   it("reaches the latest user_version", () => {
-    expect(db.pragma("user_version", { simple: true })).toBe(45)
+    expect(db.pragma("user_version", { simple: true })).toBe(64)
   })
 
   it("adds the v24 subprocess_id column to process_phases", () => {
@@ -349,10 +349,15 @@ describe.skipIf(!sqliteLoads)("runs + phase runs", () => {
     updatePhaseRun(parent.id, {
       status: "completed",
       agentName: "coder",
+      resultContent: "frozen result",
       finishedAt: 5,
     })
     expect(getPhaseRun(parent.id)!.status).toBe("completed")
     expect(getPhaseRun(parent.id)!.agentName).toBe("coder")
+    expect(getPhaseRun(parent.id)!.resultContent).toBe("frozen result")
+
+    updatePhaseRun(parent.id, { outputIdentity: null })
+    expect(getPhaseRun(parent.id)!.resultContent).toBeNull()
 
     const topLevel = listPhaseRuns({ runId: run.id, parentId: null })
     expect(topLevel.map((r) => r.id)).toEqual([parent.id])
@@ -521,5 +526,76 @@ describe.skipIf(!sqliteLoads)("sub-processes (plan 038.1)", () => {
     expect(
       listProcessRuns({ parentPhaseRunId: implRun.id }).map((r) => r.id)
     ).toEqual([child.id])
+  })
+})
+
+describe.skipIf(!sqliteLoads)("mission control fields (plan 106.3)", () => {
+  it("a phase agent names exactly one of an agent or a seat role", () => {
+    const def = createProcessDefinition({ name: "P" })
+    const phase = createPhase({
+      processId: def.id,
+      key: "k",
+      name: "K",
+      proofStep: true,
+      position: 0,
+    })
+    expect(getPhase(phase.id)!.proofStep).toBe(true)
+    expect(updatePhase(phase.id, { proofStep: false }).proofStep).toBe(false)
+
+    const bound = createPhaseAgent({
+      phaseId: phase.id,
+      seatRole: " Builder ",
+      position: 0,
+    })
+    expect(bound).toMatchObject({ agentName: null, seatRole: "builder" })
+    expect(() => createPhaseAgent({ phaseId: phase.id, position: 1 })).toThrow(
+      /exactly one/
+    )
+    expect(() =>
+      createPhaseAgent({
+        phaseId: phase.id,
+        agentName: "coder",
+        seatRole: "qa",
+        position: 1,
+      })
+    ).toThrow(/exactly one/)
+  })
+
+  it("round-trips seat bindings, the container link, and seat addresses", () => {
+    const def = createProcessDefinition({ name: "P" })
+    const phase = createPhase({
+      processId: def.id,
+      key: "k",
+      name: "K",
+      position: 0,
+    })
+    const run = createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      seatBindings: {
+        version: 1,
+        rigName: "Rig",
+        rigCulture: "",
+        podKey: "impl",
+        roles: { builder: ["builder@impl"] },
+        seats: {},
+        intentChain: "",
+      },
+      missionControl: {
+        featureId: "i",
+        milestoneId: "m",
+        userStoryId: "s",
+        playbookRunId: "pbr",
+        hook: "run",
+      },
+    })
+    expect(getProcessRun(run.id)!.seatBindings?.roles.builder).toEqual([
+      "builder@impl",
+    ])
+    expect(getProcessRun(run.id)!.missionControl?.playbookRunId).toBe("pbr")
+    const phaseRun = createPhaseRun({ runId: run.id, phaseId: phase.id })
+    expect(
+      updatePhaseRun(phaseRun.id, { seatAddress: "builder@impl" }).seatAddress
+    ).toBe("builder@impl")
   })
 })

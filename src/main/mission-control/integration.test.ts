@@ -1,0 +1,876 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
+import Database from "better-sqlite3"
+import { execFileSync } from "child_process"
+import { randomUUID } from "crypto"
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "fs"
+import { tmpdir } from "os"
+import path from "path"
+import { runMigrations } from "../db/migrations"
+import { sqliteLoadsForTests } from "../test/sqlite"
+
+// Milestone integration end to end (plan 106.5): real SQLite, real temporary git
+// repositories, and a fake agent loop whose builders write files into the
+// workspace the Process engine hands them (a user story worktree).
+
+const sqliteLoads = sqliteLoadsForTests()
+
+let db: Database.Database
+vi.mock("../db/connection", () => ({ getDb: () => db }))
+vi.mock("../conversations/lifecycle", () => ({
+  cleanupConversationArtifacts: async () => {},
+}))
+const { SHUTDOWN_ABORT_REASON, PAUSE_ABORT_REASON } = vi.hoisted(() => ({
+  SHUTDOWN_ABORT_REASON: Symbol("agent:shutdown"),
+  PAUSE_ABORT_REASON: Symbol("task:pause"),
+}))
+vi.mock("../agent/abort", () => ({ SHUTDOWN_ABORT_REASON, PAUSE_ABORT_REASON }))
+
+interface LoopCall {
+  workspace: string
+  userMessage: string
+  agentName: string | null
+}
+const loopCalls: LoopCall[] = []
+// What each user story's build step writes, by user story key: file → content.
+const builds = new Map<string, Record<string, string>>()
+// What the integrator writes into the conflicted files.
+let resolution: Record<string, string> | null = null
+
+vi.mock("../agent", () => ({
+  SHUTDOWN_ABORT_REASON,
+  generateTitle: async () => "Title",
+  runAgentLoop: async (input: {
+    conversationId: string
+    workspace: string
+    userMessage?: string
+    processProofStep?: boolean
+    processRunId?: string
+    processPhaseRunId?: string
+  }) => {
+    const msg = input.userMessage ?? ""
+    loopCalls.push({
+      workspace: input.workspace,
+      userMessage: msg,
+      agentName: db
+        .prepare("SELECT agent_name FROM conversations WHERE id = ?")
+        .pluck()
+        .get(input.conversationId) as string | null,
+    })
+    let content = "done"
+    if (msg.startsWith("# Review the")) content = '{"approved": true}'
+    else if (msg.includes("Build the user story")) {
+      const key = /# User story ([a-z0-9-]+):/.exec(msg)?.[1] ?? ""
+      for (const [file, text] of Object.entries(builds.get(key) ?? {}))
+        writeFileSync(path.join(input.workspace, file), text)
+    } else if (msg.includes("Resolve the merge conflict") && resolution) {
+      for (const [file, text] of Object.entries(resolution))
+        writeFileSync(path.join(input.workspace, file), text)
+    }
+    if (input.processProofStep) {
+      recordUserStoryProof({
+        processRunId: input.processRunId!,
+        processPhaseRunId: input.processPhaseRunId!,
+        args: {
+          verdict: "accepted",
+          criteria: [
+            { id: "AC-1", status: "met", evidence: "Checked the file." },
+          ],
+        },
+      })
+      content = "verified"
+    }
+    const seq =
+      (db
+        .prepare("SELECT MAX(seq) FROM messages WHERE conversation_id = ?")
+        .pluck()
+        .get(input.conversationId) as number | null) ?? 0
+    db.prepare(
+      "INSERT INTO messages (id, conversation_id, seq, role, content, created_at) VALUES (?, ?, ?, 'assistant', ?, ?)"
+    ).run(randomUUID(), input.conversationId, seq + 1, content, Date.now())
+    return { content }
+  },
+}))
+vi.mock("../agent/providers", () => {
+  class NoActiveProviderError extends Error {}
+  return {
+    resolveLlm: () => ({ client: {}, model: "m", apiMode: "completions" }),
+    createCompletion: async () => ({ choices: [{ message: { content: "" } }] }),
+    NoActiveProviderError,
+  }
+})
+
+const AGENTS = ["builder", "qa", "lead"].map((name) => ({
+  name,
+  refId: `agentref:v1:${name}`,
+  label: `Agent ${name}`,
+  description: `${name} agent`,
+  tools: ["read", "edit", "execute"],
+  body: `You are ${name}.`,
+}))
+vi.mock("../agent/agents/loader", () => ({
+  loadAgent: async (name: string) =>
+    AGENTS.find((a) => a.refId === name || a.name === name) ?? null,
+}))
+
+import * as processes from "../db/repositories/processes"
+import * as rigs from "../db/repositories/rigs"
+import * as features from "../db/repositories/features"
+import * as mergeQueue from "../db/repositories/merge-queue"
+import * as playbooks from "../db/repositories/playbooks"
+import {
+  listWorkspaces,
+  updateWorkspace,
+  upsertWorkspace,
+} from "../db/repositories/workspaces"
+import { ProcessService } from "../tasks/process/service"
+import { UserStoryRunner, recordUserStoryProof } from "./user-story-runner"
+import { startConflictResolution } from "./hook-runner"
+import { MilestoneIntegration } from "./integration"
+import { createDefaultPlaybook } from "./playbook-defaults"
+import type { AgentDefinition } from "../agent/agents/types"
+import { listWorktrees } from "../agent/subagents/worktrees"
+
+const fakeRunner = {
+  enqueueKind: () => {
+    const conversationId = randomUUID()
+    const taskId = randomUUID()
+    const now = Date.now()
+    db.prepare(
+      "INSERT INTO conversations (id, mode, title, workspace_id, created_at, updated_at) VALUES (?, 'interactive', NULL, NULL, ?, ?)"
+    ).run(conversationId, now, now)
+    db.prepare(
+      "INSERT INTO tasks (id, conversation_id, source_conversation_id, title, status, input, result, error, created_at, updated_at) VALUES (?, ?, ?, NULL, 'queued', NULL, NULL, NULL, ?, ?)"
+    ).run(taskId, conversationId, conversationId, now, now)
+    return { id: taskId }
+  },
+} as never
+
+const dirs: string[] = []
+const git = (cwd: string, ...args: string[]) =>
+  execFileSync("git", args, { cwd, encoding: "utf8" }).trim()
+
+function repo(): string {
+  const root = mkdtempSync(path.join(tmpdir(), "mc-int-"))
+  dirs.push(root)
+  git(root, "init", "-b", "main")
+  git(root, "config", "user.email", "test@example.com")
+  git(root, "config", "user.name", "Test")
+  writeFileSync(path.join(root, "README.md"), "base\n")
+  writeFileSync(path.join(root, "shared.txt"), "one\ntwo\nthree\n")
+  git(root, "add", ".")
+  git(root, "commit", "-m", "base")
+  return root
+}
+
+let service: ProcessService
+let runner: UserStoryRunner
+let integration: MilestoneIntegration
+let worktreeRoot: string
+const notices: string[] = []
+
+function setup(options: { resolve?: boolean } = {}) {
+  worktreeRoot = mkdtempSync(path.join(tmpdir(), "mc-worktrees-"))
+  dirs.push(worktreeRoot)
+  service = new ProcessService(fakeRunner)
+  integration = new MilestoneIntegration({
+    worktreeRoot: () => worktreeRoot,
+    startResolution:
+      options.resolve === false
+        ? undefined
+        : (input) => startConflictResolution(runner, input),
+    notifyUser: (title, body) => notices.push(`${title}: ${body}`),
+    leaseRetryMs: 10,
+  })
+  runner = new UserStoryRunner({
+    startProcessRun: (input) => service.startRun(input),
+    cancelTask: () => {},
+    loadAgents: async () => AGENTS as unknown as AgentDefinition[],
+    integration,
+  })
+  service.onRunSettled((id) => runner.settle(id))
+}
+
+function rig() {
+  const created = rigs.createRig({ name: "Team" })
+  const lead = rigs.createPod({
+    rigId: created.id,
+    key: "orchestration",
+    name: "Orchestration",
+  })
+  const pod = rigs.createPod({
+    rigId: created.id,
+    key: "implementation",
+    name: "Implementation",
+  })
+  rigs.createSeat({
+    podId: lead.id,
+    key: "lead",
+    role: "lead",
+    agentRefId: "agentref:v1:lead",
+    agentLabel: "lead",
+  })
+  rigs.createSeat({
+    podId: pod.id,
+    key: "builder",
+    role: "builder",
+    agentRefId: "agentref:v1:builder",
+    agentLabel: "builder",
+  })
+  rigs.createSeat({
+    podId: pod.id,
+    key: "qa",
+    role: "qa",
+    agentRefId: "agentref:v1:qa",
+    agentLabel: "qa",
+  })
+  rigs.setOversight(created.id, [
+    { overseerPodId: lead.id, overseenPodId: pod.id },
+  ])
+  return created
+}
+
+function featureIn(workspace: string, keys: string[]) {
+  const graph = features.createFeature({
+    key: "billing",
+    name: "Billing",
+    intent: "Invoices.",
+    definitionOfDone: "Done.",
+    rigId: rig().id,
+    workspaceId: upsertWorkspace(workspace).id,
+  })
+  const milestone = graph.milestones[0]
+  for (const key of keys)
+    features.createUserStory({
+      milestoneId: milestone.id,
+      key,
+      title: key,
+      spec: { goal: key, acceptance: ["The file exists"] },
+    })
+  features.startFeature(graph.feature.id)
+  const userStories = features.listUserStories(milestone.id)
+  return {
+    feature: features.getFeature(graph.feature.id)!,
+    milestone,
+    userStory: (key: string) => userStories.find((s) => s.key === key)!,
+  }
+}
+
+async function drive(processRunId: string) {
+  const run = processes.getProcessRun(processRunId)!
+  await service.execute({
+    task: { id: run.taskId!, input: { processRunId } } as never,
+    signal: new AbortController().signal,
+    emit: () => {},
+    workspace: undefined,
+  } as never)
+}
+
+// Drive every Mission Control run that is still running (resolution hooks
+// appear only after a conflict), then wait for the merge queue.
+async function settleAll() {
+  for (let round = 0; round < 5; round++) {
+    await integration.idle()
+    const running = playbooks
+      .listPlaybookRuns({ status: "running" })
+      .filter((r) => r.processRunId)
+    if (!running.length) break
+    for (const run of running) await drive(run.processRunId!)
+  }
+  await integration.idle()
+}
+
+beforeEach(() => {
+  if (!sqliteLoads) return
+  db = new Database(":memory:")
+  runMigrations(db)
+  loopCalls.length = 0
+  builds.clear()
+  resolution = null
+  notices.length = 0
+})
+
+afterEach(() => {
+  integration?.stop()
+  for (const dir of dirs.splice(0))
+    rmSync(dir, { recursive: true, force: true })
+})
+
+describe.skipIf(!sqliteLoads)("milestone integration", () => {
+  it("runs independent user stories in parallel worktrees, merges them in order, and starts the dependent user story on both", async () => {
+    setup()
+    const root = repo()
+    const userHead = git(root, "rev-parse", "HEAD")
+    const { milestone, userStory } = featureIn(root, [
+      "invoice-api",
+      "invoice-pdf",
+      "invoice-ui",
+    ])
+    features.setUserStoryEdges(milestone.id, [
+      {
+        fromUserStoryId: userStory("invoice-api").id,
+        toUserStoryId: userStory("invoice-ui").id,
+      },
+      {
+        fromUserStoryId: userStory("invoice-pdf").id,
+        toUserStoryId: userStory("invoice-ui").id,
+      },
+    ])
+    builds.set("invoice-api", { "api.txt": "api\n" })
+    builds.set("invoice-pdf", { "pdf.txt": "pdf\n" })
+    builds.set("invoice-ui", { "ui.txt": "ui\n" })
+
+    // Both start before either runs: two isolated runs at once.
+    const api = await runner.startUserStory(userStory("invoice-api").id)
+    const pdf = await runner.startUserStory(userStory("invoice-pdf").id)
+    expect(api.worktreePath).not.toBe(pdf.worktreePath)
+    const started = features.getMilestone(milestone.id)!
+    expect(started).toMatchObject({
+      integrationBranch: "mc/billing/milestone-1/integration",
+      baseRef: "main",
+      baseOid: userHead,
+    })
+    // The dependent user story waits for merges, not just proofs.
+    await expect(
+      runner.startUserStory(userStory("invoice-ui").id)
+    ).rejects.toThrow(/unmerged user stories/)
+    // Worktrees are never registered as workspaces: each run belongs to the
+    // feature's workspace and works in its own worktree.
+    expect(listWorkspaces().map((w) => w.path)).toEqual([root])
+    expect(db.prepare("SELECT path FROM workspaces").pluck().all()).toEqual([
+      root,
+    ])
+    const workspaceId = upsertWorkspace(root).id
+    for (const run of [api, pdf]) {
+      const processRun = processes.getProcessRun(run.processRunId!)!
+      expect(processRun.workspaceId).toBe(workspaceId)
+      expect(processRun.workingDirectory).toBe(run.worktreePath)
+    }
+    expect(integration.info(userStory("invoice-api").id).workspacePath).toBe(
+      api.worktreePath
+    )
+
+    // Drive the second one first: merge order is dependency level, then the
+    // time each proof was accepted.
+    await drive(pdf.processRunId!)
+    await drive(api.processRunId!)
+    await integration.idle()
+    // Every worker ran in its worktree, in a conversation that says so.
+    const workers = db
+      .prepare(
+        "SELECT workspace_id, working_directory FROM conversations WHERE working_directory IS NOT NULL"
+      )
+      .all() as Array<{ workspace_id: string; working_directory: string }>
+    expect(workers.length).toBeGreaterThan(0)
+    for (const worker of workers) {
+      expect(worker.workspace_id).toBe(workspaceId)
+      expect([api.worktreePath, pdf.worktreePath]).toContain(
+        worker.working_directory
+      )
+    }
+    // Every worker of each user story ran in that user story's own worktree.
+    const workspaces = new Set(loopCalls.map((c) => c.workspace))
+    expect([...workspaces].sort()).toEqual(
+      [api.worktreePath, pdf.worktreePath].sort()
+    )
+    expect(features.getUserStory(userStory("invoice-api").id)!.status).toBe(
+      "done"
+    )
+    expect(features.getUserStory(userStory("invoice-pdf").id)!.status).toBe(
+      "done"
+    )
+    const subjects = git(
+      root,
+      "log",
+      "--first-parent",
+      "--format=%s",
+      started.integrationBranch!
+    )
+      .split("\n")
+      .slice(0, 2)
+    expect(subjects).toEqual([
+      "user story invoice-api: invoice-api",
+      "user story invoice-pdf: invoice-pdf",
+    ])
+    // Merged worktrees are removed.
+    expect(existsSync(api.worktreePath!)).toBe(false)
+    expect(existsSync(pdf.worktreePath!)).toBe(false)
+
+    const ui = await runner.startUserStory(userStory("invoice-ui").id)
+    const uiUserStory = features.getUserStory(userStory("invoice-ui").id)!
+    expect(existsSync(path.join(ui.worktreePath!, "api.txt"))).toBe(true)
+    expect(existsSync(path.join(ui.worktreePath!, "pdf.txt"))).toBe(true)
+    expect(uiUserStory.baseOid).toBe(
+      git(root, "rev-parse", started.integrationBranch!)
+    )
+    await drive(ui.processRunId!)
+    await integration.idle()
+    expect(features.getMilestone(milestone.id)!.status).toBe("review")
+
+    // The merge commit carries the proof and the trailers.
+    const body = git(
+      root,
+      "log",
+      "-1",
+      "--format=%B",
+      started.integrationBranch!
+    )
+    expect(body).toContain(`Mission-Control-User-Story: ${uiUserStory.id}`)
+    expect(body).toContain(`Mission-Control-Proof: ${ui.id}`)
+    expect(body).toContain("AC-1 met")
+
+    // The user's checkout and base branch were never touched.
+    expect(git(root, "rev-parse", "main")).toBe(userHead)
+    expect(git(root, "status", "--porcelain")).toBe("")
+    expect(git(root, "branch", "--show-current")).toBe("main")
+  })
+
+  it("hands a conflict to the integrator (falling back to the lead), re-verifies, and merges", async () => {
+    setup()
+    const root = repo()
+    const { milestone, userStory } = featureIn(root, ["a", "b"])
+    builds.set("a", { "shared.txt": "one\nTWO from a\nthree\n" })
+    builds.set("b", { "shared.txt": "one\nTWO from b\nthree\n" })
+    resolution = { "shared.txt": "one\nTWO from a and b\nthree\n" }
+    const a = await runner.startUserStory(userStory("a").id)
+    const b = await runner.startUserStory(userStory("b").id)
+    await drive(a.processRunId!)
+    await drive(b.processRunId!)
+    await integration.idle()
+
+    const entry = mergeQueue.listMergeEntries({
+      userStoryId: userStory("b").id,
+    })[0]
+    expect(entry).toMatchObject({
+      status: "resolving",
+      conflictFiles: ["shared.txt"],
+    })
+    expect(features.getUserStory(userStory("b").id)!.status).toBe("integrating")
+    const resolutionRun = playbooks.getPlaybookRun(entry.resolutionRunId!)!
+    expect(resolutionRun).toMatchObject({
+      hook: "after_each_user_story",
+      userStoryId: userStory("b").id,
+    })
+
+    await settleAll()
+    const integrator = loopCalls.find((c) =>
+      c.userMessage.includes("Resolve the merge conflict")
+    )!
+    // No integrator seat in this rig: the lead stands in.
+    expect(integrator.agentName).toBe("agentref:v1:lead")
+    expect(integrator.userMessage).toContain("shared.txt")
+    expect(mergeQueue.getMergeEntry(entry.id)!.status).toBe("merged")
+    expect(features.getUserStory(userStory("b").id)!.status).toBe("done")
+    const integrationBranch = features.getMilestone(
+      milestone.id
+    )!.integrationBranch!
+    expect(git(root, "show", `${integrationBranch}:shared.txt`)).toContain(
+      "a and b"
+    )
+    expect(git(root, "log", "-1", "--format=%B", integrationBranch)).toContain(
+      "Mission-Control-Resolved-By:"
+    )
+    expect(git(root, "status", "--porcelain")).toBe("")
+    expect((await listWorktrees(root)).length).toBe(1)
+  })
+
+  it("escalates a conflict with no way to resolve it and leaves the repository clean", async () => {
+    setup({ resolve: false })
+    const root = repo()
+    const { milestone, userStory } = featureIn(root, ["a", "b"])
+    builds.set("a", { "shared.txt": "a\n" })
+    builds.set("b", { "shared.txt": "b\n" })
+    const a = await runner.startUserStory(userStory("a").id)
+    const b = await runner.startUserStory(userStory("b").id)
+    await drive(a.processRunId!)
+    await drive(b.processRunId!)
+    await integration.idle()
+
+    const entry = mergeQueue.listMergeEntries({
+      userStoryId: userStory("b").id,
+    })[0]
+    expect(entry).toMatchObject({ status: "conflict", escalated: true })
+    expect(notices.join("\n")).toMatch(/user story b needs you/)
+    expect(git(root, "status", "--porcelain")).toBe("")
+    expect(features.getMilestone(milestone.id)!.status).toBe("integrating")
+
+    // Abandoning fails the user story (its branch kept) and reopens the milestone.
+    await integration.abandon(entry.id)
+    const failed = features.getUserStory(userStory("b").id)!
+    expect(failed.status).toBe("failed")
+    expect(git(root, "branch", "--list", failed.branch!)).toContain(
+      failed.branch!
+    )
+    expect(features.getMilestone(milestone.id)!.status).toBe("active")
+    // A retry starts from the integration head, which now has user story a.
+    builds.set("b", { "b.txt": "b\n" })
+    const retry = await runner.startUserStory(userStory("b").id)
+    expect(
+      readFileSync(path.join(retry.worktreePath!, "shared.txt"), "utf8")
+    ).toBe("a\n")
+  })
+
+  it("regenerates conflicting generated files in the queue, without the integrator", async () => {
+    setup({ resolve: false })
+    const root = repo()
+    const { feature, userStory } = featureIn(root, ["a", "b"])
+    updateWorkspace(feature.workspaceId!, {
+      generatedFiles: [
+        {
+          paths: ["*.generated"],
+          command: "echo rebuilt > out.generated",
+        },
+      ],
+    })
+    builds.set("a", { "a.txt": "a\n", "out.generated": "a\n" })
+    builds.set("b", { "b.txt": "b\n", "out.generated": "b\n" })
+    const a = await runner.startUserStory(userStory("a").id)
+    const b = await runner.startUserStory(userStory("b").id)
+    await drive(a.processRunId!)
+    await drive(b.processRunId!)
+    await integration.idle()
+
+    const entry = mergeQueue.listMergeEntries({
+      userStoryId: userStory("b").id,
+    })[0]
+    expect(entry).toMatchObject({ status: "merged", resolutionAttempts: 0 })
+    expect(entry.note).toContain(
+      "regenerating 1 conflicting generated file(s): out.generated"
+    )
+  })
+
+  it("keeps why regeneration failed in the user story's history", async () => {
+    setup({ resolve: false })
+    const root = repo()
+    const { feature, userStory } = featureIn(root, ["a", "b"])
+    updateWorkspace(feature.workspaceId!, {
+      generatedFiles: [{ paths: ["*.generated"], command: "exit 2" }],
+    })
+    builds.set("a", { "out.generated": "a\n" })
+    builds.set("b", { "out.generated": "b\n" })
+    const a = await runner.startUserStory(userStory("a").id)
+    const b = await runner.startUserStory(userStory("b").id)
+    await drive(a.processRunId!)
+    await drive(b.processRunId!)
+    await integration.idle()
+
+    const history = features
+      .listRevisions(feature.id)
+      .filter((r) => r.targetId === userStory("b").id)
+      .map((r) => r.reason ?? "")
+    expect(
+      history.some((reason) =>
+        /regenerating them failed \(`exit 2` failed/.test(reason)
+      )
+    ).toBe(true)
+  })
+
+  it("escalates when the milestone playbook has no after-each-user-story hook", async () => {
+    setup()
+    const root = repo()
+    const { milestone, userStory } = featureIn(root, ["a", "b"])
+    const playbook = createDefaultPlaybook("milestone")
+    playbooks.removeHook(playbook.id, "after_each_user_story")
+    features.updateMilestone(milestone.id, { playbookId: playbook.id })
+    builds.set("a", { "shared.txt": "a\n" })
+    builds.set("b", { "shared.txt": "b\n" })
+    const a = await runner.startUserStory(userStory("a").id)
+    const b = await runner.startUserStory(userStory("b").id)
+    await drive(a.processRunId!)
+    await drive(b.processRunId!)
+    await integration.idle()
+    const entry = mergeQueue.listMergeEntries({
+      userStoryId: userStory("b").id,
+    })[0]
+    expect(entry).toMatchObject({ status: "conflict", escalated: true })
+    expect(entry.note).toMatch(/no after each user story hook/)
+    expect((await listWorktrees(root)).length).toBe(2)
+  })
+
+  it("finishes the bookkeeping for a merge interrupted after the branch moved", async () => {
+    setup()
+    const root = repo()
+    const { milestone, userStory } = featureIn(root, ["a", "b"])
+    builds.set("a", { "a.txt": "a\n" })
+    builds.set("b", { "b.txt": "b\n" })
+    const a = await runner.startUserStory(userStory("a").id)
+    const b = await runner.startUserStory(userStory("b").id)
+    // Settle both runs without letting the queue drain yet.
+    integration.stop()
+    await drive(a.processRunId!)
+    await drive(b.processRunId!)
+    const entryA = mergeQueue.listMergeEntries({
+      userStoryId: userStory("a").id,
+    })[0]
+    const entryB = mergeQueue.listMergeEntries({
+      userStoryId: userStory("b").id,
+    })[0]
+    expect([entryA.status, entryB.status]).toEqual(["queued", "queued"])
+
+    // Simulate a crash mid-merge for a: its merge landed on the integration
+    // branch, but the row still says merging. b crashed before merging.
+    const mc = features.getMilestone(milestone.id)!
+    const userStoryA = features.getUserStory(userStory("a").id)!
+    git(userStoryA.worktreePath!, "add", "-A")
+    git(userStoryA.worktreePath!, "commit", "-m", "a work")
+    const headA = git(root, "rev-parse", userStoryA.branch!)
+    const scratch = path.join(worktreeRoot, "crash-merge")
+    git(root, "worktree", "add", "--detach", scratch, mc.integrationBranch!)
+    git(
+      scratch,
+      "merge",
+      "--no-ff",
+      "-m",
+      `user story a\n\nMission-Control-User-Story: ${userStoryA.id}`,
+      headA
+    )
+    git(
+      root,
+      "update-ref",
+      `refs/heads/${mc.integrationBranch}`,
+      git(scratch, "rev-parse", "HEAD")
+    )
+    mergeQueue.updateMergeEntry(entryA.id, {
+      status: "merging",
+      userStoryHead: headA,
+    })
+    mergeQueue.updateMergeEntry(entryB.id, {
+      status: "merging",
+      userStoryHead: null,
+    })
+
+    // Restart: a fresh service sweeps the stray worktree and resumes.
+    setupRestart()
+    await integration.reconcile()
+    await integration.idle()
+    expect(existsSync(scratch)).toBe(false)
+    expect(mergeQueue.getMergeEntry(entryA.id)).toMatchObject({
+      status: "merged",
+      mergeCommit: git(
+        root,
+        "log",
+        "-1",
+        "--format=%H",
+        "--grep",
+        userStoryA.id,
+        mc.integrationBranch!
+      ),
+    })
+    expect(mergeQueue.getMergeEntry(entryB.id)!.status).toBe("merged")
+    expect(features.getMilestone(milestone.id)!.status).toBe("review")
+    // Each user story merged exactly once.
+    expect(
+      git(root, "log", "--merges", "--format=%s", mc.integrationBranch!).split(
+        "\n"
+      )
+    ).toHaveLength(2)
+  })
+
+  it("lands a local-merge milestone only with an approval for what the user reviewed", async () => {
+    setup()
+    const root = repo()
+    const { milestone, userStory } = featureIn(root, ["a"])
+    features.setMilestoneMergePolicy(milestone.id, "local_merge")
+    builds.set("a", { "a.txt": "a\n" })
+    const a = await runner.startUserStory(userStory("a").id)
+    // Locked once started, except back to manual.
+    expect(() =>
+      features.setMilestoneMergePolicy(milestone.id, "open_pr")
+    ).toThrow(/locked/)
+    await drive(a.processRunId!)
+    await integration.idle()
+
+    const status = await integration.status(milestone.id)
+    expect(status).toMatchObject({
+      policy: "local_merge",
+      workspace: { mode: "git" },
+      summary: { fastForward: true, merged: false },
+    })
+    expect(status.queue.map((e) => e.status)).toEqual(["merged"])
+    expect(git(root, "rev-parse", "main")).toBe(status.baseOid)
+    await expect(
+      integration.land(milestone.id, {
+        baseOid: status.summary!.baseOid!,
+        headOid: "stale",
+      })
+    ).rejects.toThrow(/moved since you reviewed/)
+    const landing = await integration.land(milestone.id, {
+      baseOid: status.summary!.baseOid!,
+      headOid: status.summary!.headOid!,
+    })
+    expect(landing).toMatchObject({
+      mode: "local_merge",
+      fastForward: true,
+      completedBy: "user",
+    })
+    expect(readFileSync(path.join(root, "a.txt"), "utf8")).toBe("a\n")
+    const done = features.getMilestone(milestone.id)!
+    expect(done.status).toBe("completed")
+    // User story and integration branches are cleaned up once reachable from main.
+    expect(git(root, "branch", "--list", "mc/*")).toBe("")
+  })
+
+  it("reaches review when the last unfinished user story is deleted", async () => {
+    setup()
+    const root = repo()
+    const { milestone, userStory } = featureIn(root, ["a", "b"])
+    builds.set("a", { "a.txt": "a\n" })
+    const a = await runner.startUserStory(userStory("a").id)
+    await drive(a.processRunId!)
+    await integration.idle()
+    expect(features.getMilestone(milestone.id)!.status).toBe("active")
+    features.deleteUserStory(userStory("b").id)
+    // Nothing merged since; the status read catches up, and stays quiet after.
+    const changes: string[] = []
+    const quiet = new MilestoneIntegration({
+      worktreeRoot: () => worktreeRoot,
+      onChanged: (id) => changes.push(id),
+    })
+    await quiet.status(milestone.id)
+    expect(features.getMilestone(milestone.id)!.status).toBe("review")
+    await quiet.status(milestone.id)
+    expect(changes).toHaveLength(1)
+  })
+
+  it("detects a manual merge and completes the milestone", async () => {
+    setup()
+    const root = repo()
+    const { milestone, userStory } = featureIn(root, ["a"])
+    builds.set("a", { "a.txt": "a\n" })
+    const a = await runner.startUserStory(userStory("a").id)
+    await drive(a.processRunId!)
+    await integration.idle()
+    git(
+      root,
+      "merge",
+      "--no-ff",
+      "-m",
+      "my merge",
+      "mc/billing/milestone-1/integration"
+    )
+    const status = await integration.status(milestone.id)
+    expect(status.landing).toMatchObject({
+      completedBy: "detected",
+      mode: "manual",
+    })
+    expect(features.getMilestone(milestone.id)!.status).toBe("completed")
+  })
+
+  it("serializes user stories with overlapping touch hints unless told otherwise", async () => {
+    setup()
+    const root = repo()
+    const { userStory } = featureIn(root, ["a", "b"])
+    features.updateUserStory(userStory("a").id, {
+      spec: { ...userStory("a").spec, touchHints: ["src/billing/**"] },
+    })
+    features.updateUserStory(userStory("b").id, {
+      spec: { ...userStory("b").spec, touchHints: ["src/billing/invoice.ts"] },
+    })
+    await runner.startUserStory(userStory("a").id)
+    await expect(runner.startUserStory(userStory("b").id)).rejects.toThrow(
+      /touch_overlap/
+    )
+    await expect(
+      runner.startUserStory(userStory("b").id, { allowTouchOverlap: true })
+    ).resolves.toMatchObject({ status: "running" })
+  })
+
+  it("runs overlapping user stories together under the feature's parallel policy", async () => {
+    setup()
+    const root = repo()
+    const { feature, userStory } = featureIn(root, ["a", "b"])
+    features.updateUserStory(userStory("a").id, {
+      spec: { ...userStory("a").spec, touchHints: ["src/billing/**"] },
+    })
+    features.updateUserStory(userStory("b").id, {
+      spec: { ...userStory("b").spec, touchHints: ["src/billing/invoice.ts"] },
+    })
+    features.setFeatureDrive(feature.id, { overlapPolicy: "parallel" })
+    await runner.startUserStory(userStory("a").id)
+    await expect(
+      runner.startUserStory(userStory("b").id)
+    ).resolves.toMatchObject({
+      status: "running",
+    })
+  })
+
+  it("caps concurrent user stories at the feature budget", async () => {
+    setup()
+    const root = repo()
+    const { feature, userStory } = featureIn(root, ["a", "b"])
+    db.prepare("UPDATE features SET budgets = ? WHERE id = ?").run(
+      JSON.stringify({ maxConcurrentUserStories: 1 }),
+      feature.id
+    )
+    await runner.startUserStory(userStory("a").id)
+    await expect(runner.startUserStory(userStory("b").id)).rejects.toThrow(
+      /1 running user stories at once/
+    )
+    // The refused attempt left no worktree behind.
+    expect((await listWorktrees(root)).length).toBe(2)
+  })
+
+  it("keeps single-flight behavior with an explanation outside git", async () => {
+    setup()
+    const folder = mkdtempSync(path.join(tmpdir(), "mc-plain-"))
+    dirs.push(folder)
+    const { milestone, userStory } = featureIn(folder, ["a", "b"])
+    const a = await runner.startUserStory(userStory("a").id)
+    expect(a.worktreePath).toBeNull()
+    await expect(runner.startUserStory(userStory("b").id)).rejects.toThrow(
+      /one playbook run can use this workspace at a time.*git workspace/
+    )
+    const status = await integration.status(milestone.id)
+    expect(status.workspace).toMatchObject({
+      mode: "single_flight",
+      reason: expect.stringContaining("isn't a git repository"),
+    })
+    expect(status.policies.local_merge.available).toBe(false)
+    await drive(a.processRunId!)
+    expect(features.getUserStory(userStory("a").id)!.status).toBe("done")
+  })
+
+  it("removes worktrees and merged mc branches when the feature is deleted", async () => {
+    setup()
+    const root = repo()
+    const { feature, userStory } = featureIn(root, ["a", "b"])
+    builds.set("a", { "a.txt": "a\n" })
+    const a = await runner.startUserStory(userStory("a").id)
+    await drive(a.processRunId!)
+    await integration.idle()
+    const b = await runner.startUserStory(userStory("b").id)
+    runner.cancelPlaybookRun(b.id)
+    const { keptBranches } = await integration.cleanupFeature(feature.id)
+    // The integration branch holds merged work that never reached main.
+    expect(keptBranches).toEqual(["mc/billing/milestone-1/integration"])
+    expect(
+      git(root, "branch", "--list", "mc/billing/milestone-1/userStories/*")
+    ).toBe("")
+    expect((await listWorktrees(root)).length).toBe(1)
+    expect(existsSync(path.join(worktreeRoot, feature.id))).toBe(false)
+  })
+})
+
+// A second service over the same database and worktree root, as after a
+// restart.
+function setupRestart() {
+  const root = worktreeRoot
+  integration.stop()
+  integration = new MilestoneIntegration({
+    worktreeRoot: () => root,
+    startResolution: (input) => startConflictResolution(runner, input),
+    notifyUser: (title, body) => notices.push(`${title}: ${body}`),
+    leaseRetryMs: 10,
+  })
+  runner = new UserStoryRunner({
+    startProcessRun: (input) => service.startRun(input),
+    cancelTask: () => {},
+    loadAgents: async () => AGENTS as unknown as AgentDefinition[],
+    integration,
+  })
+}

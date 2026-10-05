@@ -17,7 +17,15 @@ import {
   writeFile,
 } from "fs/promises"
 import type { FileHandle } from "fs/promises"
-import { isAbsolute, relative, resolve, join, sep } from "path"
+import {
+  basename,
+  delimiter,
+  isAbsolute,
+  relative,
+  resolve,
+  join,
+  sep,
+} from "path"
 import { tmpdir } from "os"
 import { StringDecoder } from "string_decoder"
 import * as pty from "node-pty"
@@ -82,10 +90,56 @@ export function normalizeAsarUnpackedExecutablePath(path: string): string {
 
 type SpawnFn = typeof spawn
 
+export function applyEnvOverlay(
+  env: NodeJS.ProcessEnv,
+  overlay: LocalEnvOverlay | undefined
+): NodeJS.ProcessEnv {
+  if (!overlay) return env
+  const prepend = new Set(overlay.prependPath)
+  const rest = (env.PATH ?? "")
+    .split(delimiter)
+    .filter((p) => p && !prepend.has(p))
+  return {
+    ...env,
+    ...overlay.vars,
+    PATH: [...overlay.prependPath, ...rest].join(delimiter),
+  }
+}
+
+// The TTY path runs through the user's login shell (`$SHELL -lc`), and on macOS
+// the login profile's path_helper moves every inherited PATH entry behind the
+// system dirs, so a prepended dir ends up last. Re-prepend it inside the
+// command. The captured paths use /bin/sh -c, which sources nothing, and
+// Windows has no such reordering.
+export function reassertPathPrepend(
+  command: string,
+  overlay: LocalEnvOverlay | undefined,
+  platform: NodeJS.Platform = process.platform,
+  shell: string = process.env.SHELL || "sh"
+): string {
+  if (!overlay || overlay.prependPath.length === 0 || platform === "win32") {
+    return command
+  }
+  const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`
+  if (basename(shell) === "fish") {
+    return `set -gx PATH ${overlay.prependPath.map(quote).join(" ")} $PATH; ${command}`
+  }
+  return `export PATH=${quote(overlay.prependPath.join(":"))}:"$PATH"; ${command}`
+}
+
+// Extra environment layered over the host environment for every command this
+// instance runs. Used by interactive chat turns to put the app's Python venv
+// first on PATH (src/main/python/chat-venv.ts).
+export interface LocalEnvOverlay {
+  prependPath: string[]
+  vars: Record<string, string>
+}
+
 interface LocalEnvironmentDeps {
   resolveRipgrepPath?: () => string
   spawn?: SpawnFn
   hostCliEnv?: typeof hostCliEnv
+  envOverlay?: LocalEnvOverlay
   platform?: NodeJS.Platform
   searchTimeoutMs?: number
   searchMaxOutputBytes?: number
@@ -183,6 +237,13 @@ export class LocalEnvironment implements Environment {
 
   get localRuntimeProfile(): LocalRuntimeProfile {
     return this.profile
+  }
+
+  // The same profile and deps (env overlay included) rooted at another
+  // directory. Chat has no workspace, so its commands are rooted in the
+  // conversation's scratch dir this way (tools/chat_shell.ts).
+  withWorkspace(workspace: string): LocalEnvironment {
+    return new LocalEnvironment(workspace, this.profile, this.deps)
   }
 
   resolve(path: string): Promise<string> {
@@ -370,7 +431,11 @@ export class LocalEnvironment implements Environment {
 
     let handle: CommandSessionHandle
     if (opts.tty) {
-      const shell = this.shellInvocation(commandToRun, false)
+      const shell = this.shellInvocation(
+        reassertPathPrepend(commandToRun, this.deps.envOverlay, platform),
+        false,
+        opts.readOnlyPaths
+      )
       try {
         const term = pty.spawn(shell.file, shell.args, {
           name: "xterm-256color",
@@ -396,7 +461,8 @@ export class LocalEnvironment implements Environment {
         commandToRun,
         opts.cwd,
         ["pipe", "pipe", "pipe"],
-        hostEnv
+        hostEnv,
+        opts.readOnlyPaths
       )
       handle = new ChildProcessCommandHandle(child, {
         killGroup: true,
@@ -413,7 +479,7 @@ export class LocalEnvironment implements Environment {
       : handle
   }
 
-  private commandPlatform(): NodeJS.Platform {
+  commandPlatform(): NodeJS.Platform {
     return this.deps.platform ?? process.platform
   }
 
@@ -445,9 +511,9 @@ export class LocalEnvironment implements Environment {
   // commands unavailable, so it degrades to the inherited environment.
   private hostEnvPromise?: Promise<NodeJS.ProcessEnv>
   private hostEnv(): Promise<NodeJS.ProcessEnv> {
-    this.hostEnvPromise ??= (this.deps.hostCliEnv ?? hostCliEnv)().catch(
-      () => ({ ...process.env })
-    )
+    this.hostEnvPromise ??= (this.deps.hostCliEnv ?? hostCliEnv)()
+      .catch(() => ({ ...process.env }))
+      .then((env) => applyEnvOverlay(env, this.deps.envOverlay))
     return this.hostEnvPromise
   }
 
@@ -509,7 +575,8 @@ export class LocalEnvironment implements Environment {
 
   private shellInvocation(
     command: string,
-    captured = true
+    captured = true,
+    readOnlyPaths: string[] = []
   ): { file: string; args: string[] } {
     const platform = this.commandPlatform()
     const shell = captured
@@ -523,7 +590,7 @@ export class LocalEnvironment implements Environment {
       file: sandboxExecPath(),
       args: [
         "-p",
-        buildDarwinSandboxProfile(this.profile, this.workspace),
+        buildDarwinSandboxProfile(this.profile, this.workspace, readOnlyPaths),
         shell.file,
         ...shell.args,
       ],
@@ -539,7 +606,8 @@ export class LocalEnvironment implements Environment {
     command: string,
     cwd: string,
     stdio: ["ignore" | "pipe", "pipe", "pipe"] | ["pipe", "pipe", "pipe"],
-    env: NodeJS.ProcessEnv
+    env: NodeJS.ProcessEnv,
+    readOnlyPaths: string[] = []
   ): ChildProcess {
     if (this.profile === "host-access") {
       return this.commandSpawn()(command, {
@@ -550,7 +618,7 @@ export class LocalEnvironment implements Environment {
         env,
       })
     }
-    const shell = this.shellInvocation(command, true)
+    const shell = this.shellInvocation(command, true, readOnlyPaths)
     return this.commandSpawn()(shell.file, shell.args, {
       cwd,
       shell: false,

@@ -41,28 +41,56 @@ export interface RouteInput {
   signal: AbortSignal
 }
 
+// One routable candidate: a named agent from the pool, or (plan 106.3) a bound
+// Mission Control seat addressed by its seat address.
+export interface RouteCandidate {
+  name: string
+  description: string
+}
+
 // Pick the best-fit agent from the pool for the given (sub-)task. Always returns a
 // pool member's `agentName`: on an empty/malformed reply, a parse miss, no
 // configured provider, or any classifier error, it falls back to pool[0] so a
-// `dispatch` phase never wedges.
+// `dispatch` phase never wedges. Seat-role rows are resolved by the caller
+// through routeCandidates, so only agent-name rows participate here.
 export async function route(input: RouteInput): Promise<string> {
   const { pool, taskPrompt, selection, workspace, signal } = input
-  const fallback = pool[0]?.agentName ?? null
-  if (!fallback) throw new Error("route() called with an empty agent pool")
+  const named = pool.filter(
+    (a): a is ProcessPhaseAgent & { agentName: string } => !!a.agentName
+  )
+  if (named.length === 0) throw new Error("route() called with an empty agent pool")
   // Nothing to classify with a single-agent pool — skip the LLM call entirely.
-  if (pool.length === 1) return fallback
+  if (named.length === 1) return named[0].agentName
 
   // Resolve each pool agent's description (the routing signal). A pool agent that
   // no longer loads keeps its slot with an empty description rather than dropping
   // out — it stays selectable and the positions/fallback are unchanged.
   const defs = await Promise.all(
-    pool.map((a) => loadAgent(a.agentName, workspace).catch(() => null))
+    named.map((a) => loadAgent(a.agentName, workspace).catch(() => null))
   )
-  const candidates = pool.map((a, i) => ({
-    name: a.agentName,
-    description: defs[i]?.description ?? "",
-  }))
+  return routeCandidates({
+    candidates: named.map((a, i) => ({
+      name: a.agentName,
+      description: defs[i]?.description ?? "",
+    })),
+    taskPrompt,
+    selection,
+    signal,
+  })
+}
 
+// Classify a (sub-)task over explicit candidates. candidates[0] is the
+// deterministic fallback for every failure mode.
+export async function routeCandidates(input: {
+  candidates: RouteCandidate[]
+  taskPrompt: string
+  selection: LlmSelection
+  signal: AbortSignal
+}): Promise<string> {
+  const { candidates, taskPrompt, selection, signal } = input
+  const fallback = candidates[0]?.name
+  if (!fallback) throw new Error("routeCandidates() called with no candidates")
+  if (candidates.length === 1) return fallback
   try {
     const { client, model, apiMode } = resolveLlm(selection)
     const res = await createCompletion(
@@ -85,7 +113,7 @@ export async function route(input: RouteInput): Promise<string> {
     const choice = (res as { choices?: { message?: { content?: unknown } }[] })
       .choices?.[0]
     const reply = contentToText(choice?.message?.content)
-    return matchAgent(reply, pool) ?? fallback
+    return matchCandidate(reply, candidates) ?? fallback
   } catch (err) {
     // No provider configured, or any classifier failure: fall back deterministically
     // rather than wedging the phase (the `single` path would've used pool[0] anyway).
@@ -95,23 +123,24 @@ export async function route(input: RouteInput): Promise<string> {
   }
 }
 
-// Match the classifier's free-text reply to a pool agent name. Prefers an exact
-// (trimmed, case-insensitive) match; else the first pool agent whose name appears
+// Match the classifier's free-text reply to a candidate name. Prefers an exact
+// (trimmed, case-insensitive) match; else the first candidate whose name appears
 // as a token in the reply — tolerant of a model that answers "Agent: backend" or
-// wraps the name in punctuation. Returns null if nothing in the pool matches.
-function matchAgent(reply: string, pool: ProcessPhaseAgent[]): string | null {
+// wraps the name in punctuation. Returns null if nothing matches.
+function matchCandidate(
+  reply: string,
+  candidates: RouteCandidate[]
+): string | null {
   const text = reply.trim().toLowerCase()
   if (!text) return null
-  for (const a of pool) {
-    if (a.agentName.toLowerCase() === text) return a.agentName
+  for (const c of candidates) {
+    if (c.name.toLowerCase() === text) return c.name
   }
   // Longest names first so a name that's a substring of another can't shadow it.
-  const byLength = [...pool].sort(
-    (a, b) => b.agentName.length - a.agentName.length
-  )
-  for (const a of byLength) {
-    const re = new RegExp(`\\b${escapeRegExp(a.agentName.toLowerCase())}\\b`)
-    if (re.test(text)) return a.agentName
+  const byLength = [...candidates].sort((a, b) => b.name.length - a.name.length)
+  for (const c of byLength) {
+    const re = new RegExp(`(^|[^\\w@-])${escapeRegExp(c.name.toLowerCase())}($|[^\\w@-])`)
+    if (re.test(text)) return c.name
   }
   return null
 }

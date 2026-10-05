@@ -14,6 +14,143 @@ export const MODEL_REQUEST_RETRY = {
   maxElapsedMs: 120_000,
 }
 
+// How long a model request may go silent. Reasoning models can think a while
+// before the first chunk, so that wait is generous; after that, a stream that
+// sends nothing for minutes has hung (nav-test-9: a Codex-subscription stream
+// stayed open with no data for 15 minutes and blocked the phase).
+export const MODEL_STREAM_IDLE = {
+  firstChunkMs: 5 * 60_000,
+  betweenChunksMs: 2 * 60_000,
+}
+
+// Streamed Chat Completions only report usage when asked (plan 108). Some
+// OpenAI-compatible bridges reject the unknown parameter; such an account is
+// remembered for the session and asked again only after a restart.
+const STREAM_USAGE_OPTIONS = { include_usage: true } as const
+const streamUsageRejectedAccounts = new Set<string>()
+
+export function streamUsageRequested(identity: {
+  accountId: string
+  apiMode: ApiMode
+}): boolean {
+  return (
+    identity.apiMode === "completions" &&
+    !streamUsageRejectedAccounts.has(identity.accountId)
+  )
+}
+
+// A failure that could be the provider refusing stream_options. Bridges often
+// reject unknown parameters with a bare 400/422 that never names the field, so
+// any 400/422 qualifies; withStreamUsage's retry without it tells the cases
+// apart. With no numeric status, the error must name stream_options.
+export function mayRejectStreamOptions(error: unknown): boolean {
+  const e = (error ?? {}) as {
+    status?: unknown
+    code?: unknown
+    message?: unknown
+    error?: unknown
+  }
+  if (typeof e.status === "number") return e.status === 400 || e.status === 422
+  let body = ""
+  try {
+    body = JSON.stringify(e.error ?? "")
+  } catch {
+    // An unserializable body just isn't searched.
+  }
+  const text = `${String(e.code ?? "")} ${String(e.message ?? error)} ${body}`
+  return /stream_options/i.test(text)
+}
+
+// Send a streamed request asking for usage. If a request with stream_options
+// fails in a way that could be a refusal of it, retry once without it: when
+// that succeeds, the account is remembered for the session and never asked
+// again; when it fails too, the request itself was bad and the retry's error
+// is the one thrown. Usage reporting never fails a turn on its own.
+export async function withStreamUsage<T>(
+  identity: { accountId: string; apiMode: ApiMode },
+  send: (streamOptions: typeof STREAM_USAGE_OPTIONS | undefined) => Promise<T>
+): Promise<T> {
+  if (!streamUsageRequested(identity)) return send(undefined)
+  try {
+    return await send(STREAM_USAGE_OPTIONS)
+  } catch (error) {
+    if (!mayRejectStreamOptions(error)) throw error
+  }
+  const result = await send(undefined)
+  streamUsageRejectedAccounts.add(identity.accountId)
+  console.warn(
+    `[ctx] provider account ${identity.accountId} rejected stream_options; continuing without usage reporting.`
+  )
+  return result
+}
+
+export const testStreamUsage = {
+  reset: () => streamUsageRejectedAccounts.clear(),
+}
+
+// A request or its stream sent nothing for too long. Not retried within the
+// round's transient budget (its time window is gone by then); the agent loop
+// re-issues the round.
+export class StreamStalledError extends Error {
+  constructor(
+    readonly waitedMs: number,
+    readonly firstChunk: boolean
+  ) {
+    super(
+      `The model ${firstChunk ? "sent no response" : "stopped sending"} for ${Math.round(waitedMs / 1000)} s; the request looks hung.`
+    )
+    this.name = "StreamStalledError"
+  }
+}
+
+// Settle with `promise`, or reject with `stalled()` after `ms`. One `then`,
+// so a result or error arrives no later than awaiting `promise` directly.
+function withinTime<T>(
+  promise: Promise<T>,
+  ms: number,
+  stalled: () => Error
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(stalled()), ms)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (error) => {
+        clearTimeout(timer)
+        reject(error)
+      }
+    )
+  })
+}
+
+// The stream's chunks, failing with StreamStalledError when the next one
+// doesn't arrive in time.
+async function* idleGuarded<T>(
+  stream: AsyncIterable<T>,
+  idle: typeof MODEL_STREAM_IDLE
+): AsyncGenerator<T> {
+  const iterator = stream[Symbol.asyncIterator]()
+  let first = true
+  try {
+    for (;;) {
+      const ms = first ? idle.firstChunkMs : idle.betweenChunksMs
+      const next = await withinTime(
+        iterator.next(),
+        ms,
+        () => new StreamStalledError(ms, first)
+      )
+      if (next.done) return
+      first = false
+      yield next.value
+    }
+  } finally {
+    // Don't wait: a hung stream's return() can hang too.
+    void Promise.resolve(iterator.return?.()).catch(() => {})
+  }
+}
+
 export interface CompletionRound {
   text: string
   toolFragments: ToolCallDelta[]
@@ -25,7 +162,13 @@ export type CompletionAttemptEvent =
   | { type: "start"; attemptId: string; attempt: number }
   | { type: "text"; attemptId: string; delta: string }
   | { type: "commit"; attemptId: string }
-  | { type: "rollback"; attemptId: string; retrying: boolean }
+  | {
+      type: "rollback"
+      attemptId: string
+      retrying: boolean
+      // Why the attempt was rolled back.
+      error: unknown
+    }
 
 export class ModelRequestRetryExhaustedError extends Error {
   readonly retryable: boolean
@@ -39,18 +182,23 @@ export class ModelRequestRetryExhaustedError extends Error {
 
 export class ModelResponseValidationError extends Error {
   readonly retryable: boolean
+  // The round was cut off at the output-token cap. Not retried here at the same
+  // cap; the agent loop re-issues the round with a higher one.
+  readonly outputLimit: boolean
   diagnostics?: ModelResponseAttemptDiagnostics
 
   constructor(
     message: string,
     options?: {
       retryable?: boolean
+      outputLimit?: boolean
       diagnostics?: ModelResponseAttemptDiagnostics
     }
   ) {
     super(message)
     this.name = "ModelResponseValidationError"
     this.retryable = options?.retryable === true
+    this.outputLimit = options?.outputLimit === true
     this.diagnostics = options?.diagnostics
   }
 }
@@ -204,8 +352,12 @@ function finiteNumber(value: unknown): number | undefined {
 function usageFromChunk(chunk: any): ModelResponseAttemptDiagnostics["usage"] {
   const usage = chunk?.usage
   if (!usage || typeof usage !== "object") return null
-  const promptTokens = finiteNumber(usage.prompt_tokens)
-  const completionTokens = finiteNumber(usage.completion_tokens)
+  // Chat Completions spells it prompt/completion; the Responses API (the
+  // Codex subscription bridge passes its usage through) spells it input/output.
+  const promptTokens =
+    finiteNumber(usage.prompt_tokens) ?? finiteNumber(usage.input_tokens)
+  const completionTokens =
+    finiteNumber(usage.completion_tokens) ?? finiteNumber(usage.output_tokens)
   const totalTokens = finiteNumber(usage.total_tokens)
   if (
     promptTokens === undefined &&
@@ -383,6 +535,7 @@ export async function createCompletionRoundWithRetry(input: {
   random?: () => number
   repository?: RetryRepository
   config?: typeof MODEL_REQUEST_RETRY
+  idle?: typeof MODEL_STREAM_IDLE
 }): Promise<CompletionRound> {
   const {
     conversationId,
@@ -426,15 +579,24 @@ export async function createCompletionRoundWithRetry(input: {
       // loop can execute tools, so a parent blocked in spawn_subagents holds none.
       releasePermit = await modelRequestPermits.acquire(signal)
       const startedAt = clock.now()
-      const stream = await request()
-      const round = await consumeCompletionStream(stream, signal, {
-        startedAt,
-        now: clock.now,
-        requestIdentity: input.requestIdentity,
-        recoverVisibleText: input.recoverVisibleText,
-        attemptId,
-        onAttemptEvent: input.onAttemptEvent,
-      })
+      const idle = input.idle ?? MODEL_STREAM_IDLE
+      const stream = await withinTime(
+        request(),
+        idle.firstChunkMs,
+        () => new StreamStalledError(idle.firstChunkMs, true)
+      )
+      const round = await consumeCompletionStream(
+        idleGuarded(stream, idle),
+        signal,
+        {
+          startedAt,
+          now: clock.now,
+          requestIdentity: input.requestIdentity,
+          recoverVisibleText: input.recoverVisibleText,
+          attemptId,
+          onAttemptEvent: input.onAttemptEvent,
+        }
+      )
       if (!signal.aborted && validateRound) {
         try {
           validateRound(round)
@@ -471,12 +633,15 @@ export async function createCompletionRoundWithRetry(input: {
       const retryable =
         error instanceof ModelResponseValidationError
           ? error.retryable
-          : isTransientError(error)
+          : error instanceof StreamStalledError
+            ? false
+            : isTransientError(error)
       if (!retryable) {
         input.onAttemptEvent?.({
           type: "rollback",
           attemptId,
           retrying: false,
+          error,
         })
         repository.exhaustBudget({
           conversationId,
@@ -501,6 +666,7 @@ export async function createCompletionRoundWithRetry(input: {
           type: "rollback",
           attemptId,
           retrying: false,
+          error,
         })
         repository.exhaustBudget({
           conversationId,
@@ -511,7 +677,12 @@ export async function createCompletionRoundWithRetry(input: {
         break
       }
 
-      input.onAttemptEvent?.({ type: "rollback", attemptId, retrying: true })
+      input.onAttemptEvent?.({
+        type: "rollback",
+        attemptId,
+        retrying: true,
+        error,
+      })
       await clock.sleep(delay, signal)
       if (signal.aborted) throw error
     } finally {

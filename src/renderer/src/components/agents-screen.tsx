@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import type { ReactNode } from "react"
 import {
-  ArrowLeft,
   ChevronRight,
   FolderOpen,
   Plus,
@@ -43,10 +42,12 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { Markdown } from "@/components/markdown"
+import { ScreenHeader } from "@/components/screen-header"
 import { AgentUploadModal } from "@/components/agent-upload-modal"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 import type { AgentDefinition, AgentFolder, AgentTree } from "@/types"
+import { WorkspaceSectionLabel } from "@/components/workspace-label"
 
 // The Agents view — an in-panel destination (rendered in the center region of
 // the app shell, beside the still-visible sidebar) for browsing, editing,
@@ -290,8 +291,8 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
     ]
   }, [tree])
 
-  const loadTree = useCallback(() => {
-    window.cowork.agents.tree().then(setTree)
+  const loadTree = useCallback(async () => {
+    setTree(await window.cowork.agents.tree())
   }, [])
 
   // Load on mount. The component is mounted only while the Agents view is open
@@ -410,8 +411,9 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
 
   // After a best-effort import, refresh the tree and select the first agent that
   // landed. `newPath` is `<dir>/<name>.agent.md`; derive the name from its stem.
-  function onImported(newPath: string, dir: string) {
-    loadTree()
+  // Await the refresh so the vanished-selection guard sees the new agent.
+  async function onImported(newPath: string, dir: string) {
+    await loadTree()
     const base = newPath.split(/[\\/]/).pop() ?? ""
     const name = base.endsWith(".agent.md")
       ? base.slice(0, -".agent.md".length)
@@ -465,7 +467,7 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
       // Persist the full form (tools/skills/children/body/user-invocable) — create
       // only scaffolds name+description with defaults.
       await window.cowork.agents.save(path, toFields({ ...draft, name }))
-      loadTree()
+      await loadTree()
       setSelectedKey(agentKey(mode.dir, name))
       setMode({ kind: "view" })
       setDraft(null)
@@ -501,28 +503,24 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
       data-slot="agents-screen"
       className="flex min-h-0 flex-1 flex-col bg-background pt-11 text-sm text-foreground"
     >
-      {/* Header row (matches the app's h-11 top bar; the Shell drag bar sits
-          above via pt-11). */}
-      <div className="flex h-11 shrink-0 items-center justify-between border-b px-4">
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close agents"
-          className="group/back flex items-center gap-2 rounded-md text-left"
-        >
-          <ArrowLeft className="size-4 text-muted-foreground transition-colors group-hover/back:text-foreground" />
-          <h1 className="font-heading text-base font-medium">Agents</h1>
-        </button>
-        <Button variant="ghost" size="icon-sm" onClick={onClose}>
-          <XIcon />
-          <span className="sr-only">Close</span>
-        </Button>
-      </div>
+      <ScreenHeader
+        title={
+          mode.kind === "create"
+            ? "New agent"
+            : selected
+              ? displayName(selected)
+              : "Agents"
+        }
+        onBack={mode.kind === "create" || selected ? backToCards : onClose}
+        backLabel={
+          mode.kind === "create" || selected ? "Back to agents" : "Close agents"
+        }
+        onClose={onClose}
+      />
 
       {mode.kind === "create" && draft ? (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           <FormHeader
-            title="New agent"
             saving={saving}
             saveLabel={saving ? "Creating…" : "Create"}
             canSave={!!draft.name.trim() && !!mode.dir}
@@ -544,7 +542,6 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
       ) : mode.kind === "edit" && draft && selected ? (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           <FormHeader
-            title={displayName(selected)}
             subtitle={selected.path}
             saving={saving}
             saveLabel={saving ? "Saving…" : "Save"}
@@ -563,22 +560,9 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
       ) : selected ? (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-4">
-            <div className="flex min-w-0 items-center gap-2">
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                onClick={backToCards}
-                aria-label="Back to agents"
-              >
-                <ArrowLeft />
-              </Button>
-              <div className="min-w-0">
-                <p className="truncate font-medium">{displayName(selected)}</p>
-                <p className="truncate font-mono text-xs text-muted-foreground">
-                  {selected.path}
-                </p>
-              </div>
-            </div>
+            <p className="min-w-0 truncate font-mono text-xs text-muted-foreground">
+              {selected.path}
+            </p>
             <div className="flex shrink-0 items-center gap-2">
               <Button variant="outline" size="sm" onClick={revealAgent}>
                 <FolderOpen className="size-4" />
@@ -797,7 +781,6 @@ function toFields(d: Draft) {
 // ── Form header (shared by create + edit) ───────────────────────────────────
 
 function FormHeader({
-  title,
   subtitle,
   saving,
   saveLabel,
@@ -805,7 +788,6 @@ function FormHeader({
   onCancel,
   onSave,
 }: {
-  title: string
   subtitle?: string
   saving: boolean
   saveLabel: string
@@ -815,14 +797,9 @@ function FormHeader({
 }) {
   return (
     <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-4">
-      <div className="min-w-0">
-        <p className="truncate font-medium">{title}</p>
-        {subtitle && (
-          <p className="truncate font-mono text-xs text-muted-foreground">
-            {subtitle}
-          </p>
-        )}
-      </div>
+      <p className="min-w-0 truncate font-mono text-xs text-muted-foreground">
+        {subtitle}
+      </p>
       <div className="flex shrink-0 items-center gap-2">
         <Button
           variant="outline"
@@ -1328,7 +1305,7 @@ function WorkspaceSection({
           className="group/ws flex w-full items-center gap-1.5 rounded-md px-2 py-2 text-left hover:bg-accent disabled:hover:bg-transparent"
         >
           <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/ws:rotate-90" />
-          <span className="truncate font-medium">{ws.label}</span>
+          <WorkspaceSectionLabel label={ws.label} path={ws.path} />
           <span className="ml-auto shrink-0 text-xs text-muted-foreground">
             {wsAgents.length}
           </span>

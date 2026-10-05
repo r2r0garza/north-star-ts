@@ -1,18 +1,25 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-const { deleteConversation, deleteConversations, deletePlanFiles } = vi.hoisted(
-  () => ({
-    deleteConversation: vi.fn(),
-    deleteConversations: vi.fn(),
-    deletePlanFiles: vi.fn(async () => ({ removed: 0, failed: 0 })),
-  })
-)
+const {
+  deleteConversation,
+  deleteConversations,
+  deletePlanFiles,
+  deleteChatScratchDirs,
+} = vi.hoisted(() => ({
+  deleteConversation: vi.fn(),
+  deleteConversations: vi.fn(),
+  deletePlanFiles: vi.fn(async () => ({ removed: 0, failed: 0 })),
+  deleteChatScratchDirs: vi.fn(async () => undefined),
+}))
 
 vi.mock("../db/repositories/conversations", () => ({
   deleteConversation,
   deleteConversations,
 }))
 vi.mock("../agent/tools/plan-file", () => ({ deletePlanFiles }))
+vi.mock("../agent/tools/chat_shell", () => ({
+  deleteChatScratchDirs,
+}))
 
 import {
   cleanupConversationArtifacts,
@@ -37,6 +44,7 @@ describe("conversation lifecycle", () => {
 
     expect(order).toEqual(["db", "files"])
     expect(deletePlanFiles).toHaveBeenCalledWith(["conversation-1"])
+    expect(deleteChatScratchDirs).toHaveBeenCalledWith(["conversation-1"])
   })
 
   it("deduplicates batch deletion IDs for database and artifact cleanup", async () => {
@@ -44,10 +52,12 @@ describe("conversation lifecycle", () => {
 
     expect(deleteConversations).toHaveBeenCalledWith(["worker", "source"])
     expect(deletePlanFiles).toHaveBeenCalledWith(["worker", "source"])
+    expect(deleteChatScratchDirs).toHaveBeenCalledWith(["worker", "source"])
   })
 
   it("cleans artifacts after a caller-owned database transaction", async () => {
     await cleanupConversationArtifacts(["reviewer"])
     expect(deletePlanFiles).toHaveBeenCalledWith(["reviewer"])
+    expect(deleteChatScratchDirs).toHaveBeenCalledWith(["reviewer"])
   })
 })

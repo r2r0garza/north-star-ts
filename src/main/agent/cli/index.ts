@@ -1,6 +1,7 @@
 import { app } from "electron"
 import { mkdir, realpath, stat } from "fs/promises"
 import { isAbsolute, join, resolve } from "path"
+import { stopNote } from "../abort"
 import { appendMessage, listMessages } from "../../db/repositories/messages"
 import {
   deleteCliSession,
@@ -212,7 +213,7 @@ export async function runCodexConversation(input: {
       appendMessage({
         conversationId: input.conversation.id,
         role: "assistant",
-        content: "Stopped by user.",
+        content: stopNote(input.abort.signal),
       })
       return { stopped: true }
     }
@@ -365,7 +366,7 @@ export async function runClaudeConversation(input: {
       appendMessage({
         conversationId: input.conversation.id,
         role: "assistant",
-        content: "⏹ Stopped by user.",
+        content: stopNote(input.abort.signal),
       })
       return { stopped: true }
     }

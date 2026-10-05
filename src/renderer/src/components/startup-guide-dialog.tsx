@@ -2,9 +2,9 @@ import { useState } from "react"
 import {
   BarChart3Icon,
   BotIcon,
-  GitBranchIcon,
   MessageSquareIcon,
   MousePointerClickIcon,
+  NetworkIcon,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -47,11 +47,11 @@ const GUIDE_ITEMS = [
       "Use this workspace-backed mode for longer autonomous work where the agent can plan, execute, and keep momentum across steps.",
   },
   {
-    key: "processes",
-    title: "Processes",
-    icon: GitBranchIcon,
+    key: "mission-control",
+    title: "Mission Control",
+    icon: NetworkIcon,
     description:
-      "Processes are reusable multi-step workflows for repeatable work, including live runs and approval points.",
+      "Mission Control plans features with a team of agent seats. Its Playbooks are reusable multi-step workflows; Quick run starts one on its own.",
   },
   {
     key: "dashboards",

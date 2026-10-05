@@ -14,6 +14,7 @@ import {
   FolderPlus,
   GripVertical,
   LayoutDashboard,
+  Network,
   MoreHorizontal,
   Pin,
   PinOff,
@@ -502,6 +503,8 @@ export function AppSidebar({
   onSkillsClick,
   onAgentsClick,
   onProcessClick,
+  showProcesses,
+  onMissionControlClick,
   onMcpClick,
   onDashboardsClick,
   refreshKey,
@@ -520,6 +523,9 @@ export function AppSidebar({
   onSkillsClick: () => void
   onAgentsClick: () => void
   onProcessClick: () => void
+  // Legacy Processes button (plan 106.9), behind a Settings switch.
+  showProcesses: boolean
+  onMissionControlClick: () => void
   onMcpClick: () => void
   onDashboardsClick: () => void
   // Bumped by the app whenever conversations change, so the list refetches.
@@ -937,12 +943,24 @@ export function AppSidebar({
           type="button"
           size="sm"
           variant="ghost"
-          onClick={onProcessClick}
+          onClick={onMissionControlClick}
           className="w-full justify-start"
         >
-          <Workflow className="size-4" />
-          Processes
+          <Network className="size-4" />
+          Mission Control
         </Button>
+        {showProcesses && (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={onProcessClick}
+            className="w-full justify-start"
+          >
+            <Workflow className="size-4" />
+            Processes
+          </Button>
+        )}
         <Button
           type="button"
           size="sm"

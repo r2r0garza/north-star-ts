@@ -73,6 +73,9 @@ import { webFetchTool } from "./web/fetch"
 import { spawnSubagentTool } from "./spawn_subagent"
 import { spawnSubagentsTool } from "./spawn_subagents"
 import { flagForReworkTool } from "./flag_for_rework"
+import { recordProofTool } from "./record_proof"
+import { seatCommsTools } from "./seat_comms_tools"
+import { mapTools } from "./map_tools"
 import { dashboardWriteTool } from "./dashboard_write"
 import { dashboardReadTool } from "./dashboard_read"
 
@@ -143,6 +146,16 @@ const otherTools: Tool[] = [
   // flag_for_rework: offered by runChat only to a Process phase worker (plan
   // 031.2 — when opts.processRunId is set). Not in toolDefinitions.
   flagForReworkTool,
+  // record_proof: offered by runChat only to a Mission Control playbook's proof
+  // step (plan 106.3 — opts.processProofStep). Not in toolDefinitions.
+  recordProofTool,
+  // Mission Control Comms (plan 106.4): send_message / reply / list_inbox /
+  // escalate, offered by runChat only to seat turns (opts.missionControlSeat)
+  // and never to an answer-only wake. Not in toolDefinitions.
+  ...seatCommsTools,
+  // Mission Control map tools (plan 106.6): offered by runChat only to pod-lead
+  // seat turns, never to an answer-only wake. Not in toolDefinitions.
+  ...mapTools,
   // dashboard_write: offered by runChat in interactive modes (plan 033.2 —
   // gated on showTodos like todo_write). Writes only its own tables; not gated.
   dashboardWriteTool,
@@ -250,6 +263,9 @@ export { readPlanTool } from "./read_plan_tool"
 export { presentPlanTool } from "./present_plan_tool"
 export { spawnSubagentsTool } from "./spawn_subagents"
 export { flagForReworkTool } from "./flag_for_rework"
+export { recordProofTool } from "./record_proof"
+export { seatCommsTools } from "./seat_comms_tools"
+export { mapTools } from "./map_tools"
 export { dashboardWriteTool } from "./dashboard_write"
 export { dashboardReadTool } from "./dashboard_read"
 export {

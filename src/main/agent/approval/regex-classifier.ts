@@ -7,6 +7,8 @@ import {
 } from "../memory/paths"
 import {
   analyzeShellCommand,
+  isPathInside,
+  resolveShellPathArg,
   type ShellCommandAnalysis,
   type ShellCommandSegment,
 } from "./shell-analyzer"
@@ -351,6 +353,81 @@ function managedMemoryWriteTarget(
   return undefined
 }
 
+const SKILL_RESOURCE_WRITE_ERROR =
+  "Skill resources are read-only: shell commands may not write, move, or delete files in an activated skill's directory"
+
+// Executables that only write their destination argument; their sources are
+// reads, so copying a template OUT of a skill stays allowed.
+const DESTINATION_WRITERS = new Set(["cp", "install", "ln"])
+// Executables that mutate every path argument they're given.
+const PATH_MUTATORS = new Set([
+  "chmod",
+  "chown",
+  "mkdir",
+  "mv",
+  "patch",
+  "rm",
+  "rmdir",
+  "shred",
+  "tee",
+  "touch",
+  "truncate",
+  "unlink",
+])
+
+// Best-effort: catches the direct shapes (redirects, rm/mv/cp/sed -i/...). The
+// sandboxed local profiles enforce the same rule at the OS level; under
+// host-access a script's own writes are covered only by the approval gate.
+function readOnlyRootWriteTarget(
+  analysis: ShellCommandAnalysis,
+  roots: string[],
+  cwd: string | undefined
+): string | undefined {
+  if (roots.length === 0) return undefined
+  const inRoot = (path: string) =>
+    roots.some((root) => isPathInside(root, path))
+  const redirected = analysis.candidateWritePaths.find(inRoot)
+  if (redirected) return redirected
+  for (const segment of [...analysis.segments, ...analysis.substitutions]) {
+    for (const arg of mutatedPathArgs(segment)) {
+      const path = resolveShellPathArg(arg, cwd)
+      if (path && inRoot(path)) return path
+    }
+  }
+  return undefined
+}
+
+function mutatedPathArgs(segment: ShellCommandSegment): string[] {
+  const executable = segment.executable ? basename(segment.executable) : ""
+  const args = segment.argv.slice(1)
+  const positional = args.filter((arg) => !arg.startsWith("-"))
+  if (DESTINATION_WRITERS.has(executable)) {
+    const flag = args.findIndex((arg) => arg === "-t")
+    if (flag >= 0 && args[flag + 1]) return [args[flag + 1]]
+    const long = args.find((arg) => arg.startsWith("--target-directory="))
+    if (long) return [long.slice("--target-directory=".length)]
+    return positional.slice(-1)
+  }
+  if (executable === "sed") {
+    const inPlace = args.some(
+      (arg) => /^-[a-zA-Z]*i/.test(arg) || arg.startsWith("--in-place")
+    )
+    return inPlace ? positional : []
+  }
+  if (executable === "dd") {
+    return args
+      .filter((arg) => arg.startsWith("of="))
+      .map((arg) => arg.slice(3))
+  }
+  return PATH_MUTATORS.has(executable) ? positional : []
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : []
+}
+
 export class RegexCommandClassifier implements ActionClassifier {
   classify(action: ToolAction): ActionDecision | null {
     if (action.kind !== "shell") return null
@@ -386,6 +463,19 @@ export class RegexCommandClassifier implements ActionClassifier {
       }
     }
 
+    const readOnlyRoots = stringArray(action.detail?.readOnlyRoots)
+    const skillTarget = readOnlyRootWriteTarget(
+      analysis,
+      readOnlyRoots,
+      typeof action.detail?.cwd === "string" ? action.detail.cwd : undefined
+    )
+    if (skillTarget) {
+      return {
+        level: "hard_block",
+        reason: `${SKILL_RESOURCE_WRITE_ERROR} (blocked target: ${skillTarget})`,
+      }
+    }
+
     const dangerous = firstMatch(normalized, DANGEROUS_COMPILED)
     if (dangerous) {
       return {
@@ -414,11 +504,27 @@ export class RegexCommandClassifier implements ActionClassifier {
         category: "code_exec",
       }
     }
-    if (analysis.outsideWorkspacePaths.length > 0) {
+    const outsideSkillRoots = analysis.outsideWorkspacePaths.filter(
+      (path) => !readOnlyRoots.some((root) => isPathInside(root, path))
+    )
+    if (outsideSkillRoots.length > 0) {
       return {
         level: "require_approval",
         reason: "command references paths outside the workspace",
         category: "system_mutation",
+      }
+    }
+    // Keyed on the skill:// rewrite as well as the parsed paths: the analyzer
+    // doesn't see paths in leading assignments (PYTHONPATH=skill://x python3 -m).
+    if (
+      analysis.outsideWorkspacePaths.length > 0 ||
+      (Array.isArray(action.detail?.skillResources) &&
+        action.detail.skillResources.length > 0)
+    ) {
+      return {
+        level: "require_approval",
+        reason: "command runs or reads files bundled with an activated skill",
+        category: "code_exec",
       }
     }
     if (analysis.networkOperations.length > 0) {

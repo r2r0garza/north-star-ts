@@ -3,12 +3,14 @@ import {
   deleteConversations,
 } from "../db/repositories/conversations"
 import { deletePlanFiles } from "../agent/tools/plan-file"
+import { deleteChatScratchDirs } from "../agent/tools/chat_shell"
 
 export async function deleteConversationWithArtifacts(
   id: string
 ): Promise<void> {
   deleteConversation(id)
   await deletePlanFiles([id])
+  await deleteChatScratchDirs([id])
 }
 
 export async function deleteConversationsWithArtifacts(
@@ -17,10 +19,13 @@ export async function deleteConversationsWithArtifacts(
   const unique = [...new Set(ids)]
   deleteConversations(unique)
   await deletePlanFiles(unique)
+  await deleteChatScratchDirs(unique)
 }
 
 export async function cleanupConversationArtifacts(
   ids: Iterable<string>
 ): Promise<void> {
-  await deletePlanFiles(ids)
+  const unique = [...new Set(ids)]
+  await deletePlanFiles(unique)
+  await deleteChatScratchDirs(unique)
 }

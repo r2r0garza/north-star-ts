@@ -22,11 +22,17 @@ let writeText: ReturnType<typeof vi.fn>
 function mount(
   content: string,
   mode?: "settled" | "streaming",
-  findQuery?: string
+  findQuery?: string,
+  preserveSoftBreaks?: boolean
 ) {
   act(() => {
     root.render(
-      <Markdown content={content} mode={mode} findQuery={findQuery} />
+      <Markdown
+        content={content}
+        mode={mode}
+        findQuery={findQuery}
+        preserveSoftBreaks={preserveSoftBreaks}
+      />
     )
   })
 }
@@ -183,6 +189,13 @@ describe("Markdown conversation find", () => {
 })
 
 describe("Markdown modes", () => {
+  it("can preserve soft line breaks for editable prose previews", () => {
+    mount("First line\nSecond line", undefined, undefined, true)
+
+    expect(container.firstElementChild?.className).toContain("[&_p]:whitespace-pre-line")
+    expect(container.querySelector("p")?.textContent).toBe("First line\nSecond line")
+  })
+
   it("renders prose, GFM, links, and inline code equivalently", () => {
     const content =
       "A [link](https://example.com) with `inline` code.\n\n| A | B |\n| - | - |\n| 1 | 2 |"

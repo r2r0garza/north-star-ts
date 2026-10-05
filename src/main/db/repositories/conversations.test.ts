@@ -19,6 +19,7 @@ import {
   deleteConversation,
 } from "./conversations"
 import { createTask } from "./tasks"
+import { upsertWorkspace, workingDirectoryOf } from "./workspaces"
 import { appendMessage, deleteMessage } from "./messages"
 
 beforeEach(() => {
@@ -98,6 +99,26 @@ describe.skipIf(!sqliteLoads)(
     })
   }
 )
+
+describe.skipIf(!sqliteLoads)("conversations — working directory", () => {
+  it("works in its worktree until a workspace is chosen for it", () => {
+    const workspace = upsertWorkspace("/code/app")
+    const conversation = createConversation({
+      mode: "interactive",
+      workspaceId: workspace.id,
+      workingDirectory: "/data/mission-control/worktrees/f1/us-1-1-abc",
+    })
+    expect(workingDirectoryOf(getConversation(conversation.id))).toBe(
+      "/data/mission-control/worktrees/f1/us-1-1-abc"
+    )
+
+    updateConversation(conversation.id, { workspaceId: workspace.id })
+    expect(getConversation(conversation.id)?.workingDirectory).toBeNull()
+    expect(workingDirectoryOf(getConversation(conversation.id))).toBe(
+      "/code/app"
+    )
+  })
+})
 
 describe.skipIf(!sqliteLoads)("searchConversations", () => {
   it("searches titles case-insensitively and ranks title matches before content", () => {

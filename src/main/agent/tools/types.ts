@@ -6,6 +6,7 @@ import type {
 import type { Environment } from "../env/types"
 import type { TodoStatus } from "../../db/types"
 import type { BrowserHandle } from "../../browser/manager"
+import type { SeatTurnIdentity } from "../../mission-control/seat-turns"
 import type {
   SpawnSubagentsInput,
   SubagentResult,
@@ -197,6 +198,11 @@ export interface ToolContext {
   // reports it's unavailable (and isn't offered).
   processRunId?: string
   processPhaseRunId?: string
+  // --- Mission Control seat turn (plan 106.4) ---
+  // Set ONLY on a seat turn (a role-bound playbook worker, a seat-session step,
+  // or a wake). The Comms tools take the sender from here, never from model
+  // arguments. Absent otherwise — the Comms tools then report unavailable.
+  missionControlSeat?: SeatTurnIdentity
 }
 
 export interface ToolEffects {
