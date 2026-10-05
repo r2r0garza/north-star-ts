@@ -14,9 +14,11 @@ import {
 import type {
   BrowserRefDescription,
   InteractionResult,
+  KeyPressResult,
   NavigateResult,
   SelectOptionResult,
   ScreenshotResult,
+  ViewportResult,
 } from "./session"
 import type {
   BrowserConsoleEntry,
@@ -89,6 +91,9 @@ export interface BrowserHandle {
   drag(fromRef: string, toRef: string): Promise<InteractionResult>
   type(ref: string, text: string, submit: boolean): Promise<InteractionResult>
   selectOption(ref: string, option: string): Promise<SelectOptionResult>
+  // Keyboard-only use and responsive layout (plan 110).
+  pressKey(combo: string): Promise<KeyPressResult>
+  setViewport(width: number, height: number): Promise<ViewportResult>
   wait(input: BrowserWaitInput): Promise<NavigateResult>
   console(options: {
     cursor?: number
@@ -574,6 +579,19 @@ export class BrowserManager {
         this.ensureTab(conversationId).click(ref, INTERACT_TIMEOUT_MS, signal),
       hover: (ref) =>
         this.ensureTab(conversationId).hover(ref, INTERACT_TIMEOUT_MS, signal),
+      pressKey: (combo) =>
+        this.ensureTab(conversationId).pressKey(
+          combo,
+          INTERACT_TIMEOUT_MS,
+          signal
+        ),
+      setViewport: (width, height) =>
+        this.ensureTab(conversationId).setViewport(
+          width,
+          height,
+          INTERACT_TIMEOUT_MS,
+          signal
+        ),
       drag: (fromRef, toRef) =>
         this.ensureTab(conversationId).drag(
           fromRef,

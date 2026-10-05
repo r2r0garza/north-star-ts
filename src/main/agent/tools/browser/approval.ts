@@ -61,6 +61,8 @@ export function browserActionIdentity(input: {
     | "drag"
     | "wait"
     | "dialog"
+    | "press_key"
+    | "set_viewport"
   url: string
   origin: string
   target: string

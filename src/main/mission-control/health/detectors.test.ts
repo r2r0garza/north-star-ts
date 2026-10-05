@@ -268,6 +268,44 @@ describe("proof_polishing", () => {
     expect(proofPolishing(snapshot({ events: rejected(3) }))).toHaveLength(1)
   })
 
+  it("doesn't count rejections only for criteria QA couldn't exercise (plan 110)", () => {
+    const unverified = Array.from({ length: 3 }, (_, i) =>
+      event("proof_rejected", NOW - (10 - i) * MIN, {
+        userStoryId: "s1",
+        detail: { notMet: ["AC-1"], unverified: true },
+      })
+    )
+    expect(proofPolishing(snapshot({ events: unverified }))).toEqual([])
+    const real = event("proof_rejected", NOW - MIN, {
+      userStoryId: "s1",
+      detail: { notMet: ["AC-2"] },
+    })
+    expect(
+      proofPolishing(snapshot({ events: [...unverified, real, real, real] }))
+    ).toHaveLength(1)
+  })
+
+  it("starts over when the user decides on the user story (plan 110.05)", () => {
+    const rejected = (n: number, from: number) =>
+      Array.from({ length: n }, (_, i) =>
+        event("proof_rejected", NOW - (from - i) * MIN, { userStoryId: "s1" })
+      )
+    const decided = event("user_decision", NOW - 10 * MIN, {
+      userStoryId: "s1",
+    })
+    expect(
+      proofPolishing(snapshot({ events: [...rejected(3, 20), decided] }))
+    ).toEqual([])
+    expect(
+      proofPolishing(
+        snapshot({ events: [...rejected(2, 20), decided, ...rejected(2, 5)] })
+      )
+    ).toEqual([])
+    expect(
+      proofPolishing(snapshot({ events: [decided, ...rejected(3, 5)] }))
+    ).toHaveLength(1)
+  })
+
   it("is only informational once the user story is done", () => {
     const [finding] = proofPolishing(
       snapshot({

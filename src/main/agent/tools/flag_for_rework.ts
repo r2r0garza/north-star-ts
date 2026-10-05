@@ -2,6 +2,7 @@ import { TOOL_EFFECTS, type Tool } from "./types"
 import { toolError } from "./output"
 import * as processes from "../../db/repositories/processes"
 import { resolveTarget } from "../../tasks/process/flagback"
+import { proofReworkRefusal } from "../../mission-control/user-story-runner"
 
 // The per-run cap on how many rework flags may be raised (plan 031.2). The DAG has
 // no cycle guard, so cross-phase flag-back MUST be bounded — a flagging phase that
@@ -78,6 +79,11 @@ export const flagForReworkTool: Tool = {
     const flaggingRun = processes.getPhaseRun(ctx.processPhaseRunId)
     if (!flaggingRun)
       return toolError("unavailable", "this phase run is no longer available.")
+
+    // A Mission Control proof step rejected only for what it couldn't
+    // exercise has nothing to send back (plan 110).
+    const refusal = proofReworkRefusal(ctx.processRunId, ctx.processPhaseRunId)
+    if (refusal) return toolError("nothing_to_rework", refusal)
 
     // Per-run flag budget — the mandatory bound (no cycle guard on the DAG).
     const raised = processes.listFlags({ runId: ctx.processRunId })

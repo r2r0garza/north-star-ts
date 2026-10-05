@@ -98,6 +98,8 @@ export interface AnalysisFacts {
   unsupported: Array<{ file: string; ecosystem: string }>
   // Setup-relevant file excerpts for the model (bounded).
   excerpts: Array<{ path: string; text: string }>
+  // Every file found (workspace-relative), for the app launch model.
+  files: string[]
 }
 
 const MAX_FILES = 60_000
@@ -120,7 +122,7 @@ const UNSUPPORTED_MARKERS: Array<{ re: RegExp; ecosystem: string }> = [
   { re: /(^|\/)Package\.resolved$/, ecosystem: "" },
 ]
 
-function reader(workspace: string) {
+export function reader(workspace: string) {
   return async (file: string): Promise<string | null> => {
     const full = path.join(workspace, file)
     try {
@@ -469,6 +471,7 @@ export async function analyzeWorkspace(
     unknownIgnored,
     unsupported,
     excerpts,
+    files,
   }
 }
 

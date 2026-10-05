@@ -14,6 +14,7 @@ import {
   type SetupRunView,
   type WorkspaceAnalysis,
   type WorkspaceSettingsPatch,
+  type AppServiceShape,
 } from "../../../shared/mission-control/workspace-analysis"
 import { stripAnsi } from "../../agent/approval/ansi"
 import {
@@ -29,6 +30,14 @@ import type { FindingDraft } from "./draft"
 import { ECOSYSTEM_INFO, languageOf } from "./inventory"
 import { interpret, type Complete } from "./interpret"
 import { checkSetupCommand } from "./policy"
+import { modelRecipe } from "./recipe-model"
+import {
+  describeServices,
+  startServices,
+  stopServices,
+} from "../app-launch"
+import type { AppLaunch } from "../../../shared/mission-control/app-launch"
+import { reader } from "./analyze"
 import { RECIPE_VERSION } from "./recipes"
 import {
   TEST_BROWSER_FINDING,
@@ -120,6 +129,8 @@ interface InternalRun {
 
 const OUTPUT_TAIL = 4000
 const MODEL_TIMEOUT_MS = 120_000
+// The model plus up to three real starts of the app.
+const VERIFY_TIMEOUT_MS = 10 * 60_000
 const MODEL_MAX_TOKENS = 4000
 
 export const ownerIdFor = (featureId: string) => `mission-control:${featureId}`
@@ -350,12 +361,18 @@ export class WorkspaceAnalysisService {
   // Concurrent calls for a feature share one run.
   analyze(
     featureId: string,
-    options: { model?: boolean } = {}
+    // verifyRecipe: start the written app launch recipe in the workspace
+    // before keeping it (Start does, once the environment is set up).
+    options: { model?: boolean; verifyRecipe?: boolean } = {}
   ): Promise<WorkspaceAnalysis> {
     const existing = this.inflight.get(featureId)
     if (existing) return existing
     this.failures.delete(featureId)
-    const promise = this.runAnalysis(featureId, options.model !== false)
+    const promise = this.runAnalysis(
+      featureId,
+      options.model !== false,
+      options.verifyRecipe === true
+    )
       .catch((error: unknown) => {
         const started = this.running.get(featureId)
         const failed: WorkspaceAnalysis | null = started
@@ -387,7 +404,8 @@ export class WorkspaceAnalysisService {
 
   private async runAnalysis(
     featureId: string,
-    useModel: boolean
+    useModel: boolean,
+    verifyRecipe = false
   ): Promise<WorkspaceAnalysis> {
     const { feature, workspace } = this.context(featureId)
     if (!existsSync(workspace.path))
@@ -460,14 +478,20 @@ export class WorkspaceAnalysisService {
 
     // Model findings from the last run carry over when the model isn't asked
     // again (re-analysis after a fix).
+    // The model's app launch recipe outranks the rules' guess at it.
     const carried =
       !useModel && sameWorkspace
         ? (previous!.drafts as FindingDraft[]).filter(
             (d) =>
-              d.source === "model" && !facts.drafts.some((x) => x.key === d.key)
+              d.source === "model" &&
+              (d.key === APP_LAUNCH_FINDING ||
+                !facts.drafts.some((x) => x.key === d.key))
           )
         : []
-    let drafts = [...facts.drafts, ...carried]
+    let drafts = [
+      ...facts.drafts.filter((d) => !carried.some((c) => c.key === d.key)),
+      ...carried,
+    ]
     const complete = useModel ? this.deps.complete() : null
     const analysis: WorkspaceAnalysis = {
       ...base,
@@ -507,7 +531,42 @@ export class WorkspaceAnalysisService {
     if (!complete) return this.get(featureId)!
 
     // Stage 7: the model, bounded in time; failure keeps the checklist.
-    const timer = setTimeout(() => controller.abort(), MODEL_TIMEOUT_MS)
+    // The app launch recipe is its own call beside it: a workspace without a
+    // recipe gets one written for whatever stack it is (or, with no app yet,
+    // planned from the intent), so nobody stops to set it up.
+    // A recipe is only started once nothing blocks the workspace: a missing
+    // environment would fail it for reasons the recipe can't fix.
+    const verify =
+      verifyRecipe &&
+      !(this.get(featureId)?.findings ?? []).some(
+        (f) => f.status === "open" && f.severity === "blocker"
+      )
+    const timer = setTimeout(
+      () => controller.abort(),
+      verify ? VERIFY_TIMEOUT_MS : MODEL_TIMEOUT_MS
+    )
+    const recipe = workspace.appLaunch.services.length
+      ? null
+      : modelRecipe({
+          workspace: workspace.path,
+          files: facts.files,
+          roots: facts.inventory.roots,
+          intent: `${feature.name}. ${feature.intent}`,
+          setupSteps: plannedSetupSteps(drafts),
+          hint: ruleRecipe(drafts),
+          read: reader(workspace.path),
+          complete,
+          signal: controller.signal,
+          ...(verify
+            ? {
+                tryStart: (candidate: AppLaunch) =>
+                  trialStart(featureId, workspace.path, candidate, controller.signal),
+              }
+            : {}),
+        }).catch((error: unknown) => {
+          console.warn("[workspace-analysis] app launch recipe:", error)
+          return null
+        })
     try {
       const result = await interpret({
         facts,
@@ -517,6 +576,26 @@ export class WorkspaceAnalysisService {
         complete,
         signal: controller.signal,
       })
+      const written = await recipe
+      if (written?.draft)
+        drafts = [
+          ...drafts.filter((d) => d.key !== APP_LAUNCH_FINDING),
+          written.draft,
+        ]
+      // The model saw more to start than the rules did, but its recipe
+      // didn't pass the checks: the rules' guess stays, saying what it may
+      // be missing, rather than passing for the whole app.
+      else if (written?.proposed?.length)
+        drafts = drafts.map((d) =>
+          d.key === APP_LAUNCH_FINDING
+            ? {
+                ...d,
+                confidence: "guess",
+                explanation: `${d.explanation} The model found more to start (${written.proposed!.join(", ")}), but its recipe didn't pass the checks (${written.rejected[0]?.reason ?? "unknown"}), so this one may not start all of it. The first builder completes it with app_launch_save.`,
+              }
+            : d
+        )
+      if (written?.rejected.length) result.rejected.push(...written.rejected)
       drafts = drafts.map((d) => {
         const paired = result.generatedCommands.find((g) => g.key === d.key)
         const explained = result.explanations[d.key]
@@ -1098,8 +1177,11 @@ export class WorkspaceAnalysisService {
   // ── Start preflight ───────────────────────────────────────────────────────
 
   // Before a draft feature starts: reuse a fresh analysis or run one (built-in
-  // checks only; the model never delays Start), apply what's safe to apply
-  // without asking, and report what still needs the user.
+  // checks only), apply what's safe to apply without asking, and report what
+  // still needs the user. The one exception to "the model never delays
+  // Start": a workspace without an app launch recipe waits for the model to
+  // write one (once per workspace), and it's applied without asking, so
+  // planning and every seat know how the app starts.
   async preflight(featureId: string): Promise<{
     ok: boolean
     analysis: WorkspaceAnalysis | null
@@ -1125,7 +1207,36 @@ export class WorkspaceAnalysisService {
         blockers: ["analysis-failed"],
         review: [],
       }
+    const needsRecipe = () =>
+      !this.context(featureId).workspace.appLaunch.services.length
+    // Stepped: the environment first (its blockers stop Start), then the
+    // recipe, written and started for real before it's saved.
+    const blocked = analysis.findings.some(
+      (f) => f.status === "open" && f.severity === "blocker"
+    )
+    if (needsRecipe() && !blocked && this.deps.complete()) {
+      const withModel = await this.analyze(featureId, {
+        model: true,
+        verifyRecipe: true,
+      }).catch(() => null)
+      if (withModel?.status === "ready") analysis = withModel
+    }
     const applied: string[] = []
+    const recipe = analysis.findings.find(
+      (f) => f.key === APP_LAUNCH_FINDING && f.status === "open"
+    )
+    if (
+      needsRecipe() &&
+      recipe?.fix.kind === "apply-settings" &&
+      !recipe.replacesUserSetting
+    ) {
+      try {
+        this.applySettings(featureId, recipe.fix.patch, recipe.key)
+        applied.push(recipe.title)
+      } catch (error) {
+        console.warn("[workspace-analysis] app launch recipe:", error)
+      }
+    }
     for (const finding of autoApplicable(analysis.findings)) {
       if (finding.fix.kind !== "apply-settings") continue
       try {
@@ -1160,4 +1271,42 @@ function savesOrRunsCommand(fix: Fix): boolean {
     !!fix.patch.generatedFiles?.add?.length ||
     !!fix.patch.appLaunch?.add?.length
   )
+}
+
+// What the rule-based detection proposed, as a hint for the recipe model.
+function ruleRecipe(drafts: FindingDraft[]): AppServiceShape[] {
+  const fix = drafts.find((d) => d.key === APP_LAUNCH_FINDING)?.fix
+  return fix?.kind === "apply-settings" ? (fix.patch.appLaunch?.add ?? []) : []
+}
+
+// The worktree setup the analysis plans (installs, builds), which runs
+// before the app starts, so the recipe doesn't repeat it.
+function plannedSetupSteps(drafts: FindingDraft[]): string[] {
+  return drafts.flatMap((d) =>
+    (d.fix.kind === "apply-settings" || d.fix.kind === "run-command") && d.fix.patch
+      ? (d.fix.patch.worktreeSetupSteps?.add ?? []).map(
+          (step) => `${step.label}: \`${step.command}\`${step.cwd ? ` in ${step.cwd}` : ""}`
+        )
+      : []
+  )
+}
+
+// Start a candidate recipe in the workspace (its environment is set up), then
+// stop it: null when every service came up, or what failed, with the
+// services' output for the model.
+async function trialStart(
+  featureId: string,
+  root: string,
+  recipe: AppLaunch,
+  signal: AbortSignal
+): Promise<string | null> {
+  const owner = `recipe-check:${featureId}`
+  try {
+    const outcome = await startServices({ owner, root, recipe, signal })
+    return outcome.ok
+      ? null
+      : `${outcome.message}\n${describeServices(outcome.services)}`
+  } finally {
+    await stopServices({ owner, root })
+  }
 }

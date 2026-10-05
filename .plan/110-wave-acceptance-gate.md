@@ -1,6 +1,6 @@
 # PR110: Wave acceptance gate — exploratory QA per story, Playwright suite per wave
 
-> Status: **IN PROGRESS** — `110.01` through `110.04` done (2026-10-04); `110.05` remains. Proposed 2026-10-04. Follow-up to `109` (QA seats that verify independently) and
+> Status: **DONE** — `110.01` through `110.05` done (2026-10-04). Proposed 2026-10-04. Follow-up to `109` (QA seats that verify independently) and
 > `106.5` (worktrees and the merge queue). Changes `109.02`'s per-story checks step; keeps `109.03`–
 > `109.06`. Uses the current names: Features, Milestones, User stories.
 
@@ -391,6 +391,59 @@ starts from them. `110.05` is independent after `110.01`.
   legacy checks step's scope and repair rounds via `src/main/test/legacy-playbook.ts`), the playbook
   default and reset tests, the QA agent prompt test. The gate tests' fake QA now writes the batch's
   manifests itself, as the gate does once stories stop authoring them.
+
+## `110.05` as built (2026-10-04)
+
+- **The smoke step.** `qaStepKind`'s `verify` became `smoke`: the QA proof step of a merge conflict's
+  resolution (`after_each_user_story`). Its kickoff (`smokeStepNote`) is three checks: the app starts
+  (`app_start` with the recipe, or the project's own start command without one), the project's own
+  tests pass (quote the summary), and a quick pass over the story's criteria in the running app,
+  starting with the ones the conflicted files touch (named from the queue entry). A broken start or
+  failing tests means `rejected` with the criteria they break `not_met`. Like the exploratory step it
+  writes only in scratch, has the seat browser and app tools, gets no `run_checks` (the tool refuses
+  it, `smoke_step`), and its proof follows `110.04`'s exploratory rules. The default milestone
+  playbook's `reverify` step (key kept, so Reset to default shows a rename) is now "Smoke-test the
+  merged result…"; the conflict objective says so too. The step kind applies to stored playbooks as
+  well: a re-verification had nothing left to run once stories stopped writing manifests.
+- **Retired.** Reverify's whole-milestone manifest set (`StoryChecks.milestoneStories` / `reverify`),
+  `startVerifyStep`, `verifyStepNote`, and the proof's manifest coverage: `proofVerification` now
+  only resolves saved evidence (`recordUserStoryProof` no longer takes the worktree). `run_checks`
+  outside a gate runs only a legacy checks step's own manifest.
+- **A failed smoke step keeps the resolution.** When the resolution run's proof is rejected,
+  `onResolutionSettled` keeps the resolution worktree (the boot sweep keeps a `conflict` entry's
+  worktree too) and escalates with `smoke` on the queue entry (v70 column, `MergeSmokeFailure`: the
+  run, each criterion that didn't hold with its words and evidence, and the decision). Any other
+  failure drops the worktree and escalates as before.
+- **The three actions** (`integration.resolveSmokeFailure`, IPC
+  `integration.resolveSmokeFailure`, a card on the merge queue row above Retry / Run integrator /
+  Abandon, which stay):
+  - **Accept as is** commits the integrator's resolution: the entry goes back to `resolving` and
+    `onResolutionSettled` finalizes it because the decision says so. The merge commit records
+    "Merged as is over AC-n (smoke step decided by …)". Not a waiver: the acceptance gate still
+    proves the criteria (without a gate the story is `done`, as for any merge).
+  - **Drop the criteria** removes the failing criteria from the story's spec (by their words; an
+    audited execution revision), then commits the same way.
+  - **I'll fix it** drops the resolution worktree and pauses the feature (`pausedBy: "user"`) with
+    where to commit the fix (the story branch or its worktree). Resuming retries the merge
+    (`onFeatureResumed`, wired to the Navigator's `onResumed`); the merge re-reads the branch head.
+  Retry and Run integrator clear `smoke` and drop a kept worktree. The Navigator's `merge_conflict`
+  decision names the failed criteria and the three actions while one is pending.
+- **Health de-duplication.** `pendingDecisionAnchors` (escalated merge conflicts, open gate
+  escalations: the story and its milestone) is computed on every evaluation, and a finding on such an
+  anchor never escalates to critical or auto-pauses; it still alerts and refocuses. A new neutral
+  event, `user_decision`, is recorded for the story when the user decides on a merge (retry, run
+  the integrator, abandon an escalated merge, or any smoke action) or a gate escalation;
+  `proof_polishing` counts only events after the story's latest one, so its signal resolves on the
+  next evaluation. Gate fix rounds never fed `proof_polishing` (a gate run has no story), so
+  decision 9's cap governs them alone.
+- **Tests.** `integration.test.ts` (a rejected smoke step keeps the resolution through a boot sweep;
+  accept merges with the decision in the commit; drop revises the spec and merges; I'll fix it drops
+  the worktree and a resume retries onto the user's fix), `qa-checks.test.ts` (step kind, the smoke
+  kickoff with and without a recipe, `run_checks` refused; the generic `run_checks` tests moved to
+  the legacy checks step), `detectors.test.ts` (polishing restarts after a decision),
+  `health.integration.test.ts` (no pause over an escalated merge after 31 minutes, signal resolves on
+  the decision), `gate-fixes.test.ts` (a gate decision records `user_decision`), `position.test.ts`,
+  the playbook default test, and the v70 migration version bumps.
 
 ## Out of scope
 

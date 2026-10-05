@@ -5,6 +5,7 @@ import * as processes from "../db/repositories/processes"
 import { listApprovals } from "../db/repositories/approvals"
 import * as playbooks from "../db/repositories/playbooks"
 import * as proposalsRepo from "../db/repositories/proposals"
+import { changeLimitRefusal } from "./intent-requirements"
 import * as comms from "../db/repositories/seat-comms"
 import * as waveGates from "../db/repositories/wave-gates"
 import type {
@@ -316,6 +317,10 @@ export function positionInput(
         milestoneId: e.milestoneId,
         status: e.status,
         escalated: e.escalated,
+        smokeFailed:
+          e.smoke && !e.smoke.decision
+            ? e.smoke.criteria.map((c) => c.id)
+            : undefined,
       }))
     ),
     // Follow-ups (plan 106.7) are ideas for later work: they wait in the
@@ -783,6 +788,9 @@ export class Navigator {
           (proposal.kind !== "plan" &&
             !fromPlanningReview(proposal, feature.id))
         )
+          continue
+        // Past the limits the user wrote into the intent, it waits for them.
+        if (changeLimitRefusal(feature, proposal.milestoneId, proposal.changes))
           continue
         try {
           applyProposal(proposal.id, actor)

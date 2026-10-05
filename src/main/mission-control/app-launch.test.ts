@@ -1,10 +1,11 @@
-import { mkdtempSync, rmSync } from "fs"
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs"
 import { createServer, type Server } from "net"
 import { tmpdir } from "os"
 import path from "path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { AppService } from "../../shared/mission-control/app-launch"
 import {
+  ownerAppFailed,
   serviceEnvironment,
   serviceStatus,
   startServices,
@@ -199,6 +200,51 @@ describe.skipIf(process.platform === "win32")("startServices", () => {
     } finally {
       blocker.close()
     }
+  })
+
+  it("finds the project's own tools on PATH, as an activated virtualenv would", async () => {
+    const dir = root()
+    mkdirSync(path.join(dir, ".venv/bin"), { recursive: true })
+    const tool = path.join(dir, ".venv/bin/my-api")
+    writeFileSync(
+      tool,
+      `#!/bin/sh\nexec ${NODE} -e "console.log(process.env.VIRTUAL_ENV); require('http').createServer((q,s)=>s.end('ok')).listen(Number(process.env.PORT),'127.0.0.1')"\n`
+    )
+    chmodSync(tool, 0o755)
+    const recipe = { services: [service({ key: "api", command: "my-api serve" })] }
+    const started = await startServices({ owner: "p1", root: dir, recipe })
+    expect(started.ok).toBe(true)
+    const [api] = serviceStatus({ owner: "p1", root: dir, recipe, logs: "api" })
+    expect(api.outputTail).toContain(path.join(dir, ".venv"))
+  })
+
+  it("runs a service's prepare command first, and starts it only if that succeeds", async () => {
+    const dir = root()
+    const prepared = {
+      services: [
+        service({
+          key: "api",
+          prepare: `${NODE} -e "require('fs').writeFileSync('db.txt','ready')"`,
+          command: httpServer("if(require('fs').readFileSync('db.txt','utf8')!=='ready')process.exit(9);"),
+        }),
+      ],
+    }
+    expect((await startServices({ owner: "p1", root: dir, recipe: prepared })).ok).toBe(true)
+
+    const failing = {
+      services: [
+        service({
+          key: "api",
+          prepare: `${NODE} -e "console.error('no database'); process.exit(4)"`,
+        }),
+      ],
+    }
+    const started = await startServices({ owner: "p2", root: root(), recipe: failing })
+    expect(started).toMatchObject({ ok: false, code: "service_failed" })
+    expect(started.ok || started.message).toMatch(/prepare command .* exited with 4/)
+    expect(started.services[0].outputTail).toContain("no database")
+    expect(ownerAppFailed("p2")).toBe(true)
+    expect(ownerAppFailed("p1")).toBe(false)
   })
 
   it("refuses when there's no recipe", async () => {

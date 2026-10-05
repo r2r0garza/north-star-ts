@@ -57,6 +57,8 @@ import { browserSnapshotTool } from "./browser/snapshot"
 import { browserScreenshotTool } from "./browser/screenshot"
 import { browserClickTool } from "./browser/click"
 import { browserHoverTool } from "./browser/hover"
+import { browserPressKeyTool } from "./browser/press-key"
+import { browserSetViewportTool } from "./browser/set-viewport"
 import { browserDragTool } from "./browser/drag"
 import { browserTypeTool } from "./browser/type"
 import { browserSelectOptionTool } from "./browser/select-option"
@@ -153,7 +155,7 @@ const otherTools: Tool[] = [
   // step (plan 106.3 — opts.processProofStep). Not in toolDefinitions.
   recordProofTool,
   // QA acceptance checks (plan 109.02): offered by runChat only to a QA seat's
-  // checks step, merge re-verification, or wave gate (opts.processQaChecks).
+  // checks step or wave gate (opts.processQaChecks).
   // Not in toolDefinitions.
   runChecksTool,
   // record_gate (plan 110.02): offered by runChat only to the QA step of a
@@ -190,6 +192,8 @@ export const browserTools: Tool[] = [
   browserScreenshotTool,
   browserClickTool,
   browserHoverTool,
+  browserPressKeyTool,
+  browserSetViewportTool,
   browserDragTool,
   browserTypeTool,
   browserSelectOptionTool,
@@ -209,7 +213,7 @@ export const browserToolDefinitions = browserTools.map((t) => t.definition)
 // browser is for there (plan 109.06): models pick a tool at the point of use,
 // so the rule "explore with the browser, assert with Playwright" lives here.
 export const SEAT_BROWSER_ROUTING =
-  "In Mission Control, use the browser for exploring and evidence. To prove a criterion, write a check and run it with run_checks."
+  "In Mission Control, use the browser to exercise the running app and save evidence; repeatable assertions belong in Playwright checks run with run_checks."
 export const seatBrowserToolDefinitions = browserToolDefinitions
   .filter(
     (d) => d.function.name !== browserHandoffTool.definition.function.name

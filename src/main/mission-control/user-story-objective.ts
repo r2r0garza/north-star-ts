@@ -1,4 +1,5 @@
 import type {
+  AppLaunch,
   Feature,
   GeneratedFilesRule,
   Milestone,
@@ -7,6 +8,7 @@ import type {
 import { renderEnvironment, type WorktreeEnvironment } from "./worktree-env"
 import { formatStory } from "../../shared/mission-control/story"
 import { renderIntentChain } from "./intent-chain"
+import { renderIntentRequirements } from "./intent-requirements"
 
 // The user story objective IS the spec (plan 106.3, decision 5): a rendered,
 // versioned block rather than a paraphrase. Acceptance criteria get stable ids
@@ -100,6 +102,29 @@ export function renderUserStoryObjective(input: {
   ].join("\n")
 }
 
+// How the app starts, for planning and reviews. A provisional recipe was
+// planned from the intent before the app existed: the work must make the app
+// start exactly this way.
+function renderAppLaunch(recipe: AppLaunch | null): string[] {
+  if (!recipe?.services.length) return []
+  const provisional = recipe.services.some((s) => s.provisional)
+  return [
+    "",
+    "## How the app starts",
+    provisional
+      ? "Mission Control will start the app this way (planned from the intent; nothing is built yet). The first user story must build the app so it starts with exactly this recipe, taking its port as shown; its builder can change the recipe with `app_launch_save` only if the stack truly needs it."
+      : "Mission Control starts the app this way for builders, QA, and the acceptance gates.",
+    ...recipe.services.map(
+      (s) =>
+        `- ${s.label}: \`${s.command}\`${s.cwd ? ` in \`${s.cwd}\`` : ""}, port ${
+          s.port === "auto"
+            ? `from ${s.command.includes("{port") ? "the {port} placeholder" : `$${s.portEnv ?? "PORT"}`}`
+            : s.port
+        }, ready when ${"http" in s.ready ? `GET ${s.ready.http} answers` : `output matches /${s.ready.log}/`}${s.dependsOn?.length ? `, after ${s.dependsOn.join(", ")}` : ""}`
+    ),
+  ]
+}
+
 // The objective for a milestone/feature hook run (decision 4): composed from
 // the container so each hook sees exactly what it is deciding about.
 export function renderHookObjective(input: {
@@ -111,6 +136,8 @@ export function renderHookObjective(input: {
   nextMilestone?: Milestone | null
   // Pending follow-ups for the milestone review, rendered (plan 106.7).
   followups?: string | null
+  // The workspace's app launch recipe: planning builds to it.
+  appLaunch?: AppLaunch | null
 }): string {
   const { hook, feature, milestones, userStories, milestone, nextMilestone } =
     input
@@ -131,6 +158,8 @@ export function renderHookObjective(input: {
     "",
     "## Why this work exists",
     renderIntentChain({ feature, milestone }),
+    ...renderIntentRequirements(feature),
+    ...renderAppLaunch(input.appLaunch ?? null),
   ]
   if (milestone) {
     lines.push(
@@ -171,13 +200,15 @@ export function renderHookObjective(input: {
         "Give every user story a short key, a goal, concrete acceptance criteria (each one checkable), touch hints for the files it will change, and `depends_on` keys for user stories it must wait for. " +
         "Keep user stories small enough to build and prove in one sitting, and keep independent user stories independent so they run in parallel. " +
         "Mark a user story that must come after all the others (an integration proof, docs) `runs_last` instead of listing every other story in its `depends_on`. " +
-        "If nothing in the workspace runs yet (a new project), make the first user story a walking skeleton: the smallest version of the app that starts with one command and reads its port from the `PORT` environment variable (a package.json `start` script, or `node server.js`), and have every user story that needs the running app list it in `depends_on`. Mission Control builds that first story alone, so QA can test the others against a running app. " +
-        "Before you submit, check coverage: go through every item of the feature's definition of done and each milestone's outcome and definition of done, and make sure some user story's acceptance criteria deliver and verify it. Add a user story for anything uncovered; the milestone's planning review otherwise finds it after you. " +
+        "If nothing in the workspace runs yet (a new project), make the first user story a walking skeleton: the smallest version of the app that starts the way “How the app starts” above says (or, with no recipe there, with one command that takes its port from the environment), and have every user story that needs the running app list it in `depends_on`. Give it a criterion that Mission Control can start the app from the workspace's app launch recipe. Mission Control builds that first story alone, so QA can test the others against a running app. " +
+        "Before you submit, check coverage: go through every requirement from the intent, every item of the feature's definition of done, and each milestone's outcome and definition of done, and make sure some user story's acceptance criteria deliver and verify it. Carry the intent's specifics (exact labels, texts, and behaviours) into the criteria rather than summarizing them away. " +
+        "When the intent lists requirements, pass `coverage` mapping each one (R1, R2, ...) to the story and criterion numbers that cover it; a plan that leaves one out, or exceeds the intent's plan limits, is refused. To stay inside a story limit, give a story more acceptance criteria rather than adding stories. " +
         "The user reviews and applies the proposal. Without the tool, write the plan in your final message."
     )
   else
     lines.push(
-      "If you have map tools, submit each recommended change with `propose_user_story` or `revise_plan` rather than only describing it; otherwise list them in your final message. " +
+      "Check the plan against the requirements from the intent above: a requirement no acceptance criterion delivers and verifies is a gap to fix, ideally by adding criteria to a not-started story (`edit_user_story`) rather than a new story when the intent limits the story count. " +
+        "If you have map tools, submit each recommended change with `propose_user_story` or `revise_plan` rather than only describing it; otherwise list them in your final message. " +
         "When you add a user story, set `depends_on` for what it needs and `blocks` for not-started stories that need it: stories already planned in later waves don't wait for a new story otherwise."
     )
   return lines.join("\n")
@@ -185,8 +216,8 @@ export function renderHookObjective(input: {
 
 // The objective for the milestone's after_each_user_story hook when a user story's merge
 // conflicts (plan 106.5, decision 6). The worktree already holds the merge in
-// progress; the integrator resolves it and the proof step re-verifies the
-// user story against its original acceptance criteria before anything commits.
+// progress; the integrator resolves it and the proof step smoke-tests the
+// merged result (plan 110.05) before anything commits.
 export function renderConflictObjective(input: {
   feature: Feature
   milestone: Milestone
@@ -215,7 +246,7 @@ export function renderConflictObjective(input: {
     "- Resolve every conflict so both sides keep their intent: the work already on the integration branch (other user stories) and this user story's goal.",
     "- Remove every conflict marker. Run the project's checks if it has them.",
     "- Do not commit, abort the merge, switch branches, rebase, or push. Mission Control commits the merge after the proof is accepted.",
-    "- The proof step then re-verifies this user story against its acceptance criteria on the merged result.",
+    "- QA then smoke-tests the merged result: the app starts, the project's tests pass, and this user story's criteria still hold in the running app. The milestone's acceptance gate proves them fully once the wave merges.",
     ...renderEnvironment(input.environment),
     ...(generated.length
       ? [

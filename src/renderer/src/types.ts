@@ -216,6 +216,7 @@ export type {
   MergePolicyMode,
   MergeQueueEntry,
   MergeQueueStatus,
+  MergeSmokeFailure,
   MilestoneLanding,
   PhaseContextScope,
   SeatSession,

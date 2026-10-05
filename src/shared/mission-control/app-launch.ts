@@ -18,6 +18,9 @@ export interface AppService {
   label: string
   // One shell command, run in `cwd`.
   command: string
+  // Run to completion first, in the same directory and environment (create
+  // or migrate a database, seed data); the service starts only if it exits 0.
+  prepare?: string
   // Workspace-relative directory; "" is the workspace root.
   cwd: string
   // "auto": the harness picks a free port per run, so parallel worktrees
@@ -34,9 +37,18 @@ export interface AppService {
   // Services started first. A `{port:<key>}` placeholder is an implicit
   // dependency too.
   dependsOn?: string[]
-  // Who wrote it: the user, or an applied workspace-analysis finding.
-  source: "user" | "analysis"
+  // Who wrote it: the user, an applied workspace-analysis finding, or a
+  // builder seat that made the app runnable (app_launch_save).
+  source: "user" | "analysis" | "seat"
   findingKey?: string
+  // Planned from the feature's intent before the app existed (a greenfield
+  // workspace): the first story builds the app to start this way, and the
+  // first successful start proves it.
+  provisional?: boolean
+}
+
+export function isProvisional(recipe: AppLaunch): boolean {
+  return recipe.services.some((s) => s.provisional)
 }
 
 export const DEFAULT_PORT_ENV = "PORT"
@@ -206,6 +218,12 @@ export function validateAppLaunch(value: unknown): AppLaunchValidation {
       errors.push(`${called}: the command must be one line.`)
       return
     }
+    const prepare =
+      typeof item.prepare === "string" ? item.prepare.trim() : ""
+    if (/[\n\r]/.test(prepare)) {
+      errors.push(`${called}: the prepare command must be one line.`)
+      return
+    }
     const cwd = relativeDir(typeof item.cwd === "string" ? item.cwd : "")
     if (cwd === null) {
       errors.push(`${called}: its directory must be inside the workspace.`)
@@ -309,6 +327,7 @@ export function validateAppLaunch(value: unknown): AppLaunchValidation {
       key,
       label: label || key,
       command,
+      ...(prepare ? { prepare } : {}),
       cwd,
       port,
       ...(portEnv !== DEFAULT_PORT_ENV ? { portEnv } : {}),
@@ -316,10 +335,14 @@ export function validateAppLaunch(value: unknown): AppLaunchValidation {
       ready,
       ...(readyTimeoutMs !== undefined ? { readyTimeoutMs } : {}),
       ...(dependsOn.length ? { dependsOn } : {}),
-      source: item.source === "analysis" ? "analysis" : "user",
+      source:
+        item.source === "analysis" || item.source === "seat"
+          ? item.source
+          : "user",
       ...(typeof item.findingKey === "string" && item.findingKey
         ? { findingKey: item.findingKey }
         : {}),
+      ...(item.provisional === true ? { provisional: true } : {}),
     })
   })
 

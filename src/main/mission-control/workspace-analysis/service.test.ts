@@ -1,6 +1,7 @@
 import { execFileSync } from "child_process"
 import { EventEmitter } from "events"
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -300,7 +301,7 @@ describe.skipIf(!sqliteLoads)("WorkspaceAnalysisService", () => {
     )
   })
 
-  it("proposes an app launch recipe from a dev script and saves it only on Apply", async () => {
+  it("proposes an app launch recipe from a dev script and saves it at Start without asking", async () => {
     const root = repo({
       "package.json": JSON.stringify({
         name: "shop",
@@ -332,10 +333,10 @@ describe.skipIf(!sqliteLoads)("WorkspaceAnalysisService", () => {
         },
       },
     })
-    // It persists a command: never applied by Start on its own.
-    await svc.preflight(feature.id)
-    expect(getWorkspace(workspace.id)!.appLaunch.services).toEqual([])
-    const result = await svc.applyFix(feature.id, "app-launch:recipe")
+    // Seats need it to start the app: Start saves it, with no review step.
+    const started = await svc.preflight(feature.id)
+    expect(started.review).not.toContain("app-launch:recipe")
+    expect(started.applied).toContain(finding!.title)
     expect(getWorkspace(workspace.id)!.appLaunch.services).toEqual([
       expect.objectContaining({
         key: "web",
@@ -345,8 +346,146 @@ describe.skipIf(!sqliteLoads)("WorkspaceAnalysisService", () => {
       }),
     ])
     expect(
-      result.analysis?.findings.find((f) => f.key === "app-launch:recipe")
+      svc.get(feature.id)?.findings.find((f) => f.key === "app-launch:recipe")
     ).toMatchObject({ status: "resolved", resolution: "Already configured" })
+  })
+
+  // The recipe model's answer for any stack, beside the interpret step's.
+  function recipeModel(answer: Record<string, unknown>) {
+    const asked: string[] = []
+    model = async (system, user) => {
+      if (system.includes("app launch recipe")) {
+        asked.push(user)
+        return JSON.stringify(answer)
+      }
+      return JSON.stringify({ ignored: [], generated: [], findings: [], explanations: {} })
+    }
+    return asked
+  }
+
+  it("has the model write the recipe for a stack the rules don't know, starts it, and applies it at Start", async () => {
+    const root = repo({
+      Gemfile: "source 'https://rubygems.org'\ngem 'rails'\n",
+      // Stands in for Rails: serves HTTP on the port after -p.
+      "bin/rails": `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} -e "require('http').createServer((q,s)=>s.end('ok')).listen(Number(process.argv[1]),'127.0.0.1')" "$5"\n`,
+      "config.ru": "run Rails.application\n",
+    })
+    chmodSync(path.join(root, "bin/rails"), 0o755)
+    const { feature, workspace } = featureFor(root)
+    const asked = recipeModel({
+      basis: "code",
+      services: [
+        {
+          key: "web",
+          label: "Rails server",
+          command: "bin/rails server -b 127.0.0.1 -p {port}",
+          cwd: "",
+          port: "auto",
+          ready: { http: "/up" },
+          readyTimeoutMs: 15_000,
+        },
+      ],
+      reason: "A Rails app.",
+      evidence: ["Gemfile", "bin/rails"],
+    })
+    const svc = service({ qaSeat: true })
+    const started = await svc.preflight(feature.id)
+    expect(asked).toHaveLength(1)
+    expect(asked[0]).toContain("bin/rails")
+    expect(started.applied).toContain("How seats start the app")
+    expect(getWorkspace(workspace.id)!.appLaunch.services).toEqual([
+      expect.objectContaining({
+        command: "bin/rails server -b 127.0.0.1 -p {port}",
+        source: "analysis",
+      }),
+    ])
+    expect(getWorkspace(workspace.id)!.appLaunch.services[0].provisional).toBeUndefined()
+    expect(svc.get(feature.id)?.findings.find((f) => f.key === "app-launch:recipe")?.confidence).toBe("verified")
+  })
+
+  it("doesn't write the recipe while the environment isn't set up", async () => {
+    const root = repo(python)
+    const { feature, workspace } = featureFor(root)
+    const asked = recipeModel({ basis: "code", services: [], reason: "", evidence: [] })
+    const svc = service({ qaSeat: true })
+    const started = await svc.preflight(feature.id)
+    expect(started.blockers).toContain("main-env:.:pip")
+    expect(asked).toEqual([])
+    expect(getWorkspace(workspace.id)!.appLaunch.services).toEqual([])
+  })
+
+  it("plans a provisional recipe from the intent for a workspace with no app yet", async () => {
+    const root = repo({ "README.md": "# Shop\n" })
+    const { feature, workspace } = featureFor(root)
+    const asked = recipeModel({
+      basis: "intent",
+      services: [
+        {
+          key: "web",
+          label: "Phoenix server",
+          command: "mix phx.server",
+          cwd: "",
+          port: "auto",
+          ready: { http: "/" },
+        },
+      ],
+      reason: "The intent asks for a web shop; Phoenix fits.",
+      evidence: [],
+    })
+    const svc = service({ qaSeat: true })
+    await svc.preflight(feature.id)
+    expect(asked[0]).toContain("Build a shop")
+    expect(getWorkspace(workspace.id)!.appLaunch.services).toEqual([
+      expect.objectContaining({ command: "mix phx.server", provisional: true }),
+    ])
+  })
+
+  it("keeps the rules' recipe when the model's fails its checks, saying what it may miss", async () => {
+    const root = repo({
+      "package.json": JSON.stringify({
+        name: "shop",
+        scripts: { dev: "vite" },
+        devDependencies: { vite: "^5.0.0" },
+      }),
+      "package-lock.json": "{}",
+    })
+    const { feature } = featureFor(root)
+    const asked = recipeModel({
+      basis: "code",
+      services: [
+        { key: "api", label: "Python API", command: "cd api && uvicorn main:app", cwd: "", port: "auto", ready: { http: "/" } },
+      ],
+      reason: "",
+      evidence: [],
+    })
+    const analysis = await service().analyze(feature.id)
+    expect(asked).toHaveLength(3)
+    expect(analysis.findings.find((f) => f.key === "app-launch:recipe")).toMatchObject({
+      source: "recipe",
+      confidence: "guess",
+      explanation: expect.stringMatching(/found more to start \(Python API\).*may not start all of it/),
+    })
+  })
+
+  it("leaves a recipe the user wrote alone, and doesn't ask the model for one", async () => {
+    const root = repo(python)
+    const { feature, workspace } = featureFor(root)
+    const mine = {
+      key: "web",
+      label: "Mine",
+      command: "flask run --port {port}",
+      cwd: "",
+      port: "auto" as const,
+      ready: { http: "/" },
+      source: "user" as const,
+    }
+    updateWorkspace(workspace.id, { appLaunch: { services: [mine] } })
+    const asked = recipeModel({ basis: "code", services: [], reason: "", evidence: [] })
+    const svc = service({ qaSeat: true })
+    await svc.analyze(feature.id)
+    await svc.preflight(feature.id)
+    expect(asked).toEqual([])
+    expect(getWorkspace(workspace.id)!.appLaunch.services).toEqual([mine])
   })
 
   it("dismisses and restores a finding", async () => {
@@ -541,7 +680,9 @@ describe.skipIf(!sqliteLoads)("WorkspaceAnalysisService", () => {
     const root = repo(python, { "notes/todo.md": "x" })
     const { feature } = featureFor(root)
     let calls = 0
-    model = async (_s, user) => {
+    model = async (system, user) => {
+      if (system.includes("app launch recipe"))
+        return JSON.stringify({ basis: "none", services: [], reason: "", evidence: [] })
       calls++
       const [, p, id] = /- (notes\/\S+) \[(E\d+)\]/.exec(user) ?? []
       return JSON.stringify({

@@ -1,7 +1,12 @@
 import * as features from "../db/repositories/features"
 import * as processes from "../db/repositories/processes"
 import * as waveGates from "../db/repositories/wave-gates"
-import type { GateCheckChange, ProcessRun, WaveGateReport } from "../db/types"
+import type {
+  GateCheckChange,
+  ProcessRun,
+  UserStoryProof,
+  WaveGateReport,
+} from "../db/types"
 import { runGit } from "../agent/subagents/worktrees"
 import { describeServices, startServices } from "./app-launch"
 import { savedEvidence } from "./evidence"
@@ -80,6 +85,19 @@ export async function startGateStep(input: {
   })
 }
 
+// A criterion the story's own QA deferred to this gate (plan 110): its tools
+// couldn't exercise it, so nothing has verified it yet.
+function deferredNote(story: GateCheckStory, criterionId: string): string {
+  // UserStory.proof is stored loosely (unknown); read only what's needed.
+  const proof = story.userStory.proof as UserStoryProof | null
+  const deferred = proof?.criteria?.find(
+    (c) => c.id === criterionId && c.status === "deferred"
+  )
+  return deferred
+    ? ` _(deferred to this gate by the story's QA, so only this gate verifies it: ${(deferred.reason ?? "its tools couldn't exercise it").replace(/\.+$/, "")}. Write an automated check for it.)_`
+    : ""
+}
+
 export function gateStepNote(input: {
   gate: GateChecks
   // What the recipe's services are doing, or null without a recipe.
@@ -102,7 +120,7 @@ export function gateStepNote(input: {
       ...fixLine(story, gate),
       ...story.criteria.map(
         (c) =>
-          `- **${c.id}**: ${c.text}${story.waived.includes(c.id) ? " _(accepted as is by the user: don't triage it)_" : ""}`
+          `- **${c.id}**: ${c.text}${story.waived.includes(c.id) ? " _(accepted as is by the user: don't triage it)_" : deferredNote(story, c.id)}`
       ),
       present.has(story.storyRef)
         ? `  Manifest: \`${storyManifestPath(gate.checksDir, story.storyRef)}\` (extend it; fix what doesn't hold on the integrated app).`

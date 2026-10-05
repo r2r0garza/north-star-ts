@@ -1,4 +1,6 @@
 import { spawn, type ChildProcess } from "child_process"
+import { existsSync } from "fs"
+import path from "path"
 import { connect, createServer } from "net"
 import { stripAnsi } from "../agent/approval/ansi"
 import { resolveInWorkspaceReal } from "../agent/tools/workspace"
@@ -427,7 +429,18 @@ export async function startServices(input: {
     // Keep dev servers from opening the user's browser or waiting on a TTY.
     env.BROWSER ??= "none"
     env.CI ??= "1"
+    withProjectBins(env, cwd, root)
     running.set(key, entry)
+    if (service.prepare) {
+      let prepare: string
+      try {
+        prepare = substitutePorts(service.prepare, entry.port, ports)
+      } catch (err) {
+        return failEarly(err instanceof Error ? err.message : String(err))
+      }
+      const prepared = await runPrepare(entry, cwd, prepare, env, input.signal)
+      if (prepared) return failEarly(prepared)
+    }
     try {
       spawnService(entry, cwd, command, env)
     } catch (err) {
@@ -442,6 +455,69 @@ export async function startServices(input: {
     }
   }
   return { ok: true, services: results }
+}
+
+// The project's own tools first on PATH, the way a developer's activated
+// shell has them: a virtualenv's entry points and node_modules binaries, in
+// the service's directory and the worktree root. Without it a recipe that
+// runs my-cli serve fails with "command not found" (nav-test-17).
+const ENV_BINS =
+  process.platform === "win32"
+    ? [".venv/Scripts", "venv/Scripts", "node_modules/.bin"]
+    : [".venv/bin", "venv/bin", "node_modules/.bin"]
+
+function withProjectBins(env: Record<string, string>, cwd: string, root: string): void {
+  const dirs = [...new Set([cwd, root])].flatMap((base) =>
+    ENV_BINS.map((bin) => path.join(base, bin)).filter((dir) => existsSync(dir))
+  )
+  if (!dirs.length) return
+  const key = Object.keys(env).find((k) => k.toUpperCase() === "PATH") ?? "PATH"
+  env[key] = [...dirs, env[key]].filter(Boolean).join(path.delimiter)
+  const venv = dirs.find((dir) => /[\\/](\.venv|venv)[\\/](bin|Scripts)$/.test(dir))
+  if (venv) env.VIRTUAL_ENV ??= path.dirname(venv)
+}
+
+const PREPARE_TIMEOUT_MS = 5 * 60_000
+
+// A service's prepare command, to completion. Its output joins the service's;
+// returns why it failed, or null.
+function runPrepare(
+  entry: RunningService,
+  cwd: string,
+  command: string,
+  env: Record<string, string>,
+  signal?: AbortSignal
+): Promise<string | null> {
+  const isWin = process.platform === "win32"
+  return new Promise((resolve) => {
+    const child = spawn(
+      isWin ? "cmd.exe" : "/bin/sh",
+      isWin ? ["/d", "/s", "/c", command] : ["-c", command],
+      { cwd, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, detached: !isWin }
+    )
+    const keep = (chunk: Buffer) => {
+      const next = entry.output + chunk.toString("utf8")
+      entry.output = next.length > OUTPUT_KEEP ? next.slice(next.length - OUTPUT_KEEP) : next
+    }
+    child.stdout?.on("data", keep)
+    child.stderr?.on("data", keep)
+    const timer = setTimeout(() => signalTree(child, "SIGKILL"), PREPARE_TIMEOUT_MS)
+    const abort = () => signalTree(child, "SIGKILL")
+    signal?.addEventListener("abort", abort, { once: true })
+    child.once("error", (err) => {
+      clearTimeout(timer)
+      resolve(`its prepare command couldn't run: ${err.message}`)
+    })
+    child.once("close", (code, sig) => {
+      clearTimeout(timer)
+      signal?.removeEventListener("abort", abort)
+      resolve(
+        code === 0
+          ? null
+          : `its prepare command (\`${command}\`) exited with ${code ?? sig ?? "an error"}`
+      )
+    })
+  })
 }
 
 function failure(
@@ -479,6 +555,16 @@ export function ownerServiceUrls(owner: string): string[] {
   return [...running.values()]
     .filter((e) => e.owner === owner && e.port !== null)
     .map((e) => serviceUrl(e.port!))
+}
+
+// Whether the owner tried to start the app and nothing came up: a step that
+// can't reach the app it must verify (the proof gate won't defer then).
+export function ownerAppFailed(owner: string): boolean {
+  const mine = [...running.values()].filter((e) => e.owner === owner)
+  return (
+    mine.some((e) => e.status === "failed") &&
+    !mine.some((e) => e.status === "ready")
+  )
 }
 
 async function stopEntries(entries: RunningService[]): Promise<number> {
@@ -575,11 +661,17 @@ export const testAppServices = {
 }
 
 // Shown to a seat that can start the app: what's configured and how to use it.
-export function appLaunchContextSection(recipe: AppLaunch): ContextSection {
+export function appLaunchContextSection(
+  recipe: AppLaunch,
+  role?: string
+): ContextSection {
   return {
     name: "mission_control_app_launch",
     priority: SEAT_CONTEXT_PRIORITY,
-    content: appLaunchBriefing(recipe),
+    content:
+      role === "builder" && recipe.services.length
+        ? `${appLaunchBriefing(recipe)}\n\n${BUILDER_START_RULE}`
+        : appLaunchBriefing(recipe),
     provenance: {
       trust: "system",
       channel: "runtime",
@@ -588,10 +680,30 @@ export function appLaunchContextSection(recipe: AppLaunch): ContextSection {
   }
 }
 
+// QA verifies in the running app, so a build that doesn't start wastes a
+// whole round (nav-test-17: the builder finished on green tests; QA's first
+// app_start failed).
+const BUILDER_START_RULE =
+  "Before you finish, start the app with `app_start` and check your change in it. If it won't start, fixing that is part of your work: your code, or the recipe itself with `app_launch_save` (for example a missing `prepare` step or a wrong command). Don't finish while the app fails to start."
+
 export function appLaunchBriefing(recipe: AppLaunch): string {
+  if (recipe.services.some((s) => s.provisional))
+    return [
+      "## Running the app (recipe planned, not yet proven)",
+      "Mission Control will start the app with the recipe below, planned from the feature's intent before the app existed. Build the app so it starts exactly this way, taking its port as shown, then start it with `app_start`: the first successful start confirms the recipe. If the stack you built truly needs a different command, call `app_launch_save` with one that works; it replaces this recipe only if the planned one can't start the app. Don't start the app by hand with a shell command. Everything you start is stopped when this step ends.",
+      ...recipe.services.map(
+        (s) =>
+          `- \`${s.key}\` (${s.label}): \`${s.command}\`${s.cwd ? ` in \`${s.cwd}\`` : ""}${s.port === "auto" && !s.command.includes("{port") ? `, port in $${s.portEnv ?? "PORT"}` : ""}`
+      ),
+    ].join("\n")
+  if (!recipe.services.length)
+    return [
+      "## Making the app startable (required)",
+      "This workspace has no app launch recipe yet, so Mission Control can't start the app for QA, the acceptance gates, or the stories after yours. Part of your job is fixing that: once your work makes the app runnable, call `app_launch_save` with how to start it (the command, its directory, and a readiness check). The app must let Mission Control choose its port (an environment variable or a `{port}` argument) so parallel worktrees don't collide. The recipe is tried in your worktree and saved only if the app starts; fix whatever stops it and call again. Don't finish while the app runs but no recipe is saved. If your story's changes don't make anything runnable yet, say so in your summary.",
+    ].join("\n")
   return [
     "## Running the app",
-    "This workspace has an app launch recipe. Start the app with `app_start` (it picks free ports, waits until each service is ready, and returns the URLs); check on it with `app_status` and stop it with `app_stop`. Don't start these services by hand with a shell command: the ports would collide with other worktrees, and nothing would stop them. Everything you start is stopped when this step ends.",
+    "This workspace has an app launch recipe. Start the app with `app_start` (it picks free ports, waits until each service is ready, and returns the URLs); check on it with `app_status` and stop it with `app_stop`. Don't start these services by hand with a shell command: the ports would collide with other worktrees, and nothing would stop them. Everything you start is stopped when this step ends. If the app needs a service this recipe doesn't start (a backend, a worker), a builder adds it with `app_launch_save`.",
     ...recipe.services.map((s) => {
       const deps = s.dependsOn?.length
         ? `, after ${s.dependsOn.join(", ")}`

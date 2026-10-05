@@ -42,7 +42,12 @@ export const recordProofTool: Tool = {
                 },
                 status: {
                   type: "string",
-                  enum: ["met", "not_met", "not_verifiable"],
+                  enum: ["met", "not_met", "not_verifiable", "deferred"],
+                  description:
+                    "deferred: in a user story's test step, a criterion your tools can't exercise " +
+                    "(say, something only an automated browser check can do). The milestone's wave " +
+                    "acceptance gate proves it with Playwright; give the reason. It doesn't block " +
+                    "acceptance, but at least one criterion must be verified here.",
                 },
                 method: {
                   type: "string",
@@ -81,7 +86,8 @@ export const recordProofTool: Tool = {
                 reason: {
                   type: "string",
                   description:
-                    "Required when accepting a not_verifiable criterion: why it cannot be verified.",
+                    "Required when accepting a not_verifiable criterion (why it cannot be verified) " +
+                    "and for a deferred one (what your tools can't do that the gate's checks can).",
                 },
               },
               required: ["id", "status", "method", "evidence"],
@@ -102,7 +108,6 @@ export const recordProofTool: Tool = {
     const result = await recordUserStoryProof({
       processRunId: ctx.processRunId,
       processPhaseRunId: ctx.processPhaseRunId,
-      workspace: ctx.workspace,
       args,
     })
     if (!result.ok) return toolError(result.code, result.message)

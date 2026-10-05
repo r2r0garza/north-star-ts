@@ -35,6 +35,7 @@ import * as seatSessionsRepo from "../db/repositories/seat-sessions"
 import { deleteConversationsWithArtifacts } from "../conversations/lifecycle"
 import { startHookRun } from "../mission-control/hook-runner"
 import { resolveGateEscalation } from "../mission-control/gate-fixes"
+import { upgradeDefaultPlaybooks } from "../mission-control/playbook-upgrade"
 import { emitWorkChanged } from "../mission-control/work-events"
 import type { GateEscalationAction } from "../db/types"
 import type { MilestoneIntegration } from "../mission-control/integration"
@@ -102,16 +103,26 @@ export function registerMissionControlHandlers(
   // feature activates, and the rig is snapshotted, only after it passes.
   // `reviewed`: the user already chose what to do about the setup that
   // saves commands (Apply and start, or Start without them).
+  // Outdated default playbooks are upgraded (or pointed out) first, even
+  // when the user starts anyway: they decide which flow the feature runs.
   const preflight = async (id: string, skip: boolean, reviewed: boolean) => {
     const none = [] as string[]
+    const playbookUpgrade = upgradeDefaultPlaybooks(id)
     if (skip)
-      return { blocked: false, applied: none, blockers: none, review: none }
+      return {
+        blocked: false,
+        applied: playbookUpgrade.upgraded,
+        blockers: none,
+        review: none,
+        notices: playbookUpgrade.notices,
+      }
     const result = await analysis.preflight(id)
     return {
       blocked: !result.ok,
-      applied: result.applied,
+      applied: [...playbookUpgrade.upgraded, ...result.applied],
       blockers: result.blockers,
       review: result.ok && !reviewed ? result.review : none,
+      notices: playbookUpgrade.notices,
     }
   }
   ipcMain.handle(
@@ -419,6 +430,33 @@ export function registerMissionControlHandlers(
   ipcMain.handle(
     "missionControl:integration:abandon",
     (_event, entryId: string) => integration.abandon(entryId)
+  )
+  // A merge whose smoke step failed (plan 110.05): the same three actions as
+  // an acceptance gate escalation. "I'll fix it" pauses the feature, and
+  // resuming retries the merge.
+  ipcMain.handle(
+    "missionControl:integration:resolveSmokeFailure",
+    async (
+      _event,
+      input: { entryId: string; action: GateEscalationAction; note?: string }
+    ) => {
+      if (!["accept", "user_fix", "drop"].includes(input.action))
+        throw new Error(`Unknown action: ${String(input.action)}`)
+      const outcome = await integration.resolveSmokeFailure({
+        ...input,
+        by: "user",
+      })
+      const milestone = features.getMilestone(outcome.entry.milestoneId)
+      if (milestone) {
+        if (
+          outcome.pause &&
+          features.getFeature(milestone.featureId)?.status === "active"
+        )
+          navigator.pause(milestone.featureId, outcome.pause, "user")
+        emitWorkChanged(milestone.featureId)
+      }
+      return outcome.entry
+    }
   )
   ipcMain.handle(
     "missionControl:integration:userStoryInfo",

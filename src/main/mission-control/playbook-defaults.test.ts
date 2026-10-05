@@ -22,6 +22,18 @@ describe("default playbooks", () => {
   })
 })
 
+describe("the default milestone playbook", () => {
+  it("resolves a merge conflict, then smoke-tests it (plan 110.05)", () => {
+    const steps = DEFAULT_PLAYBOOKS.milestone.hooks.after_each_user_story!
+    expect(steps.map((step) => [step.key, step.role])).toEqual([
+      ["resolve", "integrator"],
+      ["reverify", "qa"],
+    ])
+    expect(steps[1].name).toMatch(/^Smoke-test the merged result/)
+    expect(steps[1].name).toMatch(/project's tests/)
+  })
+})
+
 describe("the default user story playbook", () => {
   it("builds, then has QA verify by exploration (plan 110.04)", () => {
     const steps = DEFAULT_PLAYBOOKS.user_story.hooks.run!

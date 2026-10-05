@@ -95,6 +95,9 @@ export const HEALTH_EVENTS = {
     label: "Worktree setup ran",
   },
   steer: { class: "neutral", weight: 0, label: "Message from the user" },
+  // The user decided on a story's escalation (a merge conflict or an
+  // acceptance gate): its proof-polishing count starts over (plan 110.05).
+  user_decision: { class: "neutral", weight: 0, label: "User decided" },
 } as const satisfies Record<string, HealthEventSpec>
 
 export type HealthEventType = keyof typeof HEALTH_EVENTS
@@ -147,7 +150,7 @@ export const HEALTH_DETECTORS: readonly HealthDetectorSpec[] = [
     label: "Proof polishing",
     pathology: "Recursive proof loop",
     description:
-      "A proof keeps being revised: re-recorded after it was accepted, or rejected again and again across attempts.",
+      "A proof keeps being revised: re-recorded after it was accepted, or rejected again and again across attempts. The count starts over when you decide on the user story.",
   },
   {
     key: "ping_pong",

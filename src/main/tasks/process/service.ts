@@ -53,7 +53,7 @@ import {
   completeAuthorStep,
   exploreStepNote,
   qaStepKind,
-  startVerifyStep,
+  smokeStepKickoff,
   storyChecks,
 } from "../../mission-control/qa-checks"
 import { startGateStep } from "../../mission-control/gate-step"
@@ -128,7 +128,7 @@ const PROOF_STEP_INSTRUCTION =
   "You are this user story's verifier. Check every acceptance criterion yourself — " +
   "exercise the running app, run commands — and then call `record_proof` exactly " +
   "once with one entry per criterion id (AC-1, AC-2, …) listed in the objective. " +
-  "Each entry needs a status (met, not_met, or not_verifiable) and concrete evidence: " +
+  "Each entry needs a status (met, not_met, not_verifiable, or deferred — see the tool) and concrete evidence: " +
   'what you ran or inspected and what you observed. Use verdict "accepted" only when ' +
   'every criterion is met; otherwise record "rejected". Artifacts are the evidence ' +
   "paths your screenshots and saved output returned. The tool validates your proof " +
@@ -1431,10 +1431,11 @@ export class ProcessService {
       // QA's step (plans 109.02, 110): a user story's test step verifies by
       // exploring the running app and writes nothing in the repository
       // (plan 110.04). A checks step, from a playbook older than that,
-      // completes only with a valid manifest. A merge re-verification runs
-      // the milestone's checks. A wave gate's QA step (plan 110.02) writes
-      // and runs the acceptance suite in the gate's worktree, with the app
-      // started from the recipe.
+      // completes only with a valid manifest. A merge conflict's smoke step
+      // (plan 110.05) starts the app, runs the project's tests, and
+      // spot-checks the story, also writing nothing. A wave gate's QA step
+      // (plan 110.02) writes and runs the acceptance suite in the gate's
+      // worktree, with the app started from the recipe.
       const qaKind = qaStepKind({
         role: seat?.role,
         proofStep: !!phase.proofStep,
@@ -1444,7 +1445,7 @@ export class ProcessService {
         run,
         seat,
         workspace,
-        qaKind !== "explore"
+        qaKind !== "explore" && qaKind !== "smoke"
       )
       if ("error" in scoped) return { error: scoped.error, retryable: false }
       const { seatScope } = scoped
@@ -1463,12 +1464,8 @@ export class ProcessService {
             workspace,
             resuming: resumingWorker,
           })
-        } else if (qaKind === "verify" && workspace) {
-          qaNote = await startVerifyStep({
-            run,
-            phaseRunId: phaseRun.id,
-            resuming: resumingWorker,
-          })
+        } else if (qaKind === "smoke" && workspace) {
+          qaNote = smokeStepKickoff(missionControl!)
         }
       } catch (err) {
         console.warn("[process] could not prepare the QA checks:", err)
@@ -1481,7 +1478,11 @@ export class ProcessService {
         seat && missionControl && workspace && APP_LAUNCH_ROLES.has(seat.role)
           ? recipeForLink(missionControl)
           : null
-      const appLaunch = !!appRecipe?.services.length
+      // Without a recipe, the builder is the one who must save it once the
+      // app runs (app_launch_save); QA has nothing to start yet.
+      const appLaunch =
+        !!appRecipe?.services.length ||
+        (!!appRecipe && seat?.role === "builder")
       // Seat browser (plan 109.04): a seat's work step drives the app in an
       // isolated, local-only background tab owned by this phase run, closed
       // (and its storage cleared) when the phase ends. Not in QA's checks
@@ -1532,7 +1533,9 @@ export class ProcessService {
                 ? [commsContextSection(feature, seatTurn)]
                 : []),
               ...(seatScope ? [seatScope.contextSection] : []),
-              ...(appLaunch ? [appLaunchContextSection(appRecipe!)] : []),
+              ...(appLaunch
+                ? [appLaunchContextSection(appRecipe!, seat?.role)]
+                : []),
               ...(seatBrowser ? [seatBrowserContextSection()] : []),
             ],
             missionControlSeat: seatTurn ?? undefined,

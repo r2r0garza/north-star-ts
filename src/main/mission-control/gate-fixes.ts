@@ -1,4 +1,5 @@
 import * as features from "../db/repositories/features"
+import { recordEvent } from "../db/repositories/mc-events"
 import * as proposalsRepo from "../db/repositories/proposals"
 import * as waveGates from "../db/repositories/wave-gates"
 import { getWorkspace } from "../db/repositories/workspaces"
@@ -525,6 +526,14 @@ export function resolveGateEscalation(input: {
           "escalated",
         ])
   if (!saved) throw new Error("That gate changed while you decided. Try again.")
+  // Health's proof-polishing count for the story starts over (plan 110.05).
+  recordEvent({
+    featureId: milestone.featureId,
+    type: "user_decision",
+    milestoneId: milestone.id,
+    userStoryId: root.id,
+    refId: `${gate.id}:${escalation.id}`,
+  })
   return {
     gate: saved,
     pause:

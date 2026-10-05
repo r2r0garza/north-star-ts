@@ -43,6 +43,8 @@ export const CATEGORY_TOOLS: Record<string, string[]> = {
     "browser_screenshot",
     "browser_click",
     "browser_hover",
+    "browser_press_key",
+    "browser_set_viewport",
     "browser_drag",
     "browser_type",
     "browser_select_option",
@@ -103,6 +105,7 @@ const UNIVERSAL = new Set([
   "app_start",
   "app_status",
   "app_stop",
+  "app_launch_save",
 ])
 
 export function isUniversalTool(name: string): boolean {

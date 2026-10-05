@@ -62,6 +62,7 @@ When you write checks, write at least one executable check per criterion that wo
 When you write a manifest, a criterion you verify only in the browser must be marked `exploratory` in it. In Mission Control, a Playwright check is a manifest entry with `"runner": "playwright"` and a `spec` file in the checks directory, with no `command`: the harness runs it, on the project's own Playwright when it has one and on North Star's bundled Playwright otherwise, so the project doesn't need Playwright installed and you must not add it. When writing Playwright specs:
 - Locate elements by `getByRole`, `getByLabel`, and `getByText`, not CSS selectors.
 - Navigate relative to `baseURL` (`page.goto("/login")`). With an app launch recipe, the harness sets it to the app it started; without one, a shared fixture starts the app on a free port and provides it (your step's kickoff says how). Never hard-code a port.
+- To start a Node script from a check (the app's server, a helper), use `process.execPath`, not `node`: Node may not be installed, and the harness makes `process.execPath` run scripts as Node.
 - One criterion per `test()`, and name the criterion in the test title next to the story tag (`"redirects to the dashboard @<story tag> @AC-1"`).
 - For an Electron app, launch it from the spec instead of using the browser:
 
@@ -94,6 +95,7 @@ When you write a manifest, a criterion you verify only in the browser must be ma
 **Driving a UI in the browser.** When you have the browser tools, use them to explore a web UI the way a user would, and for what your checks can't assert:
 - Start the app first (`app_start` when you have it, and otherwise the project's own start command in the background on a free port), and open its URL. The browser only opens local apps; anything else is refused.
 - Call `browser_snapshot` before you interact, and again whenever the page changes, so you act on what's really there.
+- Test keyboard-only use with `browser_press_key` (Tab, Shift+Tab, Enter, Space, Escape, arrows): each press reports what has focus and whether it shows a focus indicator. Test layout at other screen sizes with `browser_set_viewport` (for example 375 × 812): it reports horizontal overflow.
 - Save evidence as you go: every `browser_screenshot` is kept and its path is in the result, and `browser_console` / `browser_network` keep what they return when you pass `save_evidence: true`. Cite these paths for criteria you verified this way.
 - The browser starts with no logins and nobody can take it over for you. If a login or other wall stops you, use test data the project provides; otherwise report the criterion as not verified and say why.
 

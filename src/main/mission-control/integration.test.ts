@@ -42,10 +42,12 @@ const loopCalls: LoopCall[] = []
 const builds = new Map<string, Record<string, string>>()
 // What the integrator writes into the conflicted files.
 let resolution: Record<string, string> | null = null
+// The merge smoke step's verdict (plan 110.05).
+let smokeFails = false
 // The wave gate's QA turn (plan 110.02): every batch criterion passes,
 // unless a test scripts it.
 type GateTurn = (input: {
-  processQaChecks?: "author" | "explore" | "verify" | "gate"
+  processQaChecks?: "author" | "explore" | "smoke" | "gate"
   processRunId?: string
   processPhaseRunId?: string
   workspace?: string
@@ -63,7 +65,7 @@ vi.mock("../agent", () => ({
     processProofStep?: boolean
     processRunId?: string
     processPhaseRunId?: string
-    processQaChecks?: "author" | "explore" | "verify" | "gate"
+    processQaChecks?: "author" | "explore" | "smoke" | "gate"
   }) => {
     // QA's checks step (a playbook from before plan 110.04) needs a valid
     // manifest to complete.
@@ -90,14 +92,20 @@ vi.mock("../agent", () => ({
         writeFileSync(path.join(input.workspace, file), text)
     }
     if (input.processProofStep) {
+      const fails = smokeFails && input.processQaChecks === "smoke"
       await recordUserStoryProof({
         processRunId: input.processRunId!,
         processPhaseRunId: input.processPhaseRunId!,
-        workspace: input.workspace,
         args: proveInApp(input.processPhaseRunId!, {
-          verdict: "accepted",
+          verdict: fails ? "rejected" : "accepted",
           criteria: [
-            { id: "AC-1", status: "met", evidence: "Checked the file." },
+            fails
+              ? {
+                  id: "AC-1",
+                  status: "not_met",
+                  evidence: "The page shows the wrong copy.",
+                }
+              : { id: "AC-1", status: "met", evidence: "Checked the file." },
           ],
         }),
       })
@@ -141,6 +149,7 @@ import * as rigs from "../db/repositories/rigs"
 import * as features from "../db/repositories/features"
 import * as mergeQueue from "../db/repositories/merge-queue"
 import * as playbooks from "../db/repositories/playbooks"
+import { listEvents } from "../db/repositories/mc-events"
 import {
   listWorkspaces,
   updateWorkspace,
@@ -330,6 +339,7 @@ beforeEach(() => {
   loopCalls.length = 0
   builds.clear()
   resolution = null
+  smokeFails = false
   gateTurn = passGate
   notices.length = 0
 })
@@ -875,6 +885,116 @@ describe.skipIf(!sqliteLoads)("milestone integration", () => {
     expect((await listWorktrees(root)).length).toBe(1)
   })
 
+  // Plan 110.05: the resolution's proof step is a smoke step. When it
+  // rejects, the resolution is kept and the user decides.
+  async function smokeFailure() {
+    setup()
+    smokeFails = true
+    const root = repo()
+    const { feature, milestone, userStory } = featureIn(root, ["a", "b"])
+    builds.set("a", { "shared.txt": "one\nTWO from a\nthree\n" })
+    builds.set("b", { "shared.txt": "one\nTWO from b\nthree\n" })
+    resolution = { "shared.txt": "one\nTWO from a and b\nthree\n" }
+    const a = await runner.startUserStory(userStory("a").id)
+    const b = await runner.startUserStory(userStory("b").id)
+    await drive(a.processRunId!)
+    await drive(b.processRunId!)
+    await settleAll()
+    const entry = mergeQueue.listMergeEntries({
+      userStoryId: userStory("b").id,
+    })[0]
+    return { root, feature, milestone, story: userStory("b"), entry }
+  }
+
+  it("keeps the resolution when the smoke step fails, and merges it accepted as is", async () => {
+    const { root, feature, milestone, story, entry } = await smokeFailure()
+    const smoke = loopCalls.find((c) =>
+      c.userMessage.includes("Smoke-testing the merged result")
+    )!
+    expect(smoke.userMessage).toContain("`shared.txt`")
+    expect(entry).toMatchObject({
+      status: "conflict",
+      escalated: true,
+      smoke: {
+        criteria: [{ id: "AC-1", text: "The file exists", status: "not_met" }],
+        decision: null,
+      },
+    })
+    expect(entry.note).toMatch(/smoke step found AC-1 not holding/)
+    expect(existsSync(entry.resolutionWorktree!)).toBe(true)
+    // A boot sweep keeps it.
+    await integration.reconcile()
+    expect(existsSync(entry.resolutionWorktree!)).toBe(true)
+
+    const outcome = await integration.resolveSmokeFailure({
+      entryId: entry.id,
+      action: "accept",
+      note: "the copy is the gate's job",
+    })
+    expect(outcome.pause).toBeNull()
+    await integration.idle()
+    expect(mergeQueue.getMergeEntry(entry.id)).toMatchObject({
+      status: "merged",
+      smoke: { decision: { action: "accept", by: "user" } },
+    })
+    expect(features.getUserStory(story.id)!.status).toBe("done")
+    const branch = features.getMilestone(milestone.id)!.integrationBranch!
+    expect(git(root, "show", `${branch}:shared.txt`)).toContain("a and b")
+    expect(git(root, "log", "-1", "--format=%B", branch)).toContain(
+      "Merged as is over AC-1 (smoke step decided by user: the copy is the gate's job)."
+    )
+    expect(existsSync(entry.resolutionWorktree!)).toBe(false)
+    expect(
+      listEvents(feature.id).filter(
+        (e) => e.type === "user_decision" && e.userStoryId === story.id
+      )
+    ).toHaveLength(1)
+    await expect(
+      integration.resolveSmokeFailure({ entryId: entry.id, action: "drop" })
+    ).rejects.toThrow(/isn't waiting on a smoke step decision/)
+  })
+
+  it("drops the failing criteria from the story, then merges the resolution", async () => {
+    const { root, milestone, story, entry } = await smokeFailure()
+    await integration.resolveSmokeFailure({ entryId: entry.id, action: "drop" })
+    await integration.idle()
+    expect(mergeQueue.getMergeEntry(entry.id)!.status).toBe("merged")
+    expect(features.getUserStory(story.id)!.spec.acceptance).toEqual([])
+    const branch = features.getMilestone(milestone.id)!.integrationBranch!
+    expect(git(root, "log", "-1", "--format=%B", branch)).toContain(
+      "Merged after dropping AC-1"
+    )
+  })
+
+  it("lets the user fix it on the story branch, and retries the merge on resume", async () => {
+    const { feature, story, entry } = await smokeFailure()
+    const outcome = await integration.resolveSmokeFailure({
+      entryId: entry.id,
+      action: "user_fix",
+    })
+    expect(outcome.pause).toMatch(/Commit the fix on `mc\//)
+    expect(outcome.pause).toMatch(/resume: the merge into .* is retried/)
+    const waiting = mergeQueue.getMergeEntry(entry.id)!
+    expect(waiting).toMatchObject({
+      status: "conflict",
+      escalated: true,
+      resolutionWorktree: null,
+      smoke: { decision: { action: "user_fix" } },
+    })
+    expect(existsSync(entry.resolutionWorktree!)).toBe(false)
+
+    // The user's fix: the story takes the integration side of the line.
+    const worktree = features.getUserStory(story.id)!.worktreePath!
+    writeFileSync(path.join(worktree, "shared.txt"), "one\nTWO from a\nthree\n")
+    git(worktree, "commit", "-am", "fix by the user")
+    integration.onFeatureResumed(feature.id)
+    await vi.waitFor(async () => {
+      await integration.idle()
+      expect(mergeQueue.getMergeEntry(entry.id)!.status).toBe("merged")
+    })
+    expect(mergeQueue.getMergeEntry(entry.id)!.smoke).toBeNull()
+  })
+
   it("escalates a conflict with no way to resolve it and leaves the repository clean", async () => {
     setup({ resolve: false })
     const root = repo()
@@ -1109,6 +1229,34 @@ describe.skipIf(!sqliteLoads)("milestone integration", () => {
     expect(done.status).toBe("completed")
     // User story and integration branches are cleaned up once reachable from main.
     expect(git(root, "branch", "--list", "mc/*")).toBe("")
+  })
+
+  it("deletes a done story's earlier attempt branches when the milestone lands", async () => {
+    setup()
+    const root = repo()
+    const { milestone, userStory } = featureIn(root, ["a"])
+    features.setMilestoneMergePolicy(milestone.id, "local_merge")
+    builds.set("a", { "a.txt": "a\n" })
+    const a = await runner.startUserStory(userStory("a").id)
+    await drive(a.processRunId!)
+    await integration.idle()
+    const prefix = features
+      .getMilestone(milestone.id)!
+      .integrationBranch!.replace(/\/integration$/, "/userStories/")
+    // A failed earlier attempt of "a" with work of its own, and branches of a
+    // story that never finished: one with unmerged work, one without.
+    const orphan = git(root, "commit-tree", "main^{tree}", "-p", "main", "-m", "lost work")
+    git(root, "branch", `${prefix}a-7`, orphan)
+    git(root, "branch", `${prefix}ghost-1`, orphan)
+    git(root, "branch", `${prefix}ghost-2`, "main")
+    const status = await integration.status(milestone.id)
+    await integration.land(milestone.id, {
+      baseOid: status.summary!.baseOid!,
+      headOid: status.summary!.headOid!,
+    })
+    expect(git(root, "branch", "--list", "--format=%(refname:short)", "mc/*")).toBe(
+      `${prefix}ghost-1`
+    )
   })
 
   it("reaches review when the last unfinished user story is deleted", async () => {

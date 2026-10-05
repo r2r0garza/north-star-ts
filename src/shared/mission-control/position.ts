@@ -109,6 +109,9 @@ export interface PositionInput {
     milestoneId: string
     status: string
     escalated: boolean
+    // The criteria a failed smoke step is waiting on the user for (plan
+    // 110.05); absent or empty otherwise.
+    smokeFailed?: string[]
   }>
   proposals: Array<{
     id: string
@@ -239,7 +242,9 @@ export interface Position {
   }
   // What Autopilot would start now, in order, and why the rest wait.
   dispatch: Array<{ userStory: string; retry: boolean }>
-  deferred: Array<{ userStory: string; reason: string }>
+  // `gate`: held by the wave acceptance gate's barrier (plan 110), which the
+  // lead's map tools respect too.
+  deferred: Array<{ userStory: string; reason: string; gate?: boolean }>
   // Mechanical steps other than user stories, in order.
   maneuver: Maneuver
   budgets: BudgetMeter[]
@@ -748,7 +753,9 @@ export function computePosition(input: PositionInput): Position {
         kind: "merge_conflict",
         owner: "user",
         target: { kind: "user_story", id: entry.userStoryId },
-        summary: `User story ${keyOf(entry.userStoryId)}'s merge conflict needs you: retry, run the integrator, or abandon it.`,
+        summary: entry.smokeFailed?.length
+          ? `User story ${keyOf(entry.userStoryId)}'s merge failed its smoke step (${entry.smokeFailed.join(", ")}): accept it as is, fix it yourself, or drop the criteria.`
+          : `User story ${keyOf(entry.userStoryId)}'s merge conflict needs you: retry, run the integrator, or abandon it.`,
       })
 
   const allSettled =
@@ -1045,6 +1052,7 @@ export function computePosition(input: PositionInput): Position {
         reason: gateOpen
           ? "waiting for the acceptance gate's fix stories"
           : "waiting for the acceptance gate",
+        gate: true,
       }))
     const gateRunning =
       latestGate?.status === "running" ||

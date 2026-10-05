@@ -38,7 +38,7 @@ let resolution: Record<string, string> | null = null
 // The wave gate's QA turn (plan 110.02): every batch criterion passes,
 // unless a test scripts it.
 type GateTurn = (input: {
-  processQaChecks?: "author" | "explore" | "verify" | "gate"
+  processQaChecks?: "author" | "explore" | "smoke" | "gate"
   processRunId?: string
   processPhaseRunId?: string
   workspace?: string
@@ -60,7 +60,7 @@ vi.mock("../agent", () => ({
     processProofStep?: boolean
     processRunId?: string
     processPhaseRunId?: string
-    processQaChecks?: "author" | "explore" | "verify" | "gate"
+    processQaChecks?: "author" | "explore" | "smoke" | "gate"
     missionControlSeat?: import("./seat-turns").SeatTurnIdentity
   }) => {
     // QA's checks step (plan 109.02) needs a valid manifest to complete.
@@ -104,7 +104,6 @@ vi.mock("../agent", () => ({
       await recordUserStoryProof({
         processRunId: input.processRunId!,
         processPhaseRunId: input.processPhaseRunId!,
-        workspace: input.workspace,
         args: proveInApp(input.processPhaseRunId!, {
           verdict: "accepted",
           criteria: [
@@ -347,12 +346,13 @@ const LEAD: Omit<SeatTurnIdentity, "featureId"> = {
 
 function draftFeature(
   workspace: string,
-  leadRights?: Parameters<typeof rig>[0]
+  leadRights?: Parameters<typeof rig>[0],
+  intent = "Customers can be invoiced."
 ) {
   const graph = features.createFeature({
     key: "billing",
     name: "Billing",
-    intent: "Customers can be invoiced.",
+    intent,
     definitionOfDone: "Invoices ship.",
     rigId: rig(leadRights).id,
     workspaceId: upsertWorkspace(workspace).id,
@@ -1012,10 +1012,10 @@ describe.skipIf(!sqliteLoads)("Navigator autopilot", () => {
 })
 
 describe.skipIf(!sqliteLoads)("Navigator copilot and map tools", () => {
-  async function copilot(leadRights?: Parameters<typeof rig>[0]) {
+  async function copilot(leadRights?: Parameters<typeof rig>[0], intent?: string) {
     setup()
     const root = repo()
-    const id = draftFeature(root, leadRights)
+    const id = draftFeature(root, leadRights, intent)
     const milestone = features.getFeatureGraph(id)!.milestones[0]
     for (const key of ["a", "b"])
       features.createUserStory({
@@ -1122,6 +1122,54 @@ describe.skipIf(!sqliteLoads)("Navigator copilot and map tools", () => {
       "Ready to start now (assign_user_story, critical path first): b"
     )
     expect(b().status).not.toBe("running")
+  })
+
+  it("keeps the lead's map tools behind the gate's barrier (plan 110)", async () => {
+    setup()
+    const root = repo()
+    const id = draftFeature(root)
+    const milestone = features.getFeatureGraph(id)!.milestones[0]
+    for (const key of ["a", "b"])
+      features.createUserStory({
+        milestoneId: milestone.id,
+        key,
+        title: key.toUpperCase(),
+        spec: { acceptance: [`${key} works`], touchHints: [`${key}/**`] },
+      })
+    const playbook = createDefaultPlaybook("milestone")
+    playbooks.removeHook(playbook.id, "before_user_stories")
+    features.updateMilestone(milestone.id, { playbookId: playbook.id })
+    builds.set("a", { "a.txt": "a\n" })
+    builds.set("b", { "b.txt": "b\n" })
+    await navigator.startDrive(id, { mode: "copilot" })
+    await navigator.idle()
+    const turn = { ...LEAD, featureId: id }
+    // While a's gate runs, the lead tries to start b.
+    let duringGate: unknown = null
+    gateTurn = async (input) => {
+      if (input.processQaChecks === "gate" && !duringGate)
+        duringGate = await getMapTools()!.assignUserStory(turn, {
+          userStory: "b",
+        })
+      return passGate(input)
+    }
+    try {
+      expect(
+        await getMapTools()!.assignUserStory(turn, { userStory: "a" })
+      ).toMatchObject({ ok: true })
+      await settle()
+    } finally {
+      gateTurn = passGate
+    }
+    expect(duringGate).toMatchObject({
+      ok: false,
+      code: "gate_barrier",
+      message: expect.stringMatching(/waiting for the acceptance gate/),
+    })
+    // Once the gate passed, b is the lead's to start again.
+    expect(
+      await getMapTools()!.assignUserStory(turn, { userStory: "b" })
+    ).toMatchObject({ ok: true })
   })
 
   it("enforces decision rights: a lead without revise_plan can only propose", async () => {
@@ -1403,7 +1451,14 @@ describe.skipIf(!sqliteLoads)("Navigator copilot and map tools", () => {
     )
     expect(second).toMatchObject({ ok: false, code: "feature_rate_limit" })
     expect(
-      bus.escalate({ ...turn, profile: "work" }, { reason: "Blocked" })
+      bus.escalate(
+        { ...turn, profile: "work" },
+        {
+          reason: "Blocked",
+          question: "Raise the budget?",
+          options: ["Yes", "No"],
+        }
+      )
     ).toMatchObject({
       ok: true,
     })
@@ -1463,7 +1518,11 @@ describe.skipIf(!sqliteLoads)("Navigator copilot and map tools", () => {
     // No lead DoD right: the user gets the judgment, with an action for it.
     const escalation = bus.escalate(
       { ...turn, profile: "work" },
-      { reason: "Need a call on scope" }
+      {
+        reason: "Need a call on scope",
+        question: "Keep the scope small?",
+        options: ["Keep it small", "Include the extras"],
+      }
     )
     expect(escalation).toMatchObject({
       ok: true,
@@ -1490,6 +1549,94 @@ describe.skipIf(!sqliteLoads)("Navigator copilot and map tools", () => {
     await expect(
       judgeMilestoneDone(milestone.id, "done", async () => {})
     ).rejects.toThrow(/unfinished user stories/)
+  })
+
+  // The intent is the source of truth (Quick List lost four of its six
+  // behaviours and doubled its story limit between the intent and the plan).
+  const LISTED_INTENT = "Invoices:\n1. Create invoices\n2. Send invoices\n\nKeep it to at most 2 user stories."
+
+  it("refuses a plan that leaves an intent requirement uncovered or exceeds its limits", async () => {
+    const { turn } = await copilot(undefined, LISTED_INTENT)
+    const tools = getMapTools()!
+    const milestone = (stories: Array<{ key: string; title: string; acceptance: string[] }>) => [
+      { key: "m", name: "M", outcome: "Invoices.", user_stories: stories },
+    ]
+    const create = { key: "create", title: "Create", acceptance: ["created"] }
+    const send = { key: "send", title: "Send", acceptance: ["sent"] }
+    const uncovered = tools.proposePlan(turn, {
+      milestones: milestone([create, send]),
+      coverage: [{ requirement: "R1", user_story: "create", criteria: [1] }],
+    })
+    expect(uncovered).toMatchObject({ ok: false, code: "intent_not_covered" })
+    expect(!uncovered.ok && uncovered.message).toContain("R2 (Send invoices)")
+    const tooMany = tools.proposePlan(turn, {
+      milestones: milestone([create, send, { key: "x", title: "X", acceptance: ["x"] }]),
+    })
+    expect(tooMany).toMatchObject({ ok: false, code: "exceeds_intent_limits" })
+    expect(
+      tools.proposePlan(turn, {
+        milestones: milestone([create, send]),
+        coverage: [
+          { requirement: "R1", user_story: "create", criteria: [1] },
+          { requirement: "R2", user_story: "send", criteria: [1] },
+        ],
+      })
+    ).toMatchObject({ ok: true, data: { status: "pending" } })
+  })
+
+  it("turns a revision past the intent's story limit into a proposal", async () => {
+    const { id, turn } = await copilot(undefined, LISTED_INTENT)
+    const revised = getMapTools()!.revisePlan(turn, {
+      changes: [{ op: "add_user_story", userStory: { key: "c", title: "C", acceptance: ["c"] } }],
+      reason: "More",
+    })
+    expect(revised).toMatchObject({ ok: true, data: { status: "pending" } })
+    expect(revised.ok && revised.message).toContain("at most 2 user stories")
+    expect(userStoriesOf(id).some((s) => s.key === "c")).toBe(false)
+  })
+
+  it("with auto-apply on, leaves a planning-review addition past the intent's limit for the user", async () => {
+    setup()
+    const root = repo()
+    const id = draftFeature(root, undefined, "Keep it to at most 3 user stories.")
+    plannedMilestones = [PLAN[0]]
+    reviewAddsStory = { key: "audit", title: "Audit log", acceptance: ["audited"] }
+    await navigator.startDrive(id, { mode: "autopilot", autoApplyPlan: true })
+    await settle()
+    expect(proposals.listProposals(id, "applied").map((p) => p.kind)).toEqual(["plan"])
+    expect(proposals.listProposals(id, "pending").map((p) => p.kind)).toEqual(["user_story"])
+    expect(userStoriesOf(id).some((s) => s.key === "audit")).toBe(false)
+  })
+
+  it("judges a milestone against every requirement from the intent", async () => {
+    const { milestone, turn } = await copilot(undefined, LISTED_INTENT)
+    const tools = getMapTools()!
+    for (const key of ["a", "b"]) await tools.assignUserStory(turn, { userStory: key })
+    await settle()
+    expect(features.getMilestone(milestone.id)!.status).toBe("review")
+    const missing = await tools.completeMilestone(turn, { milestone: milestone.key, summary: "Done." })
+    expect(missing).toMatchObject({ ok: false, code: "intent_not_met" })
+    expect(!missing.ok && missing.message).toContain("- R2: Send invoices")
+    const unmet = await tools.completeMilestone(turn, {
+      milestone: milestone.key,
+      summary: "Done.",
+      requirements: [
+        { requirement: "R1", status: "met", evidence: "a AC-1" },
+        { requirement: "R2", status: "not_met" },
+      ],
+    })
+    expect(unmet).toMatchObject({ ok: false, code: "intent_not_met" })
+    expect(features.getMilestone(milestone.id)!.dodReview).toBeNull()
+    const judged = await tools.completeMilestone(turn, {
+      milestone: milestone.key,
+      summary: "Done.",
+      requirements: [
+        { requirement: "R1", status: "met", evidence: "a AC-1" },
+        { requirement: "R2", status: "met", evidence: "b AC-1" },
+      ],
+    })
+    expect(judged).toMatchObject({ ok: true })
+    expect(features.getMilestone(milestone.id)!.dodReview?.intentCheck).toHaveLength(2)
   })
 
   it("stops agent revisions at the budget: further changes become proposals", async () => {

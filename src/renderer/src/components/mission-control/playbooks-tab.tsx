@@ -62,7 +62,7 @@ const ALTITUDES: Array<{
       {
         hook: "after_each_user_story",
         label: "After each user story",
-        note: "Reserved for merges once worktrees land.",
+        note: "Runs when a merge conflicts: the integrator resolves it, then QA smoke-tests the merged result.",
       },
       {
         hook: "after_each_wave",

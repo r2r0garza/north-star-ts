@@ -140,6 +140,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureWorkspaceAppLaunchColumn,
   ensureWaveGates,
   ensureUserStoryFixColumns,
+  ensureMergeSmokeColumn,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -386,6 +387,13 @@ function ensureUserStoryFixColumns(db: Database.Database): void {
   if (!tableExists(db, "user_stories")) return
   addColumnIfMissing(db, "user_stories", "gate_id", "TEXT")
   addColumnIfMissing(db, "user_stories", "fixes", "TEXT")
+}
+
+// v70 (plan 110.05): a merge conflict's smoke step that rejected the merged
+// result, and the user's decision on it (JSON MergeSmokeFailure).
+function ensureMergeSmokeColumn(db: Database.Database): void {
+  if (!tableExists(db, "merge_queue")) return
+  addColumnIfMissing(db, "merge_queue", "smoke", "TEXT")
 }
 
 // v58: a workspace's generated files and the command that rebuilds them
@@ -644,6 +652,7 @@ export function runMigrations(
       ensureWorkspaceAppLaunchColumn(db)
       ensureWaveGates(db)
       ensureUserStoryFixColumns(db)
+      ensureMergeSmokeColumn(db)
       ensureConversationNotes(db)
       ensureSeatMemory(db)
       ensureHealth(db)

@@ -29,7 +29,7 @@ import { SeatComms, type CommsResult } from "../comms"
 import { Navigator } from "../navigator"
 import { recordRefocusDelivered, signalDrift } from "../refocus"
 import type { SeatTurnIdentity } from "../seat-turns"
-import { HealthMonitor } from "./monitor"
+import { HealthMonitor, pendingDecisionAnchors } from "./monitor"
 
 const MIN = 60 * 1000
 const BUILDER = "builder@implementation"
@@ -490,6 +490,55 @@ describe.skipIf(!sqliteLoads)(
       tick(31)
       monitor.evaluate(other.id)
       expect(features.getFeature(other.id)!.status).toBe("active")
+    })
+
+    it("doesn't pause over a story already waiting on the user's decision (plan 110.05)", () => {
+      const { feature, userStory } = orchestrated()
+      const entry = mergeQueue.enqueueMerge({
+        milestoneId: userStory.milestoneId,
+        userStoryId: userStory.id,
+        playbookRunId: null,
+        proofAcceptedAt: Date.now(),
+      })
+      mergeQueue.updateMergeEntry(entry.id, {
+        status: "conflict",
+        escalated: true,
+      })
+      expect(pendingDecisionAnchors(feature.id)).toEqual(
+        new Set([userStory.id, userStory.milestoneId])
+      )
+      for (let i = 0; i < 3; i++) {
+        tick()
+        events.recordEvent({
+          featureId: feature.id,
+          type: "proof_rejected",
+          userStoryId: userStory.id,
+          seatAddress: QA,
+          refId: `run-1:${i}`,
+        })
+      }
+      monitor.evaluate(feature.id)
+      expect(
+        monitor
+          .report(feature.id)
+          .signals.find((s) => s.detector === "proof_polishing")
+      ).toMatchObject({ severity: "warn", anchorId: userStory.id })
+      tick(31)
+      monitor.evaluate(feature.id)
+      expect(features.getFeature(feature.id)!.status).toBe("active")
+
+      // The user decides: the count starts over and the signal clears.
+      events.recordEvent({
+        featureId: feature.id,
+        type: "user_decision",
+        userStoryId: userStory.id,
+      })
+      monitor.evaluate(feature.id)
+      expect(
+        monitor
+          .report(feature.id)
+          .signals.find((s) => s.detector === "proof_polishing")
+      ).toMatchObject({ status: "resolved" })
     })
 
     it("raises no warnings on a normal healthy Autopilot run", () => {

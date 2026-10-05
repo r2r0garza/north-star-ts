@@ -218,6 +218,15 @@ export function AppLaunchEditor({
                     <Sparkles className="size-3" /> Suggested
                   </Badge>
                 )}
+                {draft.source === "seat" && (
+                  <Badge
+                    variant="secondary"
+                    className="gap-1"
+                    title="Saved by the builder that made the app runnable"
+                  >
+                    <Sparkles className="size-3" /> From the builder
+                  </Badge>
+                )}
                 <Button
                   size="icon-sm"
                   variant="ghost"

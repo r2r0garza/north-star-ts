@@ -24,12 +24,13 @@ import type {
   UserStory,
 } from "../db/types"
 import type { Finding } from "../../shared/mission-control/workspace-analysis"
+import { isProvisional } from "../../shared/mission-control/app-launch"
+import { ownerAppFailed } from "./app-launch"
 import { ensureDefaultPlaybook } from "./playbook-defaults"
+import { hasWaveGate } from "./wave-gate"
 import { concludeWaveGate, failWaveGateForRun } from "./wave-gate"
 import { QA_ROLE } from "./qa-scope"
-import { readStoryManifest, storyChecks } from "./qa-checks"
 import {
-  checkOutcomes,
   decideProof,
   DEFAULT_MAX_PROOF_REVISIONS,
   parseProofSubmission,
@@ -100,6 +101,9 @@ export interface UserStoryRunnerDeps {
     ref: string
     record?: boolean
   }): Promise<Finding | null>
+  // Save the recorded app launch finding's recipe to the workspace. Without
+  // it, a detected recipe waits for the user to apply it.
+  applyAppLaunch?(feature: Feature): Promise<void>
 }
 
 // A story start refused because QA would need the running app and no app
@@ -188,6 +192,14 @@ function needsAppLaunch(feature: Feature): boolean {
     return false
   const workspace = getWorkspace(feature.workspaceId)
   return !!workspace && !workspace.appLaunch.services.length
+}
+
+function hasProvisionalRecipe(feature: Feature): boolean {
+  if (!feature.workspaceId) return false
+  if (!feature.rigSnapshot?.seats.some((seat) => seat.role === QA_ROLE))
+    return false
+  const workspace = getWorkspace(feature.workspaceId)
+  return !!workspace && isProvisional(workspace.appLaunch)
 }
 
 export function featureWorkspacePath(feature: Feature): string {
@@ -628,9 +640,11 @@ export class UserStoryRunner {
   // the running app, which only an app launch recipe can start for it. When
   // the workspace has none but the story's starting point (the milestone's
   // integration branch, where earlier stories landed) has a runnable app,
-  // refuse the start and offer the detected recipe, instead of a QA step that
-  // can't reach the app. Nothing runnable yet (greenfield) starts as before,
-  // and so does a dismissed finding.
+  // save the detected recipe and start: the first story's builder normally
+  // saves one itself (app_launch_save), and a project that already runs gets
+  // one before its first story. Only a recipe that can't be saved refuses the
+  // start, instead of a QA step that can't reach the app. Nothing runnable yet
+  // (greenfield) starts as before, and so does a dismissed finding.
   private async assertAppLaunchReady(
     feature: Feature,
     milestone: Milestone,
@@ -640,11 +654,19 @@ export class UserStoryRunner {
     const finding = await this.appLaunchFindingFor(feature, milestone, true)
     if (finding?.status !== "open" || finding.fix.kind !== "apply-settings")
       return
+    if (this.deps.applyAppLaunch) {
+      try {
+        await this.deps.applyAppLaunch(feature)
+      } catch (error) {
+        console.warn("[user-story] couldn't save the detected app launch recipe:", error)
+      }
+      if (!needsAppLaunch(feature)) return
+    }
     const commands = (finding.fix.patch.appLaunch?.add ?? [])
       .map((service) => `\`${service.command}\``)
       .join(" and ")
     throw new Error(
-      `${APP_LAUNCH_REQUIRED}: User story ${userStory.key} is verified by QA in the running app, but this workspace has no app launch recipe, so nothing can start the app for it.${commands ? ` The app looks like it runs with ${commands}.` : ""} Apply "${finding.title}" in the workspace checklist (or add a recipe in Advanced settings → App launch), or dismiss that finding to run without one.`
+      `${APP_LAUNCH_REQUIRED}: User story ${userStory.key} is verified by QA in the running app, but this workspace has no app launch recipe, so nothing can start the app for it.${commands ? ` The app looks like it runs with ${commands}.` : ""} Mission Control couldn't save that recipe. Apply "${finding.title}" under Workspace setup → Good to know (or add a recipe in Advanced settings → App launch), then resume.`
     )
   }
 
@@ -669,8 +691,12 @@ export class UserStoryRunner {
   // Stories started beside it would be verified by QA against an app that
   // doesn't exist in their worktrees. Once it lands, the app launch
   // preflight offers the recipe it made detectable.
+  // A provisional recipe (planned from the intent) is the same case: the app
+  // it starts doesn't exist until the first story builds it.
   async firstStoryAlone(feature: Feature): Promise<boolean> {
-    if (!this.deps.appLaunchFinding || !needsAppLaunch(feature)) return false
+    const provisional = hasProvisionalRecipe(feature)
+    if (!provisional && (!this.deps.appLaunchFinding || !needsAppLaunch(feature)))
+      return false
     const milestones = features.listMilestones(feature.id)
     if (
       milestones.some((m) =>
@@ -684,6 +710,7 @@ export class UserStoryRunner {
       (m) => !["completed", "cancelled"].includes(m.status)
     )
     if (!milestone) return false
+    if (provisional) return true
     return (await this.appLaunchFindingFor(feature, milestone, false)) === null
   }
 
@@ -786,7 +813,7 @@ export class UserStoryRunner {
 
     const proof = playbookRun.proof
     // A conflict resolution (106.5): finish the run, then let the integration
-    // service commit the merge (accepted re-verification) or escalate.
+    // service commit the merge (an accepted smoke step) or escalate.
     if (playbookRun.hook === "after_each_user_story") {
       const status = run.status as "completed" | "failed" | "cancelled"
       this.applyOutcome(
@@ -799,8 +826,8 @@ export class UserStoryRunner {
           : proof?.verdict === "accepted"
             ? null
             : proof
-              ? "The re-verification proof was rejected."
-              : "The resolution finished without re-verifying the user story."
+              ? "The merge's smoke step found criteria that don't hold."
+              : "The resolution finished without smoke-testing the merged result."
       )
       this.deps.integration?.onResolutionSettled(playbookRun.id)
       return
@@ -1020,55 +1047,62 @@ export type RecordProofResult =
   | { ok: false; code: string; message: string }
 
 // What the gate needs to judge how each criterion was verified (plan 109.05):
-// the story's manifest from the worktree, the check results the harness
-// recorded on this step, and which cited artifacts are saved evidence.
+// which cited artifacts are saved evidence. A user story's test step and a
+// merge's smoke step both verify by exploration (plans 110.04, 110.05): a
+// manifest, if a playbook from before 110.04 wrote one, is the wave gate's to
+// run, not this proof's.
 async function proofVerification(input: {
-  link: MissionControlRunLink
   phaseRun: ProcessPhaseRun
-  workspace: string
   submission: ProofSubmission
 }): Promise<ProofVerification> {
   const evidence = await savedEvidence(
     input.phaseRun.id,
     input.submission.criteria.flatMap((c) => c.artifacts ?? [])
   )
-  // A user story's own test step verifies by exploration (plan 110.04): its
-  // manifest, if a playbook from before 110.04 wrote one, is the wave gate's
-  // to run, not this proof's. A merge re-verification runs the checks.
-  const story = storyChecks(input.link)
-  if (!story?.reverify)
-    return { coverage: null, checks: {}, evidence, exploratory: true }
-  const read = await readStoryManifest(input.workspace, story)
-  const coverage: ProofVerification["coverage"] = read.ok
-    ? Object.fromEntries(
-        Object.entries(read.manifest.criteria).map(([id, checks]) => [
-          id.toUpperCase(),
-          {
-            automated: checks
-              .filter((c) => c.kind === "automated")
-              .map((c) => c.id),
-            exploratory: checks
-              .filter((c) => c.kind === "exploratory")
-              .map((c) => c.id),
-          },
-        ])
-      )
+  return { coverage: null, checks: {}, evidence, exploratory: true }
+}
+
+// Why a proof step's rework flag can't go back to the build, or null (plan
+// 110). When the proof it recorded is rejected only for criteria it couldn't
+// exercise (not verifiable or deferred), nothing in the build is wrong: the
+// builder can't fix the verifier's tools, and re-running the build only
+// repeats the rejection.
+export function proofReworkRefusal(
+  processRunId: string,
+  phaseRunId: string
+): string | null {
+  const run = processes.getProcessRun(processRunId)
+  const phaseRun = processes.getPhaseRun(phaseRunId)
+  if (!run || !phaseRun) return null
+  if (!processes.getPhase(phaseRun.phaseId)?.proofStep) return null
+  const link = rootRun(run).missionControl
+  const playbookRun = link?.playbookRunId
+    ? playbooks.getPlaybookRun(link.playbookRunId)
     : null
-  return {
-    coverage,
-    checks: checkOutcomes(
-      input.phaseRun.qaChecks?.results ?? [],
-      story.storyRef
-    ),
-    evidence,
-  }
+  const proof = playbookRun?.proof
+  if (!proof || proof.verdict !== "rejected") return null
+  if (proof.criteria.some((criterion) => criterion.status === "not_met"))
+    return null
+  const unverified = proof.criteria
+    .filter((c) => c.status === "not_verifiable" || c.status === "deferred")
+    .map((c) => c.id)
+  return `Your proof is rejected only because ${unverified.join(", ")} couldn't be exercised with your tools, which is nothing the build can fix. Rework would repeat the same rejection. Verify ${unverified.length === 1 ? "it" : "them"} another way (browser_press_key for keyboard use, browser_set_viewport for layout), defer ${unverified.length === 1 ? "it" : "them"} to the wave gate when the milestone has one, or record not_met with what the app does wrong.`
+}
+
+// Plan 110: a story's own run (not a merge's smoke step) in a milestone whose
+// wave gate will prove what its test step defers.
+function proofMayDefer(
+  link: MissionControlRunLink,
+  userStory: UserStory
+): boolean {
+  if (link.hook !== "run") return false
+  const milestone = features.getMilestone(userStory.milestoneId)
+  return !!milestone && hasWaveGate(milestone)
 }
 
 export async function recordUserStoryProof(input: {
   processRunId: string
   processPhaseRunId: string
-  // The worktree the step works in, where the story's manifest is read.
-  workspace: string
   args: Record<string, unknown>
 }): Promise<RecordProofResult> {
   const run = processes.getProcessRun(input.processRunId)
@@ -1119,12 +1153,7 @@ export async function recordUserStoryProof(input: {
   const submission = parseProofSubmission(input.args, criteria)
   if (typeof submission === "string")
     return { ok: false, code: "bad_args", message: submission }
-  const verification = await proofVerification({
-    link,
-    phaseRun,
-    workspace: input.workspace,
-    submission,
-  })
+  const verification = await proofVerification({ phaseRun, submission })
 
   // Read after the awaits: the run may have moved on meanwhile.
   const playbookRun = playbooks.getPlaybookRun(link.playbookRunId)
@@ -1150,6 +1179,8 @@ export async function recordUserStoryProof(input: {
     playbookRun,
     processRunId: root.id,
     maxProofRevisions: maxProofRevisions(feature),
+    deferrable: proofMayDefer(link, userStory),
+    appFailed: ownerAppFailed(phaseRun.id),
   })
   switch (decision.kind) {
     case "invalid":
@@ -1239,6 +1270,11 @@ function recordProofEvents(
         notMet: recorded.proof.criteria
           .filter((c) => c.status !== "met")
           .map((c) => c.id),
+        // Rejected only for criteria the verifier couldn't exercise (plan
+        // 110): a tooling gap, which health doesn't count as polishing.
+        ...(recorded.proof.criteria.some((c) => c.status === "not_met")
+          ? {}
+          : { unverified: true }),
       },
     })
     return

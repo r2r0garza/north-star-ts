@@ -5,14 +5,17 @@ import {
   ExternalLink,
   GitBranch,
   GitMerge,
+  Hammer,
   Loader2,
   RotateCcw,
+  Trash2,
   Wrench,
   XIcon,
 } from "lucide-react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import {
   Dialog,
   DialogContent,
@@ -29,6 +32,7 @@ import {
 } from "@/components/ui/select"
 import type {
   FeatureGraph,
+  GateEscalationAction,
   MergePolicyMode,
   MergeQueueEntry,
   Milestone,
@@ -67,6 +71,97 @@ function statusVariant(entry: MergeQueueEntry) {
   if (entry.status === "merged") return "secondary" as const
   if (entry.status === "conflict") return "destructive" as const
   return "outline" as const
+}
+
+// A merge whose smoke step failed (plan 110.05): the criteria it didn't find
+// holding, and the same three actions as an acceptance gate escalation.
+function SmokeFailureCard({
+  entry,
+  storyKey,
+  pending,
+  act,
+}: {
+  entry: MergeQueueEntry
+  storyKey: string
+  pending: boolean
+  act: (action: () => Promise<unknown>, success: string) => Promise<void>
+}) {
+  const [note, setNote] = useState("")
+  const smoke = entry.smoke!
+  const ids = smoke.criteria.map((c) => c.id).join(", ") || "the criteria"
+  const decide = (action: GateEscalationAction, success: string) =>
+    act(
+      () =>
+        window.cowork.missionControl.integration.resolveSmokeFailure({
+          entryId: entry.id,
+          action,
+          note: note.trim() || undefined,
+        }),
+      success
+    )
+  return (
+    <div className="space-y-2 rounded-md border border-destructive/50 bg-destructive/5 p-2.5">
+      <div className="text-xs font-medium">The smoke step found these not holding</div>
+      <ul className="space-y-1.5">
+        {smoke.criteria.map((criterion) => (
+          <li key={criterion.id} className="text-xs">
+            <span className="font-medium">{criterion.id}</span>
+            {criterion.text ? ` ${criterion.text}` : ""}
+            <span className="block text-muted-foreground">
+              {criterion.reason ?? criterion.evidence}
+            </span>
+          </li>
+        ))}
+      </ul>
+      <Input
+        value={note}
+        onChange={(event) => setNote(event.target.value)}
+        placeholder="Note (optional): why, or what you'll change"
+        className="h-8 text-xs"
+        disabled={pending}
+      />
+      <div className="flex flex-wrap gap-2">
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={pending}
+          title="Commit the integrator's resolution as it is; the acceptance gate still checks the criteria once the wave merges"
+          onClick={() => void decide("accept", "Merging as is")}
+        >
+          <CheckCircle2 className="size-3.5" /> Accept as is
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={pending}
+          title="Pause the feature while you fix the user story branch; resuming retries the merge"
+          onClick={() =>
+            void decide("user_fix", "Paused. Resume when it's fixed; the merge is retried.")
+          }
+        >
+          <Hammer className="size-3.5" /> I'll fix it
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="text-muted-foreground hover:text-destructive"
+          disabled={pending || !smoke.criteria.length}
+          title="Remove the failing criteria from the user story, then commit the resolution"
+          onClick={() => {
+            if (
+              !window.confirm(
+                `Drop ${ids} from ${storyKey}? The criteria are removed from the user story and the integrator's resolution is committed.`
+              )
+            )
+              return
+            void decide("drop", `Dropped ${ids}; merging`)
+          }}
+        >
+          <Trash2 className="size-3.5" /> Drop the criteria
+        </Button>
+      </div>
+    </div>
+  )
 }
 
 function QueueRow({
@@ -141,6 +236,14 @@ function QueueRow({
           {entry.resolutionAttempts > 0 ? " · resolved by the integrator" : ""}
         </p>
       )}
+      {entry.status === "conflict" && entry.smoke && !entry.smoke.decision && (
+        <SmokeFailureCard
+          entry={entry}
+          storyKey={userStory?.key ?? "this user story"}
+          pending={pending}
+          act={act}
+        />
+      )}
       {entry.status === "conflict" && (
         <div className="flex flex-wrap gap-2 pt-1">
           <Button
@@ -156,7 +259,7 @@ function QueueRow({
             size="sm"
             variant="outline"
             disabled={pending}
-            title="Run the milestone playbook's after-each-user-story hook to resolve and re-verify"
+            title="Run the milestone playbook's after-each-user-story hook to resolve and smoke-test"
             onClick={() => void act(() => api.resolve(entry.id), "Integrator started")}
           >
             <Wrench className="size-3.5" /> Run integrator

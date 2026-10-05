@@ -369,6 +369,25 @@ export const proposePlanTool: Tool = {
             type: "string",
             description: "A short summary of the plan's shape.",
           },
+          coverage: {
+            type: "array",
+            description:
+              "When the feature's intent lists requirements (R1, R2, ...), trace every one to the " +
+              "acceptance criteria that deliver and verify it. A plan missing a requirement is refused.",
+            items: {
+              type: "object",
+              properties: {
+                requirement: { type: "string", description: 'e.g. "R1"' },
+                user_story: { type: "string", description: "The user story's key." },
+                criteria: {
+                  type: "array",
+                  items: { type: "integer" },
+                  description: "1-based acceptance criterion numbers in that story.",
+                },
+              },
+              required: ["requirement", "user_story", "criteria"],
+            },
+          },
         },
         required: ["milestones"],
       },
@@ -381,6 +400,7 @@ export const proposePlanTool: Tool = {
       s.tools.proposePlan(s.turn, {
         milestones: args.milestones,
         reason: text(args.reason) ?? undefined,
+        coverage: args.coverage,
       })
     )
   },
@@ -395,7 +415,8 @@ export const completeMilestoneTool: Tool = {
       description:
         "Judge that the active milestone meets its definition of done, once every user story has " +
         "merged (requires accept_proof). A milestone with an integration branch then waits for " +
-        "the user to land it; one without is completed.",
+        "the user to land it; one without is completed. When the feature's intent lists " +
+        "requirements, judge each one in `requirements`; unmet ones keep the milestone open.",
       parameters: {
         type: "object",
         properties: {
@@ -407,6 +428,24 @@ export const completeMilestoneTool: Tool = {
             type: "string",
             description:
               "How the merged user stories meet the milestone's definition of done.",
+          },
+          requirements: {
+            type: "array",
+            description:
+              "One entry per requirement from the feature's intent (R1, R2, ...): whether this " +
+              "milestone's merged work meets it, checked in the code and proofs, not assumed.",
+            items: {
+              type: "object",
+              properties: {
+                requirement: { type: "string", description: 'e.g. "R1"' },
+                status: { type: "string", enum: ["met", "later_milestone", "not_met"] },
+                evidence: {
+                  type: "string",
+                  description: "For met: the story and criterion that prove it, or what you checked.",
+                },
+              },
+              required: ["requirement", "status"],
+            },
           },
         },
         required: ["milestone", "summary"],
@@ -424,7 +463,11 @@ export const completeMilestoneTool: Tool = {
         "complete_milestone needs `milestone` and `summary`."
       )
     return result(
-      await s.tools.completeMilestone(s.turn, { milestone, summary })
+      await s.tools.completeMilestone(s.turn, {
+        milestone,
+        summary,
+        requirements: args.requirements,
+      })
     )
   },
 }

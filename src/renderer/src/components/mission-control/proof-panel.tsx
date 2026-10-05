@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import {
   CheckCircle2,
   CircleSlash,
+  Clock,
   FileText,
   ShieldCheck,
   XCircle,
@@ -64,6 +65,11 @@ const STATUS_META: Record<
     label: "Not verifiable",
     icon: CircleSlash,
     className: "text-amber-600 dark:text-amber-500",
+  },
+  deferred: {
+    label: "Deferred to the gate",
+    icon: Clock,
+    className: "text-sky-600 dark:text-sky-500",
   },
 }
 

@@ -73,7 +73,7 @@ export function renderAlert(content: AlertContent): string {
     "Reply with a short analysis (two or three sentences): is this real, and why is it happening? Then do exactly one:",
     "- continue: the work is healthy; say what will move the map next;",
     "- replan: change the plan with your map tools so the work can move;",
-    "- escalate: raise it with the user with `escalate`.",
+    "- escalate: only when the user must decide something; call `escalate` with a `question` and 2–4 `options`, then wait for the answer instead of acting on the work.",
     "The seats involved were shown a Refocus. Don't answer with more coordination than the fix needs."
   )
   return lines.join("\n")

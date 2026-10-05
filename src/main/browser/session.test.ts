@@ -77,7 +77,7 @@ vi.mock("electron", () => ({
   WebContentsView: electronMock.WebContentsViewMock,
 }))
 
-import { BrowserSession, StaleRefError } from "./session"
+import { BrowserSession, parseKeyCombo, StaleRefError } from "./session"
 
 describe("BrowserSession.navigate", () => {
   beforeEach(() => {
@@ -786,6 +786,108 @@ describe("BrowserSession advanced browser tools", () => {
 
     await expect(session.evaluate("() => 1", 1_000)).rejects.toThrow(
       "rejects function literals"
+    )
+  })
+})
+
+describe("keyboard and viewport (plan 110)", () => {
+  beforeEach(() => {
+    electronMock.instances.length = 0
+  })
+
+  it("parses key combos into CDP key fields", () => {
+    expect(parseKeyCombo("Tab")).toMatchObject({
+      key: "Tab",
+      code: "Tab",
+      keyCode: 9,
+      modifiers: 0,
+    })
+    expect(parseKeyCombo("Shift+Tab")).toMatchObject({
+      key: "Tab",
+      modifiers: 8,
+    })
+    expect(parseKeyCombo("space")).toMatchObject({ key: " ", text: " " })
+    expect(parseKeyCombo("Enter")).toMatchObject({ keyCode: 13, text: "\r" })
+    expect(parseKeyCombo("a")).toMatchObject({
+      key: "a",
+      code: "KeyA",
+      keyCode: 65,
+    })
+    expect(() => parseKeyCombo("Hyper+Tab")).toThrow(/Unknown modifier/)
+    expect(() => parseKeyCombo("Banana")).toThrow(/Unknown key "Banana"/)
+  })
+
+  it("presses a key at the focused element and reports where focus went", async () => {
+    const session = new BrowserSession()
+    const webContents = electronMock.instances[0]
+    webContents.currentUrl = "http://localhost:3000/"
+    webContents.title = "Quick List"
+    webContents.debugger.sendCommand.mockImplementation(
+      async (method, params) => {
+        if (
+          method === "Runtime.evaluate" &&
+          String(params?.expression).includes("document.activeElement")
+        )
+          return { result: { value: 'button "Add" (visible focus indicator)' } }
+        return {}
+      }
+    )
+    const result = await session.pressKey("Shift+Tab", 1000)
+    const keys = webContents.debugger.sendCommand.mock.calls.filter(
+      ([method]) => method === "Input.dispatchKeyEvent"
+    )
+    expect(keys.map(([, params]) => params)).toEqual([
+      expect.objectContaining({ type: "rawKeyDown", key: "Tab", modifiers: 8 }),
+      expect.objectContaining({ type: "keyUp", key: "Tab", modifiers: 8 }),
+    ])
+    expect(result).toEqual({
+      target: "key Shift+Tab",
+      url: "http://localhost:3000/",
+      title: "Quick List",
+      focused: 'button "Add" (visible focus indicator)',
+    })
+  })
+
+  it("sends Space with its text, so it activates a focused button", async () => {
+    const session = new BrowserSession()
+    const webContents = electronMock.instances[0]
+    webContents.debugger.sendCommand.mockImplementation(async () => ({}))
+    await session.pressKey("Space", 1000)
+    const down = webContents.debugger.sendCommand.mock.calls.find(
+      ([method, params]) =>
+        method === "Input.dispatchKeyEvent" && params?.type !== "keyUp"
+    )
+    expect(down?.[1]).toMatchObject({ type: "keyDown", key: " ", text: " " })
+  })
+
+  it("emulates a viewport size and reports horizontal overflow, and restores it", async () => {
+    const session = new BrowserSession()
+    const webContents = electronMock.instances[0]
+    webContents.debugger.sendCommand.mockImplementation(
+      async (method, params) => {
+        if (
+          method === "Runtime.evaluate" &&
+          String(params?.expression).includes("scrollWidth")
+        )
+          return { result: { value: { innerWidth: 375, scrollWidth: 420 } } }
+        return {}
+      }
+    )
+    await expect(session.setViewport(375, 812, 1000)).resolves.toEqual({
+      width: 375,
+      height: 812,
+      innerWidth: 375,
+      scrollWidth: 420,
+      overflowsHorizontally: true,
+    })
+    expect(webContents.debugger.sendCommand).toHaveBeenCalledWith(
+      "Emulation.setDeviceMetricsOverride",
+      { width: 375, height: 812, deviceScaleFactor: 0, mobile: false }
+    )
+    await session.setViewport(0, 0, 1000)
+    expect(webContents.debugger.sendCommand).toHaveBeenCalledWith(
+      "Emulation.clearDeviceMetricsOverride",
+      {}
     )
   })
 })

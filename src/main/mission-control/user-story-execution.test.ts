@@ -32,7 +32,7 @@ interface LoopCall {
   proofResult?: RecordProofResult
   seat?: { address: string; profile: string; anchor: unknown }
   writeScope?: { allow: string[] }
-  qaChecks?: "author" | "explore" | "verify"
+  qaChecks?: "author" | "explore" | "smoke"
   // The seat browser handle input this worker would get (plan 109.04).
   seatBrowser?: { phaseRunId: string; label: string; origins: string[] }
   // What run_checks returned in the test step (plan 109.05).
@@ -55,12 +55,25 @@ vi.mock("../agent", () => ({
     processPhaseRunId?: string
     missionControlSeat?: { address: string; profile: string; anchor: unknown }
     writeScope?: { allow: string[] }
-    processQaChecks?: "author" | "explore" | "verify"
+    processQaChecks?: "author" | "explore" | "smoke"
     processAppLaunch?: boolean
     seatBrowser?: (signal: AbortSignal) => unknown
     workspace?: string
     abort?: AbortController
   }) => {
+    // A builder that makes the app startable saves its recipe, once.
+    if (saveRecipe && input.processAppLaunch) {
+      const services = saveRecipe
+      saveRecipe = null
+      recipeSaves.push(
+        await appLaunchSaveTool.execute({ services }, {
+          workspace: input.workspace,
+          processRunId: input.processRunId,
+          processPhaseRunId: input.processPhaseRunId,
+          signal: input.abort?.signal,
+        } as never)
+      )
+    }
     // A builder or QA step that starts the app (plan 109.03).
     if (startApp && input.processAppLaunch) {
       const out = await appStartTool.execute({}, {
@@ -147,7 +160,6 @@ vi.mock("../agent", () => ({
       call.proofResult = await recordUserStoryProof({
         processRunId: input.processRunId!,
         processPhaseRunId: input.processPhaseRunId!,
-        workspace: input.workspace!,
         args: proveInApp(input.processPhaseRunId!, proofSubmissions.shift()!),
       })
       content = "verified"
@@ -175,6 +187,9 @@ const appStarts: Array<{
   pids: number[]
   briefed: boolean
 }> = []
+// What a builder passes to app_launch_save, and what the tool answered.
+let saveRecipe: Array<Record<string, unknown>> | null = null
+const recipeSaves: string[] = []
 // The dispatch router's classifier reply.
 let routerReply = ""
 let hangLoops = false
@@ -221,20 +236,22 @@ import { createDefaultPlaybook } from "./playbook-defaults"
 import {
   UserStoryRunner,
   processRunFailure,
+  proofReworkRefusal,
   recordUserStoryProof,
   type RecordProofResult,
 } from "./user-story-runner"
 import { startHookRun } from "./hook-runner"
 import { proveInApp, writeFakeManifest } from "../test/qa-manifest"
 import { createLegacyChecksPlaybook } from "../test/legacy-playbook"
-import { appStartTool } from "../agent/tools/app_launch_tools"
+import { appLaunchSaveTool, appStartTool } from "../agent/tools/app_launch_tools"
 import { runChecksTool } from "../agent/tools/qa_checks_tools"
 import { testAppServices } from "./app-launch"
-import { updateWorkspace } from "../db/repositories/workspaces"
+import { getWorkspace, updateWorkspace } from "../db/repositories/workspaces"
 import { installSeatSessions, SeatSessionService } from "./sessions"
 import * as seatSessionsRepo from "../db/repositories/seat-sessions"
 import type { AgentDefinition } from "../agent/agents/types"
 import type { Finding } from "../../shared/mission-control/workspace-analysis"
+import type { Feature } from "../db/types"
 
 const enqueued: string[] = []
 const enqueuedInputs: unknown[] = []
@@ -387,6 +404,8 @@ beforeEach(() => {
   runChecksInVerify = false
   startApp = false
   appStarts.length = 0
+  saveRecipe = null
+  recipeSaves.length = 0
   seatBrowserInputs.length = 0
   seatBrowserReleases.length = 0
   installSeatBrowser(null)
@@ -529,6 +548,96 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
           /AC-1: verifying in the app needs evidence/
         ),
       })
+    })
+
+    it("accepts a criterion deferred to the wave gate, with its reason (plan 110)", async () => {
+      const { verify, story } = await run({
+        verdict: "accepted",
+        criteria: [
+          acceptedProof.criteria[0],
+          {
+            id: "AC-2",
+            status: "deferred",
+            method: "app_exercised",
+            evidence: "Checked the totals at the default size only.",
+            reason:
+              "Needs a narrow viewport, which only the gate's checks can set.",
+          },
+        ],
+      })
+      expect(verify.proofResult).toMatchObject({ ok: true, status: "accepted" })
+      expect(story.proof).toMatchObject({
+        criteria: [
+          { id: "AC-1", status: "met" },
+          { id: "AC-2", status: "deferred" },
+        ],
+        warnings: [expect.stringMatching(/^AC-2 deferred to the wave gate/)],
+      })
+    })
+
+    it("doesn't send the build back for criteria QA couldn't exercise (plan 110)", async () => {
+      const unverified = {
+        verdict: "rejected",
+        criteria: [
+          acceptedProof.criteria[0],
+          {
+            id: "AC-2",
+            status: "not_verifiable",
+            method: "app_exercised",
+            evidence: "No keyboard tool.",
+            reason: "Can't press keys.",
+          },
+        ],
+      }
+      const rig = orchestratedRig()
+      const { userStory } = billingFeature(rig.id)
+      proofSubmissions.push(unverified)
+      const playbookRun = await runner.startUserStory(userStory.id)
+      await drive(playbookRun.processRunId!)
+      // The milestone has a wave gate: what QA couldn't exercise is deferred
+      // to it, and the story goes on instead of being rebuilt.
+      expect(playbooks.getPlaybookRun(playbookRun.id)!.proof).toMatchObject({
+        verdict: "accepted",
+        criteria: [
+          expect.objectContaining({ id: "AC-1", status: "met" }),
+          expect.objectContaining({ id: "AC-2", status: "deferred", reason: "Can't press keys." }),
+        ],
+      })
+      const proofRun = processes
+        .listPhaseRuns({ runId: playbookRun.processRunId! })
+        .find((pr) => processes.getPhase(pr.phaseId)?.proofStep)!
+      // Without a gate to defer to, such a proof stays rejected, and its
+      // rework flag still can't send the build back.
+      playbooks.updatePlaybookRun(playbookRun.id, {
+        proof: {
+          ...playbooks.getPlaybookRun(playbookRun.id)!.proof!,
+          verdict: "rejected",
+          criteria: [
+            { id: "AC-1", status: "met", method: "app_exercised", evidence: "Works." },
+            { id: "AC-2", status: "not_verifiable", method: "app_exercised", evidence: "No keyboard tool." },
+          ],
+        },
+      })
+      expect(
+        proofReworkRefusal(playbookRun.processRunId!, proofRun.id)
+      ).toMatch(/rejected only because AC-2 couldn't be exercised/)
+      // A real failure still goes back to the build.
+      playbooks.updatePlaybookRun(playbookRun.id, {
+        proof: {
+          ...playbooks.getPlaybookRun(playbookRun.id)!.proof!,
+          criteria: [
+            {
+              id: "AC-1",
+              status: "not_met",
+              method: "app_exercised",
+              evidence: "Broken.",
+            },
+          ],
+        },
+      })
+      expect(
+        proofReworkRefusal(playbookRun.processRunId!, proofRun.id)
+      ).toBeNull()
     })
 
     it("doesn't bind the proof to a legacy checks step's manifest", async () => {
@@ -768,7 +877,6 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
     const again = await recordUserStoryProof({
       processRunId: playbookRun.processRunId!,
       processPhaseRunId: qaRun.id,
-      workspace: workspaceDir,
       args: proveInApp(qaRun.id, { ...acceptedProof, verdict: "rejected" }),
     })
     expect(again).toMatchObject({ ok: false, code: "already_accepted" })
@@ -796,7 +904,6 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
       recordUserStoryProof({
         processRunId: playbookRun.processRunId!,
         processPhaseRunId: qaRun.id,
-        workspace: workspaceDir,
         args: proveInApp(qaRun.id, rejected),
       })
 
@@ -958,7 +1065,10 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
         },
       }) as unknown as Finding
 
-    function gatedRunner(finding: () => Finding | null) {
+    function gatedRunner(
+      finding: () => Finding | null,
+      applyAppLaunch?: (feature: Feature) => Promise<void>
+    ) {
       const lookups: Array<{ featureId: string; ref: string }> = []
       const gated = new UserStoryRunner({
         startProcessRun: (input) => service.startRun(input),
@@ -968,9 +1078,55 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
           lookups.push({ featureId: feature.id, ref })
           return finding()
         },
+        ...(applyAppLaunch ? { applyAppLaunch } : {}),
       })
       return { gated, lookups }
     }
+
+    it("saves a detected recipe and starts, instead of pausing for the user", async () => {
+      const rig = orchestratedRig()
+      const { feature, userStory } = billingFeature(rig.id)
+      const applied: string[] = []
+      const { gated } = gatedRunner(
+        () => detected("open"),
+        async (f) => {
+          applied.push(f.id)
+          updateWorkspace(f.workspaceId!, {
+            appLaunch: {
+              services: [
+                {
+                  key: "web",
+                  label: "Node server (server.js)",
+                  command: "node server.js",
+                  cwd: "",
+                  port: "auto",
+                  ready: { http: "/" },
+                  source: "analysis",
+                },
+              ],
+            },
+          })
+        }
+      )
+      await gated.startUserStory(userStory.id)
+      expect(applied).toEqual([feature.id])
+      expect(features.getUserStory(userStory.id)!.status).toBe("running")
+    })
+
+    it("still refuses when the detected recipe can't be saved", async () => {
+      const rig = orchestratedRig()
+      const { userStory } = billingFeature(rig.id)
+      const { gated } = gatedRunner(
+        () => detected("open"),
+        async () => {
+          throw new Error("invalid")
+        }
+      )
+      await expect(gated.startUserStory(userStory.id)).rejects.toThrow(
+        /^app_launch_required: .*couldn't save that recipe/
+      )
+      expect(features.getUserStory(userStory.id)!.attempts).toBe(0)
+    })
 
     it("refuses a QA-verified story while a detected recipe isn't saved, and starts once it's dismissed", async () => {
       const rig = orchestratedRig()
@@ -1019,6 +1175,36 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
         "done",
         "test"
       )
+      expect(await gated.firstStoryAlone(current())).toBe(false)
+    })
+
+    it("builds the first story alone while the recipe is only planned (provisional)", async () => {
+      const rig = orchestratedRig()
+      const { feature, userStory } = billingFeature(rig.id)
+      updateWorkspace(feature.workspaceId!, {
+        appLaunch: {
+          services: [
+            {
+              key: "web",
+              label: "Web",
+              command: "mix phx.server",
+              cwd: "",
+              port: "auto",
+              ready: { http: "/" },
+              source: "analysis",
+              provisional: true,
+            },
+          ],
+        },
+      })
+      const { gated, lookups } = gatedRunner(() => null)
+      const current = () => features.getFeature(feature.id)!
+      expect(await gated.firstStoryAlone(current())).toBe(true)
+      expect(lookups).toEqual([])
+      // It isn't missing a recipe, so the story starts without a preflight stop.
+      await gated.startUserStory(userStory.id)
+      expect(features.getUserStory(userStory.id)!.status).toBe("running")
+      features.setUserStoryExecution(userStory.id, { status: "done" }, "done", "test")
       expect(await gated.firstStoryAlone(current())).toBe(false)
     })
 
@@ -1166,14 +1352,145 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
         }
       })
 
-      it("doesn't offer app tools without a recipe", async () => {
+      const SERVER = `${JSON.stringify(process.execPath)} -e "require('http').createServer((q,s)=>s.end('ok')).listen(Number(process.env.PORT),'127.0.0.1')"`
+
+      it("without a recipe, the builder saves one that starts, and later steps start the app from it", async () => {
         const rig = orchestratedRig()
-        const { userStory } = billingFeature(rig.id)
+        const { feature, userStory } = billingFeature(rig.id)
+        saveRecipe = [{ key: "web", label: "Web", command: SERVER, ready_http: "/" }]
         startApp = true
         proofSubmissions.push(acceptedProof)
         const playbookRun = await runner.startUserStory(userStory.id)
         await drive(playbookRun.processRunId!)
-        expect(appStarts).toEqual([])
+        expect(recipeSaves).toEqual([expect.stringMatching(/^Saved the app launch recipe/)])
+        expect(getWorkspace(feature.workspaceId!)!.appLaunch.services).toEqual([
+          expect.objectContaining({ key: "web", command: SERVER, port: "auto", source: "seat" }),
+        ])
+        // The saving step was told to make the app startable; every step
+        // after it got the recipe's briefing and started the app from it.
+        const [saving, ...later] = appStarts
+        expect(saving).toMatchObject({ ready: true, briefed: false })
+        expect(later.length).toBeGreaterThan(0)
+        expect(later.every((s) => s.ready && s.briefed)).toBe(true)
+        expect(testAppServices.size).toBe(0)
+      })
+
+      const recipeOf = (
+        command: string,
+        source: "user" | "analysis",
+        provisional?: boolean
+      ) => ({
+        services: [
+          {
+            key: "web",
+            label: "Web",
+            command,
+            cwd: "",
+            port: "auto" as const,
+            ready: { http: "/" },
+            readyTimeoutMs: 15_000,
+            source,
+            ...(provisional ? { provisional: true } : {}),
+          },
+        ],
+      })
+      const BROKEN = `${JSON.stringify(process.execPath)} -e "process.exit(1)"`
+
+      it("confirms a provisional recipe the first time the app starts with it", async () => {
+        const rig = orchestratedRig()
+        const { feature, userStory } = billingFeature(rig.id)
+        updateWorkspace(feature.workspaceId!, { appLaunch: recipeOf(SERVER, "analysis", true) })
+        startApp = true
+        proofSubmissions.push(acceptedProof)
+        const playbookRun = await runner.startUserStory(userStory.id)
+        await drive(playbookRun.processRunId!)
+        expect(appStarts[0]).toMatchObject({ ready: true })
+        expect(getWorkspace(feature.workspaceId!)!.appLaunch.services[0].provisional).toBeUndefined()
+      })
+
+      it("replaces an analysis recipe that can't start the app, and keeps one that can", async () => {
+        const rig = orchestratedRig()
+        const { feature, userStory } = billingFeature(rig.id)
+        updateWorkspace(feature.workspaceId!, { appLaunch: recipeOf(BROKEN, "analysis", true) })
+        saveRecipe = [{ key: "web", command: SERVER, ready_http: "/" }]
+        proofSubmissions.push(acceptedProof)
+        const playbookRun = await runner.startUserStory(userStory.id)
+        await drive(playbookRun.processRunId!)
+        expect(recipeSaves).toEqual([expect.stringMatching(/^Replaced the app launch recipe/)])
+        expect(getWorkspace(feature.workspaceId!)!.appLaunch.services).toEqual([
+          expect.objectContaining({ command: SERVER, source: "seat" }),
+        ])
+        expect(testAppServices.size).toBe(0)
+      })
+
+      it("keeps an analysis recipe that already starts the app", async () => {
+        const rig = orchestratedRig()
+        const { feature, userStory } = billingFeature(rig.id)
+        updateWorkspace(feature.workspaceId!, { appLaunch: recipeOf(SERVER, "analysis") })
+        saveRecipe = [{ key: "web", command: BROKEN, ready_http: "/" }]
+        proofSubmissions.push(acceptedProof)
+        const playbookRun = await runner.startUserStory(userStory.id)
+        await drive(playbookRun.processRunId!)
+        expect(recipeSaves).toEqual([expect.stringMatching(/already starts the app, so it was kept/)])
+        expect(getWorkspace(feature.workspaceId!)!.appLaunch.services[0].command).toBe(SERVER)
+        expect(testAppServices.size).toBe(0)
+      })
+
+      it("replaces a working analysis recipe when the builder adds a service it was missing", async () => {
+        const rig = orchestratedRig()
+        const { feature, userStory } = billingFeature(rig.id)
+        updateWorkspace(feature.workspaceId!, { appLaunch: recipeOf(SERVER, "analysis") })
+        saveRecipe = [
+          { key: "api", label: "API", command: SERVER, ready_http: "/" },
+          { key: "web", label: "Web", command: SERVER, ready_http: "/", depends_on: ["api"] },
+        ]
+        proofSubmissions.push(acceptedProof)
+        const playbookRun = await runner.startUserStory(userStory.id)
+        await drive(playbookRun.processRunId!)
+        expect(recipeSaves).toEqual([expect.stringMatching(/^Replaced the app launch recipe/)])
+        expect(getWorkspace(feature.workspaceId!)!.appLaunch.services.map((s) => s.key)).toEqual(["api", "web"])
+        expect(testAppServices.size).toBe(0)
+      })
+
+      it("refuses a chained command and points to prepare", async () => {
+        const rig = orchestratedRig()
+        const { feature, userStory } = billingFeature(rig.id)
+        saveRecipe = [{ key: "api", command: `${JSON.stringify(process.execPath)} -e "1" && ${SERVER}`, ready_http: "/" }]
+        proofSubmissions.push(acceptedProof)
+        const playbookRun = await runner.startUserStory(userStory.id)
+        await drive(playbookRun.processRunId!)
+        expect(recipeSaves).toEqual([expect.stringMatching(/one command per step.*Put a step that must run first in `prepare`/s)])
+        expect(getWorkspace(feature.workspaceId!)!.appLaunch.services).toEqual([])
+      })
+
+      it("never replaces a recipe the user wrote", async () => {
+        const rig = orchestratedRig()
+        const { feature, userStory } = billingFeature(rig.id)
+        updateWorkspace(feature.workspaceId!, { appLaunch: recipeOf(BROKEN, "user") })
+        saveRecipe = [{ key: "web", command: SERVER, ready_http: "/" }]
+        proofSubmissions.push(acceptedProof)
+        const playbookRun = await runner.startUserStory(userStory.id)
+        await drive(playbookRun.processRunId!)
+        expect(recipeSaves).toEqual([expect.stringMatching(/written by the user/)])
+        expect(getWorkspace(feature.workspaceId!)!.appLaunch.services[0].command).toBe(BROKEN)
+      })
+
+      it("saves nothing when the recipe doesn't start the app", async () => {
+        const rig = orchestratedRig()
+        const { feature, userStory } = billingFeature(rig.id)
+        saveRecipe = [
+          {
+            key: "web",
+            command: `${JSON.stringify(process.execPath)} -e "process.exit(1)"`,
+            ready_http: "/",
+          },
+        ]
+        proofSubmissions.push(acceptedProof)
+        const playbookRun = await runner.startUserStory(userStory.id)
+        await drive(playbookRun.processRunId!)
+        expect(recipeSaves).toEqual([expect.stringMatching(/Nothing was saved/)])
+        expect(getWorkspace(feature.workspaceId!)!.appLaunch.services).toEqual([])
+        expect(testAppServices.size).toBe(0)
       })
     }
   )

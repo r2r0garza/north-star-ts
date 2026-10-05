@@ -136,13 +136,59 @@ export function buildPlaywrightConfig(input: {
 // as Node are dropped once loaded: a worker forks nothing that needs them,
 // and an Electron app a test starts with _electron.launch would inherit them
 // and run as Node instead of as the app.
-export const RUNNER_HOOK = `const { registerHooks } = require("node:module")
+//
+// That leaves `process.execPath` — North Star's Electron — launching as an
+// app when a test runs a Node script with it (`spawn(process.execPath,
+// ["server.js"])`, `fork()`), the usual way to start "node" (plan 110):
+// Electron's "Error launching app" dialog, or a second North Star when
+// packaged. So in a worker, starting that executable gets ELECTRON_RUN_AS_NODE
+// back — except Playwright's own _electron.launch, which always passes
+// --remote-debugging-port=0 and must start Electron as an app.
+export const RUNNER_HOOK = `const { registerHooks, syncBuiltinESMExports } = require("node:module")
 const { pathToFileURL } = require("node:url")
 const { join } = require("node:path")
 const root = process.env.NORTH_STAR_PLAYWRIGHT_MODULES
 if (typeof process.send === "function") {
   for (const name of ["ELECTRON_RUN_AS_NODE", "NODE_OPTIONS", "NODE_PATH", "NORTH_STAR_PLAYWRIGHT_MODULES"])
     delete process.env[name]
+  const childProcess = require("node:child_process")
+  const { realpathSync } = require("node:fs")
+  const real = (file) => {
+    try {
+      return realpathSync(file)
+    } catch {
+      return file
+    }
+  }
+  const self = real(process.execPath)
+  const isSelf = (file) => typeof file === "string" && (file === process.execPath || real(file) === self)
+  const asNode = (options) => ({
+    ...(options || {}),
+    env: { ...((options && options.env) || process.env), ELECTRON_RUN_AS_NODE: "1" },
+  })
+  // (file, args?, options?, callback?): give the options ELECTRON_RUN_AS_NODE.
+  const withNode = (list) => {
+    let i = 1
+    if (Array.isArray(list[i]) || (list[i] == null && i < list.length - 1)) i++
+    if (list[i] && typeof list[i] === "object" && !Array.isArray(list[i])) list[i] = asNode(list[i])
+    else list.splice(i, 0, asNode(undefined))
+    return list
+  }
+  const electronLaunch = (args) => Array.isArray(args) && args.includes("--remote-debugging-port=0")
+  for (const name of ["spawn", "spawnSync", "execFile", "execFileSync"]) {
+    const original = childProcess[name]
+    childProcess[name] = function (file, ...rest) {
+      const list = [file, ...rest]
+      return original.apply(this, isSelf(file) && !electronLaunch(rest[0]) ? withNode(list) : list)
+    }
+  }
+  const fork = childProcess.fork
+  childProcess.fork = function (modulePath, ...rest) {
+    const list = [modulePath, ...rest]
+    const options = list.find((item, i) => i > 0 && item && typeof item === "object" && !Array.isArray(item))
+    return fork.apply(this, !options || !options.execPath || isSelf(options.execPath) ? withNode(list) : list)
+  }
+  syncBuiltinESMExports()
 }
 if (registerHooks && root) {
   const parentURL = pathToFileURL(join(root, "_.js")).href

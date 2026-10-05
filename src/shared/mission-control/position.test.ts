@@ -578,6 +578,38 @@ describe("computePosition — failures and judgment", () => {
       ["merge_conflict", "user"],
     ])
   })
+
+  it("offers the smoke step's three actions when it failed (plan 110.05)", () => {
+    const p = computePosition(
+      input({
+        milestones: [
+          milestone("m1", {
+            status: "integrating",
+            integrationBranch: "mc/i/m1/integration",
+          }),
+        ],
+        userStories: [userStory("a", "m1", { status: "integrating" })],
+        mergeQueue: [
+          {
+            id: "q1",
+            userStoryId: "a",
+            milestoneId: "m1",
+            status: "conflict",
+            escalated: true,
+            smokeFailed: ["AC-2"],
+          },
+        ],
+      })
+    )
+    expect(p.pendingDecisions).toEqual([
+      expect.objectContaining({
+        kind: "merge_conflict",
+        summary: expect.stringMatching(
+          /failed its smoke step \(AC-2\): accept it as is, fix it yourself, or drop the criteria/
+        ),
+      }),
+    ])
+  })
 })
 
 describe("computePosition — milestone lifecycle", () => {
@@ -791,7 +823,7 @@ describe("computePosition — the wave acceptance gate (plan 110)", () => {
     expect(due.maneuver.kind).toBe("wait")
     expect(due.dispatch).toEqual([])
     expect(due.deferred).toEqual([
-      { userStory: "x", reason: "waiting for the acceptance gate" },
+      { userStory: "x", reason: "waiting for the acceptance gate", gate: true },
     ])
 
     const running = computePosition(
@@ -882,6 +914,7 @@ describe("computePosition — the wave acceptance gate (plan 110)", () => {
     expect(p.deferred).toContainEqual({
       userStory: "x",
       reason: "waiting for the acceptance gate's fix stories",
+      gate: true,
     })
     expect(p.milestone?.gate).toEqual({
       round: 1,

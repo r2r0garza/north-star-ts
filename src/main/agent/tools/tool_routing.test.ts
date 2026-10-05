@@ -19,7 +19,7 @@ describe("tool-choice routing in definitions", () => {
 
   it("every seat browser tool routes proof to run_checks", () => {
     expect(SEAT_BROWSER_ROUTING).toBe(
-      "In Mission Control, use the browser for exploring and evidence. To prove a criterion, write a check and run it with run_checks."
+      "In Mission Control, use the browser to exercise the running app and save evidence; repeatable assertions belong in Playwright checks run with run_checks."
     )
     expect(seatBrowserToolDefinitions.length).toBeGreaterThan(5)
     for (const definition of seatBrowserToolDefinitions)

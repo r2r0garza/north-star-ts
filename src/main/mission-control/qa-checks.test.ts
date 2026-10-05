@@ -94,16 +94,16 @@ const stories = [
 ]
 
 import {
+  appGuidance,
   authorStepNote,
   completeAuthorStep,
   exploreStepNote,
   qaStepKind,
   runQaChecks,
-  startVerifyStep,
+  smokeStepNote,
   storyChecks,
   summarizeCheckRun,
   unreachableReason,
-  verifyStepNote,
 } from "./qa-checks"
 import { testAppServices } from "./app-launch"
 import { setEvidenceRoot } from "./evidence"
@@ -121,9 +121,9 @@ const link: MissionControlRunLink = {
   playbookRunId: "p1",
   hook: "run",
 }
-// A merge conflict's re-verification of the same story: the story-linked QA
-// proof step that still runs checks (plan 110.04).
-const reverifyLink: MissionControlRunLink = {
+// A merge conflict's resolution of the same story: its QA proof step is a
+// smoke step that runs no checks (plan 110.05).
+const smokeLink: MissionControlRunLink = {
   ...link,
   hook: "after_each_user_story",
 }
@@ -198,7 +198,7 @@ beforeEach(async () => {
   run = {
     id: "r1",
     parentPhaseRunId: null,
-    missionControl: reverifyLink,
+    missionControl: link,
     seatBindings: {
       seats: { "qa@pod": { address: "qa@pod", role: "qa" } },
     },
@@ -239,10 +239,10 @@ describe("qaStepKind", () => {
     ).toBeNull()
   })
 
-  it("is verify for a merge conflict's re-verification", () => {
-    expect(
-      qaStepKind({ role: "qa", proofStep: true, link: reverifyLink })
-    ).toBe("verify")
+  it("is smoke for a merge conflict's resolution (plan 110.05)", () => {
+    expect(qaStepKind({ role: "qa", proofStep: true, link: smokeLink })).toBe(
+      "smoke"
+    )
   })
 
   it("is gate for a QA proof step in a milestone's wave gate (plan 110.02)", () => {
@@ -427,6 +427,17 @@ describe("checks that can't reach the app (plan 109.07)", () => {
   })
 })
 
+describe("starting Node scripts from checks (plan 110)", () => {
+  it("tells QA to use process.execPath, with or without a recipe", () => {
+    for (const services of [[], [webService]]) {
+      const lines = appGuidance({ checksDir: "e2e", recipe: { services } })
+      expect(lines.join("\n")).toMatch(
+        /starts it with `process\.execPath`.*not `node`/
+      )
+    }
+  })
+})
+
 describe("the no-recipe kickoff (plan 109.07)", () => {
   it("has QA start the app from a shared fixture instead of expecting a baseURL", () => {
     const note = authorStepNote(storyChecks(link)!)
@@ -459,22 +470,41 @@ describe("step kickoffs (plan 109.06)", () => {
       /A Playwright check gets the first one as its `baseURL`/
     )
   })
+})
 
-  it("reverify runs the checks and uses the browser only for failures", async () => {
-    const note = verifyStepNote()
-    expect(note).toMatch(/call `run_checks`/)
-    expect(note).toMatch(/Use the browser only to investigate a failure\./)
-    expect(note).toMatch(/`qa_check`/)
-    expect(note).not.toMatch(/refreeze_checks/)
+describe("the merge smoke step (plan 110.05)", () => {
+  it("starts the app, runs the project's tests, and spot-checks the story", () => {
+    appLaunch = { services: [webService] }
+    const note = smokeStepNote(storyChecks(smokeLink)!, ["src/app.ts"])
+    expect(note).toMatch(/## Smoke-testing the merged result/)
+    expect(note).toMatch(
+      /\*\*The app starts\.\*\* Start it with `app_start`.*`web`/
+    )
+    expect(note).toMatch(/\*\*The project's own tests pass\.\*\*/)
+    expect(note).toMatch(/conflicted files \(`src\/app\.ts`\) touch/)
+    expect(note).toMatch(/accept the merge as is, fix it themselves, or drop/)
+    expect(note).toMatch(/`app_exercised`/)
+    expect(note).not.toMatch(/`qa_check`/)
+    expect(note).not.toMatch(/run_checks`/)
+  })
 
-    phaseRuns.set("verify", {
-      ...phaseRuns.get("verify")!,
-      qaChecks: { results: [{ checkId: "old" } as never] },
-    })
+  it("without a recipe, has QA start the app itself", () => {
+    const note = smokeStepNote(storyChecks(smokeLink)!)
+    expect(note).toMatch(/no app launch recipe/)
+    expect(note).not.toMatch(/app_start/)
+  })
+
+  it("refuses run_checks", async () => {
+    run.missionControl = smokeLink
+    write("e2e/stories/billing.m1.login.json", manifest({ ac1: "true" }))
     expect(
-      await startVerifyStep({ run, phaseRunId: "verify", resuming: false })
-    ).toBe(note)
-    expect(phaseRuns.get("verify")!.qaChecks!.results).toEqual([])
+      await runQaChecks({
+        processRunId: "r1",
+        phaseRunId: "verify",
+        workspace: root,
+      })
+    ).toMatchObject({ ok: false, code: "smoke_step" })
+    expect(phaseRuns.get("verify")!.qaChecks).toBeNull()
   })
 })
 
@@ -518,7 +548,7 @@ describe("run_checks", () => {
   const runAll = (checkIds?: string[]) =>
     runQaChecks({
       processRunId: "r1",
-      phaseRunId: "verify",
+      phaseRunId: "author",
       workspace: root,
       checkIds,
     })
@@ -539,7 +569,7 @@ describe("run_checks", () => {
       ["ac2", 2, false, 3],
     ])
     expect(outcome.results[1].outputTail).toMatch(/broken/)
-    expect(phaseRuns.get("verify")!.qaChecks!.results).toHaveLength(3)
+    expect(phaseRuns.get("author")!.qaChecks!.results).toHaveLength(3)
     const summary = summarizeCheckRun(outcome)
     expect(summary).toMatch(/1 passed, 1 failed, 0 flaky/)
     expect(summary).toMatch(/broken/)
@@ -603,7 +633,7 @@ describe("run_checks", () => {
       expect(overrides.events).toEqual([
         expect.objectContaining({
           type: "test_browser_needed",
-          refId: "verify",
+          refId: "author",
         }),
       ])
     })
@@ -688,29 +718,6 @@ describe("run_checks", () => {
       })
     ).toMatchObject({ ok: false, code: "unavailable" })
   })
-
-  it("runs every merged story's checks on reverify", async () => {
-    write("e2e/stories/billing.m1.login.json", manifest({ ac1: "true" }))
-    write(
-      "e2e/stories/billing.m1.logout.json",
-      JSON.stringify({
-        criteria: {
-          "AC-1": [{ id: "logout-1", kind: "automated", command: "exit 1" }],
-        },
-      })
-    )
-    // Another milestone's manifest is ignored.
-    write("e2e/stories/billing.m2.other.json", "{}")
-    const outcome = await runAll()
-    expect(outcome.ok).toBe(true)
-    if (!outcome.ok) return
-    expect(outcome.results.map((r) => [r.storyRef, r.checkId])).toEqual([
-      ["billing.m1.login", "ac1"],
-      ["billing.m1.logout", "logout-1"],
-      ["billing.m1.logout", "logout-1"],
-    ])
-    expect(outcome.problems).toEqual([])
-  })
 })
 
 describe.skipIf(process.platform === "win32")("app services", () => {
@@ -742,7 +749,7 @@ describe.skipIf(process.platform === "win32")("app services", () => {
     )
     const outcome = await runQaChecks({
       processRunId: "r1",
-      phaseRunId: "verify",
+      phaseRunId: "author",
       workspace: root,
     })
     expect(outcome.ok).toBe(true)
@@ -792,7 +799,7 @@ test("another story @billing.m1.logout", async () => { expect(1).toBe(2) })
       )
       const outcome = await runQaChecks({
         processRunId: "r1",
-        phaseRunId: "verify",
+        phaseRunId: "author",
         workspace: root,
       })
       expect(outcome.ok).toBe(true)
@@ -825,10 +832,10 @@ test("another story @billing.m1.logout", async () => { expect(1).toBe(2) })
       for (const artifact of fail.playwright!.artifacts)
         expect(
           artifact.startsWith(
-            join(evidence, "verify", "playwright", "ac2-copy-1")
+            join(evidence, "author", "playwright", "ac2-copy-1")
           )
         ).toBe(true)
-      expect(phaseRuns.get("verify")!.qaChecks!.results).toHaveLength(3)
+      expect(phaseRuns.get("author")!.qaChecks!.results).toHaveLength(3)
       const summary = summarizeCheckRun(outcome)
       expect(summary).toMatch(/1 passed, 1 failed/)
       expect(summary).toMatch(
@@ -858,7 +865,7 @@ test("another story @billing.m1.logout", async () => { expect(1).toBe(2) })
     )
     const outcome = await runQaChecks({
       processRunId: "r1",
-      phaseRunId: "verify",
+      phaseRunId: "author",
       workspace: root,
     })
     expect(outcome.ok).toBe(true)
@@ -878,7 +885,7 @@ test("another story @billing.m1.logout", async () => { expect(1).toBe(2) })
     )
     const outcome = await runQaChecks({
       processRunId: "r1",
-      phaseRunId: "verify",
+      phaseRunId: "author",
       workspace: root,
     })
     expect(outcome).toMatchObject({ ok: false, code: "no_manifest" })

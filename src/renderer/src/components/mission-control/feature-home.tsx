@@ -157,6 +157,8 @@ export function FeatureHome({
         toast.success(
           `Set up automatically: ${result.preflight.applied.join("; ")}`
         )
+      for (const notice of result.preflight?.notices ?? [])
+        toast.warning(notice)
       if (result.preflight?.blocked) {
         setBlocked(true)
         toast.warning(

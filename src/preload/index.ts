@@ -76,6 +76,7 @@ import type {
   ProofCriterionStatus,
   MissionControlRunLink,
   MergePolicyMode,
+  MergeQueueEntry,
   MilestoneLanding,
   DriveMode,
   NavigatorTick,
@@ -1197,6 +1198,16 @@ const api = {
           "missionControl:integration:abandon",
           entryId
         ) as Promise<void>,
+      // Decide a merge whose smoke step failed (plan 110.05).
+      resolveSmokeFailure: (input: {
+        entryId: string
+        action: GateEscalationAction
+        note?: string
+      }) =>
+        ipcRenderer.invoke(
+          "missionControl:integration:resolveSmokeFailure",
+          input
+        ) as Promise<MergeQueueEntry>,
       userStoryInfo: (userStoryId: string) =>
         ipcRenderer.invoke(
           "missionControl:integration:userStoryInfo",
@@ -1391,6 +1402,9 @@ const api = {
             blockers: string[]
             // Setup to review before starting; not started when non-empty.
             review: string[]
+            // Things to know that don't stop Start (an outdated playbook
+            // that couldn't be upgraded).
+            notices: string[]
           }
         }>,
       pause: (id: string, reason?: string) =>
@@ -2921,6 +2935,7 @@ export type {
   MergePolicyMode,
   MergeQueueEntry,
   MergeQueueStatus,
+  MergeSmokeFailure,
   MilestoneLanding,
   PhaseContextScope,
   SeatSession,

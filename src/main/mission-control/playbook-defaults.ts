@@ -75,7 +75,7 @@ export const DEFAULT_PLAYBOOKS: Record<PlaybookAltitude, DefaultPlaybook> = {
   milestone: {
     name: "Plan → Review",
     description:
-      "Before user stories run, the lead reviews the user story set against the milestone outcome. When a user story's merge conflicts, the integrator (or the lead) resolves it and QA re-verifies the user story. After each wave merges, QA proves the merged user stories together on the integration branch. After all user stories, the lead writes the milestone summary.",
+      "Before user stories run, the lead reviews the user story set against the milestone outcome. When a user story's merge conflicts, the integrator (or the lead) resolves it and QA smoke-tests the merged result. After each wave merges, QA proves the merged user stories together on the integration branch. After all user stories, the lead writes the milestone summary.",
     hooks: {
       before_user_stories: [
         {
@@ -95,8 +95,11 @@ export const DEFAULT_PLAYBOOKS: Record<PlaybookAltitude, DefaultPlaybook> = {
           contextScope: "user_story",
         },
         {
+          // Plan 110.05: a smoke step, not a full re-verification. The app
+          // starts, the project's tests pass, and QA spot-checks the story in
+          // the running app; the wave gate is the real check.
           key: "reverify",
-          name: "Re-verify the merged result against each acceptance criterion and record the proof",
+          name: "Smoke-test the merged result: start the app, run the project's tests, spot-check each acceptance criterion in the running app, and record the proof with evidence",
           role: "qa",
           // No validator, for the same reason as the user story test step.
           proofStep: true,

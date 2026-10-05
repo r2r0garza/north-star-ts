@@ -18,8 +18,9 @@ import { detectProjects, type EcosystemId, type ProjectRoot } from "./inventory"
 // Procfile's web process, a plain Node server file that reads PORT, and
 // Django's runserver. A docker-compose file is
 // pointed out but not proposed: its fixed ports and container names collide
-// across parallel worktrees. Like setup steps, the recipe persists commands,
-// so it's always applied explicitly (never on its own at Start).
+// across parallel worktrees. These rules are hints: the analysis's model
+// writes the recipe for any stack (recipe-model.ts), and the Start preflight
+// applies it so nobody stops to set it up.
 
 export const APP_LAUNCH_FINDING = "app-launch:recipe"
 const MAX_SERVICES = 4

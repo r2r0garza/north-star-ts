@@ -19,6 +19,8 @@ import type { ActionClassifier, ActionDecision, ToolAction } from "./types"
 // controls. Anything else with kind "browser" is treated as navigation.
 const INTERACTION_TOOLS = new Set([
   "browser_hover",
+  "browser_press_key",
+  "browser_set_viewport",
   "browser_drag",
   "browser_type",
   "browser_wait",

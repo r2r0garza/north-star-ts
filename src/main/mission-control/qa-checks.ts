@@ -3,6 +3,7 @@ import { lstat, readdir, readFile } from "fs/promises"
 import { tmpdir } from "os"
 import { join, posix } from "path"
 import * as features from "../db/repositories/features"
+import * as mergeQueue from "../db/repositories/merge-queue"
 import * as processes from "../db/repositories/processes"
 import * as waveGates from "../db/repositories/wave-gates"
 import type {
@@ -65,11 +66,13 @@ import {
 // - "author": any other QA step in a user story run. Only playbooks from
 //   before plan 110.04 have one (the `checks` step): it writes the story's
 //   manifest, which the wave gate later adopts.
-// - "verify": the proof step of a merge conflict's re-verification, which
-//   runs the milestone's checks on the merged result.
+// - "smoke": the proof step of a merge conflict's resolution (plan 110.05).
+//   QA starts the app, runs the project's own tests, and spot-checks the
+//   story's criteria by exploration; no checks. The wave gate is the real
+//   check.
 // - "gate": the QA proof step of a milestone's wave gate (plan 110.02).
 // Other roles and other runs have no QA checks step.
-export type QaStepKind = "author" | "explore" | "verify" | "gate"
+export type QaStepKind = "author" | "explore" | "smoke" | "gate"
 
 export function qaStepKind(input: {
   role: string | null | undefined
@@ -82,7 +85,7 @@ export function qaStepKind(input: {
       ? "gate"
       : null
   if (!input.proofStep) return "author"
-  return input.link.hook === "after_each_user_story" ? "verify" : "explore"
+  return input.link.hook === "after_each_user_story" ? "smoke" : "explore"
 }
 
 // ── the story's checks context ──────────────────────────────────────────────
@@ -92,10 +95,6 @@ export interface StoryChecks {
   storyRef: string
   criterionIds: string[]
   manifestPath: string
-  // The milestone's story refs → criterion ids, for reverify.
-  milestoneStories: Map<string, string[]>
-  // A conflict resolution re-verifying the merged result.
-  reverify: boolean
   // The workspace's app launch recipe: the services a check may declare.
   recipe: AppLaunch
 }
@@ -110,23 +109,11 @@ export function storyChecks(link: MissionControlRunLink): StoryChecks | null {
     ? features.getMilestone(userStory.milestoneId)
     : null
   if (!storyRef || !userStory || !feature || !milestone) return null
-  const milestoneStories = new Map<string, string[]>()
-  for (const story of features.listUserStories(milestone.id))
-    milestoneStories.set(
-      userStoryRef({
-        featureKey: feature.key,
-        milestoneKey: milestone.key,
-        userStoryKey: story.key,
-      }),
-      userStoryCriteria(story).map((c) => c.id)
-    )
   return {
     checksDir,
     storyRef,
     criterionIds: userStoryCriteria(userStory).map((c) => c.id),
     manifestPath: storyManifestPath(checksDir, storyRef),
-    milestoneStories,
-    reverify: link.hook === "after_each_user_story",
     recipe: recipeForLink(link),
   }
 }
@@ -376,36 +363,19 @@ export async function gateManifests(
   return set
 }
 
-// The manifests run_checks uses: the story's own, or, on reverify, every
-// manifest of this milestone's stories present in the merged result.
+// The manifest run_checks uses outside a gate: the story's own (a checks step
+// from before plan 110.04).
 async function manifestsForRun(
   root: string,
   story: StoryChecks
 ): Promise<ManifestSet> {
-  const refs = [story.storyRef]
-  if (story.reverify) {
-    const names = await readdir(
-      await resolveInWorkspaceReal(root, `${story.checksDir}/${MANIFEST_DIR}`)
-    ).catch(() => [] as string[])
-    for (const name of names.sort()) {
-      const ref = name.replace(/\.json$/, "")
-      if (name.endsWith(".json") && ref !== story.storyRef)
-        if (story.milestoneStories.has(ref)) refs.push(ref)
-    }
-  }
   const set: ManifestSet = { manifests: [], problems: [], invalid: {} }
-  for (const ref of refs) {
-    const read = await readStoryManifest(root, {
-      manifestPath: storyManifestPath(story.checksDir, ref),
-      criterionIds: story.milestoneStories.get(ref) ?? story.criterionIds,
-      storyRef: ref,
-      recipe: story.recipe,
-    })
-    if (read.ok) set.manifests.push({ storyRef: ref, manifest: read.manifest })
-    else {
-      set.problems.push(read.message)
-      set.invalid[ref] = read.message
-    }
+  const read = await readStoryManifest(root, story)
+  if (read.ok)
+    set.manifests.push({ storyRef: story.storyRef, manifest: read.manifest })
+  else {
+    set.problems.push(read.message)
+    set.invalid[story.storyRef] = read.message
   }
   return set
 }
@@ -443,7 +413,7 @@ export type QaToolContext =
       checksDir: string
       recipe: AppLaunch
     } & (
-      | { kind: "author" | "verify"; story: StoryChecks }
+      | { kind: "author"; story: StoryChecks }
       | { kind: "gate"; gate: GateChecks }
     ))
   | { ok: false; code: string; message: string }
@@ -477,6 +447,13 @@ export function qaToolContext(
       code: "exploratory_step",
       message:
         "A user story's test step runs no checks: verify each criterion by exercising the running app yourself and save evidence. The milestone's acceptance gate writes and runs the Playwright suite after the story merges.",
+    }
+  if (kind === "smoke")
+    return {
+      ok: false,
+      code: "smoke_step",
+      message:
+        "A merge's smoke step runs no checks: start the app, run the project's own tests, and spot-check the story's criteria in the running app. The milestone's acceptance gate runs the Playwright suite once the wave merges.",
     }
   if (kind === "gate") {
     const gate = gateChecks(root.missionControl!)
@@ -1067,6 +1044,18 @@ export async function completeAuthorStep(input: {
 export function appGuidance(
   story: Pick<StoryChecks, "checksDir" | "recipe">
 ): string[] {
+  return [...appStartGuidance(story), NODE_SCRIPT_GUIDANCE]
+}
+
+// A check that starts a Node script (the fixture above, or a criterion about
+// how the server starts): the user may have no Node, and the harness makes
+// process.execPath run scripts as Node (plan 110, the runner hook).
+const NODE_SCRIPT_GUIDANCE =
+  '- A check that runs a Node script itself (the app\'s server, or a helper) starts it with `process.execPath` (`spawn(process.execPath, ["server.js"])`, or `fork`), not `node`: Node may not be installed, and the harness makes `process.execPath` run scripts as Node.'
+
+function appStartGuidance(
+  story: Pick<StoryChecks, "checksDir" | "recipe">
+): string[] {
   return story.recipe.services.length
     ? [
         `- A check that needs the running app lists the services it needs in \`"services"\` (from this workspace's app launch recipe: ${story.recipe.services.map((service) => `\`${service.key}\``).join(", ")}). \`run_checks\` starts them first, on free ports. A Playwright check gets the first one as its \`baseURL\`; any check gets \`BASE_URL\` (the first one), \`APP_<KEY>_URL\` and \`APP_<KEY>_PORT\` in its environment, and a command check \`{port:<key>}\` in its command. Don't hard-code ports or start the app inside the check.`,
@@ -1107,15 +1096,10 @@ export function authorStepNote(story: StoryChecks): string {
 // ── the test step: exploration (plan 110.04) ────────────────────────────────
 
 // How each criterion's verification is recorded and judged (plan 109.05).
-function methodLines(withChecks: boolean): string[] {
+function methodLines(): string[] {
   return [
     "### How each criterion was verified",
     "Every criterion in `record_proof` says how you verified it (`method`), and the harness checks the claim against what it recorded in this step:",
-    ...(withChecks
-      ? [
-          "- `qa_check`: the manifest's automated checks for it passed here through `run_checks`. List every one of them in `checkIds`. A criterion with automated checks can't be met any other way, and a check that failed or didn't run here means it isn't met.",
-        ]
-      : []),
     "- `app_exercised`: you drove the running app. Cite the evidence paths `browser_screenshot` (or `save_evidence`) returned in `artifacts`. A criterion you saw hold in the app needs this.",
     "- `command`: a command you ran yourself (curl, the CLI, a script in your scratch directory). Quote what it printed in the evidence. `builder_tests`: only the builder's tests; allowed, but flagged on the user story.",
     "- `code_read`: you only read the code. That never makes a criterion met: record it `not_verifiable` with a reason.",
@@ -1134,37 +1118,47 @@ export function exploreStepNote(story: Pick<StoryChecks, "recipe">): string {
       ? `- Start the app with \`app_start\` (this workspace's app launch recipe: ${services.map((service) => `\`${service.key}\``).join(", ")}) and open the URL it gives you in the browser.`
       : "- This workspace has no app launch recipe. Start the app yourself in the background with the project's own start command (a package.json `start` or `dev` script, or `node server.js`) on a free port, or serve its static files with a small local server, then open its `http://localhost:<port>` URL in the browser. Stop it before you finish. If nothing in this worktree runs yet, say so and record what you could verify.",
     "- Call `browser_snapshot` before you interact and after the page changes. Exercise each criterion's happy path, then the edges it implies: empty and invalid input, repeating the action, errors.",
+    "- The snapshot can leave things out. Before you decide some text or element isn't there, take a `browser_screenshot` and look: what the screenshot shows is what the user sees.",
     "- Take a `browser_screenshot` at the moment that shows each criterion holding (or failing), and cite its path. For what a screenshot can't show, save `browser_console` / `browser_network` output with `save_evidence: true`.",
+    "- Keyboard-only criteria: use `browser_press_key` (Tab, Shift+Tab, Enter, Space, Escape, arrows) from the start of the page, never the pointer. Each press reports what has focus and whether it shows a visible focus indicator.",
+    "- Layout and responsive criteria: use `browser_set_viewport` (for example 375 × 812, then 1280 × 800) and screenshot each size; it reports horizontal overflow. Restore with 0 × 0.",
     "- An app the browser can't drive (a CLI, an API, a desktop app): exercise it with commands and record `command` with what they printed.",
+    "- A criterion your tools really can't exercise: record it `deferred` with the reason. The milestone's acceptance gate proves it with Playwright after this story merges. It doesn't block acceptance, but verify everything you can here, and never send the build back for something you couldn't check.",
     "- Write nothing in the repository. Throwaway scripts and notes go in your scratch directory.",
     "",
-    ...methodLines(false),
+    ...methodLines(),
   ].join("\n")
 }
 
-// Run when a merge conflict's re-verification step starts: the results of
-// an earlier attempt are cleared (a resumed worker keeps its own). Returns
-// the kickoff note.
-export async function startVerifyStep(input: {
-  run: ProcessRun
-  phaseRunId: string
-  resuming: boolean
-}): Promise<string | null> {
-  const root = rootRun(input.run)
-  const story = root.missionControl ? storyChecks(root.missionControl) : null
+// The kickoff of a merge conflict's smoke step (plan 110.05): the merged
+// result starts, the project's own tests pass, and QA spot-checks the
+// conflicted story's criteria in the running app. No checks to run: frozen
+// contracts made the integrator rework round after round, and the wave gate
+// proves the criteria properly once the wave merges.
+export function smokeStepKickoff(link: MissionControlRunLink): string | null {
+  const story = storyChecks(link)
   if (!story) return null
-  updateQaChecks(input.phaseRunId, (current) => ({
-    ...current,
-    results: input.resuming ? current.results : [],
-  }))
-  return verifyStepNote()
+  const entry = mergeQueue.getMergeEntryByResolutionRun(link.playbookRunId)
+  return smokeStepNote(story, entry?.conflictFiles ?? [])
 }
 
-export function verifyStepNote(): string {
+export function smokeStepNote(
+  story: Pick<StoryChecks, "recipe">,
+  conflictFiles: readonly string[] = []
+): string {
+  const services = story.recipe.services
   return [
-    "## QA checks",
-    "Run the checks: before anything else, call `run_checks`. On this merged result it runs the automated checks of every user story in this milestone that has a manifest, so a change that breaks an earlier story's checks shows up here. Use the browser only to investigate a failure.",
+    "## Smoke-testing the merged result",
+    "The integrator resolved a merge conflict in this worktree. Check that the merged result still works: a quick, honest pass, not a full verification. There are no checks to write or run: once the wave merges, the milestone's acceptance gate runs the Playwright suite against the integrated app.",
+    services.length
+      ? `1. **The app starts.** Start it with \`app_start\` (this workspace's app launch recipe: ${services.map((service) => `\`${service.key}\``).join(", ")}) and open the URL it gives you in the browser.`
+      : "1. **The app starts.** This workspace has no app launch recipe. Start the app yourself in the background with the project's own start command (a package.json `start` or `dev` script, or `node server.js`) on a free port, or serve its static files with a small local server, then open its `http://localhost:<port>` URL in the browser. Stop it before you finish.",
+    "2. **The project's own tests pass.** Run its test command (a package.json `test` script, `pytest`, `go test ./...`, or whatever the project uses) if it has one. Quote the summary line.",
+    `3. **Spot-check the story's criteria.** Exercise each acceptance criterion briefly in the running app, starting with the ones the conflicted files${conflictFiles.length ? ` (${conflictFiles.map((f) => `\`${f}\``).join(", ")})` : ""} touch. Take a \`browser_screenshot\` that shows each one and cite its path.`,
+    "- If the app doesn't start or the tests fail, record the verdict `rejected` and mark the criteria that breaks `not_met`, quoting the output in the evidence.",
+    "- A criterion that fails here goes to the user, who can accept the merge as is, fix it themselves, or drop the criterion. Don't ask the integrator to rework the merge for a detail the criterion doesn't ask for.",
+    "- Write nothing in the repository. Throwaway scripts and notes go in your scratch directory.",
     "",
-    ...methodLines(true),
+    ...methodLines(),
   ].join("\n")
 }

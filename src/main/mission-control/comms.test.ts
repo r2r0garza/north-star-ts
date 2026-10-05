@@ -570,16 +570,74 @@ describe.skipIf(!sqliteLoads)("seat comms: steer and escalate", () => {
       toAddress: "lead@orchestration",
       kind: "escalation",
     })
-    const top = ok(
+    // To the user, an escalation must be a decision (plan 110).
+    expect(
       bus.escalate(seat(feature, "lead@orchestration"), {
         reason: "Need a product decision.",
       })
+    ).toMatchObject({ ok: false, code: "needs_decision" })
+    const top = ok(
+      bus.escalate(seat(feature, "lead@orchestration"), {
+        reason: "Need a product decision.",
+        question: "Should refunds be pro-rated?",
+        options: ["Pro-rate them", "Refund in full"],
+      })
     )
     expect(top).toMatchObject({ toAddress: "user@rig", status: "delivered" })
+    expect(top.body).toContain(
+      "**Decision needed:** Should refunds be pro-rated?\n1. Pro-rate them\n2. Refund in full"
+    )
     // The one to the user notifies through Waiting on you instead.
     expect(notifications).toEqual([
       "Escalation from builder@implementation to lead@orchestration",
     ])
+  })
+})
+
+describe.skipIf(!sqliteLoads)("escalating a user story (plan 110)", () => {
+  it("shows the decider what QA found on its latest rejected proof", () => {
+    const { feature, userStory } = orchestrated()
+    features.setUserStoryExecution(
+      userStory.id,
+      {
+        proof: {
+          version: 1,
+          verdict: "rejected",
+          criteria: [
+            {
+              id: "AC-1",
+              status: "met",
+              method: "app_exercised",
+              evidence: "Saw it.",
+            },
+            {
+              id: "AC-2",
+              status: "not_verifiable",
+              method: "app_exercised",
+              evidence: "Tried at 1280px.",
+              reason: "The browser can't resize the viewport.",
+            },
+          ],
+          verifiedBy: { kind: "seat", address: "qa@implementation" },
+          builderAddresses: ["builder@implementation"],
+          processRunId: "run",
+          acceptedAt: null,
+        },
+      },
+      "test"
+    )
+    const escalation = ok(
+      bus.escalate(seat(feature, "lead@orchestration"), {
+        reason: "The proof keeps being rejected.",
+        anchor: `user_story:${userStory.key}`,
+        question: "How should we proceed?",
+        options: ["Defer AC-2 to the gate", "Drop AC-2"],
+      })
+    )
+    expect(escalation.body).toContain(
+      "**The latest proof (rejected):**\n- AC-2 not verifiable: The browser can't resize the viewport."
+    )
+    expect(escalation.body).not.toContain("AC-1")
   })
 })
 

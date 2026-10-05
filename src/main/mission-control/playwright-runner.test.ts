@@ -433,6 +433,46 @@ test("heading @CHK.M1.US1", async ({ page }) => {
     expect(getTestBrowserState().requested).toBe(true)
   }, 60_000)
 
+  for (const type of ["commonjs", "module"] as const)
+    it(`runs Node scripts a ${type} spec starts with process.execPath as Node, not as an Electron app`, async () => {
+      const root = workspace(
+        type,
+        `import { test, expect } from "@playwright/test"
+import { spawnSync, execFileSync, fork } from "node:child_process"
+import { writeFileSync } from "node:fs"
+import { join } from "node:path"
+const probe = "console.log(String(process.env.ELECTRON_RUN_AS_NODE) + ':' + typeof require('node:http').createServer)"
+test("starts node @CHK.M1.US1", async () => {
+  const spawned = spawnSync(process.execPath, ["-e", probe], { encoding: "utf8" })
+  expect(spawned.stdout.trim()).toBe("1:function")
+  expect(execFileSync(process.execPath, ["-e", probe], { encoding: "utf8" }).trim()).toBe("1:function")
+  const script = join(process.cwd(), "child.cjs")
+  writeFileSync(script, "process.send(process.env.ELECTRON_RUN_AS_NODE)")
+  const child = fork(script)
+  const message = await new Promise((resolve) => child.on("message", resolve))
+  expect(message).toBe("1")
+  // The worker itself still doesn't carry it, so _electron.launch is unaffected.
+  expect(process.env.ELECTRON_RUN_AS_NODE).toBeUndefined()
+})
+`
+      )
+      const run = await runPlaywrightCheck({
+        cwd: root,
+        checksDir: join(root, "e2e"),
+        storyRef: "CHK.M1.US1",
+        check: check("math.spec.ts"),
+        env,
+        outputDir: join(dir, "evidence"),
+      })
+      expect(run.output).not.toMatch(/Error launching app/)
+      expect(run.tests).toEqual([
+        expect.objectContaining({
+          title: "starts node @CHK.M1.US1",
+          status: "passed",
+        }),
+      ])
+    }, 60_000)
+
   it("checks an Electron app with _electron.launch, without a browser", async () => {
     const root = workspace(
       "commonjs",

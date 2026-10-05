@@ -61,6 +61,22 @@ export interface InteractionResult {
   title: string
 }
 
+// A key press (plan 110): where focus landed afterwards, so keyboard-only use
+// can be followed without a snapshot after every Tab.
+export interface KeyPressResult extends InteractionResult {
+  focused: string
+}
+
+// The page's layout viewport after an emulated resize (plan 110), with what
+// a responsive check needs: whether the page is wider than the viewport.
+export interface ViewportResult {
+  width: number
+  height: number
+  innerWidth: number
+  scrollWidth: number
+  overflowsHorizontally: boolean
+}
+
 export interface SelectOptionResult extends InteractionResult {
   option: string
   value: string | null
@@ -1039,6 +1055,108 @@ export class BrowserSession {
       await this.settle(timeoutMs, signal)
     }
     return this.interactionResult(entry.label)
+  }
+
+  // Press a key, optionally with modifiers ("Tab", "Shift+Tab", "Enter",
+  // "Space", "Escape", arrows), at whatever has focus — the way a keyboard-only
+  // user moves and acts. Reports what has focus afterwards.
+  async pressKey(
+    combo: string,
+    timeoutMs: number,
+    signal?: AbortSignal
+  ): Promise<KeyPressResult> {
+    const parsed = parseKeyCombo(combo)
+    await this.ensureAttached(timeoutMs, signal)
+    const dbg = this.view.webContents.debugger
+    const base = {
+      key: parsed.key,
+      code: parsed.code,
+      windowsVirtualKeyCode: parsed.keyCode,
+      nativeVirtualKeyCode: parsed.keyCode,
+      modifiers: parsed.modifiers,
+    }
+    const text = parsed.modifiers & ~MODIFIER_SHIFT ? undefined : parsed.text
+    await sendCommand(
+      dbg,
+      "Input.dispatchKeyEvent",
+      text
+        ? { ...base, type: "keyDown", text, unmodifiedText: text }
+        : { ...base, type: "rawKeyDown" },
+      timeoutMs,
+      signal
+    )
+    await sendCommand(
+      dbg,
+      "Input.dispatchKeyEvent",
+      { ...base, type: "keyUp" },
+      timeoutMs,
+      signal
+    )
+    await this.settle(timeoutMs, signal)
+    const { result } = await sendCommand<{ result?: { value?: unknown } }>(
+      dbg,
+      "Runtime.evaluate",
+      { expression: FOCUSED_ELEMENT, returnByValue: true, silent: true },
+      timeoutMs,
+      signal
+    )
+    return {
+      ...this.interactionResult(parsed.label),
+      focused: typeof result?.value === "string" ? result.value : "unknown",
+    }
+  }
+
+  // Emulate a viewport size (a phone, a narrow window) for this tab, or
+  // restore the real one with 0 × 0. Reports whether the page now overflows
+  // horizontally.
+  async setViewport(
+    width: number,
+    height: number,
+    timeoutMs: number,
+    signal?: AbortSignal
+  ): Promise<ViewportResult> {
+    await this.ensureAttached(timeoutMs, signal)
+    const dbg = this.view.webContents.debugger
+    if (width === 0 && height === 0)
+      await sendCommand(
+        dbg,
+        "Emulation.clearDeviceMetricsOverride",
+        {},
+        timeoutMs,
+        signal
+      )
+    else
+      await sendCommand(
+        dbg,
+        "Emulation.setDeviceMetricsOverride",
+        { width, height, deviceScaleFactor: 0, mobile: false },
+        timeoutMs,
+        signal
+      )
+    await this.settle(timeoutMs, signal)
+    const { result } = await sendCommand<{
+      result?: { value?: { innerWidth?: number; scrollWidth?: number } }
+    }>(
+      dbg,
+      "Runtime.evaluate",
+      {
+        expression:
+          "({ innerWidth: window.innerWidth, scrollWidth: Math.max(document.documentElement.scrollWidth, document.body ? document.body.scrollWidth : 0) })",
+        returnByValue: true,
+        silent: true,
+      },
+      timeoutMs,
+      signal
+    )
+    const innerWidth = result?.value?.innerWidth ?? 0
+    const scrollWidth = result?.value?.scrollWidth ?? 0
+    return {
+      width,
+      height,
+      innerWidth,
+      scrollWidth,
+      overflowsHorizontally: scrollWidth > innerWidth,
+    }
   }
 
   async selectOption(
@@ -2439,3 +2557,104 @@ function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
 
 const SENSITIVE_URL_KEY_RE =
   /^(token|access_token|refresh_token|id_token|code|key|api_key|apikey|password|secret|signature|sig|auth|authorization|cookie)$/i
+
+// ── keys (plan 110) ─────────────────────────────────────────────────────────
+
+const MODIFIER_ALT = 1
+const MODIFIER_CTRL = 2
+const MODIFIER_META = 4
+const MODIFIER_SHIFT = 8
+
+const MODIFIERS: Record<string, number> = {
+  alt: MODIFIER_ALT,
+  option: MODIFIER_ALT,
+  ctrl: MODIFIER_CTRL,
+  control: MODIFIER_CTRL,
+  meta: MODIFIER_META,
+  cmd: MODIFIER_META,
+  command: MODIFIER_META,
+  shift: MODIFIER_SHIFT,
+}
+
+// Named keys: the DOM key, code, Windows virtual key code, and the text a
+// press inserts (Enter and Space activate buttons and submit forms through it).
+const NAMED_KEYS: Record<
+  string,
+  { key: string; code: string; keyCode: number; text?: string }
+> = {
+  tab: { key: "Tab", code: "Tab", keyCode: 9 },
+  enter: { key: "Enter", code: "Enter", keyCode: 13, text: "\r" },
+  return: { key: "Enter", code: "Enter", keyCode: 13, text: "\r" },
+  space: { key: " ", code: "Space", keyCode: 32, text: " " },
+  escape: { key: "Escape", code: "Escape", keyCode: 27 },
+  esc: { key: "Escape", code: "Escape", keyCode: 27 },
+  backspace: { key: "Backspace", code: "Backspace", keyCode: 8 },
+  delete: { key: "Delete", code: "Delete", keyCode: 46 },
+  arrowup: { key: "ArrowUp", code: "ArrowUp", keyCode: 38 },
+  arrowdown: { key: "ArrowDown", code: "ArrowDown", keyCode: 40 },
+  arrowleft: { key: "ArrowLeft", code: "ArrowLeft", keyCode: 37 },
+  arrowright: { key: "ArrowRight", code: "ArrowRight", keyCode: 39 },
+  home: { key: "Home", code: "Home", keyCode: 36 },
+  end: { key: "End", code: "End", keyCode: 35 },
+  pageup: { key: "PageUp", code: "PageUp", keyCode: 33 },
+  pagedown: { key: "PageDown", code: "PageDown", keyCode: 34 },
+}
+
+export const PRESSABLE_KEYS =
+  "Tab, Enter, Space, Escape, Backspace, Delete, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Home, End, PageUp, PageDown, or a single character"
+
+// "Shift+Tab" → the key event fields. Throws on a key it doesn't know.
+export function parseKeyCombo(combo: string): {
+  key: string
+  code: string
+  keyCode: number
+  text?: string
+  modifiers: number
+  label: string
+} {
+  const parts = combo
+    .split("+")
+    .map((part) => part.trim())
+    .filter(Boolean)
+  // "Shift++" means Shift and the plus key.
+  if (combo.trim().endsWith("++")) parts.push("+")
+  const name = parts.pop() ?? ""
+  let modifiers = 0
+  for (const part of parts) {
+    const bit = MODIFIERS[part.toLowerCase()]
+    if (!bit)
+      throw new Error(
+        `Unknown modifier "${part}". Use Shift, Ctrl, Alt, or Meta.`
+      )
+    modifiers |= bit
+  }
+  const named = NAMED_KEYS[name.toLowerCase().replace(/\s+/g, "")]
+  if (named) return { ...named, modifiers, label: `key ${combo.trim()}` }
+  if ([...name].length === 1) {
+    const upper = name.toUpperCase()
+    const letter = /^[A-Z]$/.test(upper)
+    const digit = /^[0-9]$/.test(name)
+    return {
+      key: name,
+      code: letter ? `Key${upper}` : digit ? `Digit${name}` : "",
+      keyCode: letter || digit ? upper.charCodeAt(0) : 0,
+      text: name,
+      modifiers,
+      label: `key ${combo.trim()}`,
+    }
+  }
+  throw new Error(`Unknown key "${name}". Use ${PRESSABLE_KEYS}.`)
+}
+
+// The focused element after a key press, as role, name, and tag.
+const FOCUSED_ELEMENT = `(() => {
+  const el = document.activeElement
+  if (!el || el === document.body) return "nothing (the page body)"
+  const role = el.getAttribute("role") || el.tagName.toLowerCase()
+  const name = (el.getAttribute("aria-label") || (el.labels && el.labels[0] && el.labels[0].textContent) || el.textContent || el.getAttribute("placeholder") || el.getAttribute("name") || "").trim().replace(/\\s+/g, " ").slice(0, 80)
+  const visibleFocus = (() => {
+    const style = getComputedStyle(el)
+    return el.matches(":focus-visible") && (style.outlineStyle !== "none" && parseFloat(style.outlineWidth) > 0 || style.boxShadow !== "none")
+  })()
+  return role + (name ? " \\"" + name + "\\"" : "") + (visibleFocus ? " (visible focus indicator)" : " (no visible outline or box-shadow on focus)")
+})()`

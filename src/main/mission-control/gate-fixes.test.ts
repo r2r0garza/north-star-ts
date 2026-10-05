@@ -18,6 +18,7 @@ import * as features from "../db/repositories/features"
 import * as playbooks from "../db/repositories/playbooks"
 import * as proposalsRepo from "../db/repositories/proposals"
 import * as waveGates from "../db/repositories/wave-gates"
+import { listEvents } from "../db/repositories/mc-events"
 import { upsertWorkspace } from "../db/repositories/workspaces"
 import type {
   DriveMode,
@@ -375,6 +376,12 @@ describe.skipIf(!sqliteLoads)(
             criterion: "items toggles",
             note: "Good enough for now.",
           }),
+        ])
+        // The decision restarts the story's proof-polishing count (110.05).
+        expect(
+          listEvents(ctx.feature.id).filter((e) => e.type === "user_decision")
+        ).toEqual([
+          expect.objectContaining({ userStoryId: ctx.story("items").id }),
         ])
         // Twice is refused.
         expect(() =>

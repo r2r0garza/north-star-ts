@@ -905,12 +905,13 @@ export interface RunAgentLoopOptions {
   // seats from the run itself; this flag only controls the offer.
   processProofStep?: boolean
   // Mission Control (plan 109.02): this worker is a QA seat's step. A checks
-  // step ("author") and a merge re-verification ("verify") are offered
-  // run_checks; a wave gate's QA step ("gate", plan 110.02) run_checks and
-  // record_gate. A user story's test step ("explore", plan 110.04) verifies
-  // by exploration and gets neither. The tools re-derive the story (or gate)
-  // and manifests from the run; this only controls the offer.
-  processQaChecks?: "author" | "explore" | "verify" | "gate"
+  // step ("author") is offered run_checks; a wave gate's QA step ("gate",
+  // plan 110.02) run_checks and record_gate. A user story's test step
+  // ("explore", plan 110.04) and a merge conflict's smoke step ("smoke",
+  // plan 110.05) verify by exploration and get neither. The tools re-derive
+  // the story (or gate) and manifests from the run; this only controls the
+  // offer.
+  processQaChecks?: "author" | "explore" | "smoke" | "gate"
   // Mission Control (plan 109.03): this worker is a builder or QA seat's step
   // and the workspace has an app launch recipe. Offers app_start /
   // app_status / app_stop; the tools re-derive the recipe and the owning
@@ -1479,8 +1480,8 @@ export async function runAgentLoop(
           : [],
         // run_checks (plan 109.02): process-structural too, offered only to
         // a QA seat's step that runs checks.
-        opts.processQaChecks &&
-          opts.processQaChecks !== "explore" &&
+        (opts.processQaChecks === "author" ||
+          opts.processQaChecks === "gate") &&
           opts.processRunId &&
           !planMode
           ? [

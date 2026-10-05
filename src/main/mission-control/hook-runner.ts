@@ -87,6 +87,9 @@ export async function startHookRun(
         input.hook === "after_all_user_stories" && milestone
           ? renderFollowupsForReview(feature.id, milestone.id)
           : null,
+      appLaunch: feature.workspaceId
+        ? (getWorkspace(feature.workspaceId)?.appLaunch ?? null)
+        : null,
     }),
     intentChain: renderIntentChain({ feature, milestone }),
     title: milestone
@@ -97,8 +100,8 @@ export async function startHookRun(
 
 // A user story's merge conflicted (plan 106.5, decision 6): run the milestone
 // playbook's after_each_user_story hook in the prepared resolution worktree. The
-// integrator role falls back to the lead; the hook's proof step re-verifies
-// the user story's own acceptance criteria before anything is committed. Throws
+// integrator role falls back to the lead; the hook's proof step smoke-tests
+// the merged result (plan 110.05) before anything is committed. Throws
 // when there is nothing to run, and the integration service escalates.
 export async function startConflictResolution(
   runner: UserStoryRunner,

@@ -5,6 +5,7 @@ import * as events from "../../db/repositories/mc-events"
 import * as playbooks from "../../db/repositories/playbooks"
 import * as comms from "../../db/repositories/seat-comms"
 import * as signals from "../../db/repositories/health-signals"
+import * as waveGates from "../../db/repositories/wave-gates"
 import { hasActiveFeatureTask } from "../../db/repositories/tasks"
 import type {
   Feature,
@@ -32,6 +33,7 @@ import {
 } from "./alerts"
 import { runDetectors, type Finding, type HealthSnapshot } from "./detectors"
 import { weakProofCriteria } from "../proof"
+import { isWaveGateReport } from "../gate-record"
 import {
   breakdown,
   lastProgress,
@@ -277,6 +279,30 @@ function busyBySeat(featureId: string, now: number): Map<string, number> {
   return new Map(rows.map((r) => [r.address, Math.max(0, r.ms)]))
 }
 
+// User stories and milestones already waiting on the user (plan 110.05): an
+// escalated merge conflict, or an open acceptance gate escalation. Health
+// doesn't pause the feature over them; the user already has the decision.
+export function pendingDecisionAnchors(featureId: string): Set<string> {
+  const anchors = new Set<string>()
+  for (const entry of mergeQueue.listMergeEntries({
+    featureId,
+    statuses: ["conflict"],
+  }))
+    if (entry.escalated) {
+      anchors.add(entry.userStoryId)
+      anchors.add(entry.milestoneId)
+    }
+  for (const gate of waveGates.listFeatureWaveGates(featureId)) {
+    if (gate.status !== "escalated" || !isWaveGateReport(gate.report)) continue
+    for (const escalation of gate.report.escalations ?? [])
+      if (!escalation.resolution) {
+        anchors.add(escalation.root.userStoryId)
+        anchors.add(gate.milestoneId)
+      }
+  }
+  return anchors
+}
+
 // ── refocus_ignored ─────────────────────────────────────────────────────────
 
 // A drift signal's Refocus was ignored when one of its Refocus reminders was
@@ -475,6 +501,7 @@ export class HealthMonitor {
   ): void {
     const critical: AlertContent[] = []
     const escalateMs = settings.healthEscalateMinutes * MINUTE_MS
+    const awaitingUser = pendingDecisionAnchors(feature.id)
     for (const { finding } of pairs) {
       // Re-read: an earlier pair in this pass may have updated it.
       const signal = signals.getSignal(
@@ -488,12 +515,15 @@ export class HealthMonitor {
         anchorLabel: finding.anchor.label,
         evidence: finding.evidence,
       }
+      // An anchor with a pending user decision never auto-pauses: the
+      // decision is already in front of the user (plan 110.05).
       const escalate =
-        finding.severity === "critical" ||
-        (finding.severity === "warn" &&
-          signal.status === "open" &&
-          escalateMs > 0 &&
-          now - signal.firstSeenAt >= escalateMs)
+        !awaitingUser.has(finding.anchor.id) &&
+        (finding.severity === "critical" ||
+          (finding.severity === "warn" &&
+            signal.status === "open" &&
+            escalateMs > 0 &&
+            now - signal.firstSeenAt >= escalateMs))
       if (RANK[finding.severity] >= RANK.warn && signal.alertedAt === null) {
         const to = feature.rigSnapshot
           ? contextSeat(feature.rigSnapshot, {

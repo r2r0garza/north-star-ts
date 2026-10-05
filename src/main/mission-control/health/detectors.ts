@@ -262,14 +262,21 @@ export function stalled(s: HealthSnapshot): Finding[] {
 // ── proof_polishing (recursive proof loop) ──────────────────────────────────
 
 // A proof re-recorded after it was accepted, or rejected again and again
-// across a user story's attempts.
+// across a user story's attempts. Counted since the user last decided on the
+// story (plan 110.05): a decision is the answer to the loop, not more of it.
 export function proofPolishing(s: HealthSnapshot): Finding[] {
   const findings: Finding[] = []
   for (const story of s.userStories) {
     if (story.status === "cancelled") continue
-    const mine = s.events.filter((e) => e.userStoryId === story.id)
+    const all = s.events.filter((e) => e.userStoryId === story.id)
+    const decided = all.findLastIndex((e) => e.type === "user_decision")
+    const mine = all.slice(decided + 1)
     const after = mine.filter((e) => e.type === "proof_after_acceptance")
-    const rejected = mine.filter((e) => e.type === "proof_rejected")
+    // A rejection only for what the verifier couldn't exercise (plan 110) is
+    // a tooling gap, not a proof being polished.
+    const rejected = mine.filter(
+      (e) => e.type === "proof_rejected" && e.detail?.unverified !== true
+    )
     if (!after.length && rejected.length < PROOF_REJECTIONS) continue
     const evidence = [...after, ...rejected]
       .sort((a, b) => a.createdAt - b.createdAt)

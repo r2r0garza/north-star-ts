@@ -75,15 +75,18 @@ export const sendMessageTool: Tool = {
         properties: {
           to: {
             type: "string",
-            description: "The recipient seat's address, e.g. qa@implementation.",
+            description:
+              "The recipient seat's address, e.g. qa@implementation.",
           },
           body: {
             type: "string",
-            description: "The message. Short and specific; point to files for detail.",
+            description:
+              "The message. Short and specific; point to files for detail.",
           },
           thread_id: {
             type: "string",
-            description: "Continue an existing thread. Omit to start a new one.",
+            description:
+              "Continue an existing thread. Omit to start a new one.",
           },
           subject: {
             type: "string",
@@ -144,7 +147,10 @@ export const replyTool: Tool = {
       parameters: {
         type: "object",
         properties: {
-          message_id: { type: "string", description: "The message you are answering." },
+          message_id: {
+            type: "string",
+            description: "The message you are answering.",
+          },
           body: { type: "string", description: "Your reply." },
         },
         required: ["message_id", "body"],
@@ -175,7 +181,10 @@ export const listInboxTool: Tool = {
       parameters: {
         type: "object",
         properties: {
-          limit: { type: "number", description: "How many recent messages (default 20, max 50)." },
+          limit: {
+            type: "number",
+            description: "How many recent messages (default 20, max 50).",
+          },
         },
       },
     },
@@ -200,17 +209,31 @@ export const escalateTool: Tool = {
       name: "escalate",
       description:
         "Raise a blocker or a decision you cannot make. It goes to your pod lead, else the " +
-        "overseeing pod's lead, else the user, and always notifies the user.",
+        "overseeing pod's lead, else the user, and always notifies the user. When it reaches the " +
+        "user, ask a question with 2–4 options: the user decides; they don't run the work.",
       parameters: {
         type: "object",
         properties: {
           reason: {
             type: "string",
-            description: "What is blocked or needs deciding, and what you need.",
+            description:
+              "What is blocked or needs deciding, and what you need.",
           },
           anchor: {
             type: "string",
-            description: '"user_story:<key>" or "milestone:<key>". Defaults to the work you are on.',
+            description:
+              '"user_story:<key>" or "milestone:<key>". Defaults to the work you are on.',
+          },
+          question: {
+            type: "string",
+            description:
+              "What the decider must decide, as a question. Required when the escalation reaches the user.",
+          },
+          options: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "2–4 concrete choices for the question, each with its consequence. Required when the escalation reaches the user.",
           },
         },
         required: ["reason"],
@@ -223,7 +246,14 @@ export const escalateTool: Tool = {
     const reason = text(args.reason)
     if (!reason) return toolError("bad_args", "escalate needs a `reason`.")
     return sent(
-      seat.bus.escalate(seat.turn, { reason, anchor: text(args.anchor) }),
+      seat.bus.escalate(seat.turn, {
+        reason,
+        anchor: text(args.anchor),
+        question: text(args.question),
+        options: Array.isArray(args.options)
+          ? args.options.filter((o): o is string => typeof o === "string")
+          : [],
+      }),
       "Escalated. The user has been notified."
     )
   },

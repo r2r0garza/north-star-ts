@@ -83,6 +83,7 @@ import {
 } from "./db/repositories/workspaces"
 import { getFeature as getFeatureRow } from "./db/repositories/features"
 import { WorkspaceAnalysisService } from "./mission-control/workspace-analysis"
+import { APP_LAUNCH_FINDING } from "./mission-control/workspace-analysis/app-launch"
 import { stopAllServicesSync } from "./mission-control/app-launch"
 import { registerWorkspaceAnalysisHandlers } from "./ipc/workspace-analysis-handlers"
 import { resolveLlm, createCompletion } from "./agent/providers"
@@ -306,6 +307,9 @@ const userStoryRunner: UserStoryRunner = new UserStoryRunner({
   integration: milestoneIntegration,
   appLaunchFinding: ({ feature, ref, record }) =>
     workspaceAnalysis.appLaunchAtRef(feature.id, ref, { record }),
+  applyAppLaunch: async (feature) => {
+    await workspaceAnalysis.applyFix(feature.id, APP_LAUNCH_FINDING)
+  },
 })
 // The Navigator (plan 106.6): deterministic GPS for each feature. It ticks
 // on durable work events (debounced), drives Autopilot's mechanical steps, and
@@ -338,6 +342,7 @@ const milestoneNavigator: Navigator = new Navigator({
   onResumed: (featureId) => {
     seatSessions.dispatchFeature(featureId)
     healthMonitor.onResumed(featureId)
+    milestoneIntegration.onFeatureResumed(featureId)
   },
   onCancelled: (featureId) => seatSessions.cancelFeature(featureId),
   onChanged: (featureId) => {

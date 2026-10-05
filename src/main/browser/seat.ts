@@ -446,6 +446,12 @@ export class SeatBrowserPool {
         run((tab) => tab.session.click(ref, INTERACT_TIMEOUT_MS, signal)),
       hover: (ref) =>
         run((tab) => tab.session.hover(ref, INTERACT_TIMEOUT_MS, signal)),
+      pressKey: (combo) =>
+        run((tab) => tab.session.pressKey(combo, INTERACT_TIMEOUT_MS, signal)),
+      setViewport: (width, height) =>
+        run((tab) =>
+          tab.session.setViewport(width, height, INTERACT_TIMEOUT_MS, signal)
+        ),
       drag: (fromRef, toRef) =>
         run((tab) =>
           tab.session.drag(fromRef, toRef, INTERACT_TIMEOUT_MS, signal)

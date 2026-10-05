@@ -20,6 +20,7 @@ const STATUSES: readonly ProofCriterionStatus[] = [
   "met",
   "not_met",
   "not_verifiable",
+  "deferred",
 ]
 
 export const PROOF_METHODS: readonly ProofVerificationMethod[] = [
@@ -293,9 +294,19 @@ export function decideProof(input: {
   playbookRun: PlaybookRun
   processRunId: string
   maxProofRevisions: number
+  // A user story's own test step in a milestone with a wave gate (plan 110):
+  // a criterion its tools can't exercise may be deferred to the gate.
+  deferrable?: boolean
+  // The step tried to start the app and it didn't come up. That's the build's
+  // (or its recipe's) to fix, not a tooling gap: nothing is deferred.
+  appFailed?: boolean
   now?: number
 }): ProofDecision {
-  const { submission, verifier, playbookRun } = input
+  const { verifier, playbookRun } = input
+  const submission =
+    input.deferrable && !input.appFailed
+      ? deferUnverified(input.submission)
+      : input.submission
   const current = playbookRun.proof
 
   // Anti recursive-proof-loop: an accepted proof is frozen.
@@ -319,9 +330,39 @@ export function decideProof(input: {
     }
 
   const warnings: string[] = []
+  for (const criterion of submission.criteria) {
+    if (criterion.status !== "deferred") continue
+    if (input.appFailed)
+      return {
+        kind: "invalid",
+        message: `Criterion ${criterion.id} can't be deferred: the app didn't start in this step, which is something the build must fix, not a gap in your tools. Record the criteria that need the running app not_met (say the app wouldn't start, with its output) and verdict "rejected", so it goes back to the builder.`,
+      }
+    if (!input.deferrable)
+      return {
+        kind: "invalid",
+        message: `Criterion ${criterion.id} can't be deferred: only a user story's own test step defers, and only when its milestone has a wave acceptance gate to prove it. Verify it, or record it not_verifiable with a reason.`,
+      }
+    if (!criterion.reason)
+      return {
+        kind: "invalid",
+        message: `Deferring ${criterion.id} needs a reason: what your tools can't do that the gate's Playwright checks can.`,
+      }
+  }
   if (submission.verdict === "accepted") {
+    const deferred = submission.criteria.filter((c) => c.status === "deferred")
+    if (deferred.length === submission.criteria.length)
+      return {
+        kind: "invalid",
+        message:
+          'Every criterion is deferred, so nothing was verified here. Verify at least one in the running app, or record verdict "rejected".',
+      }
+    for (const criterion of deferred)
+      warnings.push(
+        `${criterion.id} deferred to the wave gate by ${verifier.address}: ${criterion.reason}`
+      )
     for (const criterion of submission.criteria) {
-      if (criterion.status === "met") continue
+      if (criterion.status === "met" || criterion.status === "deferred")
+        continue
       if (criterion.status === "not_met")
         return {
           kind: "invalid",
@@ -428,6 +469,36 @@ export function decideProof(input: {
     proof,
     proofRevisions,
     exhausted: !accepted && proofRevisions >= input.maxProofRevisions,
+  }
+}
+
+// A criterion the test step couldn't exercise isn't a fault in the build
+// (plan 110). With a wave gate to prove it, it's deferred there instead of
+// failing the story, which only rebuilds working code: quick-list-2's
+// list-persistence was retried over an empty-state text its page snapshot
+// didn't show. Only when nothing failed and something was verified here.
+function deferUnverified(submission: ProofSubmission): ProofSubmission {
+  const { criteria } = submission
+  if (
+    !criteria.some((c) => c.status === "not_verifiable") ||
+    criteria.some((c) => c.status === "not_met") ||
+    !criteria.some((c) => c.status === "met")
+  )
+    return submission
+  return {
+    verdict: "accepted",
+    criteria: criteria.map((c) =>
+      c.status === "not_verifiable"
+        ? {
+            ...c,
+            status: "deferred",
+            reason:
+              c.reason?.trim() ||
+              c.evidence.trim() ||
+              "The test step couldn't exercise it.",
+          }
+        : c
+    ),
   }
 }
 

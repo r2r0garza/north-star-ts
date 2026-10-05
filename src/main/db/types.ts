@@ -868,6 +868,12 @@ export interface MilestoneDodReview {
   by: string
   summary: string
   at: number
+  // The lead's per-requirement judgment against the feature's intent.
+  intentCheck?: Array<{
+    requirement: string
+    status: "met" | "later_milestone" | "not_met"
+    evidence: string
+  }>
 }
 
 export interface MilestoneMergePolicy {
@@ -918,11 +924,37 @@ export interface MergeQueueEntry {
   resolutionWorktree: string | null
   resolutionStartOid: string | null
   resolutionAttempts: number
+  // The conflict resolution's smoke step found criteria that don't hold
+  // (plan 110.05); null otherwise.
+  smoke: MergeSmokeFailure | null
   proofAcceptedAt: number
   createdAt: number
   updatedAt: number
   startedAt: number | null
   finishedAt: number | null
+}
+
+// A merge conflict's smoke step that rejected the merged result (plan
+// 110.05). The resolution worktree is kept, so the user can accept the merge
+// as is, fix it themselves, or drop the criteria, the same three actions as
+// an acceptance gate escalation.
+export interface MergeSmokeFailure {
+  resolutionRunId: string
+  // The criteria the smoke step didn't find holding, with their words at the
+  // time (positional ids shift when a criterion is dropped).
+  criteria: Array<{
+    id: string
+    text: string
+    status: ProofCriterionStatus
+    evidence: string
+    reason?: string
+  }>
+  decision: {
+    action: GateEscalationAction
+    note: string
+    by: string
+    at: number
+  } | null
 }
 
 export interface UserStory {
@@ -1212,7 +1244,13 @@ export interface SeatBindingsSnapshot {
   intentChain: string
 }
 
-export type ProofCriterionStatus = "met" | "not_met" | "not_verifiable"
+// "deferred" (plan 110): a story's own test step couldn't exercise the
+// criterion with its tools, and the milestone's wave gate proves it instead.
+export type ProofCriterionStatus =
+  | "met"
+  | "not_met"
+  | "not_verifiable"
+  | "deferred"
 
 // How a proof criterion was verified (plan 109.05). Proofs recorded before
 // it have none, shown as "unspecified".

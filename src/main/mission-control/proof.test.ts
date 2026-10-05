@@ -582,3 +582,87 @@ describe("userStoryStatusPath", () => {
     expect(userStoryStatusPath("done", "running")).toBeNull()
   })
 })
+
+describe("deferring a criterion to the wave gate (plan 110)", () => {
+  const deferAc2 = () => {
+    const parsed = submission(["met", "deferred"])
+    parsed.criteria[1].reason = "No way to resize the viewport here."
+    return parsed
+  }
+
+  it("accepts a proof with a deferred criterion when the gate will prove it, with a warning", () => {
+    const decision = decide({ submission: deferAc2(), deferrable: true })
+    expect(decision).toMatchObject({ kind: "recorded" })
+    if (decision.kind !== "recorded") return
+    expect(decision.proof.verdict).toBe("accepted")
+    expect(decision.proof.criteria[1]).toMatchObject({ status: "deferred" })
+    expect(decision.proof.warnings).toEqual([
+      "AC-2 deferred to the wave gate by qa@impl: No way to resize the viewport here.",
+    ])
+  })
+
+  it("defers what the test step couldn't verify instead of rejecting a build that nothing failed", () => {
+    const unverified = submission(["met", "not_verifiable"], "rejected")
+    unverified.criteria[1].evidence = "The snapshot didn't show the empty-state text."
+    const decision = decide({ submission: unverified, deferrable: true })
+    expect(decision).toMatchObject({ kind: "recorded" })
+    if (decision.kind !== "recorded") return
+    expect(decision.proof.verdict).toBe("accepted")
+    expect(decision.proof.criteria[1]).toMatchObject({
+      status: "deferred",
+      reason: "The snapshot didn't show the empty-state text.",
+    })
+    expect(decision.proof.warnings).toEqual([
+      "AC-2 deferred to the wave gate by qa@impl: The snapshot didn't show the empty-state text.",
+    ])
+  })
+
+  it("defers nothing when the app wouldn't start in the step", () => {
+    const deferred = decide({ submission: deferAc2(), deferrable: true, appFailed: true })
+    expect(deferred).toMatchObject({
+      kind: "invalid",
+      message: expect.stringMatching(/the app didn't start in this step.*not_met/),
+    })
+    const unverified = decide({
+      submission: submission(["met", "not_verifiable"], "rejected"),
+      deferrable: true,
+      appFailed: true,
+    })
+    expect(unverified).toMatchObject({ kind: "recorded", proof: { verdict: "rejected" } })
+  })
+
+  it("still rejects when something failed, nothing was verified, or there's no gate", () => {
+    const failed = decide({
+      submission: submission(["not_met", "not_verifiable"], "rejected"),
+      deferrable: true,
+    })
+    expect(failed).toMatchObject({ kind: "recorded", proof: { verdict: "rejected" } })
+    const nothing = decide({
+      submission: submission(["not_verifiable", "not_verifiable"], "rejected"),
+      deferrable: true,
+    })
+    expect(nothing).toMatchObject({ kind: "recorded", proof: { verdict: "rejected" } })
+    const noGate = decide({ submission: submission(["met", "not_verifiable"], "rejected") })
+    expect(noGate).toMatchObject({ kind: "recorded", proof: { verdict: "rejected" } })
+  })
+
+  it("refuses to defer without a gate, without a reason, or everything", () => {
+    expect(decide({ submission: deferAc2() })).toMatchObject({
+      kind: "invalid",
+      message: expect.stringMatching(/AC-2 can't be deferred/),
+    })
+    expect(
+      decide({ submission: submission(["met", "deferred"]), deferrable: true })
+    ).toMatchObject({
+      kind: "invalid",
+      message: expect.stringMatching(/Deferring AC-2 needs a reason/),
+    })
+    const all = submission(["deferred", "deferred"], "accepted", {
+      reason: "Can't press keys.",
+    })
+    expect(decide({ submission: all, deferrable: true })).toMatchObject({
+      kind: "invalid",
+      message: expect.stringMatching(/Every criterion is deferred/),
+    })
+  })
+})

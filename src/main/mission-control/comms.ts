@@ -10,6 +10,7 @@ import {
   type SeatMessage,
   type SeatMessageKind,
   type SeatThreadAnchorKind,
+  type UserStoryProof,
 } from "../db/types"
 import { formatSeatAddress } from "../../shared/mission-control/address"
 import { budgetLimit } from "../../shared/mission-control/budgets"
@@ -318,7 +319,15 @@ export class SeatComms {
 
   escalate(
     turn: SeatTurnIdentity,
-    args: { reason: string; anchor?: string | null }
+    args: {
+      reason: string
+      anchor?: string | null
+      // What the user decides, and the choices (plan 110). Required when the
+      // escalation reaches the user: an escalation is a decision, not a
+      // status report.
+      question?: string | null
+      options?: string[]
+    }
   ): CommsResult {
     const feature = features.getFeature(turn.featureId)
     if (!feature?.rigSnapshot)
@@ -335,14 +344,31 @@ export class SeatComms {
     // who is never woken and so cannot extend the chain.
     const target = escalationTarget(feature.rigSnapshot, turn.address)
     const tooDeep = hop > commsBounds(feature).maxHopDepth
+    const question = args.question?.trim() ?? ""
+    const options = (args.options ?? []).map((o) => o.trim()).filter(Boolean)
+    // Depth never refuses an escalation (above); only one that reaches the
+    // user on its own must say what they're deciding.
+    if (
+      target === USER_ADDRESS &&
+      !tooDeep &&
+      (!question || options.length < 2)
+    )
+      return fail(
+        "needs_decision",
+        "This escalation goes to the user, so it must ask them to decide something: give `question` (what they decide) and 2–4 `options`. If nothing needs the user, don't escalate: keep the work moving or replan."
+      )
+    const decision = question
+      ? `\n\n**Decision needed:** ${question}${options.length ? `\n${options.map((o, i) => `${i + 1}. ${o}`).join("\n")}` : ""}`
+      : ""
+    const body = `${args.reason}${decision}${storyFindings(anchor)}`
     return this.post({
       feature,
       from: turn.address,
       to: tooDeep ? USER_ADDRESS : target,
       body:
         tooDeep && target !== USER_ADDRESS
-          ? `${args.reason}\n\n[Routed to you instead of ${target}: this reply chain is ${hop} hops deep.]`
-          : args.reason,
+          ? `${body}\n\n[Routed to you instead of ${target}: this reply chain is ${hop} hops deep.]`
+          : body,
       kind: "escalation",
       anchor,
       subject: `Escalation: ${subjectFrom(args.reason)}`,
@@ -813,4 +839,25 @@ export function installSeatComms(instance: SeatComms | null): void {
 
 export function getSeatComms(): SeatComms | null {
   return installed
+}
+
+// What the verifier found on an escalated user story's latest rejected proof
+// (plan 110), so whoever decides sees QA's reasons, not only a count.
+function storyFindings(anchor: PostInput["anchor"]): string {
+  if (anchor?.kind !== "user_story") return ""
+  const proof = features.getUserStory(anchor.id)?.proof as
+    | UserStoryProof
+    | null
+    | undefined
+  if (proof?.verdict !== "rejected") return ""
+  const unmet = (proof.criteria ?? []).filter((c) => c.status !== "met")
+  if (!unmet.length) return ""
+  const clip = (text: string) =>
+    text.length > 280 ? `${text.slice(0, 279)}…` : text
+  return `\n\n**The latest proof (rejected):**\n${unmet
+    .map(
+      (c) =>
+        `- ${c.id} ${c.status.replace(/_/g, " ")}: ${clip(c.reason || c.evidence)}`
+    )
+    .join("\n")}`
 }

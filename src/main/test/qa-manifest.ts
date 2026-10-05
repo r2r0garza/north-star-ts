@@ -13,7 +13,7 @@ import { recordWaveGate } from "../mission-control/gate-step"
 // given a command, one automated check running it. A no-op for any other turn.
 export function writeFakeManifest(
   input: {
-    processQaChecks?: "author" | "explore" | "verify" | "gate"
+    processQaChecks?: "author" | "explore" | "smoke" | "gate"
     processRunId?: string
     workspace?: string
   },
@@ -83,7 +83,7 @@ export function proveInApp(
 // no-op for any other turn.
 export async function recordFakeGate(
   input: {
-    processQaChecks?: "author" | "explore" | "verify" | "gate"
+    processQaChecks?: "author" | "explore" | "smoke" | "gate"
     processRunId?: string
     processPhaseRunId?: string
     workspace?: string

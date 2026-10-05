@@ -35,6 +35,7 @@ const facts = (): AnalysisFacts => ({
   fingerprint: "f",
   unknownIgnored: ["models"],
   unsupported: [],
+  files: [],
   excerpts: [
     {
       path: "README.md",

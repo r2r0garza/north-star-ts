@@ -26,6 +26,16 @@ import {
   seatScopeRefusal,
 } from "./plan-edits"
 import type { SeatTurnIdentity } from "./seat-turns"
+import {
+  changeLimitRefusal,
+  coverageRefusal,
+  describeCoverage,
+  extractRequirements,
+  parseCoverage,
+  parseRequirementChecks,
+  planLimitRefusal,
+  requirementCheckRefusal,
+} from "./intent-requirements"
 
 // The lead seat's map tools (plan 106.6). Every tool re-derives the seat, its
 // decision rights, and the active milestone from durable state: the model names
@@ -117,6 +127,17 @@ export class MapToolService {
         )
   }
 
+  // The wave gate's barrier (plan 110): while merged stories await their
+  // acceptance gate (or its fix stories run), nothing else starts — from the
+  // Navigator or from here. Null when the story may start.
+  private async gateHold(featureId: string, userStory: UserStory): Promise<string | null> {
+    const position = await this.runtime.position(featureId)
+    const held = position.deferred.find((d) => d.userStory === userStory.id && d.gate)
+    return held
+      ? `User story ${userStory.key} can't start now: it is ${held.reason}. The gate proves the merged stories before anything else starts; the Navigator starts ${userStory.key} when it's done.`
+      : null
+  }
+
   // A user story by key: in the active milestone, or a clear error naming where it is.
   private activeUserStory(ctx: SeatContext, key: string): UserStory | MapResult {
     if (!ctx.activeMilestone)
@@ -188,6 +209,8 @@ export class MapToolService {
       return args.pod
         ? { ok: true, message: `User story ${userStory.key} will run in pod ${args.pod}.` }
         : fail("not_ready", `User story ${userStory.key} is ${userStory.status} and can't be started.`)
+    const held = await this.gateHold(ctx.feature.id, userStory)
+    if (held) return fail("gate_barrier", held)
     try {
       const run = await this.runtime.startUserStory(userStory.id, { actor: turn.address })
       return {
@@ -218,6 +241,8 @@ export class MapToolService {
         "attempts_exhausted",
         `User story ${userStory.key} has used all ${cap} attempts. Split it, cancel it, or escalate to ask the user for more attempts.`
       )
+    const held = await this.gateHold(ctx.feature.id, userStory)
+    if (held) return fail("gate_barrier", held)
     try {
       const run = await this.runtime.startUserStory(userStory.id, {
         note: args.note,
@@ -291,7 +316,7 @@ export class MapToolService {
 
   async completeMilestone(
     turn: SeatTurnIdentity,
-    args: { milestone: string; summary: string }
+    args: { milestone: string; summary: string; requirements?: unknown }
   ): Promise<MapResult> {
     const ctx = this.context(turn)
     if ("ok" in ctx) return ctx
@@ -307,9 +332,24 @@ export class MapToolService {
     if (notDone) return fail("not_done", notDone + stillInFlight(milestone))
     if (!args.summary.trim())
       return fail("bad_args", "complete_milestone needs a summary of how the milestone meets its definition of done.")
+    // Judged against the user's intent, not only the definition of done the
+    // plan derived from it (which can drop requirements).
+    const checks = parseRequirementChecks(args.requirements)
+    if (typeof checks === "string") return fail("bad_args", checks)
+    const requirements = extractRequirements(ctx.feature.intent)
+    const isLast = !features
+      .listMilestones(ctx.feature.id)
+      .some((m) => m.position > milestone.position && !["completed", "cancelled"].includes(m.status))
+    const unmet = requirementCheckRefusal(requirements, checks, isLast)
+    if (unmet) return fail("intent_not_met", unmet)
     features.setMilestoneDodReview(
       milestone.id,
-      { by: turn.address, summary: args.summary.trim(), at: Date.now() },
+      {
+        by: turn.address,
+        summary: args.summary.trim(),
+        at: Date.now(),
+        ...(requirements.length ? { intentCheck: checks } : {}),
+      },
       turn.address
     )
     if (!milestone.integrationBranch) {
@@ -393,6 +433,8 @@ export class MapToolService {
         `This milestone has used its ${budget.limit} plan revisions.`
       )
     const milestone = ctx.activeMilestone!
+    const overLimit = changeLimitRefusal(ctx.feature, milestone.id, parsed)
+    if (overLimit) return this.propose(ctx, turn, "revise_plan", parsed, reason, overLimit)
     const adds = parsed.reduce(
       (n, c) => n + (c.op === "add_user_story" ? 1 : c.op === "split_user_story" ? c.into.length : 0),
       0
@@ -466,7 +508,7 @@ export class MapToolService {
 
   proposePlan(
     turn: SeatTurnIdentity,
-    args: { milestones: unknown; reason?: string }
+    args: { milestones: unknown; reason?: string; coverage?: unknown }
   ): MapResult {
     const ctx = this.context(turn)
     if ("ok" in ctx) return ctx
@@ -478,12 +520,20 @@ export class MapToolService {
       if (typeof draft === "string") return fail("bad_args", `Milestone ${index + 1}: ${draft}`)
       changes.push({ op: "add_milestone", milestone: draft })
     }
+    const drafts = changes.flatMap((c) => (c.op === "add_milestone" ? [c.milestone] : []))
+    const overLimit = planLimitRefusal(ctx.feature.intent, drafts)
+    if (overLimit) return fail("exceeds_intent_limits", `Nothing was proposed. ${overLimit}`)
+    const coverage = parseCoverage(args.coverage)
+    if (typeof coverage === "string") return fail("bad_args", coverage)
+    const uncovered = coverageRefusal(extractRequirements(ctx.feature.intent), drafts, coverage)
+    if (uncovered) return fail("intent_not_covered", `Nothing was proposed. ${uncovered}`)
+    const reason = args.reason?.trim() || "Feature plan"
     return this.propose(
       ctx,
       turn,
       "plan",
       changes,
-      args.reason?.trim() || "Feature plan",
+      coverage.length ? `${reason}\nCoverage: ${describeCoverage(coverage)}` : reason,
       null
     )
   }
