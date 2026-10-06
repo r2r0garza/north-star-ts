@@ -43,6 +43,8 @@ If you are asked to decompose the work into subtasks:
 - Don't add error handling, config flags, or generality for cases the task doesn't require.
 - Add comments only where the *why* isn't obvious from the code itself (a non-obvious constraint, a workaround, a subtle invariant) — never comments that restate what the code does.
 - Make sure the pieces connect: files that must be loaded are actually referenced (scripts, stylesheets, imports, routes), and names used across files match.
+- **Make data locations configurable.** When you add or touch persistent storage (a SQLite file, a database connection, an uploads or data directory), read its location from an environment variable (e.g. `DATABASE_PATH`, `DATABASE_URL`, `DATA_DIR`), with the current location as the default. Match the variable naming the project already uses, and document it in the README or `.env.example` if one exists. This lets tests run against throwaway data instead of a developer's real data.
+- **Keep generated files out of version control.** If the project has no `.gitignore`, create one. In a repo with separate stacks (e.g. `backend/` and `frontend/`), put one in each, or a root one with per-directory paths. Cover what the stack generates: dependency and environment directories (`node_modules/`, `.venv/`, `venv/`, `vendor/` where it isn't committed), build output (`dist/`, `build/`, `target/`), caches (`__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`), local data files your code creates (e.g. `*.db`), and local env files (`.env`, never `.env.example`). If a `.gitignore` already exists, leave it as is apart from adding entries for anything new your change generates.
 
 ## 5. Verify (unit level only)
 

@@ -59,6 +59,30 @@ From that, write down:
 
 Prefer a production-like build-and-serve command when it's cheap; use the dev server when that's what the project documents.
 
+### Resolve each command's runtime
+
+Playwright runs every `webServer` command in a plain, non-interactive shell: no activated virtualenv, no `source`d env file, no shell aliases. A command that works in a developer's terminal (`python app.py`, `uvicorn …`, `rails s`) can fail there or pick up the wrong install. Make every command self-sufficient:
+
+1. **Prefer a command the project already defines.** `Makefile`/`justfile` targets, `Procfile` lines, `package.json` scripts, and `bin/` scripts usually build in the right runner already. Use one as-is when it exists.
+2. **Otherwise, prefix the ecosystem's runner,** chosen from what's in the directory:
+
+   | Signal in the directory | Install first | Prefix commands with |
+   |---|---|---|
+   | `uv.lock`, or `pyproject.toml` with `[tool.uv]` | `uv sync` | `uv run` |
+   | `poetry.lock` | `poetry install` | `poetry run` |
+   | `Pipfile.lock` | `pipenv install --dev` | `pipenv run` |
+   | `pdm.lock` | `pdm install` | `pdm run` |
+   | `requirements*.txt` only | `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt` (only if no `.venv`/`venv` exists) | `.venv/bin/python -m …` |
+   | `Gemfile.lock` | `bundle install` | `bundle exec` |
+   | `composer.lock` | `composer install` | `php …` / `vendor/bin/…` |
+   | `mvnw` / `gradlew` | (the wrapper handles it) | `./mvnw …` / `./gradlew …` |
+   | `go.mod`, `Cargo.toml`, `*.csproj`, `mix.exs` | (the tool resolves deps) | `go run`, `cargo run`, `dotnet run`, `mix …` |
+
+   For an existing virtualenv without a lock-based runner, call its binaries by path (`.venv/bin/python -m uvicorn …`), never `source .venv/bin/activate`. Use `python -m <tool>` over a bare console script (`uvicorn`, `flask`, `pytest`) so the interpreter decides which install runs.
+3. **Respect pinned versions.** If the directory has `.python-version`, `.nvmrc`/`.node-version`, `.ruby-version`, or `.tool-versions`/`mise.toml`, check that the active tool matches (e.g. `uv run python --version`, `node --version`). If it doesn't and the project's version manager is installed (`mise`, `asdf`, `pyenv`, `nvm`, `rbenv`), run through it (e.g. `mise exec -- …`). Otherwise note the mismatch in the report.
+4. **Probe each command before wiring it in.** Run it once from its `cwd` as a short `exec_command` with `background: true`. Confirm it reaches its ready signal (log line or port), then `terminate_command` it. If it fails, read the error and fix the command: a missing module means the deps weren't installed or the runner is wrong. A quick `<runner> python -c "import sys; print(sys.executable)"` (or the language's equivalent) shows which interpreter actually ran.
+5. **Put the exact working command in `webServer`,** with the same `cwd`. Don't rely on `PATH` changes, aliases, or `env` tricks to make a bare command work.
+
 If the workspace has no web UI (a CLI, library, desktop or mobile app), stop and report that this agent's approach does not apply, rather than forcing Playwright onto it.
 
 ## 4. Put Playwright in place
@@ -66,6 +90,18 @@ If the workspace has no web UI (a CLI, library, desktop or mobile app), stop and
 - If Playwright is already set up, use the existing config, directory layout, and conventions.
 - If not, add it the way the ecosystem expects (for a Node project, `@playwright/test` as a dev dependency with the project's package manager; for other stacks, a minimal `e2e/` Node package with its own `package.json` is fine). Install only the Chromium browser (`npx playwright install chromium`) unless the project already targets others.
 - Configure `webServer` with **one entry per process** from step 3: `command`, `cwd`, `url` (or `port`), a generous `timeout` for first boot, and `reuseExistingServer: !process.env.CI`. Set `use.baseURL`. Put one-time setup (migrations, seeding) in `globalSetup` or the `webServer` command, not in individual tests.
+- **When there are several processes** (e.g. an API and a frontend, possibly in different languages), wire them together explicitly:
+  - **Pick fixed ports and connect the processes.** Choose a port for each server and pass the URLs of the servers it depends on through `env` (e.g. `API_URL`, `VITE_API_URL`, `NEXT_PUBLIC_API_URL`, `CORS_ORIGINS`), or use the frontend dev server's proxy config. Find the variable names in the code or `.env.example`; don't guess. If you move a server off its default port, update everything that points at it.
+  - **Each entry is just a shell command with its own `cwd`,** so mixed stacks work: e.g. `uv run python -m uvicorn app.main:app --port 8000` in `backend/` next to `npm run dev -- --port 5173` in `frontend/`. Resolve and probe each one as described in "Resolve each command's runtime" (step 3), and install each stack's dependencies in its own directory first.
+  - **Playwright starts all entries in parallel, not in order.** If a server needs something ready before it boots (migrations, a seeded database), chain it into that server's command (`… migrate && … serve`) or do it in `globalSetup`.
+  - **Readiness:** use `url:` pointed at a route that really returns 2xx (a health endpoint, or the root page). Use `port:` instead for non-HTTP services such as a database or Redis (e.g. `docker compose up db` with `port: 5432`). If a service needs Docker and Docker isn't running, report that as the blocker.
+  - Point `use.baseURL` at the user-facing server (usually the frontend).
+  - Pass environment variables through each entry's `env` option (spread `process.env` first), not inline `VAR=value command` prefixes, so the config also works on Windows.
+- **Protect real data.** Tests that create, change, or delete data must never touch a developer's existing data:
+  - Look for how the app chooses its data store: an env var for a database path or URL (`DATABASE_URL`, `DATABASE_PATH`, `DB_PATH`, `SQLITE_PATH`, …), a data directory, or a config file. Point it at a throwaway location through `webServer` `env`, e.g. a file under `test-results/` or the OS temp dir, or a separate test database, and reset it in `globalSetup`.
+  - When the suite changes data, set `reuseExistingServer: false` on every entry that owns data, so a developer's already-running server (and its real data) is never reused. If its port is taken, fail clearly instead of testing against it.
+  - If the app gives no way to redirect its data store (e.g. a hardcoded database path), don't run destructive tests against the real one. Report a **Major** finding asking for a configurable data location, and test only what you can do safely: copy the real file aside and restore it afterwards, or limit tests to data they create and remove themselves.
+  - When a criterion is about existing data surviving a change (a migration, an upgrade), build that existing data yourself in the throwaway store (e.g. create the old schema and rows in `globalSetup`). Never prove it by migrating the developer's real file.
 - Turn on evidence capture: `trace: 'retain-on-failure'`, `screenshot: 'only-on-failure'`, and an HTML or list reporter.
 - Make the suite runnable the project's normal way: if `package.json` has no real `test` script (missing, or npm's placeholder `echo "Error: no test specified" && exit 1`), set it to `playwright test`. Don't replace a real test script; add `test:e2e` instead.
 - Keep generated files out of version control: make sure `.gitignore` (create it if missing; append, never rewrite) lists `node_modules/`, `test-results/`, `playwright-report/`, `blob-report/`, and `playwright/.cache/`.
@@ -110,7 +146,7 @@ If the `record_proof` tool is available, call it once, with one entry per accept
 
 Whether or not `record_proof` exists, finish with a written report:
 - **Verdict** — does the work satisfy its acceptance criteria.
-- **How the app was run** — the servers, commands, ports, and setup you discovered, so the next run (or a human) can reuse it.
+- **How the app was run** — the servers, exact commands (with their runner, e.g. `uv run …`), runtime versions, ports, and setup you discovered, so the next run (or a human) can reuse it.
 - **Tests added** — file paths, and per-criterion pass/fail from the final run.
 - **Exploratory findings** — classified as above.
 - **Not verified** — anything you could not exercise, and why. Be plain about it.
