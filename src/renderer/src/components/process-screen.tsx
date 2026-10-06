@@ -5032,7 +5032,7 @@ function NewRunModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent className="flex h-[calc(100vh-10rem)] max-h-[calc(100vh-3rem)] flex-col overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>New run</DialogTitle>
           <DialogDescription>
@@ -5040,8 +5040,8 @@ function NewRunModal({
             project from scratch, or an existing codebase to modify.
           </DialogDescription>
         </DialogHeader>
-        <div className="flex flex-col gap-3">
-          <div className="flex flex-col gap-1.5">
+        <div className="flex min-h-0 flex-1 flex-col gap-3">
+          <div className="flex min-h-0 flex-1 flex-col gap-1.5">
             <label className="text-xs font-medium text-muted-foreground">
               Objective
             </label>
@@ -5049,7 +5049,7 @@ function NewRunModal({
               value={objective}
               onChange={(e) => setObjective(e.target.value)}
               placeholder="Describe what this run should accomplish…"
-              className="min-h-20 resize-y"
+              className="min-h-0 w-full flex-1 resize-none overflow-y-auto"
               autoFocus
             />
           </div>
@@ -5115,7 +5115,7 @@ function NewRunModal({
             </div>
           )}
         </div>
-        <DialogFooter>
+        <DialogFooter className="mt-auto">
           <Button
             type="button"
             variant="outline"
