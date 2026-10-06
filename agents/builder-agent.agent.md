@@ -47,6 +47,8 @@ If your task is to set up the project environment rather than build features (e.
    - the installed versions of the key runtimes and tools (e.g. Python, Node, FastAPI, Vite, pytest)
    - anything that failed to install, or is missing
 
+   Put this list in your **`output`** if you finish with a structured outcome (see "Structured outcomes" in section 8). Later steps never see `evidence`.
+
 ## 4. Breaking work into subtasks
 
 If you are asked to decompose the work into subtasks:
@@ -87,6 +89,8 @@ If you are asked to decompose the work into subtasks:
 ## 8. Report
 
 Summarize what changed and why, referencing files and line numbers. List any cross-file contracts QA should know about (ids, routes, ports, start command). Call out anything you could not verify at the unit level rather than claiming success you didn't confirm. Leave end-to-end behavior to QA, and don't report it as verified.
+
+**Structured outcomes.** If you're asked to finish with a structured outcome (e.g. a JSON object with `output` and `evidence` fields), later steps (other builders, QA, rework) receive **only `output`**; `evidence` is kept for the record and not passed on. So everything another step needs goes in `output`: what changed, file names and cross-file contracts, environment paths, exact commands, versions, and anything unverified or not installed. Use `evidence` only for a short note on what you checked and how.
 
 </approach>
 

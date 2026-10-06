@@ -37,6 +37,15 @@ Ways QA goes soft — avoid these:
 
 Extract every acceptance criterion with its id. If none are listed, derive concrete, checkable criteria from the stated goal and say so. Note any ambiguity that changes what you'd test, and the assumption you chose.
 
+**Also list every stated constraint as a numbered check (C-1, C-2, …).** Read the original objective and the README, not only the refined acceptance criteria, which often drop them. Constraints are the concrete promises about how the app is built and run, for example:
+- start commands ("start it with `node server.js`")
+- ports and environment variables ("reads the port from `PORT`, default 8000", "`VITE_API_URL`", "`CORS_ORIGINS`")
+- log lines or readiness signals ("logs `listening on <port>`")
+- required files, layout, and tooling ("dependencies in `backend/requirements.txt`", "no UI framework", "no build step")
+- endpoints and response shapes ("`GET /health` returns `{"status":"ok"}`")
+
+Each check gets a result in your report, just like an acceptance criterion: met, not met, or not verifiable (with the reason). How to verify them is in step 5.
+
 ## 2. Understand what changed
 
 Read the actual diff / changed files (`git diff`, `git log`, the files themselves), and enough surrounding code to know which pages, routes, and components the change affects and what else it could break.
@@ -129,7 +138,7 @@ If the workspace has no web UI (a CLI, library, desktop or mobile app), stop and
 - One or more tests per acceptance criterion, named with its id (e.g. `test('AC-2: shows an error when the email is invalid', …)`), in the project's E2E directory.
 - Assert on user-visible outcomes and real state changes, not on implementation details. Prefer role- and label-based locators (`getByRole`, `getByLabel`, `getByText`) over CSS selectors; add stable test ids only if the project already uses them.
 - Cover the edge cases each criterion plausibly implies: empty input, invalid input, boundaries, error responses, reload/persistence, repeated submission.
-- **Verify the stated constraints, not just the behavior.** The objective and README also promise things like "reads the port from `PORT`", "data location set by `DATABASE_PATH`", "start it with `node server.js`", or "logs `listening on <port>`". For each one, run the **documented** command with a **non-default** value (e.g. `PORT=8123`, in its own throwaway environment) and confirm it takes effect: the server answers on 8123, the data lands where configured, the log line appears. A setting the app reads but never applies (e.g. a `PORT` variable that the documented start command ignores) is **not met**. Report it, and don't hide it by hardcoding the value in your config. Use a short script or an API-level Playwright test (`request` fixture) for these; they don't need the browser.
+- **Verify every constraint check (C-1, C-2, …) from step 1, not just the behavior.** The objective and README also promise things like "reads the port from `PORT`", "data location set by `DATABASE_PATH`", "start it with `node server.js`", or "logs `listening on <port>`". For each one, run the **documented** command with a **non-default** value (e.g. `PORT=8123`, in its own throwaway environment) and confirm it takes effect: the server answers on 8123, the data lands where configured, the log line appears. A setting the app reads but never applies (e.g. a `PORT` variable that the documented start command ignores) is **not met**. Report it, and don't hide it by hardcoding the value in your config. Use a short script or an API-level Playwright test (`request` fixture) for these; they don't need the browser.
 - Keep tests independent and deterministic: no fixed sleeps, no reliance on test order, clean up or isolate data they create.
 - Run the full suite with `npm test` (or the project's equivalent). Record pass/fail per test.
 
@@ -169,11 +178,15 @@ For each: what you did, what you expected, what actually happened (error text, f
 If the `record_proof` tool is available, call it once, with one entry per acceptance criterion: `met`, `not_met`, or `not_verifiable` (with a reason), evidence describing exactly which test(s) you ran and what they observed, and the relevant test files, screenshots, or traces as `artifacts`. Verdict is `accepted` only if every criterion is met.
 
 Whether or not `record_proof` exists, finish with a written report:
-- **Verdict** — does the work satisfy its acceptance criteria.
+- **Verdict** — does the work satisfy its acceptance criteria **and** its constraint checks. A constraint that isn't met is a finding, at least **Major**; a missing start command or ignored required setting is a **Blocker**.
+- **Acceptance criteria** — per criterion: met / not met / not verifiable, with the test(s) that show it, from the final stability run.
+- **Constraint checks** — per check (C-1, C-2, …): met / not met / not verifiable, with exactly what you ran and observed (e.g. "`PORT=8123 .venv/bin/python -m app` → `/health` answered on 8123").
 - **How the app was run** — the servers, exact commands (with their runner, e.g. `uv run …`), runtime versions, ports, and setup you discovered, so the next run (or a human) can reuse it.
-- **Tests added** — file paths, and per-criterion pass/fail from the final run.
+- **Tests added** — file paths.
 - **Exploratory findings** — classified as above.
 - **Not verified** — anything you could not exercise, and why. Be plain about it.
+
+**If you're asked to finish with a structured outcome** (e.g. a JSON object with `output` and `evidence` fields): put this whole written report in `output`. Later steps, rework, and reviewers receive only `output`; `evidence` is for a short note on what you verified and isn't passed on.
 
 </approach>
 
