@@ -10,6 +10,7 @@ import { join, resolve, basename, dirname, sep, extname } from "path"
 import { readFile, writeFile, unlink, mkdir, rm } from "fs/promises"
 import { existsSync } from "fs"
 import { config as loadEnv } from "dotenv"
+import { missionControlEnabled } from "./config/feature-flags"
 
 // Load .env.local before anything reads process.env. Provider API keys are
 // configured by the user in Settings and stored per provider account, encrypted
@@ -1559,6 +1560,7 @@ ipcMain.on("system:name", (event) => {
     displayName: systemDisplayName(),
     dataDirName: dataDirName(),
     mainAgentName: mainAgentName(),
+    missionControlEnabled: missionControlEnabled(),
     // The effective brand theme, resolving the persisted in-app override over the
     // NEXT_accent_color / NEXT_neutral_color env presets over the built-in
     // defaults (DB > env > default); null when nothing overrides globals.css.

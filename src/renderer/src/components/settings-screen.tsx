@@ -233,20 +233,26 @@ const SECTION_ALIASES: Record<string, string> = {
   advanced: "capabilities",
 }
 
-function resolveSettingsSection(value: string): string {
+function resolveSettingsSection(
+  value: string,
+  groups: SettingsGroup[]
+): string {
   const candidate = SECTION_ALIASES[value] ?? value
-  return SETTINGS_GROUPS.some((group) =>
+  return groups.some((group) =>
     group.sections.some((section) => section.value === candidate)
   )
     ? candidate
     : "appearance"
 }
 
-function settingsGroupFor(section: string): SettingsGroup {
+function settingsGroupFor(
+  section: string,
+  groups: SettingsGroup[]
+): SettingsGroup {
   return (
-    SETTINGS_GROUPS.find((group) =>
+    groups.find((group) =>
       group.sections.some((candidate) => candidate.value === section)
-    ) ?? SETTINGS_GROUPS[0]
+    ) ?? groups[0]
   )
 }
 
@@ -477,9 +483,20 @@ export function SettingsScreen({
   // "providers"; the composer's "Configure model…" also lands there.
   initialTab?: string
 }) {
+  const [missionControlEnabled] = useState(
+    () => window.cowork.system().missionControlEnabled
+  )
+  const [settingsGroups] = useState(() =>
+    SETTINGS_GROUPS.map((group) => ({
+      ...group,
+      sections: group.sections.filter(
+        (section) => section.value !== "sidebar" || missionControlEnabled
+      ),
+    }))
+  )
   const contentRef = useRef<HTMLDivElement | null>(null)
   const [activeSection, setActiveSection] = useState(() =>
-    resolveSettingsSection(initialTab)
+    resolveSettingsSection(initialTab, settingsGroups)
   )
   const lastSectionByGroup = useRef<Record<string, string>>({})
   const [execution, setExecution] = useState<ExecutionSettings | null>(null)
@@ -540,16 +557,16 @@ export function SettingsScreen({
 
   useEffect(() => {
     if (!open) return
-    const section = resolveSettingsSection(initialTab)
+    const section = resolveSettingsSection(initialTab, settingsGroups)
     setActiveSection(section)
-    const group = settingsGroupFor(section)
+    const group = settingsGroupFor(section, settingsGroups)
     lastSectionByGroup.current[group.value] = section
-  }, [open, initialTab])
+  }, [open, initialTab, settingsGroups])
 
   // Sidebar destinations, loaded on their own so the rest of the screen
   // doesn't wait on them.
   useEffect(() => {
-    if (!open) return
+    if (!open || !missionControlEnabled) return
     let cancelled = false
     window.cowork.settings
       .getSidebar()
@@ -560,7 +577,7 @@ export function SettingsScreen({
     return () => {
       cancelled = true
     }
-  }, [open])
+  }, [open, missionControlEnabled])
 
   // Load current settings + runtime availability whenever the screen opens.
   useEffect(() => {
@@ -877,7 +894,7 @@ export function SettingsScreen({
     isContainer ||
     execution?.localProfile === "workspace-write" ||
     execution?.localProfile === "read-only"
-  const activeGroup = settingsGroupFor(activeSection)
+  const activeGroup = settingsGroupFor(activeSection, settingsGroups)
   const activeAccount = llm.accounts?.find(
     (account) => account.id === llm.active?.activeAccountId
   )
@@ -896,7 +913,7 @@ export function SettingsScreen({
 
   function selectSection(section: string) {
     setActiveSection(section)
-    const group = settingsGroupFor(section)
+    const group = settingsGroupFor(section, settingsGroups)
     lastSectionByGroup.current[group.value] = section
   }
 
@@ -972,7 +989,7 @@ export function SettingsScreen({
                     <p className="px-3 pb-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">
                       Preferences
                     </p>
-                    {SETTINGS_GROUPS.map((group) => {
+                    {settingsGroups.map((group) => {
                       const selected = group.value === activeGroup.value
                       return (
                         <button
@@ -1844,36 +1861,38 @@ export function SettingsScreen({
                       {/* Sidebar — optional destinations. Processes is legacy
                         (plan 106.9): Mission Control runs Processes as
                         playbooks, so its button is hidden unless turned on. */}
-                      <TabsContent
-                        value="sidebar"
-                        className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-6"
-                      >
-                        {sidebar && (
-                          <Field orientation="horizontal">
-                            <FieldContent>
-                              <FieldLabel htmlFor="sidebar-legacy-processes">
-                                Show legacy Processes in sidebar
-                              </FieldLabel>
-                              <FieldDescription>
-                                Processes now live in Mission Control under
-                                Playbooks, with Quick run and run history. Turn
-                                this on to bring back the Processes button.
-                                Nothing is deleted either way.
-                              </FieldDescription>
-                            </FieldContent>
-                            <Switch
-                              id="sidebar-legacy-processes"
-                              checked={sidebar.showLegacyProcesses}
-                              onCheckedChange={(checked) =>
-                                saveSidebar({
-                                  ...sidebar,
-                                  showLegacyProcesses: checked,
-                                })
-                              }
-                            />
-                          </Field>
-                        )}
-                      </TabsContent>
+                      {missionControlEnabled && (
+                        <TabsContent
+                          value="sidebar"
+                          className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-6"
+                        >
+                          {sidebar && (
+                            <Field orientation="horizontal">
+                              <FieldContent>
+                                <FieldLabel htmlFor="sidebar-legacy-processes">
+                                  Show legacy Processes in sidebar
+                                </FieldLabel>
+                                <FieldDescription>
+                                  Processes now live in Mission Control under
+                                  Playbooks, with Quick run and run history.
+                                  Turn this on to bring back the Processes
+                                  button. Nothing is deleted either way.
+                                </FieldDescription>
+                              </FieldContent>
+                              <Switch
+                                id="sidebar-legacy-processes"
+                                checked={sidebar.showLegacyProcesses}
+                                onCheckedChange={(checked) =>
+                                  saveSidebar({
+                                    ...sidebar,
+                                    showLegacyProcesses: checked,
+                                  })
+                                }
+                              />
+                            </Field>
+                          )}
+                        </TabsContent>
+                      )}
 
                       {/* Editor — which IDE a changed-file pill / "open in editor"
                         launches. Opens the repo root first (focusing an existing

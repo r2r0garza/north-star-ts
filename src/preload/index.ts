@@ -2749,6 +2749,7 @@ const api = {
     displayName: string
     dataDirName: string
     mainAgentName: string
+    missionControlEnabled: boolean
     // The customizable brand theme's CSS custom-property declarations for `:root`
     // and `.dark`, or null when no NEXT_accent_color / NEXT_neutral_color is set.
     theme: { light: string; dark: string } | null

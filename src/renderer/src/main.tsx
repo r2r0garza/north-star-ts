@@ -57,6 +57,9 @@ const DEFAULT_MODE_TO_VIEW = {
 // Tracks window fullscreen state so the sidebar toggle can reposition (the
 // macOS traffic lights disappear in fullscreen, freeing the left edge).
 function Shell() {
+  const [missionControlEnabled] = useState(
+    () => window.cowork.system().missionControlEnabled
+  )
   const isMac = window.cowork.platform === "darwin"
   const reserveWindowControls = !isMac
   const [fullscreen, setFullscreen] = useState(false)
@@ -605,7 +608,8 @@ function Shell() {
             setMcpOpen(false)
             setDashboardsOpen(false)
           }}
-          showProcesses={showProcesses}
+          showMissionControl={missionControlEnabled}
+          showProcesses={!missionControlEnabled || showProcesses}
           onProcessClick={() => {
             setProcessOpen(true)
             setMissionControlOpen(false)
