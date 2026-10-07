@@ -103,6 +103,7 @@ export const runTodosInBackgroundTool: Tool = {
       kind: "todo_run",
       title: todoRunTitle(actionable),
       seedTodos: todoSeed(todos),
+      autoMode: ctx.isAutoMode?.() ?? false,
     })
 
     return JSON.stringify({

@@ -52,18 +52,22 @@ export function registerTaskHandlers(runner: TaskRunner): void {
   // (server-side) so the renderer doesn't round-trip it, then enqueues the SAME
   // `todo_run` task the agent tool does. No approval gate: clicking the button is
   // already explicit user intent. Returns null when there's nothing to run.
-  ipcMain.handle("task:start-todos", (_e, conversationId: string) => {
-    const todos = listTodos(conversationId)
-    const actionable = actionableTodos(todos)
-    if (actionable.length === 0) return null
-    return runner.enqueue({
-      conversationId,
-      message: TODO_RUN_KICKOFF,
-      kind: "todo_run",
-      title: todoRunTitle(actionable),
-      seedTodos: todoSeed(todos),
-    })
-  })
+  ipcMain.handle(
+    "task:start-todos",
+    (_e, conversationId: string, opts?: { autoMode?: boolean }) => {
+      const todos = listTodos(conversationId)
+      const actionable = actionableTodos(todos)
+      if (actionable.length === 0) return null
+      return runner.enqueue({
+        conversationId,
+        message: TODO_RUN_KICKOFF,
+        kind: "todo_run",
+        title: todoRunTitle(actionable),
+        seedTodos: todoSeed(todos),
+        autoMode: opts?.autoMode === true,
+      })
+    }
+  )
 
   // Resume an interrupted OR paused task (user-driven manual resume).
   ipcMain.handle("task:resume", (_e, taskId: string) => runner.resume(taskId))

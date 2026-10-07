@@ -2838,6 +2838,7 @@ export async function runAgentLoop(
               callSignal.throwIfAborted()
               setAutoMode(on)
             },
+            isAutoMode: () => autoMode && !planMode,
             // Subagent spawning: wired only when the running agent may spawn, so
             // the tool reports "unavailable" otherwise (it's also not offered).
             // agentChildren is the authorization whitelist; depth/ancestors bound

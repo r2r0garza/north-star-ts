@@ -175,6 +175,11 @@ interface TaskInput {
   // table, so a handed-off list must be carried here and seeded — not a column
   // (per the 015 producer contract: per-kind config rides in the input blob).
   seedTodos?: Array<{ itemId: string; content: string; status: TodoStatus }>
+  // Run the agent turn in Auto mode (gate prompts auto-approved; hard blocks
+  // still apply). Snapshotted from the source turn at handoff — Auto is a
+  // per-turn stance, not persisted on the conversation — and kept in the blob
+  // so a resume/restart runs with the same stance.
+  autoMode?: boolean
   // Per-kind config for a deterministic executor (008 workspace_index): which
   // workspace to index and at what priority. Rides in the blob per the 015
   // producer contract rather than as new columns.
@@ -401,12 +406,14 @@ export class TaskRunner {
     kind?: string
     title?: string | null
     seedTodos?: TaskInput["seedTodos"]
+    autoMode?: boolean
   }): Task {
     const kind = input.kind ?? DEFAULT_KIND
     const taskInput: TaskInput = {
       kind,
       message: input.message,
       seedTodos: input.seedTodos,
+      ...(input.autoMode ? { autoMode: true } : {}),
     }
 
     // Fork a private conversation from the source, inheriting its execution
@@ -872,6 +879,9 @@ export class TaskRunner {
           // Surfaces this task's prior gate decisions in the approvals context
           // section (plan 021) so a resumed task re-grounds instead of re-asking.
           taskId,
+          // Honor the Auto mode the task was handed off with (see TaskInput).
+          autoMode:
+            (task.input as Partial<TaskInput> | null)?.autoMode === true,
           // A background task can itself hand off more work (e.g. a todo_run task
           // spawning another). Bind to this same runner so it goes through the one
           // enqueue seam — the producer contract holds recursively.

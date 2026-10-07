@@ -430,6 +430,7 @@ export function ActivityPanel({
   historyExpanded,
   onHistoryExpandedChange,
   onRanInBackground,
+  isAutoMode,
   onBrowserPoppedOutChange,
   onWidthChange,
 }: {
@@ -467,6 +468,9 @@ export function ActivityPanel({
   // Called after the Todos panel hands its list off to the background, so the
   // Shell can keep the panel open and surface the new task.
   onRanInBackground?: () => void
+  // Whether a conversation's composer is in Auto mode; the Todos handoff passes
+  // it so the background task runs in Auto too.
+  isAutoMode?: (conversationId: string) => boolean
   // Called when the browser pops out to / docks back from its own window, so the
   // Shell can collapse the panel on pop-out (and re-open on dock).
   onBrowserPoppedOutChange?: (poppedOut: boolean) => void
@@ -680,6 +684,7 @@ export function ActivityPanel({
                 <TodosSection
                   conversationId={conversationId}
                   onRanInBackground={onRanInBackground}
+                  isAutoMode={isAutoMode}
                 />
               </ActivitySection>
               {/* History: terminal tasks for this conversation. Collapsed by default

@@ -378,6 +378,9 @@ export type AppHandle = {
     text: string
   }) => void
   prepareComposerTransition: (destination: "empty" | "populated") => void
+  // Whether a conversation's composer is in Auto mode (session-only state owned
+  // here), so a background handoff from outside App can inherit it.
+  isAutoMode: (conversationId: string) => boolean
 }
 
 export type ConversationSearchOpen = {
@@ -1084,8 +1087,14 @@ function App(
       appendTerminalSelection,
       appendFileSelection,
       prepareComposerTransition,
+      isAutoMode: (id: string) => agentModeFor(agentModeSession, id) === "auto",
     }),
-    [appendFileSelection, appendTerminalSelection, prepareComposerTransition]
+    [
+      appendFileSelection,
+      appendTerminalSelection,
+      prepareComposerTransition,
+      agentModeSession,
+    ]
   )
 
   // Drop confirmed values of one kind whose marker no longer appears in `present`

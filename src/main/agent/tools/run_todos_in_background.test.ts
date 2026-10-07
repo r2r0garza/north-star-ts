@@ -108,6 +108,18 @@ describe("run_todos_in_background", () => {
     expect(parsed.handedOff).toBe(2) // pending + in_progress
   })
 
+  it("hands off the source turn's Auto mode to the background task", async () => {
+    listTodos.mockReturnValue([todo("a", "pending")])
+    const auto = makeCtx({ gateOutcome: "approved" })
+    auto.ctx.isAutoMode = () => true
+    await runTodosInBackgroundTool.execute({}, auto.ctx)
+    expect(auto.enqueue.mock.calls[0][0].autoMode).toBe(true)
+
+    const manual = makeCtx({ gateOutcome: "approved" })
+    await runTodosInBackgroundTool.execute({}, manual.ctx)
+    expect(manual.enqueue.mock.calls[0][0].autoMode).toBe(false)
+  })
+
   it("does not enqueue when the user denies the delegation", async () => {
     listTodos.mockReturnValue([todo("a", "pending")])
     const { ctx, enqueue } = makeCtx({ gateOutcome: "denied" })

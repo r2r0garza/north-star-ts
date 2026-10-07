@@ -38,6 +38,10 @@ export type EnqueueTaskInput = {
   kind?: string
   title?: string | null
   seedTodos?: Array<{ itemId: string; content: string; status: TodoStatus }>
+  // Run the task in Auto mode. Auto is a per-turn stance (never persisted on the
+  // conversation), so a handoff snapshots the source turn's mode here; the
+  // runner stores it in the task's input blob so a resume/restart keeps it.
+  autoMode?: boolean
 }
 export type EnqueueTask = (input: EnqueueTaskInput) => {
   id: string
@@ -162,6 +166,9 @@ export interface ToolContext {
   // the user's run-level pre-approval. Set by present_plan when the user picks
   // "Yes, approve and work in Auto mode". Absent where auto mode isn't in play.
   setAutoMode?: (on: boolean) => void
+  // Read the CURRENT turn's auto mode (live — reflects mid-turn toggles). Used by
+  // run_todos_in_background so a handed-off task inherits the source's stance.
+  isAutoMode?: () => boolean
   // --- Subagent spawning (custom-agent fleet) ---
   // Spawn a permitted child agent and block for its answer (see spawn_subagent).
   // Set by the agent loop only when the running agent may spawn; absent otherwise.

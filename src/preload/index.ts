@@ -450,10 +450,11 @@ const api = {
     // Hand the conversation's current todo list off to a background task (the
     // "Run all in background" button, plan 016). Snapshots the list server-side
     // and enqueues a `todo_run` task. Resolves null when there's nothing to run.
-    startTodos: (conversationId: string) =>
+    startTodos: (conversationId: string, opts?: { autoMode?: boolean }) =>
       ipcRenderer.invoke(
         "task:start-todos",
-        conversationId
+        conversationId,
+        opts
       ) as Promise<Task | null>,
     // Manually resume an interrupted task (e.g. one reconciled after a crash).
     resume: (taskId: string) =>

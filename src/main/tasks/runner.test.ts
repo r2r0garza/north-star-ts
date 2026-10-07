@@ -517,6 +517,27 @@ describe.skipIf(!sqliteLoads)("TaskRunner — enqueue + run", () => {
     await runner.stop()
   })
 
+  it("runs the loop in Auto mode only when the task was handed off in Auto", async () => {
+    const conv = createConversation({ mode: "interactive" })
+    const runner = new TaskRunner()
+    await runner.start()
+
+    const auto = runner.enqueue({
+      conversationId: conv.id,
+      message: "auto",
+      autoMode: true,
+    })
+    await settle()
+    const manual = runner.enqueue({ conversationId: conv.id, message: "ask" })
+    await settle()
+
+    // Persisted in the input blob so a resume/restart keeps the stance.
+    expect(getTask(auto.id)!.input).toMatchObject({ autoMode: true })
+    expect(getTask(manual.id)!.input).not.toHaveProperty("autoMode")
+    expect(loopCalls.map((c) => c.autoMode)).toEqual([true, false])
+    await runner.stop()
+  })
+
   it("maps a stopped result to cancelled and an error to failed", async () => {
     const conv = createConversation({ mode: "chat" })
     const runner = new TaskRunner()

@@ -741,6 +741,7 @@ function Shell() {
           historyExpanded={historyExpanded}
           onHistoryExpandedChange={setHistoryExpanded}
           onRanInBackground={() => openSidebarTab("info")}
+          isAutoMode={(id) => appRef.current?.isAutoMode(id) ?? false}
           onBrowserPoppedOutChange={handleBrowserPoppedOutChange}
           onWidthChange={setActivityPanelWidth}
         />

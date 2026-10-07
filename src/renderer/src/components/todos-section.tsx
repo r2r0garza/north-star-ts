@@ -34,10 +34,13 @@ function actionable(todos: Todo[]): Todo[] {
 export function TodosSection({
   conversationId,
   onRanInBackground,
+  isAutoMode,
 }: {
   conversationId: string | null
   // Called after a successful handoff so the Shell can reveal the Tasks view.
   onRanInBackground?: () => void
+  // Read at click time: a handoff from an Auto-mode conversation runs in Auto.
+  isAutoMode?: (conversationId: string) => boolean
 }) {
   const [todos, setTodos] = React.useState<Todo[]>([])
   const [dispatching, setDispatching] = React.useState(false)
@@ -122,7 +125,9 @@ export function TodosSection({
     if (!conversationId || dispatching) return
     setDispatching(true)
     try {
-      const task = await window.cowork.tasks.startTodos(conversationId)
+      const task = await window.cowork.tasks.startTodos(conversationId, {
+        autoMode: isAutoMode?.(conversationId) ?? false,
+      })
       if (task) {
         activeTodoRunTaskRef.current = task.id
         displayedConversationRef.current = task.conversationId
