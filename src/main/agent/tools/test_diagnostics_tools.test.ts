@@ -4,6 +4,7 @@ import { EventEmitter } from "events"
 import {
   getTestResultsTool,
   runTestsTool,
+  terminateOwnedTestSessions,
   testDiagnosticsSessions,
   workspaceDiagnosticsTool,
 } from "./test_diagnostics_tools"
@@ -373,6 +374,69 @@ describe("workspace diagnostics and test tools", () => {
     expect(env.handles[0].exitListenerCount).toBe(1)
     await vi.advanceTimersByTimeAsync(500)
     expect(env.handles[0].killCalls).toBe(1)
+  })
+
+  it("terminates a run's still-running test sessions when the run ends", async () => {
+    vi.useFakeTimers()
+    const owner = { conversationId: "c1", workspace: "/workspace", runId: "run-1" }
+    const env = fakeEnv({
+      packageJson: { scripts: { test: "playwright test" } },
+      neverExit: true,
+    })
+    const pending = runTestsTool.execute(
+      { yield_ms: 100 },
+      ctx(env, { commandCompletionOwner: owner })
+    )
+    await vi.advanceTimersByTimeAsync(100)
+    const started = parsed(await pending)
+    expect(started.status).toBe("running")
+
+    await terminateOwnedTestSessions(owner)
+
+    expect(env.handles[0].interruptCalls).toBe(1)
+    const after = parsed(
+      await getTestResultsTool.execute(
+        { session_id: started.sessionId },
+        ctx(env)
+      )
+    )
+    expect(after.status).toBe("terminated")
+  })
+
+  it("leaves test sessions owned by another run running", async () => {
+    vi.useFakeTimers()
+    const env = fakeEnv({
+      packageJson: { scripts: { test: "playwright test" } },
+      neverExit: true,
+    })
+    const pending = runTestsTool.execute(
+      { yield_ms: 100 },
+      ctx(env, {
+        commandCompletionOwner: {
+          conversationId: "c1",
+          workspace: "/workspace",
+          runId: "run-1",
+        },
+      })
+    )
+    await vi.advanceTimersByTimeAsync(100)
+    const started = parsed(await pending)
+
+    await terminateOwnedTestSessions({
+      conversationId: "c1",
+      workspace: "/workspace",
+      runId: "run-2",
+    })
+
+    expect(env.handles[0].interruptCalls).toBe(0)
+    expect(env.handles[0].killCalls).toBe(0)
+    const after = parsed(
+      await getTestResultsTool.execute(
+        { session_id: started.sessionId },
+        ctx(env)
+      )
+    )
+    expect(after.status).toBe("running")
   })
 
   it("preserves the first diagnostic exit and schedules cleanup once", async () => {

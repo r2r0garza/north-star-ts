@@ -21,6 +21,7 @@ import {
   spawnSubagentsTool,
 } from "./tools"
 import { terminateOwnedCommandSessions } from "./tools/command_session_tools"
+import { terminateOwnedTestSessions } from "./tools/test_diagnostics_tools"
 import type { BrowserHandle } from "../browser/manager"
 import { TOOL_EFFECTS, type ToolImage } from "./tools/types"
 import { readFileTool } from "./tools/read_file_tool"
@@ -3108,6 +3109,9 @@ export async function runAgentLoop(
     } else {
       commandCompletionInbox.cleanupRun(commandCompletionOwner)
     }
+    // Test sessions aren't tracked by the completion inbox, so the loop never
+    // waits for them; end them with the run on every path.
+    await terminateOwnedTestSessions(commandCompletionOwner)
     // Drop this turn's auto-mode setter (only live turns registered one). Guard
     // against a newer turn for the same conversation having replaced it.
     if (isLiveTurn && autoModeSetters.get(conversationId) === setAutoMode) {

@@ -6,6 +6,7 @@ import type {
   CommandExit,
   CommandSessionHandle,
 } from "../env/types"
+import type { CommandCompletionOwner } from "../command-completion-inbox"
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "./types"
 import { toolError } from "./output"
 import { semanticDiagnosticsForWorkspace } from "./code_navigation_tools"
@@ -44,6 +45,11 @@ interface TestSession {
   id: string
   conversationId: string
   workspace: string
+  // The agent run that started this session. A test session isn't registered
+  // with the run's command-completion inbox, so nothing keeps the run alive for
+  // it — the run terminates its own sessions when it ends
+  // (terminateOwnedTestSessions) instead of leaving servers holding ports.
+  owner?: CommandCompletionOwner
   command: string
   provider: string
   target: string
@@ -217,6 +223,7 @@ export const runTestsTool: Tool = {
       handle,
       workspace: ctx.workspace,
       conversationId: ctx.conversationId ?? "",
+      owner: ctx.commandCompletionOwner,
       command,
       timeoutMs: timeoutArg(args.timeout_ms),
     })
@@ -552,6 +559,7 @@ function createTestSession(input: {
   handle: CommandSessionHandle
   workspace: string
   conversationId: string
+  owner?: CommandCompletionOwner
   command: ProviderCommand
   timeoutMs: number
 }): TestSession {
@@ -563,6 +571,7 @@ function createTestSession(input: {
     id: cryptoRandomId(),
     workspace: input.workspace,
     conversationId: input.conversationId,
+    owner: input.owner,
     command: input.command.command,
     provider: input.command.provider,
     target: input.command.target,
@@ -616,6 +625,23 @@ async function terminateTestSession(session: TestSession): Promise<void> {
     session.handle.kill()
     await waitForSettlementOrDelay(session, 500)
   }
+}
+
+// Terminate every still-running test session started by this agent run. Called
+// when the run ends, normally or by abort: its results can no longer reach the
+// model, and a lingering session (e.g. Playwright with its webServers) would
+// keep holding ports and processes for the next run.
+export async function terminateOwnedTestSessions(
+  owner: CommandCompletionOwner
+): Promise<void> {
+  const owned = [...testSessions.values()].filter(
+    (session) =>
+      session.status === "running" &&
+      session.owner?.runId === owner.runId &&
+      session.owner.conversationId === owner.conversationId &&
+      session.owner.workspace === owner.workspace
+  )
+  await Promise.all(owned.map((session) => terminateTestSession(session)))
 }
 
 function getOwnedTestSession(
