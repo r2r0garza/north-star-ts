@@ -3,6 +3,7 @@ import {
   INITIAL_AGENT_MODE_SESSION,
   adoptDraftAgentMode,
   agentModeFor,
+  resetDraftAgentMode,
   setConversationAgentMode,
 } from "./agent-mode"
 
@@ -45,5 +46,27 @@ describe("agent mode session", () => {
 
     expect(agentModeFor(session, "created")).toBe("plan")
     expect(agentModeFor(session, null)).toBe("default")
+  })
+
+  it("falls back to the view default until the user picks a mode", () => {
+    let session = setConversationAgentMode(
+      INITIAL_AGENT_MODE_SESSION,
+      "picked",
+      "default",
+      "auto"
+    )
+    expect(agentModeFor(session, "unpicked", "auto")).toBe("auto")
+    expect(agentModeFor(session, "picked", "auto")).toBe("default")
+    expect(agentModeFor(session, null, "auto")).toBe("auto")
+
+    // An unpicked draft adopts the view default; a reset clears the draft pick.
+    expect(
+      agentModeFor(adoptDraftAgentMode(session, "new", "auto"), "new")
+    ).toBe("auto")
+    session = setConversationAgentMode(session, null, "plan", "auto")
+    expect(agentModeFor(session, null, "auto")).toBe("plan")
+    expect(agentModeFor(resetDraftAgentMode(session), null, "auto")).toBe(
+      "auto"
+    )
   })
 })

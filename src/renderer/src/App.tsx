@@ -122,6 +122,7 @@ import {
 import {
   INITIAL_AGENT_MODE_SESSION,
   adoptDraftAgentMode,
+  resetDraftAgentMode,
   agentModeFor,
   setConversationAgentMode,
   type AgentMode,
@@ -488,17 +489,30 @@ function App(
   const [agentModeSession, setAgentModeSession] = useState(
     INITIAL_AGENT_MODE_SESSION
   )
-  const agentMode = agentModeFor(agentModeSession, conversationId)
+  // North Star conversations start in Auto (the background-delegating agent is
+  // meant to run unattended); other views start in Default. Applies to any
+  // conversation without an explicit pick this session.
+  const defaultAgentMode: AgentMode = view === "North Star" ? "auto" : "default"
+  const agentMode = agentModeFor(
+    agentModeSession,
+    conversationId,
+    defaultAgentMode
+  )
   const setAgentModeFor = useCallback(
     (
       targetConversationId: string | null,
       update: AgentMode | ((current: AgentMode) => AgentMode)
     ) => {
       setAgentModeSession((session) =>
-        setConversationAgentMode(session, targetConversationId, update)
+        setConversationAgentMode(
+          session,
+          targetConversationId,
+          update,
+          defaultAgentMode
+        )
       )
     },
-    []
+    [defaultAgentMode]
   )
   // Elements the user picked in the agent browser ("point at this button"). More
   // than one can accumulate — via the sticky picker button or Alt/Option+click on
@@ -802,8 +816,8 @@ function App(
     }
     // Existing conversations retain their session-scoped mode while offscreen.
     // A fresh draft has no durable identity to restore, so each newly opened blank
-    // conversation begins in Default until the user selects another mode.
-    if (!conversationId) setAgentModeFor(null, "default")
+    // conversation begins in the view's default until the user selects another.
+    if (!conversationId) setAgentModeSession(resetDraftAgentMode)
     // Switching to a different conversation no longer wipes any live state: each
     // streaming turn's text/tools/approval/question is held per-conversation in
     // `liveTurns` and rendered by looking up the id on screen. Leaving a turn that
@@ -1087,13 +1101,17 @@ function App(
       appendTerminalSelection,
       appendFileSelection,
       prepareComposerTransition,
-      isAutoMode: (id: string) => agentModeFor(agentModeSession, id) === "auto",
+      isAutoMode: (id: string) =>
+        !effectiveIsCli &&
+        agentModeFor(agentModeSession, id, defaultAgentMode) === "auto",
     }),
     [
       appendFileSelection,
       appendTerminalSelection,
       prepareComposerTransition,
       agentModeSession,
+      defaultAgentMode,
+      effectiveIsCli,
     ]
   )
 
@@ -1399,7 +1417,9 @@ function App(
       })
       convoId = convo.id
       isNew = true
-      setAgentModeSession((session) => adoptDraftAgentMode(session, convo.id))
+      setAgentModeSession((session) =>
+        adoptDraftAgentMode(session, convo.id, defaultAgentMode)
+      )
     }
 
     // From here, treat `convoId` as a non-null local so the guards below read
@@ -1467,7 +1487,8 @@ function App(
           // available everywhere, including Chat (suppresses browser_navigate
           // prompts).
           planMode: !isChat && agentMode === "plan",
-          autoMode: agentMode === "auto",
+          // CLI providers have no mode menu, so never send a defaulted Auto.
+          autoMode: !effectiveIsCli && agentMode === "auto",
         },
         // Events always route into THIS turn's own per-conversation live buffer
         // (keyed by turnConvoId), regardless of what's on screen. The render layer
