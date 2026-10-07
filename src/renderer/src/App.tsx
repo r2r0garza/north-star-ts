@@ -1313,7 +1313,7 @@ function App(
   function resolveApproval(
     requestId: string,
     decision: "approved" | "denied",
-    remember?: "workspace" | "conversation" | "kind"
+    remember?: "workspace" | "conversation" | "kind" | "file_changes"
   ) {
     // The card is only shown for the conversation on screen, so flip its status
     // in that conversation's live turn (matched by requestId, wherever its
@@ -2109,7 +2109,8 @@ function App(
 
   // Keyboard shortcuts for the pending approval, active only while one is shown:
   //   Enter → Approve once   S → Approve for session/workspace
-  //   A → Allow every action of this kind for this conversation   Esc → Reject
+  //   A → Allow every action of this kind for this conversation
+  //   F → Allow all file changes for this conversation   Esc → Reject
   // The "S" scope mirrors ApprovalCard exactly: no session option for delegate;
   // "conversation" for web, "workspace" otherwise. Guarded by isTypingTarget so a
   // focused field (e.g. an open question's Other box) keeps its own keys — though
@@ -2144,6 +2145,11 @@ function App(
         if (explicit || !allowsKindWide(kind)) return
         e.preventDefault()
         resolveApproval(requestId, "approved", "kind")
+      } else if (e.key.toLowerCase() === "f") {
+        // All file changes (creates, edits, folders) — only when offered.
+        if (explicit || !allowsKindWide(kind)) return
+        e.preventDefault()
+        resolveApproval(requestId, "approved", "file_changes")
       }
     }
     window.addEventListener("keydown", onKeyDown)

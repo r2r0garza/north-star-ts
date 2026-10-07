@@ -398,6 +398,50 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
     expect(await readFile(join(workspace, "main.py"), "utf8")).toBe("x")
   })
 
+  it("an all-file-changes approval covers creates, edits, and folders", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+    const call = (id: string, name: string, args: Record<string, unknown>) =>
+      streamToolCalls([{ id, name, arguments: JSON.stringify(args) }])
+    scriptedCompletions.push(() =>
+      call("create", "write_file_tool", {
+        path: "main.py",
+        mode: "create",
+        content: "print('a')",
+      })
+    )
+    scriptedCompletions.push(() =>
+      call("edit", "edit_file_tool", {
+        path: "main.py",
+        old_string: "'a'",
+        new_string: "'b'",
+      })
+    )
+    scriptedCompletions.push(() =>
+      call("mkdir", "create_directory", { path: "src" })
+    )
+    scriptedCompletions.push(() => streamText("Done."))
+    const prompted: string[] = []
+
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "Scaffold the project.",
+      abort: new AbortController(),
+      onEvent: (event) => {
+        if (event.type !== "approval") return
+        prompted.push(event.kind ?? "")
+        resolveApproval(event.requestId, "approved", "file_changes")
+      },
+    })
+
+    expect(result).toEqual({ content: "Done." })
+    expect(prompted).toEqual(["file_write"])
+    expect(await readFile(join(workspace, "main.py"), "utf8")).toBe(
+      "print('b')"
+    )
+  })
+
   it("never grants an ineligible kind kind-wide", async () => {
     const workspace = await makeWorkspace()
     const conversation = createConversation({ mode: "interactive" })

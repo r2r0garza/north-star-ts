@@ -110,7 +110,7 @@ function TaskRow({
   onOpen: () => void
   onApprove: (
     requestId: string,
-    remember?: "workspace" | "conversation" | "kind"
+    remember?: "workspace" | "conversation" | "kind" | "file_changes"
   ) => void
   onDeny: (requestId: string) => void
   onAnswer: (requestId: string, answers: QuestionAnswer[]) => void
@@ -357,7 +357,7 @@ export function TasksSection({
   function approve(
     taskId: string,
     requestId: string,
-    remember?: "workspace" | "conversation" | "kind"
+    remember?: "workspace" | "conversation" | "kind" | "file_changes"
   ) {
     void window.cowork.tasks.approve({ taskId, requestId, remember })
     setGates((g) => ({ ...g, [taskId]: null }))

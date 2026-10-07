@@ -29,6 +29,7 @@ import { CHAT_SHELL_TOOL_NAMES, chatShellContext } from "./tools/chat_shell"
 import { toolError } from "./tools/output"
 import type { ToolContext } from "./tools/types"
 import {
+  FILE_CHANGE_KINDS,
   KIND_WIDE_IDENTITY,
   allowsKindWide,
   type ApprovalRemember,
@@ -396,20 +397,25 @@ export function resolveApproval(
   } else if (
     decision === "approved" &&
     !pending.explicit &&
-    remember === "kind" &&
+    (remember === "kind" || remember === "file_changes") &&
     pending.conversationId &&
     allowsKindWide(pending.action.kind)
   ) {
     // Kind-wide, this conversation only (for a background task: its private
     // worker conversation, i.e. this run). Matched by findMatch's wildcard path.
-    actionAllowlist.addRule({
-      tool: pending.action.tool,
-      kind: pending.action.kind,
-      identity: KIND_WIDE_IDENTITY,
-      scope: "conversation",
-      workspacePath: pending.workspacePath ?? null,
-      conversationId: pending.conversationId,
-    })
+    // "file_changes" grants every eligible file kind at once.
+    const kinds =
+      remember === "file_changes" ? FILE_CHANGE_KINDS : [pending.action.kind]
+    for (const kind of kinds) {
+      actionAllowlist.addRule({
+        tool: pending.action.tool,
+        kind,
+        identity: KIND_WIDE_IDENTITY,
+        scope: "conversation",
+        workspacePath: pending.workspacePath ?? null,
+        conversationId: pending.conversationId,
+      })
+    }
   }
   pending.resolve(decision)
 }

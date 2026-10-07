@@ -426,7 +426,7 @@ const api = {
   chatApprove: (payload: {
     requestId: string
     decision: "approved" | "denied"
-    remember?: "workspace" | "conversation" | "kind"
+    remember?: "workspace" | "conversation" | "kind" | "file_changes"
   }) => ipcRenderer.invoke("chat:approve", payload) as Promise<void>,
   // Answer an in-flight ask_user_question (from a "question" ChatEvent). The
   // agent loop is paused until this is called. `answers` is parallel to the
@@ -478,7 +478,7 @@ const api = {
     approve: (payload: {
       taskId: string
       requestId: string
-      remember?: "workspace" | "conversation" | "kind"
+      remember?: "workspace" | "conversation" | "kind" | "file_changes"
     }) => ipcRenderer.invoke("task:approve", payload) as Promise<void>,
     deny: (payload: { taskId: string; requestId: string }) =>
       ipcRenderer.invoke("task:deny", payload) as Promise<void>,

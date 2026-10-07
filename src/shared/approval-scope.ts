@@ -6,7 +6,13 @@
 //                  background task that conversation is the task's private
 //                  worker transcript, so the grant covers exactly that run
 //                  (including a resume/retry) and nothing else.
-export type ApprovalRemember = "workspace" | "conversation" | "kind"
+//   file_changes — `kind` for EVERY kind-wide-eligible kind at once (creates,
+//                  edits, folders), same conversation-only reach.
+export type ApprovalRemember =
+  | "workspace"
+  | "conversation"
+  | "kind"
+  | "file_changes"
 
 // The identity stored for a kind-wide rule. The allowlist honors it only at
 // conversation scope (see action-allowlist findMatch).
@@ -25,8 +31,11 @@ const KIND_WIDE_LABELS: Record<string, string> = {
 }
 
 export function allowsKindWide(kind: string | undefined): boolean {
-  return !!kind && kind in KIND_WIDE_LABELS
+  return !!kind && Object.hasOwn(KIND_WIDE_LABELS, kind)
 }
+
+// The kinds a "file_changes" grant covers: every kind-wide-eligible kind.
+export const FILE_CHANGE_KINDS = Object.keys(KIND_WIDE_LABELS)
 
 export function kindWideLabel(kind: string): string {
   return KIND_WIDE_LABELS[kind] ?? kind

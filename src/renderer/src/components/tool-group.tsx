@@ -37,7 +37,7 @@ import { allowsKindWide, kindWideLabel } from "../../../shared/approval-scope"
 export type ApprovalHandler = (
   requestId: string,
   decision: "approved" | "denied",
-  remember?: "workspace" | "conversation" | "kind"
+  remember?: "workspace" | "conversation" | "kind" | "file_changes"
 ) => void
 
 // Icon per tool name; falls back to a generic wrench for anything unmapped.
@@ -507,6 +507,16 @@ export function ApprovalCard({
           >
             Allow all {kindWideLabel(approval.kind)} for this {runLabel}
             <Kbd className="ml-1.5">A</Kbd>
+          </Button>
+        )}
+        {allowKind && (
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={() => onApproval(requestId, "approved", "file_changes")}
+          >
+            Allow all file changes for this {runLabel}
+            <Kbd className="ml-1.5">F</Kbd>
           </Button>
         )}
         <Button

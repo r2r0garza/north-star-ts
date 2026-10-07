@@ -102,7 +102,7 @@ export function registerTaskHandlers(runner: TaskRunner): void {
       payload: {
         taskId: string
         requestId: string
-        remember?: "workspace" | "conversation" | "kind"
+        remember?: "workspace" | "conversation" | "kind" | "file_changes"
       }
     ) => {
       resolveApproval(payload.requestId, "approved", payload.remember)
