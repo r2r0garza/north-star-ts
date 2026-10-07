@@ -19,6 +19,7 @@ import { unknownSideEffectingToolCalls } from "../agent/repair"
 import {
   getConversation,
   createConversation,
+  updateConversation,
 } from "../db/repositories/conversations"
 import {
   deleteConversationWithArtifacts,
@@ -542,7 +543,15 @@ export class TaskRunner {
   // its run/graph and the scheduler resumes from the (caller-reset) failure
   // frontier. Distinct from resume(), which only re-drives interrupted/paused
   // tasks; a terminal `failed` task is otherwise never re-run. No-op otherwise.
-  restart(taskId: string): void {
+  //
+  // `model` optionally switches the task's worker conversation to another
+  // provider/model before re-queuing, so the retried run (and any later resume)
+  // uses it. Applied only after the safety check, so a refused retry changes
+  // nothing.
+  restart(
+    taskId: string,
+    opts?: { model?: { accountId: string | null; modelId: string | null } }
+  ): void {
     const task = getTask(taskId)
     if (!task || task.status !== "failed") return
     const unknownSideEffects = unknownSideEffectingToolCalls(
@@ -553,6 +562,12 @@ export class TaskRunner {
       throw new Error(
         `cannot retry task while side-effecting tool outcomes are unknown: ${names}`
       )
+    }
+    if (opts?.model) {
+      updateConversation(task.conversationId, {
+        accountId: opts.model.accountId,
+        modelId: opts.model.modelId,
+      })
     }
     // A fresh user-driven run gets the full retry allowance again.
     this.emit(taskId, { type: "retry_budget_reset" })
@@ -568,6 +583,22 @@ export class TaskRunner {
     })
     if (!this.queue.includes(taskId)) this.queue.push(taskId)
     this.wakeup()
+  }
+
+  // User-driven "Retry" of a failed AGENT task (an LLM turn in its worker
+  // conversation), optionally on a different model. Deterministic kinds are
+  // refused: a process run must be retried through its own service, which
+  // resets the failure frontier before calling restart().
+  retryAgentTask(
+    taskId: string,
+    opts?: { model?: { accountId: string | null; modelId: string | null } }
+  ): void {
+    const task = getTask(taskId)
+    if (!task) return
+    if (this.capabilityOf(kindOf(task)).run) {
+      throw new Error(`task kind "${kindOf(task)}" cannot be retried here`)
+    }
+    this.restart(taskId, opts)
   }
 
   // Pause a task (plan 008). A running task is aborted with PAUSE_ABORT_REASON so

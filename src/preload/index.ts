@@ -456,6 +456,11 @@ const api = {
         conversationId,
         opts
       ) as Promise<Task | null>,
+    // Retry a failed agent task in place, optionally switching its model first.
+    retry: (
+      taskId: string,
+      opts?: { model?: { accountId: string | null; modelId: string | null } }
+    ) => ipcRenderer.invoke("task:retry", taskId, opts) as Promise<void>,
     // Manually resume an interrupted task (e.g. one reconciled after a crash).
     resume: (taskId: string) =>
       ipcRenderer.invoke("task:resume", taskId) as Promise<void>,

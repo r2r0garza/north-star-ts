@@ -224,6 +224,92 @@ describe.skipIf(!sqliteLoads)(
       await runner.stop()
     })
 
+    it("retryAgentTask switches the worker conversation's model before re-running", async () => {
+      const conv = createConversation({
+        mode: "north_star",
+        accountId: "acct-old",
+        modelId: "model-old",
+      })
+      appendMessage({ conversationId: conv.id, role: "user", content: "hi" })
+      const task = createTask({
+        conversationId: conv.id,
+        status: "failed",
+        input: { kind: "todo_run", message: "hi" },
+      })
+      let modelAtRun: string | null | undefined
+      loopImpl = async (opts) => {
+        modelAtRun = getConversation(opts.conversationId)?.modelId
+        return { content: "done" }
+      }
+      const runner = new TaskRunner()
+      await runner.start()
+      await settle()
+
+      runner.retryAgentTask(task.id, {
+        model: { accountId: "acct-new", modelId: "model-new" },
+      })
+      await settle()
+
+      expect(getTask(task.id)?.status).toBe("completed")
+      expect(modelAtRun).toBe("model-new")
+      expect(getConversation(conv.id)).toMatchObject({
+        accountId: "acct-new",
+        modelId: "model-new",
+      })
+      await runner.stop()
+    })
+
+    it("retryAgentTask refuses deterministic kinds", async () => {
+      const conv = createConversation({ mode: "chat" })
+      const task = createTask({
+        conversationId: conv.id,
+        status: "failed",
+        input: { kind: "det_kind" },
+      })
+      const runner = new TaskRunner()
+      runner.registerKind("det_kind", {
+        autoResume: false,
+        run: async () => ({}),
+      })
+      await runner.start()
+      await settle()
+
+      expect(() => runner.retryAgentTask(task.id)).toThrow("cannot be retried")
+      expect(getTask(task.id)?.status).toBe("failed")
+      await runner.stop()
+    })
+
+    it("leaves the model untouched when a retry is refused", async () => {
+      const conv = createConversation({
+        mode: "chat",
+        accountId: "acct-old",
+        modelId: "model-old",
+      })
+      appendMessage({ conversationId: conv.id, role: "user", content: "go" })
+      appendMessage({
+        conversationId: conv.id,
+        role: "assistant",
+        content: null,
+        toolCalls: [{ id: "call-1", name: "run_shell_tool", arguments: "{}" }],
+      })
+      const task = createTask({
+        conversationId: conv.id,
+        status: "failed",
+        input: { kind: "agent_chat", message: "go" },
+      })
+      const runner = new TaskRunner()
+      await runner.start()
+      await settle()
+
+      expect(() =>
+        runner.retryAgentTask(task.id, {
+          model: { accountId: "acct-new", modelId: "model-new" },
+        })
+      ).toThrow("side-effecting tool outcomes are unknown")
+      expect(getConversation(conv.id)?.modelId).toBe("model-old")
+      await runner.stop()
+    })
+
     it("blocks retry when a side-effecting tool outcome is unknown", async () => {
       const conv = createConversation({ mode: "chat" })
       appendMessage({ conversationId: conv.id, role: "user", content: "go" })

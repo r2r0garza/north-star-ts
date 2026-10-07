@@ -71,6 +71,17 @@ export function registerTaskHandlers(runner: TaskRunner): void {
 
   // Resume an interrupted OR paused task (user-driven manual resume).
   ipcMain.handle("task:resume", (_e, taskId: string) => runner.resume(taskId))
+  // Retry a FAILED agent task in place (keeps its transcript), optionally on a
+  // different provider/model. Rejects if an earlier side effect's outcome is
+  // unknown — the renderer surfaces that message.
+  ipcMain.handle(
+    "task:retry",
+    (
+      _e,
+      taskId: string,
+      opts?: { model?: { accountId: string | null; modelId: string | null } }
+    ) => runner.retryAgentTask(taskId, opts)
+  )
   // Cancel a task (running → aborted → cancelled; pending → cancelled directly).
   ipcMain.handle("task:cancel", (_e, taskId: string) => runner.cancel(taskId))
   // Pause a task (plan 008): running → aborted → paused (a durable resume state

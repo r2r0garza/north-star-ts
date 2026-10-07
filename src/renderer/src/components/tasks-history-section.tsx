@@ -2,6 +2,10 @@ import * as React from "react"
 import { CheckCircle2, CircleAlert, Ban } from "lucide-react"
 import { cn, formatRelativeTime } from "@/lib/utils"
 import type { Task, TaskStatus } from "@/types"
+import {
+  TaskRetryPopover,
+  isRetryableTask,
+} from "@/components/task-retry-popover"
 
 // Terminal statuses — the opposite of tasks-section.tsx's ACTIONABLE. These are
 // the tasks the live Tasks section hides; History is where they live on.
@@ -32,7 +36,9 @@ const STATUS_ICON: Record<
 // The History section of the Workspace Activity panel. Mirrors tasks-section's
 // load + live-tail refetch pattern, but read-only and compact: terminal tasks
 // for the active SOURCE conversation, newest first, each row opening the same
-// read-only transcript viewer the live chat uses. No Resume/Cancel/gate UI.
+// read-only transcript viewer the live chat uses. No Resume/Cancel/gate UI; a
+// failed agent task offers Retry (optionally on another model), which re-queues
+// it and moves it back to the live Tasks section.
 export function TasksHistorySection({
   conversationId,
   onOpenTask,
@@ -107,21 +113,37 @@ export function TasksHistorySection({
         }
         const Icon = meta.Icon
         return (
-          <button
+          <div
             key={task.id}
-            type="button"
-            onClick={() => onOpenTask(task)}
-            title="Open task transcript"
-            className="flex w-full items-center gap-2 rounded-md p-1.5 text-left hover:bg-accent"
+            className="flex w-full items-center gap-1 rounded-md hover:bg-accent"
           >
-            <Icon className={cn("size-3.5 shrink-0", meta.className)} />
-            <span className="min-w-0 flex-1 truncate text-sm text-foreground">
-              {task.title ?? "Untitled task"}
-            </span>
-            <span className="shrink-0 text-xs text-muted-foreground">
-              {formatRelativeTime(task.updatedAt)}
-            </span>
-          </button>
+            <button
+              type="button"
+              onClick={() => onOpenTask(task)}
+              title={
+                task.status === "failed" && task.error
+                  ? `Failed: ${task.error}`
+                  : "Open task transcript"
+              }
+              className="flex min-w-0 flex-1 items-center gap-2 p-1.5 text-left"
+            >
+              <Icon className={cn("size-3.5 shrink-0", meta.className)} />
+              <span className="min-w-0 flex-1 truncate text-sm text-foreground">
+                {task.title ?? "Untitled task"}
+              </span>
+              <span className="shrink-0 text-xs text-muted-foreground">
+                {formatRelativeTime(task.updatedAt)}
+              </span>
+            </button>
+            {isRetryableTask(task) && (
+              <span className="shrink-0 pr-1">
+                <TaskRetryPopover
+                  task={task}
+                  onRetried={() => void refetchRef.current()}
+                />
+              </span>
+            )}
+          </div>
         )
       })}
       {truncated && (
