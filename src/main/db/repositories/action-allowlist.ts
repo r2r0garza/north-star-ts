@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto"
 import { getDb } from "../connection"
 import type { ActionAllowlistRule, AllowlistScope } from "../types"
+import { KIND_WIDE_IDENTITY } from "../../../shared/approval-scope"
 
 // Persistence for "always allow" decisions from the approval pipeline. Matching
 // is deliberately conservative: an exact `identity` equality plus scope match —
@@ -73,7 +74,10 @@ export function addRule(input: {
 // Find a remembered rule covering this action in the given scope context.
 // Conservative: exact (kind, identity) equality. Workspace scope additionally
 // requires the workspace path to match; conversation scope the conversation id.
-// Touches last_used_at on a hit so stale rules are identifiable later.
+// The one broadening: a kind-wide rule (identity KIND_WIDE_IDENTITY) matches any
+// identity of its kind, but ONLY at conversation scope — a wildcard row at any
+// other scope is ignored. Touches last_used_at on a hit so stale rules are
+// identifiable later.
 export function findMatch(
   kind: string,
   identity: string,
@@ -81,11 +85,14 @@ export function findMatch(
 ): ActionAllowlistRule | undefined {
   const rows = getDb()
     .prepare(
-      "SELECT * FROM action_allowlist WHERE kind = ? AND identity = ? ORDER BY created_at DESC"
+      "SELECT * FROM action_allowlist WHERE kind = ? AND identity IN (?, ?) ORDER BY created_at DESC"
     )
-    .all(kind, identity) as AllowlistRow[]
+    .all(kind, identity, KIND_WIDE_IDENTITY) as AllowlistRow[]
 
   for (const row of rows) {
+    if (row.identity === KIND_WIDE_IDENTITY && row.scope !== "conversation") {
+      continue
+    }
     if (row.scope === "global") return touch(toRule(row))
     if (
       row.scope === "workspace" &&

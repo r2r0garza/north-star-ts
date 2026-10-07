@@ -29,6 +29,11 @@ import { CHAT_SHELL_TOOL_NAMES, chatShellContext } from "./tools/chat_shell"
 import { toolError } from "./tools/output"
 import type { ToolContext } from "./tools/types"
 import {
+  KIND_WIDE_IDENTITY,
+  allowsKindWide,
+  type ApprovalRemember,
+} from "../../shared/approval-scope"
+import {
   readDocumentTool,
   supportedDocumentKind,
 } from "./tools/document_extraction_tool"
@@ -347,10 +352,12 @@ export function setAutoModeForConversation(
 // `remember` scope, the action is persisted to the allowlist so identical future
 // actions skip the prompt — `"workspace"` for every conversation in this folder,
 // `"conversation"` for just this session.
+// `"kind"` remembers EVERY action of this kind for this conversation only
+// (eligible kinds only — see allowsKindWide).
 export function resolveApproval(
   requestId: string,
   decision: "approved" | "denied",
-  remember?: "workspace" | "conversation"
+  remember?: ApprovalRemember
 ): void {
   const pending = pendingApprovals.get(requestId)
   if (!pending) return
@@ -382,6 +389,23 @@ export function resolveApproval(
       tool: pending.action.tool,
       kind: pending.action.kind,
       identity: pending.action.identity,
+      scope: "conversation",
+      workspacePath: pending.workspacePath ?? null,
+      conversationId: pending.conversationId,
+    })
+  } else if (
+    decision === "approved" &&
+    !pending.explicit &&
+    remember === "kind" &&
+    pending.conversationId &&
+    allowsKindWide(pending.action.kind)
+  ) {
+    // Kind-wide, this conversation only (for a background task: its private
+    // worker conversation, i.e. this run). Matched by findMatch's wildcard path.
+    actionAllowlist.addRule({
+      tool: pending.action.tool,
+      kind: pending.action.kind,
+      identity: KIND_WIDE_IDENTITY,
       scope: "conversation",
       workspacePath: pending.workspacePath ?? null,
       conversationId: pending.conversationId,

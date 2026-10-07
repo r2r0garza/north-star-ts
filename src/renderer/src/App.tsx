@@ -127,6 +127,7 @@ import {
   setConversationAgentMode,
   type AgentMode,
 } from "@/lib/agent-mode"
+import { allowsKindWide } from "../../shared/approval-scope"
 import {
   INITIAL_TRANSCRIPT_SCROLL_POLICY,
   recordTranscriptScroll,
@@ -1312,7 +1313,7 @@ function App(
   function resolveApproval(
     requestId: string,
     decision: "approved" | "denied",
-    remember?: "workspace" | "conversation"
+    remember?: "workspace" | "conversation" | "kind"
   ) {
     // The card is only shown for the conversation on screen, so flip its status
     // in that conversation's live turn (matched by requestId, wherever its
@@ -2107,7 +2108,8 @@ function App(
   }, [liveQuestion])
 
   // Keyboard shortcuts for the pending approval, active only while one is shown:
-  //   Enter → Approve once   S → Approve for session/workspace   Esc → Reject
+  //   Enter → Approve once   S → Approve for session/workspace
+  //   A → Allow every action of this kind for this conversation   Esc → Reject
   // The "S" scope mirrors ApprovalCard exactly: no session option for delegate;
   // "conversation" for web, "workspace" otherwise. Guarded by isTypingTarget so a
   // focused field (e.g. an open question's Other box) keeps its own keys — though
@@ -2137,6 +2139,11 @@ function App(
           "approved",
           kind === "web" ? "conversation" : "workspace"
         )
+      } else if (e.key.toLowerCase() === "a") {
+        // Kind-wide approve — only when the card offers it.
+        if (explicit || !allowsKindWide(kind)) return
+        e.preventDefault()
+        resolveApproval(requestId, "approved", "kind")
       }
     }
     window.addEventListener("keydown", onKeyDown)

@@ -363,6 +363,74 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
     expect(result).toEqual({ content: "Done." })
   })
 
+  it("a kind-wide approval covers later actions of that kind in the conversation", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+    const write = (id: string, path: string) =>
+      streamToolCalls([
+        {
+          id,
+          name: "write_file_tool",
+          arguments: JSON.stringify({ path, mode: "create", content: "x" }),
+        },
+      ])
+    scriptedCompletions.push(() => write("pkg", "package.json"))
+    scriptedCompletions.push(() => write("main", "main.py"))
+    scriptedCompletions.push(() => streamText("Done."))
+    const prompted: string[] = []
+
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "Scaffold the project.",
+      abort: new AbortController(),
+      onEvent: (event) => {
+        if (event.type !== "approval") return
+        prompted.push(event.summary)
+        resolveApproval(event.requestId, "approved", "kind")
+      },
+    })
+
+    expect(result).toEqual({ content: "Done." })
+    // Only the first write prompted; main.py rode the kind-wide grant.
+    expect(prompted).toHaveLength(1)
+    expect(prompted[0]).toContain("package.json")
+    expect(await readFile(join(workspace, "main.py"), "utf8")).toBe("x")
+  })
+
+  it("never grants an ineligible kind kind-wide", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+    const exec = (id: string, text: string) =>
+      streamToolCalls([
+        {
+          id,
+          name: "exec_command",
+          arguments: JSON.stringify({
+            command: nodeCmd(`console.log('${text}')`),
+          }),
+        },
+      ])
+    scriptedCompletions.push(() => exec("one", "one"))
+    scriptedCompletions.push(() => exec("two", "two"))
+    scriptedCompletions.push(() => streamText("Done."))
+    let prompts = 0
+
+    await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "Run both.",
+      abort: new AbortController(),
+      onEvent: (event) => {
+        if (event.type !== "approval") return
+        prompts++
+        resolveApproval(event.requestId, "approved", "kind")
+      },
+    })
+
+    expect(prompts).toBe(2)
+  })
+
   it("reuses completed identical calls within the same model request", async () => {
     const workspace = await makeWorkspace()
     const conversation = createConversation({ mode: "interactive" })

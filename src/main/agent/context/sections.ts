@@ -1,5 +1,6 @@
 import { listTasks } from "../../db/repositories/tasks"
 import { listRules } from "../../db/repositories/action-allowlist"
+import { KIND_WIDE_IDENTITY } from "../../../shared/approval-scope"
 import { listApprovals } from "../../db/repositories/approvals"
 import { getConversationSummary } from "../../db/repositories/conversation-summaries"
 import { readGitBranch } from "../../index/metadata"
@@ -134,7 +135,8 @@ export function approvalsSection(opts: {
       const key = `${r.kind} ${r.identity} ${r.scope}`
       if (seen.has(key)) continue
       seen.add(key)
-      ruleLines.push(`- ${r.kind} ${r.identity} [${r.scope}]`)
+      const identity = r.identity === KIND_WIDE_IDENTITY ? "(any)" : r.identity
+      ruleLines.push(`- ${r.kind} ${identity} [${r.scope}]`)
       if (ruleLines.length >= 10) break
     }
     blocks.push(

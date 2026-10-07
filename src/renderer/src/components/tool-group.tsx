@@ -28,6 +28,7 @@ import { Kbd } from "@/components/ui/kbd"
 import { Spinner } from "@/components/ui/spinner"
 import { cn } from "@/lib/utils"
 import { isErrorResult, type ToolUse } from "@/lib/timeline"
+import { allowsKindWide, kindWideLabel } from "../../../shared/approval-scope"
 
 // How the user resolved an inline approval. `requestId` is the token from the
 // approval event. `remember` persists an allowlist rule so the same action isn't
@@ -36,7 +37,7 @@ import { isErrorResult, type ToolUse } from "@/lib/timeline"
 export type ApprovalHandler = (
   requestId: string,
   decision: "approved" | "denied",
-  remember?: "workspace" | "conversation"
+  remember?: "workspace" | "conversation" | "kind"
 ) => void
 
 // Icon per tool name; falls back to a generic wrench for anything unmapped.
@@ -213,7 +214,9 @@ interface SubagentDisplayResult {
   integrationStatus?: string
 }
 
-function subagentResults(result: string | undefined): SubagentDisplayResult[] | null {
+function subagentResults(
+  result: string | undefined
+): SubagentDisplayResult[] | null {
   if (!result || result.startsWith("ERROR[")) return null
   try {
     const parsed = JSON.parse(result) as { results?: unknown }
@@ -262,16 +265,22 @@ function SubagentResults({ results }: { results: SubagentDisplayResult[] }) {
             </p>
           )}
           <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[0.68rem] text-muted-foreground">
-            {formatDuration(result.durationMs) && <span>{formatDuration(result.durationMs)}</span>}
+            {formatDuration(result.durationMs) && (
+              <span>{formatDuration(result.durationMs)}</span>
+            )}
             {result.usage?.totalTokens !== undefined && (
               <span>{result.usage.totalTokens.toLocaleString()} tokens</span>
             )}
             {result.touchedFileCount !== undefined && (
               <span>{result.touchedFileCount} files</span>
             )}
-            {result.commits?.length ? <span>{result.commits.length} commits</span> : null}
+            {result.commits?.length ? (
+              <span>{result.commits.length} commits</span>
+            ) : null}
             {result.mergeability && <span>merge: {result.mergeability}</span>}
-            {result.branch && <span className="font-mono">{result.branch}</span>}
+            {result.branch && (
+              <span className="font-mono">{result.branch}</span>
+            )}
             {result.integrationStatus && (
               <span>integration: {result.integrationStatus}</span>
             )}
@@ -305,7 +314,8 @@ function ToolUseRow({ use }: { use: ToolUse }) {
   const error = use.status === "error"
   const interrupted = use.status === "interrupted"
   const awaiting = use.approval?.status === "pending"
-  const delegated = use.name === "spawn_subagents" ? subagentResults(use.result) : null
+  const delegated =
+    use.name === "spawn_subagents" ? subagentResults(use.result) : null
   return (
     <div className="flex max-w-full min-w-0 flex-col gap-1">
       <Collapsible className="w-full max-w-full min-w-0">
@@ -356,17 +366,19 @@ function ToolUseRow({ use }: { use: ToolUse }) {
             )}
             {delegated ? (
               <SubagentResults results={delegated} />
-            ) : use.result !== undefined && (
-              <Bubble
-                align="start"
-                variant={isErrorResult(use.result) ? "destructive" : "muted"}
-              >
-                <BubbleContent>
-                  <pre className="max-h-64 overflow-auto break-words whitespace-pre-wrap">
-                    {clip(use.result)}
-                  </pre>
-                </BubbleContent>
-              </Bubble>
+            ) : (
+              use.result !== undefined && (
+                <Bubble
+                  align="start"
+                  variant={isErrorResult(use.result) ? "destructive" : "muted"}
+                >
+                  <BubbleContent>
+                    <pre className="max-h-64 overflow-auto break-words whitespace-pre-wrap">
+                      {clip(use.result)}
+                    </pre>
+                  </BubbleContent>
+                </Bubble>
+              )
             )}
             {interrupted && (
               <Bubble align="start" variant="muted">
@@ -389,9 +401,13 @@ function ToolUseRow({ use }: { use: ToolUse }) {
 export function ApprovalCard({
   approval,
   onApproval,
+  runLabel = "conversation",
 }: {
   approval: NonNullable<ToolUse["approval"]>
   onApproval: ApprovalHandler
+  // What a kind-wide grant covers, for the button label: a background task's
+  // grant is scoped to its own worker conversation, i.e. "this task".
+  runLabel?: "conversation" | "task"
 }) {
   const { requestId } = approval
   // Delegation (handing work to a background task) is asked every time — there's
@@ -402,6 +418,8 @@ export function ApprovalCard({
   // per workspace.
   const isWeb = approval.kind === "web"
   const isBrowser = approval.kind === "browser"
+  // Coarser grant: every action of this kind for this conversation/task.
+  const allowKind = allowRemember && allowsKindWide(approval.kind)
   const webOrigin =
     isWeb && typeof approval.detail?.origin === "string"
       ? approval.detail.origin
@@ -481,6 +499,16 @@ export function ApprovalCard({
               <Kbd className="ml-1.5">S</Kbd>
             </Button>
           ))}
+        {allowKind && approval.kind && (
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={() => onApproval(requestId, "approved", "kind")}
+          >
+            Allow all {kindWideLabel(approval.kind)} for this {runLabel}
+            <Kbd className="ml-1.5">A</Kbd>
+          </Button>
+        )}
         <Button
           size="xs"
           variant="destructive"

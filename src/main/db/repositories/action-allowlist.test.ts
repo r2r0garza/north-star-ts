@@ -111,3 +111,55 @@ describe.skipIf(!sqliteLoads)("action-allowlist listRules (plan 021)", () => {
     expect(listRules({})[0].lastUsedAt).not.toBeNull()
   })
 })
+
+describe.skipIf(!sqliteLoads)("action-allowlist kind-wide rules", () => {
+  it("matches any identity of its kind in its own conversation only", () => {
+    addRule({
+      tool: "write_file_tool",
+      kind: "file_write",
+      identity: "*",
+      scope: "conversation",
+      conversationId: "task-conv",
+    })
+    expect(
+      findMatch("file_write", "file_write:package.json", {
+        conversationId: "task-conv",
+      })
+    ).toBeDefined()
+    expect(
+      findMatch("file_write", "file_write:main.py", {
+        conversationId: "task-conv",
+      })
+    ).toBeDefined()
+    // Other kinds and other conversations are not covered.
+    expect(
+      findMatch("file_edit", "file_edit:main.py", {
+        conversationId: "task-conv",
+      })
+    ).toBeUndefined()
+    expect(
+      findMatch("file_write", "file_write:main.py", {
+        conversationId: "other-conv",
+      })
+    ).toBeUndefined()
+  })
+
+  it("ignores a wildcard identity at any scope but conversation", () => {
+    addRule({
+      tool: "run_shell",
+      kind: "shell",
+      identity: "*",
+      scope: "workspace",
+      workspacePath: "/ws",
+    })
+    addRule({
+      tool: "run_shell",
+      kind: "shell",
+      identity: "*",
+      scope: "global",
+    })
+    expect(
+      findMatch("shell", "rm -rf build", { workspacePath: "/ws" })
+    ).toBeUndefined()
+  })
+})

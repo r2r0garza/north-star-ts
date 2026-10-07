@@ -110,7 +110,7 @@ function TaskRow({
   onOpen: () => void
   onApprove: (
     requestId: string,
-    remember?: "workspace" | "conversation"
+    remember?: "workspace" | "conversation" | "kind"
   ) => void
   onDeny: (requestId: string) => void
   onAnswer: (requestId: string, answers: QuestionAnswer[]) => void
@@ -191,6 +191,7 @@ function TaskRow({
             detail: gate.detail,
             status: "pending",
           }}
+          runLabel="task"
           onApproval={(requestId, decision, remember) =>
             decision === "approved"
               ? onApprove(requestId, remember)
@@ -356,7 +357,7 @@ export function TasksSection({
   function approve(
     taskId: string,
     requestId: string,
-    remember?: "workspace" | "conversation"
+    remember?: "workspace" | "conversation" | "kind"
   ) {
     void window.cowork.tasks.approve({ taskId, requestId, remember })
     setGates((g) => ({ ...g, [taskId]: null }))
