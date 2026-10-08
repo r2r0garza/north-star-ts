@@ -2132,6 +2132,86 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
     expect(completionRequests).toHaveLength(3)
   })
 
+  it("repairs interrupted calls before replaying later failure and user messages", async () => {
+    const conversation = createConversation({ mode: "chat" })
+    appendMessage({
+      conversationId: conversation.id,
+      role: "user",
+      content: "inspect",
+    })
+    appendMessage({
+      conversationId: conversation.id,
+      role: "assistant",
+      toolCalls: [
+        {
+          id: "interrupted-read",
+          name: "read_file_tool",
+          arguments: '{"path":"notes.txt"}',
+        },
+      ],
+    })
+    appendMessage({
+      conversationId: conversation.id,
+      role: "assistant",
+      content: "⚠️ The turn ended early: Something went wrong",
+    })
+    appendMessage({
+      conversationId: conversation.id,
+      role: "user",
+      content: "you got cut off",
+    })
+    scriptedCompletions.push((request) => {
+      const index = request.messages.findIndex(
+        (m) => m.tool_calls?.[0]?.id === "interrupted-read"
+      )
+      expect(request.messages[index + 1]).toMatchObject({
+        role: "tool",
+        tool_call_id: "interrupted-read",
+      })
+      expect(
+        request.messages.some((m) =>
+          m.content?.includes("The turn ended early")
+        )
+      ).toBe(false)
+      return streamText("recovered")
+    })
+    expect(
+      await runAgentLoop({
+        conversationId: conversation.id,
+        userMessage: "try again",
+        abort: new AbortController(),
+        onEvent: () => {},
+      })
+    ).toEqual({ content: "recovered" })
+  })
+
+  it("makes fresh model requests after an exhausted turn", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0)
+    const conversation = createConversation({ mode: "chat" })
+    const run = (userMessage: string) =>
+      runAgentLoop({
+        conversationId: conversation.id,
+        userMessage,
+        abort: new AbortController(),
+        onEvent: () => {},
+      })
+    for (let i = 0; i < 3; i++) {
+      scriptedCompletions.push(() => {
+        throw transientError("Something went wrong")
+      })
+    }
+    expect((await run("hello")).error).toContain("failed after 3 attempts")
+    scriptedCompletions.push(() => {
+      throw new Error("bedrock error: unsupported model")
+    })
+    expect((await run("you got cut off")).error).toBe(
+      "bedrock error: unsupported model"
+    )
+    scriptedCompletions.push(() => streamText("recovered"))
+    expect(await run("try again")).toEqual({ content: "recovered" })
+    expect(completionRequests).toHaveLength(5)
+  })
+
   it("discards partial text and tool fragments from a failed stream retry", async () => {
     vi.spyOn(Math, "random").mockReturnValue(0)
     const workspace = await makeWorkspace()

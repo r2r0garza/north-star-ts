@@ -3,8 +3,7 @@ import { createCompletion, resolveLlm } from "../agent/providers"
 import { truncateUtf8Text } from "../agent/tools/output"
 import { GitService, GIT_COMMIT_MESSAGE_MAX_LENGTH } from "./service"
 
-const MAX_ROUNDS = 4
-const MAX_OUTPUT_TOKENS = 300
+const MAX_OUTPUT_TOKENS = 2048
 const MAX_TOOL_OUTPUT_BYTES = 96 * 1024
 
 const EXEC_COMMAND_DEFINITION = {
@@ -60,14 +59,19 @@ export async function generateCommitMessage(
       },
     ]
 
-    for (let round = 0; round < MAX_ROUNDS; round++) {
+    const maxInspectionRounds = Math.max(4, selected.length + 1)
+    for (let round = 0; round <= maxInspectionRounds; round++) {
       if (signal?.aborted)
         return { ok: false, error: "Commit-message generation was cancelled." }
       const response = await createCompletion(
         client,
         model,
         MAX_OUTPUT_TOKENS,
-        { messages, tools: [EXEC_COMMAND_DEFINITION], tool_choice: "auto" },
+        {
+          messages,
+          tools: [EXEC_COMMAND_DEFINITION],
+          tool_choice: round === maxInspectionRounds ? "none" : "auto",
+        },
         [undefined, { signal }],
         apiMode
       )

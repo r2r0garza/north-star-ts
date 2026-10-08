@@ -47,6 +47,33 @@ describe("ContextBuilder — base behavior (pre-014 parity)", () => {
     expect(messageRepo.listMessagesAfterSeq).not.toHaveBeenCalled()
   })
 
+  it("replays interrupted tool results before failure notes and later turns", () => {
+    messageRepo.listMessages.mockReturnValue([
+      msg(1, "user", "inspect"),
+      {
+        ...msg(2, "assistant", "checking"),
+        toolCalls: [{ id: "call", name: "read_file_tool", arguments: "{}" }],
+      },
+      msg(3, "assistant", "⚠️ The turn ended early: Something went wrong"),
+      msg(4, "user", "you got cut off"),
+      { ...msg(5, "tool", "recovered result"), toolCallId: "call" },
+    ])
+    const out = new ContextBuilder().build("c1", { baseSystemPrompt: "SYS" })
+    expect(out.map((m) => m.role)).toEqual([
+      "system",
+      "user",
+      "assistant",
+      "tool",
+      "user",
+    ])
+    expect(out[3]).toEqual({
+      role: "tool",
+      tool_call_id: "call",
+      content: "recovered result",
+    })
+    expect(out[4].content).toBe("you got cut off")
+  })
+
   it("keeps all history even when it exceeds the section budget", () => {
     messageRepo.listMessages.mockReturnValue([
       msg(1, "user", "x".repeat(400)),

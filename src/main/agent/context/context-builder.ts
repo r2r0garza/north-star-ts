@@ -131,7 +131,7 @@ export class ContextBuilder {
     )
     return [
       { role: "system", content: systemContent },
-      ...history.map(toChatMessage),
+      ...replayHistory(history),
     ]
   }
 
@@ -200,6 +200,42 @@ export class ContextBuilder {
     return { content: blocks.join("\n\n"), replacedThroughSeq }
   }
 }
+// Recovery can append tool results after a failure note or a later user turn.
+// Replay them immediately after their call, without changing durable history.
+function replayHistory(history: Message[]): ChatMessage[] {
+  const results = new Map(
+    history
+      .filter((m) => m.role === "tool" && m.toolCallId)
+      .map((m) => [m.toolCallId!, m])
+  )
+  const messages: ChatMessage[] = []
+  for (const message of history) {
+    if (message.role === "tool") continue
+    if (
+      message.role === "assistant" &&
+      !message.toolCalls?.length &&
+      /^(⚠️ The turn ended early:|⏹ Stopped)/.test(
+        message.content?.trim() ?? ""
+      )
+    )
+      continue
+    messages.push(toChatMessage(message))
+    for (const call of message.toolCalls ?? []) {
+      const result = results.get(call.id)
+      messages.push(
+        result
+          ? toChatMessage(result)
+          : {
+              role: "tool",
+              tool_call_id: call.id,
+              content: "Interrupted before completion; result unknown.",
+            }
+      )
+    }
+  }
+  return messages
+}
+
 // Map a stored message to the OpenAI-compatible shape (inverse of how runChat
 // persists turns).
 function toChatMessage(m: Message): ChatMessage {
