@@ -231,7 +231,7 @@ export function ActivitySection({
 // panel's open/close animation). When inactive it reports null, hiding the view
 // so it never lingers over the DOM (panel closed, not in browser mode, obscured
 // by a modal, or popped out to the separate window).
-function BrowserSlot({ active }: { active: boolean }) {
+export function BrowserSlot({ active }: { active: boolean }) {
   const ref = React.useRef<HTMLDivElement>(null)
   React.useEffect(() => {
     if (!active) {
@@ -242,7 +242,10 @@ function BrowserSlot({ active }: { active: boolean }) {
       const el = ref.current
       if (!el) return
       const r = el.getBoundingClientRect()
-      if (r.width <= 0 || r.height <= 0) {
+      const modal = document.querySelector(
+        '[data-slot="dialog-overlay"], [data-slot="alert-dialog-overlay"], [data-slot="sheet-overlay"]'
+      )
+      if (modal || r.width <= 0 || r.height <= 0) {
         window.cowork.reportBrowserBounds(null)
         return
       }
@@ -254,6 +257,8 @@ function BrowserSlot({ active }: { active: boolean }) {
       })
     }
     report()
+    const overlays = new MutationObserver(report)
+    overlays.observe(document.body, { childList: true, subtree: true })
     const observer = new ResizeObserver(report)
     if (ref.current) observer.observe(ref.current)
     window.addEventListener("resize", report)
@@ -262,6 +267,7 @@ function BrowserSlot({ active }: { active: boolean }) {
     const interval = window.setInterval(report, 30)
     const stop = window.setTimeout(() => window.clearInterval(interval), 400)
     return () => {
+      overlays.disconnect()
       observer.disconnect()
       window.removeEventListener("resize", report)
       window.clearInterval(interval)
