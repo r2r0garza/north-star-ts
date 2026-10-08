@@ -74,6 +74,27 @@ describe("ContextBuilder — base behavior (pre-014 parity)", () => {
     expect(out[4].content).toBe("you got cut off")
   })
 
+  it("makes old malformed tool arguments safe to replay without changing stored history", () => {
+    const argumentsText = '{"path": "src/db/_realistic.ts"'
+    const original = {
+      ...msg(1, "assistant", ""),
+      toolCalls: [
+        { id: "broken", name: "write_file_tool", arguments: argumentsText },
+      ],
+    }
+    messageRepo.listMessages.mockReturnValue([
+      original,
+      { ...msg(2, "tool", "ERROR[bad_tool_arguments]"), toolCallId: "broken" },
+      msg(3, "user", "you got cut off"),
+    ])
+    const out = new ContextBuilder().build("c1", { baseSystemPrompt: "SYS" })
+    expect(JSON.parse(out[1].tool_calls![0].function.arguments)).toEqual({
+      _invalid_tool_arguments: argumentsText,
+    })
+    expect(out[2].content).toBe("ERROR[bad_tool_arguments]")
+    expect(original.toolCalls[0].arguments).toBe(argumentsText)
+  })
+
   it("keeps all history even when it exceeds the section budget", () => {
     messageRepo.listMessages.mockReturnValue([
       msg(1, "user", "x".repeat(400)),

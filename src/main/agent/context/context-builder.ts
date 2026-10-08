@@ -6,6 +6,7 @@ import { defaultTokenCounter, type TokenCounter } from "./token-counter"
 import type { Message } from "../../db/types"
 import { renderContextEnvelope, type ContextProvenance } from "./provenance"
 import { isCommandCompletionEvent } from "../../../shared/runtime-messages"
+import { replayToolCallArguments } from "../tool-call-arguments"
 
 // An OpenAI-compatible chat message, the shape Portkey expects. The agent feeds
 // the array this builder returns straight into the chat completion request.
@@ -252,7 +253,10 @@ function toChatMessage(m: Message): ChatMessage {
       tool_calls: m.toolCalls.map((c) => ({
         id: c.id,
         type: "function",
-        function: { name: c.name, arguments: c.arguments },
+        function: {
+          name: c.name,
+          arguments: replayToolCallArguments(c.arguments),
+        },
       })),
     }
   }

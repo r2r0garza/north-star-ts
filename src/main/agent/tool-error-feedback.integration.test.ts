@@ -2185,6 +2185,72 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
     ).toEqual({ content: "recovered" })
   })
 
+  it("does not poison gateway requests or later turns with malformed write arguments", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0)
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+    const malformed = '{"path": "src/db/_realistic.ts"'
+    const run = (userMessage: string) =>
+      runAgentLoop({
+        conversationId: conversation.id,
+        workspace,
+        userMessage,
+        abort: new AbortController(),
+        onEvent: () => {},
+      })
+    const validateGatewayHistory = (request: CompletionRequest) => {
+      for (const message of request.messages) {
+        for (const call of message.tool_calls ?? []) {
+          expect(() => JSON.parse(call.function.arguments)).not.toThrow()
+        }
+      }
+      const failedCall = request.messages
+        .flatMap((m) => m.tool_calls ?? [])
+        .find((c) => c.id === "broken-write")
+      expect(JSON.parse(failedCall.function.arguments)).toEqual({
+        _invalid_tool_arguments: malformed,
+      })
+      expect(
+        request.messages.find((m) => m.tool_call_id === "broken-write")?.content
+      ).toContain("ERROR[bad_tool_arguments]")
+    }
+    scriptedCompletions.push(() =>
+      streamToolCalls([
+        { id: "broken-write", name: "write_file_tool", arguments: malformed },
+      ])
+    )
+    for (let i = 0; i < 3; i++) {
+      scriptedCompletions.push((request) => {
+        validateGatewayHistory(request)
+        throw transientError("Something went wrong")
+      })
+    }
+    expect((await run("write the file")).error).toContain(
+      "failed after 3 attempts"
+    )
+    scriptedCompletions.push((request) => {
+      validateGatewayHistory(request)
+      throw new Error("bedrock error: unsupported model")
+    })
+    expect((await run("you got cut off")).error).toBe(
+      "bedrock error: unsupported model"
+    )
+    scriptedCompletions.push((request) => {
+      validateGatewayHistory(request)
+      return streamText("recovered")
+    })
+    expect(await run("try again")).toEqual({ content: "recovered" })
+    expect(
+      listMessages(conversation.id).find(
+        (m) => m.toolCalls?.[0]?.id === "broken-write"
+      )?.toolCalls?.[0].arguments
+    ).toBe(malformed)
+    await expect(
+      access(join(workspace, "src/db/_realistic.ts"))
+    ).rejects.toThrow()
+    expect(completionRequests).toHaveLength(6)
+  })
+
   it("makes fresh model requests after an exhausted turn", async () => {
     vi.spyOn(Math, "random").mockReturnValue(0)
     const conversation = createConversation({ mode: "chat" })

@@ -135,6 +135,7 @@ import {
   browserStateSection,
 } from "./context/sections"
 import { repairDanglingToolCalls } from "./repair"
+import { replayToolCallArguments } from "./tool-call-arguments"
 import { offeredToolNames, unavailableToolResult } from "./tool-availability"
 import { createEnvironment } from "./env"
 import { LocalEnvironment } from "./env/local"
@@ -2519,7 +2520,10 @@ export async function runAgentLoop(
         tool_calls: toolCalls.map((c) => ({
           id: c.id,
           type: "function",
-          function: { name: c.name, arguments: c.arguments },
+          function: {
+            name: c.name,
+            arguments: replayToolCallArguments(c.arguments),
+          },
         })),
       })
       const assistantMessage = appendMessage({
