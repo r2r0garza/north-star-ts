@@ -56,6 +56,10 @@ vi.mock("../../env/host-cli-env", () => ({
 }))
 vi.mock("./auth-policy", () => ({ verifyPersonalSubscription: vi.fn() }))
 vi.mock("./windows-state", () => ({
+  withWindowsProbeWorker: (_signal: AbortSignal, run: () => Promise<unknown>) =>
+    run(),
+  closeWindowsProbeWorker: async () => {},
+  windowsPrivatePaths: vi.fn().mockResolvedValue(undefined),
   windowsPrivatePath: async (path: string, create: boolean) => {
     if (create)
       await (await import("fs/promises")).mkdir(path, { recursive: true })

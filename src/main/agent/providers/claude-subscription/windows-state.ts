@@ -1,4 +1,5 @@
-import { spawn } from "child_process"
+import { spawn, type ChildProcessWithoutNullStreams } from "child_process"
+import { AsyncLocalStorage } from "async_hooks"
 import { join } from "path"
 import { captureProcess } from "../../env/spawn-util"
 import { ClaudeSubscriptionError, aborted } from "./errors"
@@ -10,6 +11,8 @@ export async function windowsProbe(
   code: string
 ): Promise<string> {
   if (signal.aborted) throw aborted()
+  const worker = probeScope.getStore()
+  if (worker) return worker.probe(script, env, signal, code)
   const systemRoot = process.env.SystemRoot || process.env.SYSTEMROOT
   if (!systemRoot)
     throw new ClaudeSubscriptionError(
@@ -31,7 +34,7 @@ export async function windowsProbe(
         "-EncodedCommand",
         Buffer.from(script, "utf16le").toString("base64"),
       ],
-      { env, stdio: ["ignore", "pipe", "pipe"] }
+      { env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true }
     ),
     { signal, timeoutMs: 5000, maxOutputBytes: 4096, killGroup: true }
   )
@@ -54,9 +57,10 @@ export async function windowsProbe(
 
 const aclScript = `
 $ErrorActionPreference = 'Stop'
-$p = $env:NS_PRIVATE_PATH
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-if ($env:NS_PRIVATE_CREATE -eq '1' -and -not [System.IO.Directory]::Exists($p)) {
+foreach ($entry in (ConvertFrom-Json $env:NS_PRIVATE_PATHS)) {
+$p = $entry.path
+if ($entry.create -and -not [System.IO.Directory]::Exists($p)) {
   $security = New-Object System.Security.AccessControl.DirectorySecurity
   $security.SetOwner($sid)
   $security.SetAccessRuleProtection($true, $false)
@@ -78,6 +82,7 @@ foreach ($rule in $acl.GetAccessRules($true, $true, [System.Security.Principal.S
   }
 }
 if (-not $userAccess) { throw 'access' }
+}
 Write-Output 'private'
 `
 
@@ -86,12 +91,18 @@ export async function windowsPrivatePath(
   create = false,
   signal = new AbortController().signal
 ): Promise<void> {
+  return windowsPrivatePaths([{ path, create }], signal)
+}
+
+export async function windowsPrivatePaths(
+  paths: { path: string; create?: boolean }[],
+  signal = new AbortController().signal
+): Promise<void> {
   const result = await windowsProbe(
     aclScript,
     {
       ...process.env,
-      NS_PRIVATE_PATH: path,
-      NS_PRIVATE_CREATE: create ? "1" : "0",
+      NS_PRIVATE_PATHS: JSON.stringify(paths),
     },
     signal,
     "claude_subscription_private_state"
@@ -136,4 +147,207 @@ if ($present) { Write-Output 'present' } else { Write-Output 'absent' }
       "claude_subscription_managed_policy_probe",
       "Could not check Claude registry policy presence."
     )
+}
+
+const probeScope = new AsyncLocalStorage<WindowsProbeWorker>()
+
+export async function withWindowsProbeWorker<T>(
+  signal: AbortSignal,
+  run: () => Promise<T>
+): Promise<T> {
+  if (process.platform !== "win32") return run()
+  const worker = new WindowsProbeWorker(signal)
+  let failed = false
+  try {
+    return await probeScope.run(worker, run)
+  } catch (error) {
+    failed = true
+    throw error
+  } finally {
+    try {
+      await worker.close()
+    } catch (error) {
+      if (!failed) throw error
+    }
+  }
+}
+
+const workerScript = `
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+while ($null -ne ($line = [Console]::ReadLine())) {
+  try {
+    $command = ConvertFrom-Json $line
+    $env:NS_PRIVATE_PATHS = $command.paths
+    $output = & ([ScriptBlock]::Create($command.script))
+    [Console]::WriteLine((ConvertTo-Json -Compress @{ id = $command.id; output = [string]($output -join "\n") }))
+  } catch {
+    [Console]::WriteLine('{"failed":true}')
+    exit 1
+  }
+}
+`
+
+class WindowsProbeWorker {
+  private child?: ChildProcessWithoutNullStreams
+  private result?: ReturnType<typeof captureProcess>
+  private controller = new AbortController()
+  private pending?: {
+    id: number
+    resolve: (value: string) => void
+    reject: (error: unknown) => void
+    code: string
+  }
+  private buffer = ""
+  private id = 0
+  private closed = false
+  private onAbort = () => {
+    this.controller.abort()
+    this.reject(aborted())
+  }
+
+  constructor(private signal: AbortSignal) {
+    if (signal.aborted) this.onAbort()
+    else signal.addEventListener("abort", this.onAbort, { once: true })
+  }
+
+  private reject(error: unknown) {
+    this.pending?.reject(error)
+    this.pending = undefined
+  }
+
+  private fail(
+    code = this.pending?.code ?? "claude_subscription_private_state"
+  ) {
+    this.closed = true
+    this.controller.abort()
+    this.reject(
+      new ClaudeSubscriptionError(
+        code,
+        "Could not verify Windows transport security. Recheck host configuration."
+      )
+    )
+  }
+
+  async probe(
+    script: string,
+    env: NodeJS.ProcessEnv,
+    signal: AbortSignal,
+    code: string
+  ): Promise<string> {
+    if (signal.aborted || this.signal.aborted) throw aborted()
+    if (this.closed || this.pending) {
+      this.fail(code)
+      throw new ClaudeSubscriptionError(
+        code,
+        "Windows security worker is unavailable."
+      )
+    }
+    if (!this.child) {
+      const root = process.env.SystemRoot || process.env.SYSTEMROOT
+      if (!root)
+        throw new ClaudeSubscriptionError(
+          code,
+          "Windows system tools are unavailable."
+        )
+      this.child = spawn(
+        join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-EncodedCommand",
+          Buffer.from(workerScript, "utf16le").toString("base64"),
+        ],
+        { env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true }
+      )
+      this.result = captureProcess(this.child, {
+        signal: this.controller.signal,
+        timeoutMs: 2147483647,
+        maxOutputBytes: 4096,
+        killGroup: true,
+      })
+      void this.result.then(() => {
+        if (!this.closed) this.fail()
+      })
+      this.child.stdin.on("error", () => this.fail())
+      this.child.stderr.on("data", () => this.fail())
+      this.child.stdout.on("data", (chunk: Buffer) => {
+        this.buffer += chunk.toString("utf8")
+        if (this.buffer.length > 4096) return this.fail()
+        let newline: number
+        while ((newline = this.buffer.indexOf("\n")) !== -1) {
+          const line = this.buffer.slice(0, newline).trim()
+          this.buffer = this.buffer.slice(newline + 1)
+          try {
+            const response = JSON.parse(line)
+            if (
+              !this.pending ||
+              response.id !== this.pending.id ||
+              typeof response.output !== "string" ||
+              response.failed
+            )
+              return this.fail()
+            this.pending.resolve(response.output.trim())
+            this.pending = undefined
+          } catch {
+            this.fail()
+          }
+        }
+      })
+    }
+    const id = ++this.id
+    const timeout = setTimeout(() => this.fail(code), 5000)
+    const onAbort = () => this.onAbort()
+    signal.addEventListener("abort", onAbort, { once: true })
+    try {
+      return await new Promise<string>((resolve, reject) => {
+        this.pending = { id, resolve, reject, code }
+        this.child!.stdin.write(
+          JSON.stringify({ id, script, paths: env.NS_PRIVATE_PATHS ?? "" }) +
+            "\n",
+          (error) => {
+            if (error) this.fail(code)
+          }
+        )
+      })
+    } finally {
+      clearTimeout(timeout)
+      signal.removeEventListener("abort", onAbort)
+    }
+  }
+
+  async close(): Promise<void> {
+    this.closed = true
+    this.signal.removeEventListener("abort", this.onAbort)
+    this.reject(aborted())
+    const failed = this.controller.signal.aborted
+    this.child?.stdin.end()
+    const timeout = setTimeout(() => this.controller.abort(), 5000)
+    try {
+      const result = await this.result
+      if (
+        !failed &&
+        !this.signal.aborted &&
+        result &&
+        (result.exitCode !== 0 ||
+          result.signal ||
+          result.spawnError ||
+          result.outputTruncated ||
+          result.aborted ||
+          result.timedOut)
+      )
+        throw new ClaudeSubscriptionError(
+          "claude_subscription_private_state",
+          "Windows security worker did not exit cleanly."
+        )
+    } finally {
+      clearTimeout(timeout)
+    }
+  }
+}
+
+export async function closeWindowsProbeWorker(): Promise<void> {
+  await probeScope.getStore()?.close()
 }

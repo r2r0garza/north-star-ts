@@ -3,7 +3,13 @@ import { mkdtemp, mkdir, rm, copyFile, writeFile, realpath } from "fs/promises"
 import { join } from "path"
 import { tmpdir } from "os"
 import { privateDirectories, resolveExecutable } from "./setup"
-import { windowsPrivatePath, windowsProbe } from "./windows-state"
+import {
+  withWindowsProbeWorker,
+  closeWindowsProbeWorker,
+  windowsPrivatePath,
+  windowsPrivatePaths,
+  windowsProbe,
+} from "./windows-state"
 
 describe.skipIf(process.platform !== "win32")(
   "native Windows private state",
@@ -16,6 +22,11 @@ describe.skipIf(process.platform !== "win32")(
         await windowsPrivatePath(files.directory)
         const path = await files.file("system é.txt", "synthetic")
         await windowsPrivatePath(path)
+        const batch = await files.files([
+          { name: "batch é.txt", value: "first" },
+          { name: "batch ' second.txt", value: "second" },
+        ])
+        await windowsPrivatePaths(batch.map((path) => ({ path })))
         for (const name of [
           "../escape",
           "..\\escape",
@@ -26,7 +37,7 @@ describe.skipIf(process.platform !== "win32")(
           await expect(files.file(name, "synthetic")).rejects.toThrow(
             "Invalid private file"
           )
-        await files.close()
+
         const publicParent = join(root, "public")
         await mkdir(join(publicParent, "claude-subscription-transport"), {
           recursive: true,
@@ -43,13 +54,146 @@ describe.skipIf(process.platform !== "win32")(
           new AbortController().signal,
           "fixture_acl"
         )
+        await expect(
+          windowsPrivatePaths([
+            { path },
+            { path: join(publicParent, "claude-subscription-transport") },
+          ])
+        ).rejects.toMatchObject({ code: "claude_subscription_private_state" })
         await expect(privateDirectories(publicParent)).rejects.toMatchObject({
           code: "claude_subscription_private_state",
         })
+        await files.close()
       } finally {
         await rm(root, { recursive: true, force: true })
       }
     }, 30000)
+    it("measures equivalent separate and batched artifact ACL verification", async () => {
+      const root = await mkdtemp(join(tmpdir(), "ns-acl-timing-"))
+      try {
+        const files = await privateDirectories(root)
+        const paths = await files.files(
+          Array.from({ length: 4 }, (_, i) => ({
+            name: `artifact-${i}.txt`,
+            value: "synthetic",
+          }))
+        )
+        const started = performance.now()
+        for (const path of paths) await windowsPrivatePath(path)
+        const separateMs = Math.round(performance.now() - started)
+        const batchStarted = performance.now()
+        await windowsPrivatePaths(paths.map((path) => ({ path })))
+        console.info("Windows artifact ACL timing", {
+          separateMs,
+          batchedMs: Math.round(performance.now() - batchStarted),
+        })
+        await files.close()
+      } finally {
+        await rm(root, { recursive: true, force: true })
+      }
+    }, 30000)
+    it("reuses one request worker with Unicode paths and rechecks changed ACLs", async () => {
+      const root = await mkdtemp(join(tmpdir(), "ns-worker é-"))
+      const started = performance.now()
+      try {
+        await withWindowsProbeWorker(new AbortController().signal, async () => {
+          const pid = await windowsProbe(
+            "Write-Output $PID",
+            process.env,
+            new AbortController().signal,
+            "fixture"
+          )
+          const files = await privateDirectories(root)
+          const path = await files.file("quoted ' é.txt", "synthetic")
+          expect(
+            await windowsProbe(
+              "Write-Output $PID",
+              process.env,
+              new AbortController().signal,
+              "fixture"
+            )
+          ).toBe(pid)
+          await windowsPrivatePath(path)
+          await windowsProbe(
+            "Write-Output 'absent'",
+            process.env,
+            new AbortController().signal,
+            "fixture"
+          )
+          await windowsProbe(
+            "$p = $env:NS_PRIVATE_PATHS; $acl = Get-Acl -LiteralPath $p; $sid = New-Object System.Security.Principal.SecurityIdentifier('S-1-1-0'); $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'Read', 'Allow'); $acl.AddAccessRule($rule); Set-Acl -LiteralPath $p -AclObject $acl",
+            { ...process.env, NS_PRIVATE_PATHS: path },
+            new AbortController().signal,
+            "fixture"
+          )
+          await expect(windowsPrivatePath(path)).rejects.toMatchObject({
+            code: "claude_subscription_private_state",
+          })
+          await files.close()
+        })
+        console.info(
+          "Windows request worker checks ms",
+          Math.round(performance.now() - started)
+        )
+      } finally {
+        await rm(root, { recursive: true, force: true })
+      }
+    }, 15000)
+    it("cancels a pending worker and isolates concurrent owners", async () => {
+      const controller = new AbortController()
+      const pending = withWindowsProbeWorker(controller.signal, async () => {
+        const probe = windowsProbe(
+          "Start-Sleep -Seconds 30",
+          process.env,
+          controller.signal,
+          "fixture"
+        )
+        setTimeout(() => controller.abort(), 100)
+        await expect(probe).rejects.toMatchObject({ name: "AbortError" })
+      })
+      const other = withWindowsProbeWorker(
+        new AbortController().signal,
+        async () => {
+          expect(
+            await windowsProbe(
+              "Write-Output 'independent'",
+              process.env,
+              new AbortController().signal,
+              "fixture"
+            )
+          ).toBe("independent")
+          await closeWindowsProbeWorker()
+        }
+      )
+      await Promise.all([pending, other])
+    }, 15000)
+    it("fails closed on an unexpected worker response without leaking output", async () => {
+      await expect(
+        withWindowsProbeWorker(new AbortController().signal, () =>
+          windowsProbe(
+            "[Console]::WriteLine('SECRET'); Write-Output 'private'",
+            process.env,
+            new AbortController().signal,
+            "fixture_protocol"
+          )
+        )
+      ).rejects.toMatchObject({ code: "fixture_protocol" })
+    }, 15000)
+    it("bounds a stalled worker and rejects subsequent probes", async () => {
+      await withWindowsProbeWorker(new AbortController().signal, async () => {
+        await expect(
+          windowsProbe(
+            "Start-Sleep -Seconds 30",
+            process.env,
+            new AbortController().signal,
+            "fixture_timeout"
+          )
+        ).rejects.toMatchObject({ code: "fixture_timeout" })
+        await expect(windowsPrivatePath("C:\\unused")).rejects.toThrow(
+          "unavailable"
+        )
+      })
+    }, 15000)
     it("resolves native executables in spaces/non-ASCII paths and rejects npm shims", async () => {
       const root = await mkdtemp(join(tmpdir(), "ns executable é-"))
       try {

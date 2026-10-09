@@ -14,6 +14,10 @@ import {
   verifyCliCompatibility,
 } from "./setup"
 import { JsonLines } from "./stream-json"
+import {
+  withWindowsProbeWorker,
+  closeWindowsProbeWorker,
+} from "./windows-state"
 import { aborted, ClaudeSubscriptionError, protocol } from "./errors"
 import type { CapturedResponse } from "./sse"
 import { discoverClaudeModels } from "./model-catalog"
@@ -157,20 +161,23 @@ export function buildClaudeSubscriptionClient(
           else signal?.addEventListener("abort", onAbort, { once: true })
           const queue = new ChunkQueue(() => controller.abort())
           active.add(controller)
-          const run = execute(request, options, controller, (kind, text) => {
-            if (request.stream && text)
-              queue.push({
-                choices: [
-                  {
-                    index: 0,
-                    delta: {
-                      [kind === "text" ? "content" : "reasoning_content"]: text,
+          const run = withWindowsProbeWorker(controller.signal, () =>
+            execute(request, options, controller, (kind, text) => {
+              if (request.stream && text)
+                queue.push({
+                  choices: [
+                    {
+                      index: 0,
+                      delta: {
+                        [kind === "text" ? "content" : "reasoning_content"]:
+                          text,
+                      },
+                      finish_reason: null,
                     },
-                    finish_reason: null,
-                  },
-                ],
-              })
-          }).finally(() => {
+                  ],
+                })
+            })
+          ).finally(() => {
             active.delete(controller)
             signal?.removeEventListener("abort", onAbort)
           })
@@ -276,6 +283,15 @@ async function execute(
   emit: (kind: "text" | "reasoning", text: string) => void
 ): Promise<CapturedResponse> {
   const signal = controller.signal
+  const started = performance.now()
+  let checkpoint = started
+  const startupMs: Record<string, number> = {}
+  const stage = (name: string) => {
+    const now = performance.now()
+    startupMs[name] = Math.round(now - checkpoint)
+    checkpoint = now
+  }
+  let firstDelta = false
   let files: Awaited<ReturnType<typeof privateDirectories>> | undefined
   let inventory: Awaited<ReturnType<typeof startInventory>> | undefined
   let relay: Awaited<ReturnType<typeof startAdmission>> | undefined
@@ -308,38 +324,54 @@ async function execute(
     const env = guardEnvironment(await hostCliEnv())
     const executable = await resolveExecutable(env)
     if (signal.aborted) throw aborted()
+    stage("environment")
     files = await privateDirectories(options.appData, signal)
+    stage("privateDirectories")
     await verifyCliCompatibility(executable, files.cwd, env, signal)
+    stage("compatibility")
     inventory = await startInventory(request.tools)
     relay = await startAdmission({
       signal,
       onDelta: (kind, text) => {
+        if (!firstDelta) {
+          firstDelta = true
+          stage("nativeStartupAndUpstream")
+          console.debug("[claude-subscription] startup", {
+            ...startupMs,
+            firstDeltaMs: Math.round(performance.now() - started),
+          })
+        }
         heartbeat()
         emit(kind, text)
       },
     })
-    const system = await files.file("system.txt", request.system)
-    const mcp = await files.file("mcp.json", JSON.stringify(inventory.config))
+    const artifacts = [
+      { name: "system.txt", value: request.system },
+      { name: "mcp.json", value: JSON.stringify(inventory.config) },
+    ]
     // Native fixed thinking has a 1024-token minimum, larger than cheap
     // auxiliary caps. Keep those caps usable without increasing paid output.
-    const settings = await files.file(
-      "settings.json",
-      JSON.stringify({
-        env: {
-          CLAUDE_CODE_EXTRA_BODY: JSON.stringify(request.extraBody),
-          CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(request.maxTokens),
-          ...(request.maxTokens < 1024 ? { MAX_THINKING_TOKENS: "0" } : {}),
-        },
-        disableAllHooks: true,
-        enabledPlugins: {
-          "cc-plugin-agents-md@builtin": false,
-          "cc-plugin-plugin-authoring@builtin": false,
-        },
-        enableAllProjectMcpServers: false,
-      })
-    )
-    await files.file("manifest.json", JSON.stringify(request.tools))
+    const settingsValue = JSON.stringify({
+      env: {
+        CLAUDE_CODE_EXTRA_BODY: JSON.stringify(request.extraBody),
+        CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(request.maxTokens),
+        ...(request.maxTokens < 1024 ? { MAX_THINKING_TOKENS: "0" } : {}),
+      },
+      disableAllHooks: true,
+      enabledPlugins: {
+        "cc-plugin-agents-md@builtin": false,
+        "cc-plugin-plugin-authoring@builtin": false,
+      },
+      enableAllProjectMcpServers: false,
+    })
+    const [system, mcp, settings] = await files.files([
+      ...artifacts,
+      { name: "settings.json", value: settingsValue },
+      { name: "manifest.json", value: JSON.stringify(request.tools) },
+    ])
     if (signal.aborted) throw aborted()
+    await closeWindowsProbeWorker()
+    stage("inventoryAndFiles")
     child = spawn(
       executable,
       buildInvocation(request, { system, settings, mcp }),

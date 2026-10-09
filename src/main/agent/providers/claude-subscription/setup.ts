@@ -13,7 +13,7 @@ import {
   writeFile,
 } from "fs/promises"
 import { delimiter, join, resolve, relative, isAbsolute } from "path"
-import { windowsPrivatePath } from "./windows-state"
+import { windowsPrivatePath, windowsPrivatePaths } from "./windows-state"
 import { ClaudeSubscriptionError } from "./errors"
 import { guardProxyEnvironment } from "./admission"
 import { guardManagedPolicy } from "./managed-policy"
@@ -132,7 +132,7 @@ export async function privateDirectories(
     if (error.code !== "EEXIST") throw error
   })
   await verify(cwd)
-  if (process.platform === "win32") await windowsPrivatePath(cwd, false, signal)
+
   if ((await readdir(cwd)).length)
     throw new ClaudeSubscriptionError(
       "claude_subscription_private_state",
@@ -141,7 +141,7 @@ export async function privateDirectories(
   const directory = await mkdtemp(join(root, "request-"))
   if (process.platform === "win32") {
     try {
-      await windowsPrivatePath(directory, false, signal)
+      await windowsPrivatePaths([{ path: cwd }, { path: directory }], signal)
     } catch (error) {
       await rm(directory, { recursive: true, force: true })
       throw error
@@ -151,21 +151,31 @@ export async function privateDirectories(
     cwd,
     directory,
     async file(name: string, value: string) {
-      const path = resolve(directory, name)
-      const confined = relative(directory, path)
-      if (
-        !confined ||
-        confined === ".." ||
-        confined.startsWith("..\\") ||
-        confined.startsWith("../") ||
-        isAbsolute(confined) ||
-        name.includes(":")
-      )
-        throw new Error("Invalid private file")
-      await writeFile(path, value, { mode: 0o600, flag: "wx" })
+      return (await this.files([{ name, value }]))[0]
+    },
+    async files(entries: { name: string; value: string }[]) {
+      const paths: string[] = []
+      for (const { name, value } of entries) {
+        const path = resolve(directory, name)
+        const confined = relative(directory, path)
+        if (
+          !confined ||
+          confined === ".." ||
+          confined.startsWith("..\\") ||
+          confined.startsWith("../") ||
+          isAbsolute(confined) ||
+          name.includes(":")
+        )
+          throw new Error("Invalid private file")
+        await writeFile(path, value, { mode: 0o600, flag: "wx" })
+        paths.push(path)
+      }
       if (process.platform === "win32")
-        await windowsPrivatePath(path, false, signal)
-      return path
+        await windowsPrivatePaths(
+          paths.map((path) => ({ path })),
+          signal
+        )
+      return paths
     },
     close: () =>
       rm(directory, {
