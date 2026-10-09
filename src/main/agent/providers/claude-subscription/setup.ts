@@ -201,10 +201,10 @@ export function compatibleVersion(
       `This experimental transport requires stable Claude Code ${MINIMUM_CLAUDE_CODE_VERSION} or newer within 2.x. Upgrade older installations and recheck; prerelease and new major versions require compatibility review.`
     )
   }
-  if (platform !== "darwin") {
+  if (platform !== "darwin" && platform !== "linux") {
     throw new ClaudeSubscriptionError(
       "claude_subscription_platform_unqualified",
-      "Windows and Linux subscription transport qualification is pending. This experimental transport currently runs only on macOS."
+      "This experimental transport is qualified on native macOS and Linux. Windows qualification remains pending."
     )
   }
   return match![1]
