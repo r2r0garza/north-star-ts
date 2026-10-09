@@ -33,7 +33,14 @@ vi.mock("./setup", async (original) => {
       cwd: string,
       env: NodeJS.ProcessEnv,
       signal: AbortSignal
-    ) => actual.verifyCliCompatibility(executable, cwd, env, signal, "darwin"),
+    ) =>
+      actual.verifyCliCompatibility(
+        executable,
+        cwd,
+        env,
+        signal,
+        process.platform === "win32" ? "darwin" : process.platform
+      ),
     guardEnvironment: (env: NodeJS.ProcessEnv) => ({
       ...actual.guardEnvironment(env),
       ANTHROPIC_API_KEY: "synthetic-not-a-real-key",
