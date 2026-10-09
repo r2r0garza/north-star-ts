@@ -1,3 +1,8 @@
+import {
+  nativeAssistant,
+  validateCarrier,
+  historyFingerprint,
+} from "./native-carrier"
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process"
 import { randomUUID } from "crypto"
 import { once } from "events"
@@ -193,6 +198,7 @@ export function buildClaudeSubscriptionClient(
                   {
                     index: 0,
                     delta: {
+                      [nativeAssistant]: message[nativeAssistant],
                       ...(message.tool_calls.length
                         ? {
                             tool_calls: message.tool_calls.map(
@@ -253,6 +259,13 @@ function completion(request: ValidatedRequest, result: CapturedResponse) {
         index: 0,
         message: {
           role: "assistant",
+          [nativeAssistant]: validateCarrier({
+            version: 1,
+            provider: "claude_subscription",
+            model: request.model,
+            prefix: historyFingerprint(request.frames),
+            blocks: result.blocks,
+          }),
           content: result.text,
           reasoning_content: result.reasoning,
           tool_calls: toolCalls,
@@ -332,6 +345,7 @@ async function execute(
     inventory = await startInventory(request.tools)
     relay = await startAdmission({
       signal,
+      frames: request.frames,
       onDelta: (kind, text) => {
         if (!firstDelta) {
           firstDelta = true

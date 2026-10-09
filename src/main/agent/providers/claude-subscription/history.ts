@@ -1,3 +1,8 @@
+import {
+  nativeAssistant,
+  replayCarrier,
+  historyFingerprint,
+} from "./native-carrier"
 import { replayToolCallArguments } from "../../tool-call-arguments"
 import { invalid, object, onlyKeys } from "./errors"
 
@@ -5,7 +10,11 @@ export const TOOL_PREFIX = "mcp__ns__"
 export type NativeBlock = Record<string, any>
 export interface ReplayFrame {
   type: "user" | "assistant"
-  message: { role: "user" | "assistant"; content: NativeBlock[] }
+  message: {
+    role: "user" | "assistant"
+    content: NativeBlock[]
+    model?: string
+  }
   shouldQuery?: boolean
 }
 
@@ -77,7 +86,8 @@ function contentBlocks(content: unknown, images: boolean): NativeBlock[] {
 
 export function translateHistory(
   messages: unknown,
-  toolName = nativeToolName
+  toolName = nativeToolName,
+  model = ""
 ): {
   system: string
   frames: ReplayFrame[]
@@ -174,11 +184,28 @@ export function translateHistory(
         }
       }
     } else invalid("Unsupported message role.")
+    if (role === "assistant") {
+      blocks =
+        replayCarrier(
+          (message as any)[nativeAssistant],
+          model,
+          historyFingerprint(frames),
+          blocks
+        ) ?? blocks
+    }
     if (!blocks.length) invalid("Empty history frame.")
     const previous = frames.at(-1)
     if (role === "user" && previous?.type === "user")
       previous.message.content.push(...blocks)
-    else frames.push({ type: role, message: { role, content: blocks } })
+    else
+      frames.push({
+        type: role,
+        message: {
+          role,
+          content: blocks,
+          ...(role === "assistant" && model ? { model } : {}),
+        },
+      })
   }
   if (
     !frames.length ||

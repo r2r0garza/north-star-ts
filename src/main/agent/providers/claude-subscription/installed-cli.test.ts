@@ -49,6 +49,7 @@ vi.mock("./admission", async (original) => {
     },
   }
 })
+import { nativeAssistant } from "./native-carrier"
 import {
   buildClaudeSubscriptionClient,
   shutdownClaudeSubscription,
@@ -171,6 +172,38 @@ beforeEach(async (context) => {
       },
       { type: "message_stop" },
     ]
+    if (scenario.includes("opaque signed")) {
+      events[0].message.usage = {
+        input_tokens: 1,
+        output_tokens: 0,
+        cache_creation_input_tokens: 10,
+        cache_read_input_tokens: 20,
+      }
+      for (const event of events.slice(1, 4)) event.index = 1
+      events.splice(
+        1,
+        0,
+        {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "thinking", thinking: "", signature: "" },
+        },
+        {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "thinking_delta", thinking: "synthetic private" },
+        },
+        {
+          type: "content_block_delta",
+          index: 0,
+          delta: {
+            type: "signature_delta",
+            signature: "synthetic-opaque-signature",
+          },
+        },
+        { type: "content_block_stop", index: 0 }
+      )
+    }
     if (scenario.includes("text plus tool")) {
       events.splice(
         1,
@@ -584,6 +617,61 @@ describe.skipIf(!enabled)(
         chunks.map((chunk) => chunk.choices[0].delta.content ?? "").join("")
       ).toBe("synthetic response\n")
       expect(requests).toBe(1)
+      await clean()
+    }, 60000)
+    it("replays opaque signed blocks across client recreation with synthetic usage buckets", async () => {
+      const request = { ...body, max_tokens: 2048, stream: false }
+      const first: any = await buildClaudeSubscriptionClient({
+        appData: root,
+      }).chat.completions.create(request)
+      const firstWire = structuredClone(capturedBody)
+      const carrier = first.choices[0].message[nativeAssistant]
+      expect(carrier.blocks[0]).toEqual({
+        type: "thinking",
+        thinking: "synthetic private",
+        signature: "synthetic-opaque-signature",
+      })
+      const message = {
+        role: "assistant",
+        content: first.choices[0].message.content,
+        [nativeAssistant]: JSON.parse(JSON.stringify(carrier)),
+      }
+      const followup = {
+        ...request,
+        messages: [
+          ...body.messages,
+          message,
+          { role: "user", content: "continue" },
+        ],
+      }
+      const { validateRequest } = await import("./request")
+      expect(validateRequest(followup).frames[1].message.content).toEqual(
+        carrier.blocks
+      )
+      await buildClaudeSubscriptionClient({
+        appData: root,
+      }).chat.completions.create(followup)
+      const replayed = capturedBody.messages.find(
+        (m: any) => m.role === "assistant"
+      )
+      expect(replayed.content.slice(0, 2)).toEqual(carrier.blocks)
+      expect(first.usage.prompt_tokens).toBe(31)
+      expect(first.usage.prompt_tokens_details).toEqual({
+        cached_tokens: 20,
+        cache_creation_tokens: 10,
+      })
+      expect(first.usage.completion_tokens).toBe(2)
+      expect(requests).toBe(2)
+      const secondWire = structuredClone(capturedBody)
+      await buildClaudeSubscriptionClient({
+        appData: root,
+      }).chat.completions.create(followup)
+      expect(Buffer.from(JSON.stringify(capturedBody.messages))).toEqual(
+        Buffer.from(JSON.stringify(secondWire.messages))
+      )
+      expect(capturedBody.system).toEqual(firstWire.system)
+      expect(capturedBody.tools).toEqual(firstWire.tools)
+      expect(requests).toBe(3)
       await clean()
     }, 60000)
     it("text success", async () => {

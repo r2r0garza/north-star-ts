@@ -1,3 +1,7 @@
+import {
+  nativeAssistant,
+  validateCarrier,
+} from "./providers/claude-subscription/native-carrier"
 import type { ToolCallDelta } from "./tool-stream"
 import { modelRequestPermits } from "./model-permits"
 import type { ApiMode, ModelRequestRetryBudget } from "../db/types"
@@ -158,6 +162,7 @@ async function* idleGuarded<T>(
 }
 
 export interface CompletionRound {
+  nativeAssistant?: import("./providers/claude-subscription/native-carrier").NativeAssistantCarrier
   refusal?: string
   text: string
   toolFragments: ToolCallDelta[]
@@ -463,6 +468,7 @@ async function consumeCompletionStream(
   }
 ): Promise<CompletionRound> {
   let text = ""
+  let nativeMetadata: CompletionRound["nativeAssistant"]
   let refusal = ""
   const toolFragments: ToolCallDelta[] = []
   let finishReason: string | null = null
@@ -486,6 +492,8 @@ async function consumeCompletionStream(
     const delta = choice?.delta
     if (!delta) continue
     deltaSeen = true
+    if (delta[nativeAssistant])
+      nativeMetadata = validateCarrier(delta[nativeAssistant])
     if (Object.prototype.hasOwnProperty.call(delta, "refusal")) {
       refusalFieldRecognized = true
       refusal += contentToText(delta.refusal)
@@ -536,6 +544,7 @@ async function consumeCompletionStream(
     : (input.recoverVisibleText?.(text) ?? text)
   return {
     ...(refused ? { refusal } : {}),
+    nativeAssistant: nativeMetadata,
     text,
     toolFragments: refused ? [] : toolFragments,
     finishReason,

@@ -1,3 +1,4 @@
+import { nativeAssistant } from "./providers/claude-subscription/native-carrier"
 import { randomUUID } from "crypto"
 import { readFile, stat } from "fs/promises"
 import { basename, dirname, isAbsolute } from "path"
@@ -2446,7 +2447,12 @@ export async function runAgentLoop(
       }
 
       if (round.refusal) {
-        appendMessage({ conversationId, role: "assistant", content: text })
+        appendMessage({
+          conversationId,
+          role: "assistant",
+          content: text,
+          nativeAssistant: round.nativeAssistant,
+        })
         completeModelRequestRetryBudget({ conversationId, logicalRoundId })
         return { content: text, ...(hasTurnUsage ? { usage: turnUsage } : {}) }
       }
@@ -2485,7 +2491,12 @@ export async function runAgentLoop(
       if (toolCalls.length === 0) {
         if (commandCompletionInbox.hasPending(commandCompletionOwner)) {
           if (text.trim()) {
-            appendMessage({ conversationId, role: "assistant", content: text })
+            appendMessage({
+              conversationId,
+              role: "assistant",
+              content: text,
+              nativeAssistant: round.nativeAssistant,
+            })
           }
           completeModelRequestRetryBudget({ conversationId, logicalRoundId })
           onEvent({ type: "command_wait", phase: "start" })
@@ -2511,7 +2522,12 @@ export async function runAgentLoop(
         }
         // No tool calls — this is the final answer. Persist it so the next turn
         // (and a reopened conversation) has the full transcript.
-        appendMessage({ conversationId, role: "assistant", content: text })
+        appendMessage({
+          conversationId,
+          role: "assistant",
+          content: text,
+          nativeAssistant: round.nativeAssistant,
+        })
         completeModelRequestRetryBudget({ conversationId, logicalRoundId })
         return {
           content: text,
@@ -2524,6 +2540,7 @@ export async function runAgentLoop(
       messages.push({
         role: "assistant",
         content: text || null,
+        [nativeAssistant]: round.nativeAssistant,
         tool_calls: toolCalls.map((c) => ({
           id: c.id,
           type: "function",
@@ -2537,6 +2554,7 @@ export async function runAgentLoop(
         conversationId,
         role: "assistant",
         content: text || null,
+        nativeAssistant: round.nativeAssistant,
         toolCalls: toolCalls.map((c) => ({
           id: c.id,
           name: c.name,

@@ -233,6 +233,7 @@ export class ResponseCapture {
       (this.usage.cache_creation_input_tokens ?? 0)
     if (!Number.isSafeInteger(prompt)) protocol()
     return {
+      blocks,
       id: this.id,
       stop: this.stop,
       text: blocks

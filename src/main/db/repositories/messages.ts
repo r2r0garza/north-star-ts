@@ -1,3 +1,8 @@
+import {
+  validateCarrier,
+  MAX_CARRIER_BYTES,
+  type NativeAssistantCarrier,
+} from "../../agent/providers/claude-subscription/native-carrier"
 import { randomUUID } from "crypto"
 import { getDb } from "../connection"
 import {
@@ -18,10 +23,23 @@ interface MessageRow {
   tool_name: string | null
   token_estimate: number | null
   created_at: number
+  native_assistant: string | null
+}
+
+function readCarrier(raw: string) {
+  if (Buffer.byteLength(raw) > MAX_CARRIER_BYTES) return undefined
+  try {
+    return validateCarrier(JSON.parse(raw))
+  } catch {
+    return undefined
+  }
 }
 
 function toMessage(row: MessageRow): Message {
   return {
+    ...(row.role === "assistant" && row.native_assistant
+      ? { nativeAssistant: readCarrier(row.native_assistant) }
+      : {}),
     id: row.id,
     conversationId: row.conversation_id,
     seq: row.seq,
@@ -49,6 +67,7 @@ function estimateText(
 }
 
 export interface AppendMessageInput {
+  nativeAssistant?: NativeAssistantCarrier
   conversationId: string
   role: MessageRole
   content?: string | null
@@ -68,6 +87,10 @@ export function appendMessage(
   const now = Date.now()
   const toolCalls = input.toolCalls ?? null
   const content = input.content ?? null
+  const carrier =
+    input.role === "assistant"
+      ? validateCarrier(input.nativeAssistant)
+      : undefined
   const tokenEstimate = counter.count(estimateText(content, toolCalls))
 
   const db = getDb()
@@ -80,8 +103,8 @@ export function appendMessage(
     const seq = row.maxSeq + 1
     db.prepare(
       `INSERT INTO messages
-        (id, conversation_id, seq, role, content, tool_calls, tool_call_id, tool_name, token_estimate, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        (id, conversation_id, seq, role, content, tool_calls, tool_call_id, tool_name, token_estimate, created_at, native_assistant)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
       input.conversationId,
@@ -92,7 +115,8 @@ export function appendMessage(
       input.toolCallId ?? null,
       input.toolName ?? null,
       tokenEstimate,
-      now
+      now,
+      carrier ? JSON.stringify(carrier) : null
     )
     touchConversation(input.conversationId)
     return seq

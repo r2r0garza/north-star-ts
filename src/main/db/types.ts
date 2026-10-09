@@ -164,6 +164,7 @@ export interface ConversationSearchResult {
 }
 
 export interface Message {
+  nativeAssistant?: import("../agent/providers/claude-subscription/native-carrier").NativeAssistantCarrier
   id: string
   conversationId: string
   seq: number

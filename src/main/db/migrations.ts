@@ -60,6 +60,10 @@ import { renameWorkTerms } from "./work-terms-migration"
 // Ordered migrations. Index 0 runs to reach user_version 1, index 1 to reach 2,
 // and so on. Add a new entry to evolve the schema (e.g. future repo-indexing
 // tables) — never edit a shipped migration, append a new one.
+function ensureNativeAssistantColumn(db: Database.Database): void {
+  addColumnIfMissing(db, "messages", "native_assistant", "TEXT")
+}
+
 const MIGRATIONS: Array<(db: Database.Database) => void> = [
   (db) => db.exec(SCHEMA_V1),
   (db) => db.exec(SCHEMA_V2),
@@ -137,6 +141,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensurePlaybookHookOwnership,
   ensureWorkspaceAnalyses,
   ensureSubscriptionProviderConstraints,
+  ensureNativeAssistantColumn,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -605,6 +610,7 @@ export function runMigrations(
       ensureProjectPositionColumn(db)
       ensureSubagentArtifactsTable(db)
       ensureWorkingDirectoryColumns(db)
+      ensureNativeAssistantColumn(db)
     })()
   } finally {
     if (fkWasOn) db.pragma("foreign_keys = ON")

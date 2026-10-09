@@ -293,15 +293,19 @@ export function validateRequest(body: Record<string, unknown>) {
     }
   }
   const replayNames = new Map(names)
-  const history = translateHistory(body.messages, (name) => {
-    const native = nativeToolName(name)
-    if (replayNames.has(native) && replayNames.get(native) !== name)
-      invalid(
-        "Tool namespace collision between built-in and external MCP identities."
-      )
-    replayNames.set(native, name as string)
-    return native
-  })
+  const history = translateHistory(
+    body.messages,
+    (name) => {
+      const native = nativeToolName(name)
+      if (replayNames.has(native) && replayNames.get(native) !== name)
+        invalid(
+          "Tool namespace collision between built-in and external MCP identities."
+        )
+      replayNames.set(native, name as string)
+      return native
+    },
+    body.model
+  )
   checkClaudeSubscriptionContext({
     ...history,
     model: body.model,

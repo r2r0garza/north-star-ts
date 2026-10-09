@@ -1,3 +1,5 @@
+import { transformCacheWire, MAX_WIRE_BYTES } from "./cache-wire"
+import type { ReplayFrame } from "./history"
 import { randomBytes } from "crypto"
 import {
   createServer,
@@ -87,6 +89,7 @@ export function guardProxyEnvironment(env: NodeJS.ProcessEnv): void {
 }
 
 interface RelayOptions {
+  frames?: ReplayFrame[]
   signal: AbortSignal
   onDelta?: (kind: "text" | "reasoning", text: string) => void
   readIdleMs?: number
@@ -169,6 +172,32 @@ async function createAdmission(options: RelayOptions, upstream: URL) {
       return
     }
     admitted++
+    let wire: Buffer | undefined
+    if (options.frames) {
+      try {
+        const chunks: Buffer[] = []
+        let bytes = 0
+        for await (const chunk of req) {
+          bytes += chunk.length
+          if (bytes > MAX_WIRE_BYTES) throw new Error("wire limit")
+          chunks.push(Buffer.from(chunk))
+        }
+        wire = transformCacheWire(
+          Buffer.concat(chunks),
+          options.frames,
+          (code) => console.debug("[claude-subscription] wire", { code })
+        )
+      } catch {
+        fail(
+          new ClaudeSubscriptionError(
+            "claude_subscription_request_limit",
+            "Subscription request exceeded its bounded wire envelope."
+          )
+        )
+        res.writeHead(413).end()
+        return
+      }
+    }
     const capture = new ResponseCapture(options.onDelta)
     const target = new URL(
       req.url!.endsWith("?beta=true")
@@ -273,7 +302,8 @@ async function createAdmission(options: RelayOptions, upstream: URL) {
       if (!res.writableEnded) upstreamReq.destroy(safeTransportError())
     })
     req.once("error", () => upstreamReq.destroy(safeTransportError()))
-    req.pipe(upstreamReq)
+    if (wire) upstreamReq.end(wire)
+    else req.pipe(upstreamReq)
   })
   listener.on("connection", (socket) => {
     sockets.add(socket)

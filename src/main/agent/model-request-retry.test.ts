@@ -139,6 +139,35 @@ beforeEach(() => {
 })
 
 describe.skipIf(!sqliteLoads)("model request retry coordinator", () => {
+  it("retains private native metadata from the completed stream only", async () => {
+    const { nativeAssistant } =
+      await import("./providers/claude-subscription/native-carrier")
+    const carrier = {
+      version: 1,
+      provider: "claude_subscription",
+      model: "claude-sonnet-4-6",
+      prefix: "a".repeat(64),
+      blocks: [{ type: "text", text: "answer" }],
+    }
+    const round = await createCompletionRoundWithRetry({
+      conversationId,
+      logicalRoundId: "native",
+      signal: new AbortController().signal,
+      isTransientError: () => false,
+      request: async () =>
+        streamChunk({
+          choices: [
+            {
+              delta: { content: "answer", [nativeAssistant]: carrier },
+              finish_reason: "stop",
+            },
+          ],
+        }),
+    })
+    expect(round.nativeAssistant).toEqual(carrier)
+    expect(round.text).toBe("answer")
+    expect(JSON.stringify(round.diagnostics)).not.toContain("blocks")
+  })
   it("retains fragmented refusal and finish reason, discards tools, and never recovers refusal markup", async () => {
     const recover = vi.fn((text: string) => text)
     const events: any[] = []

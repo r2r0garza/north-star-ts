@@ -169,7 +169,9 @@ export function registerDbHandlers(
 
   // Messages (read-only from the renderer; writes happen inside runChat)
   ipcMain.handle("db:messages:list", (_e, conversationId: string) =>
-    messages.listMessages(conversationId)
+    messages
+      .listMessages(conversationId)
+      .map(({ nativeAssistant: _native, ...message }) => message)
   )
 
   // Todos (read-only from the renderer; writes happen via the todo_write tool).

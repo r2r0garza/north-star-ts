@@ -1,4 +1,8 @@
 import {
+  nativeAssistant,
+  type NativeAssistantCarrier,
+} from "../providers/claude-subscription/native-carrier"
+import {
   listMessages,
   listMessagesAfterSeq,
 } from "../../db/repositories/messages"
@@ -11,6 +15,7 @@ import { replayToolCallArguments } from "../tool-call-arguments"
 // An OpenAI-compatible chat message, the shape Portkey expects. The agent feeds
 // the array this builder returns straight into the chat completion request.
 export interface ChatMessage {
+  [nativeAssistant]?: NativeAssistantCarrier
   role: "system" | "user" | "assistant" | "tool"
   content: string | null
   tool_calls?: Array<{
@@ -249,6 +254,7 @@ function toChatMessage(m: Message): ChatMessage {
   if (m.role === "assistant" && m.toolCalls?.length) {
     return {
       role: "assistant",
+      [nativeAssistant]: m.nativeAssistant,
       content: m.content,
       tool_calls: m.toolCalls.map((c) => ({
         id: c.id,
@@ -267,7 +273,13 @@ function toChatMessage(m: Message): ChatMessage {
       tool_call_id: m.toolCallId ?? undefined,
     }
   }
-  return { role: m.role, content: m.content }
+  return {
+    role: m.role,
+    content: m.content,
+    ...(m.role === "assistant" && m.nativeAssistant
+      ? { [nativeAssistant]: m.nativeAssistant }
+      : {}),
+  }
 }
 
 // A shared default instance for the agent.

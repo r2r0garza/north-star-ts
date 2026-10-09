@@ -3,10 +3,8 @@
 > **Note (2026-09-26):** the `106.x` plans predate a rename — Initiatives are now **Features**,
 > Missions are **Milestones**, and Slices are **User stories**. Each pending `106.x` plan has a mapping note at the top.
 
-1. **`109.3` — Claude subscription replay and cache follow-up.** Deferred optimization after qualified v1:
-   versioned native assistant carriers, lossless queried-result restoration and cache-wire stability tests.
-   **Not a v1 prerequisite** unless real-service qualification proves native carriers necessary for correctness.
-   [Plan](109.3-claude-subscription-replay-and-cache.md).
+1. **`109.3` — Claude subscription replay and cache follow-up — IN PROGRESS.** Reopened because native Linux and Windows testing is missing. Implementation and macOS automated/manual verification are complete; each native platform still needs automated/installed-CLI qualification and user manual acceptance before closure.
+   [Plan](109.3-claude-subscription-replay-and-cache.md). [Linux/Windows agent and user handoff](109.3-linux-windows-qualification-handoff.md). [Evidence](109.3-qualification.md).
 2. **`109.4` — Claude Code inference across authentication and managed-policy configurations.**
    Deferred follow-up for API-key, Team/Enterprise, token-only and unknown/new auth states: support official
    CLI inference with capability-based setup, policy-preserving routing and accurate billing semantics.
