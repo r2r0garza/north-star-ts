@@ -134,8 +134,7 @@ describe.skipIf(process.platform !== "linux")(
               file,
               state.cwd,
               { HOME: root },
-              new AbortController().signal,
-              "linux"
+              new AbortController().signal
             )
           ).rejects.toMatchObject({ code: "claude_subscription_cli_probe" })
         } finally {

@@ -145,10 +145,20 @@ export function buildHostCliEnv(
   // resolves, and the fallbacks stay last. A failed probe leaves the inherited
   // PATH first exactly as before.
   const seen = new Set<string>()
-  const homeLocalBin = base.HOME ? `${base.HOME}/.local/bin` : ""
+  const home =
+    base.HOME || (process.platform === "win32" ? base.USERPROFILE : "")
+  const homeLocalBin = home ? `${home}/.local/bin` : ""
+  const inheritedPath = Object.entries(base).find(([key]) =>
+    process.platform === "win32" ? key.toUpperCase() === "PATH" : key === "PATH"
+  )?.[1]
+  if (process.platform === "win32") {
+    for (const key of Object.keys(merged)) {
+      if (key !== "PATH" && key.toUpperCase() === "PATH") delete merged[key]
+    }
+  }
   merged.PATH = [
     ...(loginShellEnv?.PATH ?? "").split(delimiter),
-    ...(base.PATH ?? "").split(delimiter),
+    ...(inheritedPath ?? "").split(delimiter),
     ...HOST_CLI_EXTRA_PATHS,
     homeLocalBin,
   ]

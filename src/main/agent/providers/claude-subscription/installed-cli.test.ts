@@ -28,19 +28,6 @@ vi.mock("./setup", async (original) => {
   const actual = await original<typeof import("./setup")>()
   return {
     ...actual,
-    verifyCliCompatibility: (
-      executable: string,
-      cwd: string,
-      env: NodeJS.ProcessEnv,
-      signal: AbortSignal
-    ) =>
-      actual.verifyCliCompatibility(
-        executable,
-        cwd,
-        env,
-        signal,
-        process.platform === "win32" ? "darwin" : process.platform
-      ),
     guardEnvironment: (env: NodeJS.ProcessEnv) => ({
       ...actual.guardEnvironment(env),
       ANTHROPIC_API_KEY: "synthetic-not-a-real-key",
@@ -545,12 +532,12 @@ describe.skipIf(!enabled)(
         } catch (caught) {
           error = caught
         }
+        expect(error).toMatchObject({ code: "claude_subscription_protocol" })
         expect(requests).toBe(1)
         expect(
           chunks.some((chunk) => chunk.choices[0].delta.tool_calls?.length)
         ).toBe(false)
         expect(fixture.relay.diagnostics().recoveryBlocked).toBe(1)
-        expect(error).toMatchObject({ code: "claude_subscription_protocol" })
         await clean()
       },
       60000

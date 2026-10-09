@@ -45,7 +45,9 @@ export async function windowsProbe(
   )
     throw new ClaudeSubscriptionError(
       code,
-      "Could not verify Windows transport security. Recheck host configuration."
+      result.timedOut
+        ? "Windows transport security probe timed out. Recheck host configuration."
+        : "Could not verify Windows transport security. Recheck host configuration."
     )
   return result.stdout.toString("utf8").trim()
 }

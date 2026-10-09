@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { mkdtemp, mkdir, rm } from "fs/promises"
+import { mkdtemp, mkdir, rm, copyFile, writeFile, realpath } from "fs/promises"
 import { join } from "path"
 import { tmpdir } from "os"
 import { privateDirectories, resolveExecutable } from "./setup"
@@ -50,6 +50,22 @@ describe.skipIf(process.platform !== "win32")(
         await rm(root, { recursive: true, force: true })
       }
     }, 30000)
+    it("resolves native executables in spaces/non-ASCII paths and rejects npm shims", async () => {
+      const root = await mkdtemp(join(tmpdir(), "ns executable é-"))
+      try {
+        await copyFile(process.execPath, join(root, "claude.exe"))
+        expect(await resolveExecutable({ Path: root })).toBe(
+          await realpath(join(root, "claude.exe"))
+        )
+        await rm(join(root, "claude.exe"))
+        await writeFile(join(root, "claude.cmd"), "@echo fixture")
+        await expect(resolveExecutable({ Path: root })).rejects.toMatchObject({
+          code: "claude_subscription_cli_shim",
+        })
+      } finally {
+        await rm(root, { recursive: true, force: true })
+      }
+    })
     it("finds the installed native executable with Windows Path casing and rejects relative search directories", async () => {
       const executable = await resolveExecutable({ Path: process.env.PATH })
       expect(executable.toLowerCase()).toMatch(/claude\.exe$/)

@@ -59,15 +59,6 @@ vi.mock("./windows-state", () => ({
 vi.mock("./setup", async (original) => ({
   ...(await original<typeof import("./setup")>()),
   resolveExecutable: async () => process.execPath,
-  verifyCliCompatibility: async (
-    ...args: Parameters<typeof import("./setup").verifyCliCompatibility>
-  ) =>
-    (
-      await vi.importActual<typeof import("./setup")>("./setup")
-    ).verifyCliCompatibility(
-      ...(args.slice(0, 4) as [string, string, NodeJS.ProcessEnv, AbortSignal]),
-      "darwin"
-    ),
 }))
 vi.mock("./admission", async (original) => {
   const actual = await original<typeof import("./admission")>()

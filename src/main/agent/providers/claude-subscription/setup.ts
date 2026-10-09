@@ -201,10 +201,10 @@ export function compatibleVersion(
       `This experimental transport requires stable Claude Code ${MINIMUM_CLAUDE_CODE_VERSION} or newer within 2.x. Upgrade older installations and recheck; prerelease and new major versions require compatibility review.`
     )
   }
-  if (platform !== "darwin" && platform !== "linux") {
+  if (platform !== "darwin" && platform !== "linux" && platform !== "win32") {
     throw new ClaudeSubscriptionError(
       "claude_subscription_platform_unqualified",
-      "This experimental transport is qualified on native macOS and Linux. Windows qualification remains pending."
+      "This experimental transport is qualified on native macOS, Linux and Windows. Other platforms require separate qualification."
     )
   }
   return match![1]
@@ -214,8 +214,7 @@ export async function verifyCliCompatibility(
   executable: string,
   cwd: string,
   env: NodeJS.ProcessEnv,
-  signal: AbortSignal,
-  qualificationPlatform = process.platform
+  signal: AbortSignal
 ): Promise<string> {
   if (signal.aborted) throw aborted()
   await guardManagedPolicy(env, signal)
@@ -245,10 +244,7 @@ export async function verifyCliCompatibility(
       "Could not verify the installed Claude Code version. Recheck the official CLI installation."
     )
   }
-  const version = compatibleVersion(
-    result.stdout.toString("utf8"),
-    qualificationPlatform
-  )
+  const version = compatibleVersion(result.stdout.toString("utf8"))
   await verifyPersonalSubscription(executable, cwd, env, signal)
   await guardManagedPolicy(env, signal)
   return version

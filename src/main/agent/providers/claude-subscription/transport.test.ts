@@ -613,7 +613,10 @@ describe("inert inventory and private setup", () => {
   it("accepts the qualified Linux CLI without bypassing the OS gate", () => {
     expect(compatibleVersion("2.1.295 (Claude Code)", "linux")).toBe("2.1.295")
   })
-  it.each(["win32"] as const)(
+  it("accepts the qualified Windows CLI through the native platform policy", () => {
+    expect(compatibleVersion("2.1.295 (Claude Code)", "win32")).toBe("2.1.295")
+  })
+  it.each(["freebsd"] as const)(
     "reports pending %s qualification separately from version compatibility",
     (platform) => {
       expect(() =>
