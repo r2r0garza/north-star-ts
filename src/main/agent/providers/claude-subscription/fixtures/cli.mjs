@@ -1,24 +1,33 @@
 import readline from "node:readline"
 const lines = readline.createInterface({ input: process.stdin })
 const mode = process.env.NS_FIXTURE_MODE
+if (mode === "stall" || mode === "discovery-stall") setInterval(() => {}, 1000)
 const emit = (event) => process.stdout.write(JSON.stringify(event) + "\n")
 let generation = false
 const init = {
   type: "system",
   subtype: "init",
-  tools: mode === "native-tool" ? ["Bash"] : ["mcp__north_star__read_file"],
+  tools:
+    mode === "native-tool"
+      ? ["Bash"]
+      : mode === "no-tools"
+        ? []
+        : ["mcp__ns__read_file"],
   skills: mode === "native-skill" ? ["unexpected"] : [],
   plugins: mode === "native-plugin" ? [{ name: "unexpected" }] : [],
   agents:
     mode === "native-agent"
       ? ["fixture-agent"]
       : ["claude", "Explore", "general-purpose", "Plan", "statusline-setup"],
-  mcp_servers: [
-    {
-      name: mode === "native-mcp" ? "unexpected" : "north_star",
-      status: "connected",
-    },
-  ],
+  mcp_servers:
+    mode === "no-tools"
+      ? []
+      : [
+          {
+            name: mode === "native-mcp" ? "unexpected" : "ns",
+            status: "connected",
+          },
+        ],
 }
 if (mode !== "missing-init") emit(init)
 for await (const line of lines) {
@@ -112,6 +121,11 @@ for await (const line of lines) {
       if (denied.status !== 409) process.exit(9)
       await denied.text()
     }
+    if (mode === "boundary-split-text")
+      emit({
+        type: "assistant",
+        message: { content: [{ type: "text", text: "hello" }] },
+      })
     emit({ type: "assistant", message: { content: [] } })
     const result = {
       type: "result",

@@ -258,7 +258,7 @@ describe("request and canonical replay", () => {
     expect(request.names.get(TOOL_PREFIX + "read_file")).toBe("read_file")
     for (const tools of [
       [tool, tool],
-      [{ ...tool, function: { ...tool.function, name: "x".repeat(49) } }],
+      [{ ...tool, function: { ...tool.function, name: "x".repeat(65 - TOOL_PREFIX.length) } }],
       [
         {
           ...tool,
@@ -443,6 +443,7 @@ describe("single admission relay", () => {
     const upstream = await fixture((req, res) => {
       count++
       auth = req.headers.authorization
+      expect(req.headers["accept-encoding"]).toBe("identity")
       req.resume()
       res.writeHead(200, {
         "content-type": "text/event-stream",
@@ -630,7 +631,7 @@ describe("inert inventory and private setup", () => {
   )
   it("lists only validated tools and all calls return an inert error", async () => {
     const inventory = await startInventory(validateRequest(body).tools)
-    const url = inventory.config.mcpServers.north_star.url
+    const url = inventory.config.mcpServers.ns.url
     const rpc = async (method: string, params: unknown) => {
       const response = await fetch(url, {
         method: "POST",

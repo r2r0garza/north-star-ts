@@ -16,6 +16,26 @@ const providers = [
 ] as unknown as AccountWithModels[]
 
 describe("runtimeBadgeDisplay", () => {
+  it("labels keyless subscription overrides without treating them as autonomous CLI sessions", () => {
+    const accounts = [
+      {
+        account: {
+          id: "sub",
+          provider: "claude_subscription",
+          displayName: "Personal Claude",
+          hasKey: false,
+        },
+        models: [{ modelId: "sonnet", modelName: "My Sonnet" }],
+      },
+    ] as unknown as AccountWithModels[]
+    expect(
+      runtimeBadgeDisplay(
+        { worker: { accountId: "sub", modelId: "sonnet", source: "phase" } },
+        accounts
+      )?.label
+    ).toBe("Personal Claude / My Sonnet")
+  })
+
   it("shows the snapshot's account and model label", () => {
     const snapshot: ProcessRuntimeSnapshot = {
       worker: {

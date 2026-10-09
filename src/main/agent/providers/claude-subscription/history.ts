@@ -1,7 +1,7 @@
 import { replayToolCallArguments } from "../../tool-call-arguments"
 import { invalid, object, onlyKeys } from "./errors"
 
-export const TOOL_PREFIX = "mcp__north_star__"
+export const TOOL_PREFIX = "mcp__ns__"
 export type NativeBlock = Record<string, any>
 export interface ReplayFrame {
   type: "user" | "assistant"
@@ -9,15 +9,34 @@ export interface ReplayFrame {
   shouldQuery?: boolean
 }
 
-export function nativeToolName(name: unknown): string {
-  if (
-    typeof name !== "string" ||
-    !/^[a-zA-Z0-9_-]+$/.test(name) ||
-    TOOL_PREFIX.length + name.length > 64
-  ) {
-    invalid("Tool names must fit the native MCP namespace without renaming.")
+export function inventoryIdentity(name: unknown): {
+  server: string
+  name: string
+  native: string
+} {
+  if (typeof name !== "string" || !/^[a-zA-Z0-9_-]+$/.test(name))
+    invalid("Malformed host tool name.")
+  let server = "ns"
+  let tool = name
+  if (name.startsWith("mcp__")) {
+    const match = /^mcp__([a-z0-9]+(?:-[a-z0-9]+)*)__([a-zA-Z0-9_-]+)$/.exec(
+      name
+    )
+    if (!match)
+      invalid(
+        "MCP server names must be canonical lowercase slugs; normalization is not implicit."
+      )
+    server = match[1]
+    tool = match[2]
   }
-  return TOOL_PREFIX + name
+  const native = `mcp__${server}__${tool}`
+  if (native.length > 64)
+    invalid("Tool names must fit the native MCP namespace without renaming.")
+  return { server, name: tool, native }
+}
+
+export function nativeToolName(name: unknown): string {
+  return inventoryIdentity(name).native
 }
 
 function contentBlocks(content: unknown, images: boolean): NativeBlock[] {
@@ -56,7 +75,10 @@ function contentBlocks(content: unknown, images: boolean): NativeBlock[] {
   })
 }
 
-export function translateHistory(messages: unknown): {
+export function translateHistory(
+  messages: unknown,
+  toolName = nativeToolName
+): {
   system: string
   frames: ReplayFrame[]
 } {
@@ -145,7 +167,7 @@ export function translateHistory(messages: unknown): {
           blocks.push({
             type: "tool_use",
             id: call.id,
-            name: nativeToolName(call.function.name),
+            name: toolName(call.function.name),
             input,
           })
           calls.set(call.id, false)

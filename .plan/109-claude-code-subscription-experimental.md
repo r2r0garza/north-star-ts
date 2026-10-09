@@ -1,6 +1,6 @@
 # PR109: Claude Code Subscription - Experimental
 
-> Status: **PLANNED**. Design umbrella; implementation is split into 109.1–109.4. No provider implementation is included in the planning change.
+> Status: **PLANNED**. Design umbrella; implementation is split into 109.1–109.5. No provider implementation is included in the planning change.
 
 ## Goal and ownership contract
 
@@ -21,6 +21,8 @@ Do not create native CLI session/resume rows or grant this provider the executio
 [109.3: Replay and cache follow-up](109.3-claude-subscription-replay-and-cache.md) is deferred optimization, despite its roadmap placement after the v1 slices. Promote signed replay into v1 only if real-service qualification proves canonical reconstruction insufficient for correctness; do not promote cache optimization merely for parity with Hermes.
 
 [109.4: Broader authentication and managed-policy support](109.4-claude-code-authentication-and-managed-policy.md) defers API-key, Team/Enterprise, token-only and unknown/new auth states to a capability- and policy-aware Claude Code inference follow-up. The goal is to support official CLI inference regardless of credential kind where transport and organization restrictions can be preserved. Work-machine qualification is deferred; no broader auth mode is enabled now.
+
+[109.5: Host image vision and durable media history](109.5-host-images-and-durable-media.md) addresses standalone image vision and durable screenshot/scanned-PDF pixels as one shared host capability. On 2026-10-09 the user accepted the current media limitations for 109.2 and confirmed macOS visual settings, live cross-provider history and Docker-selected tools. Only native Linux/Windows integrated qualification remains in 109.2; keep it in progress until those sessions complete. Distribution qualification and vendor release review are deferred until all 109.X plans are done, not waived or established by completing an implementation slice.
 
 Initial v1 is scoped to reported personal Pro/Max logins. Enterprise-account availability is not a prerequisite for that scope. This is a product scope decision, not proof that cached account metadata is fresh or that managed-policy compatibility is qualified; retain existing guards and document the personal-scope freshness/check-start limitation rather than marking it tested.
 

@@ -1,3 +1,9 @@
+export type {
+  ClaudeSubscriptionPreflight,
+  ClaudeSubscriptionCatalog,
+  ClaudeSubscriptionRefresh,
+} from "../../preload/index"
+
 // Re-export the persisted DB row types from the preload surface so renderer
 // code can import them from a stable `@/types` path.
 export type {

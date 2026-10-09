@@ -135,7 +135,9 @@ beforeEach(async (context) => {
           ? {
               type: "tool_use",
               id: "tool_fixture",
-              name: "mcp__north_star__probe",
+              name: scenario.includes("external")
+                ? "mcp__ado__testplan_show_test_results_from_build_id"
+                : "mcp__ns__probe",
               input: {},
             }
           : { type: "text", text: "" },
@@ -145,7 +147,12 @@ beforeEach(async (context) => {
         index: 0,
         delta: tool
           ? { type: "input_json_delta", partial_json: "{}" }
-          : { type: "text_delta", text: "synthetic response" },
+          : {
+              type: "text_delta",
+              text: scenario.includes("whitespace")
+                ? "synthetic response\n"
+                : "synthetic response",
+            },
       },
       { type: "content_block_stop", index: 0 },
       {
@@ -155,13 +162,36 @@ beforeEach(async (context) => {
             ? "tool_use"
             : scenario.includes("pause_turn")
               ? "pause_turn"
-              : "end_turn",
+              : scenario.includes("output limit")
+                ? "max_tokens"
+                : "end_turn",
           stop_sequence: null,
         },
         usage: { output_tokens: 2 },
       },
       { type: "message_stop" },
     ]
+    if (scenario.includes("text plus tool")) {
+      events.splice(
+        1,
+        0,
+        {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "" },
+        },
+        {
+          type: "content_block_delta",
+          index: 0,
+          delta: {
+            type: "text_delta",
+            text: "I will inspect the selected container through the host tool.",
+          },
+        },
+        { type: "content_block_stop", index: 0 }
+      )
+      for (const event of events.slice(4, 7)) event.index = 1
+    }
     const wire = (list: any[]) =>
       list
         .map(
@@ -186,7 +216,7 @@ beforeEach(async (context) => {
         events[4].delta.stop_reason = "max_tokens"
     }
     if (scenario.includes("recovery tool"))
-      events[1].content_block.name = "mcp__north_star__missing_fixture"
+      events[1].content_block.name = "mcp__ns__missing_fixture"
     if (scenario.includes("truncated text")) {
       res.end(wire(events.slice(0, -1)))
       return
@@ -425,12 +455,184 @@ describe.skipIf(!enabled)(
         await expect(access(path)).rejects.toMatchObject({ code: "ENOENT" })
       await clean()
     }, 60000)
+    it.each(["haiku", "claude-haiku-4-5", "claude-sonnet-4-6"])(
+      "disables native thinking for sub-minimum auxiliary output caps on %s",
+      async (model) => {
+        const result: any = await buildClaudeSubscriptionClient({
+          appData: root,
+        }).chat.completions.create({
+          ...body,
+          model,
+          max_tokens: 256,
+          stream: false,
+          tools: [],
+        })
+        expect(result.choices[0].message.content).toBe("synthetic response")
+        expect(capturedBody.max_tokens).toBe(256)
+        expect(capturedBody.thinking).toEqual({ type: "disabled" })
+        expect(requests).toBe(1)
+        await clean()
+      },
+      60000
+    )
+    it.each(["haiku", "sonnet", "opus"])(
+      "resolves %s natively with context above the old alias cap",
+      async (model) => {
+        const marker = "alias context qualification " + "x".repeat(135000)
+        const result: any = await buildClaudeSubscriptionClient({
+          appData: root,
+        }).chat.completions.create({
+          ...body,
+          model,
+          max_tokens: 2048,
+          stream: false,
+          tools: [],
+          messages: [{ role: "user", content: marker }],
+        })
+        expect(result.choices[0].message.content).toBe("synthetic response")
+        expect(capturedBody.model).toMatch(new RegExp(`^claude-${model}-`))
+        expect(JSON.stringify(capturedBody.messages)).toContain(marker)
+        expect(requests).toBe(1)
+        await clean()
+      },
+      60000
+    )
+    it("preserves text plus tool blocks at the host-owned tool boundary", async () => {
+      const result: any = await buildClaudeSubscriptionClient({
+        appData: root,
+      }).chat.completions.create({ ...body, stream: false })
+      expect(result.choices[0].message.content).toBe(
+        "I will inspect the selected container through the host tool."
+      )
+      expect(result.choices[0].message.tool_calls[0].function.name).toBe(
+        "probe"
+      )
+      expect(requests).toBe(1)
+      await clean()
+    }, 60000)
+    it("preserves native adaptive reasoning for ordinary output caps", async () => {
+      await buildClaudeSubscriptionClient({
+        appData: root,
+      }).chat.completions.create({
+        ...body,
+        max_tokens: 2048,
+        stream: false,
+        tools: [],
+      })
+      expect(capturedBody.thinking).toEqual({ type: "adaptive" })
+      expect(requests).toBe(1)
+      await clean()
+    }, 60000)
+    it("reconstructs user and historical tool-result base64 images", async () => {
+      const image = {
+        type: "image_url",
+        image_url: {
+          url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jG1sAAAAASUVORK5CYII=",
+        },
+      }
+      await buildClaudeSubscriptionClient({
+        appData: root,
+      }).chat.completions.create({
+        ...body,
+        stream: false,
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "text", text: "Original image" }, image],
+          },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: "past_image",
+                type: "function",
+                function: { name: "probe", arguments: "{}" },
+              },
+            ],
+          },
+          {
+            role: "tool",
+            tool_call_id: "past_image",
+            content: [{ type: "text", text: "Historical tool image" }, image],
+          },
+          { role: "user", content: "Reconstruct the available media" },
+        ],
+      })
+      const blocks = capturedBody.messages.flatMap((m: any) => m.content)
+      expect(blocks.find((b: any) => b.type === "image").source).toMatchObject({
+        type: "base64",
+        media_type: "image/png",
+      })
+      const result = blocks.find((b: any) => b.type === "tool_result")
+      expect(result.tool_use_id).toBe("past_image")
+      expect(
+        result.content.find((b: any) => b.type === "image").source.data
+      ).toBe(image.image_url.url.split(",")[1])
+      expect(requests).toBe(1)
+      await clean()
+    }, 60000)
+    it("auxiliary output limit", async () => {
+      await consume()
+      expect(requests).toBe(1)
+      await clean()
+    }, 60000)
+    it("preserves response whitespace despite native final-result presentation", async () => {
+      const chunks = await consume()
+      expect(
+        chunks.map((chunk) => chunk.choices[0].delta.content ?? "").join("")
+      ).toBe("synthetic response\n")
+      expect(requests).toBe(1)
+      await clean()
+    }, 60000)
     it("text success", async () => {
       const chunks = await consume()
       expect(
         chunks.map((chunk) => chunk.choices[0].delta.content ?? "").join("")
       ).toBe("synthetic response")
       expect(requests).toBe(1)
+      await clean()
+    }, 60000)
+    it("external tool inventory, canonical decoding and historical replay", async () => {
+      const name = "mcp__ado__testplan_show_test_results_from_build_id"
+      const request = {
+        ...body,
+        stream: false,
+        tools: [
+          ...body.tools,
+          { ...body.tools[0], function: { ...body.tools[0].function, name } },
+        ],
+      }
+      const client = buildClaudeSubscriptionClient({ appData: root })
+      const first: any = await client.chat.completions.create(request)
+      expect(first.choices[0].message.tool_calls[0].function.name).toBe(name)
+      expect(capturedBody.tools.map((tool: any) => tool.name)).toEqual([
+        "mcp__ns__probe",
+        name,
+      ])
+      await clean()
+      const second: any = await client.chat.completions.create({
+        ...request,
+        messages: [
+          ...body.messages,
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: first.choices[0].message.tool_calls,
+          },
+          {
+            role: "tool",
+            tool_call_id: "tool_fixture",
+            content: "External host result",
+          },
+        ],
+      })
+      expect(second.choices[0].message.tool_calls[0].function.name).toBe(name)
+      expect(JSON.stringify(capturedBody.messages)).toContain(name)
+      expect(JSON.stringify(capturedBody.messages)).toContain(
+        "External host result"
+      )
+      expect(requests).toBe(2)
       await clean()
     }, 60000)
     it("tool max-turn boundary", async () => {

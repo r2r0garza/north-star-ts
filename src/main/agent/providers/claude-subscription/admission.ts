@@ -181,7 +181,7 @@ async function createAdmission(options: RelayOptions, upstream: URL) {
     )(target, {
       method: "POST",
       agent: false,
-      headers: headers(req.headers),
+      headers: { ...headers(req.headers), "accept-encoding": "identity" },
       signal: options.signal,
     })
     upstreamRequests.add(upstreamReq)

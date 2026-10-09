@@ -9,6 +9,11 @@ const harness = vi.hoisted(() => ({
   home: "",
   userData: "",
   memoryEnabled: false,
+  memorySelection: {
+    accountId: null as string | null,
+    modelId: null as string | null,
+  },
+  resolve: vi.fn(),
   // Queue of responses the fake memory model returns, in order. A `null` entry
   // simulates an unreachable provider (createCompletion throws).
   responses: [] as (string | null)[],
@@ -26,13 +31,15 @@ vi.mock("electron", () => ({
 vi.mock("../../settings/service", () => ({
   getMemory: () => ({
     enabled: harness.memoryEnabled,
-    accountId: null,
-    modelId: null,
+    ...harness.memorySelection,
   }),
 }))
 
 vi.mock("../providers", () => ({
-  resolveLlm: () => ({ client: {}, model: "test-model", apiMode: "chat" }),
+  resolveLlm: (selection: unknown) => {
+    harness.resolve(selection)
+    return { client: {}, model: "test-model", apiMode: "completions" }
+  },
   createCompletion: vi.fn(async (..._args: unknown[]) => {
     const prompt = (_args[3] as any)?.messages?.[1]?.content ?? ""
     harness.prompts.push(String(prompt))
@@ -729,6 +736,27 @@ describe("turn recording", () => {
       "reference",
       `${new Date().toISOString().slice(0, 10)}.md`
     )
+
+  it("uses the explicitly selected memory account independently of the chat default", async () => {
+    harness.memorySelection = {
+      accountId: "memory-subscription",
+      modelId: "memory-haiku",
+    }
+    harness.resolve.mockClear()
+    harness.responses = [JSON.stringify({ candidates: [] })]
+    try {
+      await recordMemoryTurn({
+        conversationId: "selected-memory",
+        userText: "Remember the release checklist location.",
+        assistantText: "Noted.",
+        workspaceDir: workspace,
+      })
+      expect(harness.resolve).toHaveBeenCalledWith(harness.memorySelection)
+      expect(harness.prompts.length).toBeGreaterThan(0)
+    } finally {
+      harness.memorySelection = { accountId: null, modelId: null }
+    }
+  })
 
   it("logs a resumed turn without spending an extraction call", async () => {
     await recordMemoryTurn({

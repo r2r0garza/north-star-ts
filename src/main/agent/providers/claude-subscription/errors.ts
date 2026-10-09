@@ -40,6 +40,16 @@ export function onlyKeys(
   allowed: string[]
 ): void {
   if (Object.keys(value).some((key) => !allowed.includes(key))) {
-    invalid("Unsupported Claude subscription request field.")
+    invalid(
+      `Unsupported Claude subscription request field: ${Object.keys(value)
+        .filter((key) => !allowed.includes(key))
+        .map((key) =>
+          /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/.test(key)
+            ? key
+            : "[invalid field name]"
+        )
+        .slice(0, 8)
+        .join(", ")}.`
+    )
   }
 }

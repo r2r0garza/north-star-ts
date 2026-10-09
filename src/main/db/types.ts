@@ -429,6 +429,7 @@ export type Provider =
   | "claude_code"
   | "codex_cli"
   | "codex_subscription"
+  | "claude_subscription"
   | "anthropic"
   | "google"
   | "azure_openai"

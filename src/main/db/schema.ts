@@ -1626,3 +1626,28 @@ CREATE TABLE IF NOT EXISTS navigator_ticks (
 );
 CREATE INDEX IF NOT EXISTS idx_navigator_ticks_initiative ON navigator_ticks(initiative_id, created_at DESC);
 `
+
+// v65 (plan 109.2): keyless Claude subscription inference uses completions,
+// not autonomous CLI sessions. Rebuild only the provider account constraint.
+export const SCHEMA_V65 = `
+CREATE TABLE provider_accounts_v65 (
+  id            TEXT PRIMARY KEY,
+  provider      TEXT NOT NULL CHECK (provider IN
+                  ('portkey','openai_compatible','openai','claude_code','codex_cli','codex_subscription','claude_subscription','anthropic','google','azure_openai')),
+  display_name  TEXT NOT NULL,
+  base_url      TEXT,
+  encrypted_key BLOB,
+  api_mode      TEXT NOT NULL DEFAULT 'completions'
+                  CHECK (api_mode IN ('completions','responses','codex_responses')),
+  enabled       INTEGER NOT NULL DEFAULT 1,
+  created_at    INTEGER NOT NULL,
+  last_used_at  INTEGER,
+  position      INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO provider_accounts_v65
+  (id, provider, display_name, base_url, encrypted_key, api_mode, enabled, created_at, last_used_at, position)
+SELECT id, provider, display_name, base_url, encrypted_key, api_mode, enabled, created_at, last_used_at, position
+FROM provider_accounts;
+DROP TABLE provider_accounts;
+ALTER TABLE provider_accounts_v65 RENAME TO provider_accounts;
+`

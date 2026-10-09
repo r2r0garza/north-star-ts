@@ -610,6 +610,7 @@ function validateModelRoundForLoop(input: {
   commandCompletionPending: boolean
   canRaiseOutputCap: boolean
 }): void {
+  if (input.round.refusal) return
   const structuredToolCalls = accumulateToolCalls(input.round.toolFragments)
   const recovered = extractTextToolCalls(input.round.text)
   const text = recovered.text.trim()
@@ -2442,6 +2443,12 @@ export async function runAgentLoop(
             : stopNote(abort.signal),
         })
         return { stopped: true }
+      }
+
+      if (round.refusal) {
+        appendMessage({ conversationId, role: "assistant", content: text })
+        completeModelRequestRetryBudget({ conversationId, logicalRoundId })
+        return { content: text, ...(hasTurnUsage ? { usage: turnUsage } : {}) }
       }
 
       const structuredToolCalls = accumulateToolCalls(round.toolFragments)

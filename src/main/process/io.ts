@@ -63,6 +63,7 @@ const PROVIDERS: readonly Provider[] = [
   "claude_code",
   "codex_cli",
   "codex_subscription",
+  "claude_subscription",
   "anthropic",
   "google",
   "azure_openai",
@@ -808,7 +809,9 @@ function validateRuntimeSelection(
   }
   if (obj.modelId !== undefined) {
     selection.modelId =
-      obj.modelId === null ? null : nonEmptyString(obj.modelId, `${path}.modelId`)
+      obj.modelId === null
+        ? null
+        : nonEmptyString(obj.modelId, `${path}.modelId`)
   }
   if (obj.provider !== undefined) {
     selection.provider =

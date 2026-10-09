@@ -144,6 +144,7 @@ export function buildClaudeSubscriptionClient(
   options: TransportOptions
 ): LlmClient {
   return {
+    compatibilityProbes: false,
     chat: {
       completions: {
         create: (body, ...rest) => {
@@ -259,7 +260,9 @@ function completion(request: ValidatedRequest, result: CapturedResponse) {
                   result.stop
                 )
               ? "length"
-              : "stop",
+              : result.stop === "refusal"
+                ? "refusal"
+                : "stop",
       },
     ],
     usage: result.usage,
@@ -317,12 +320,15 @@ async function execute(
     })
     const system = await files.file("system.txt", request.system)
     const mcp = await files.file("mcp.json", JSON.stringify(inventory.config))
+    // Native fixed thinking has a 1024-token minimum, larger than cheap
+    // auxiliary caps. Keep those caps usable without increasing paid output.
     const settings = await files.file(
       "settings.json",
       JSON.stringify({
         env: {
           CLAUDE_CODE_EXTRA_BODY: JSON.stringify(request.extraBody),
           CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(request.maxTokens),
+          ...(request.maxTokens < 1024 ? { MAX_THINKING_TOKENS: "0" } : {}),
         },
         disableAllHooks: true,
         enabledPlugins: {
@@ -398,7 +404,8 @@ async function execute(
           !Array.isArray(event.mcp_servers) ||
           event.mcp_servers.some(
             (server: any) =>
-              server?.name !== "north_star" || server?.status !== "connected"
+              !Object.hasOwn(inventory!.config.mcpServers, server?.name) ||
+              server?.status !== "connected"
           )
         ) {
           throw new ClaudeSubscriptionError(
@@ -432,7 +439,7 @@ async function execute(
           .filter((block: any) => block.type === "text")
           .map((block: any) => block.text)
         if (text.some((value: unknown) => typeof value !== "string")) protocol()
-        nativeText = text.join("")
+        nativeText = (nativeText ?? "") + text.join("")
       } else if (event.type === "stream_event") {
         if (replay || !finalQuery || final) protocol()
       } else if (
@@ -569,14 +576,46 @@ async function execute(
       final.is_error === false &&
       final.num_turns === 1 &&
       exit.exitCode === 0
-    if (!ordinary && !acceptedToolBoundary) protocol()
-    if (nativeText !== undefined && nativeText !== result.text) protocol()
+    // The CLI replaces partial text with its denied output-limit recovery error;
+    // only the completed first response remains authoritative at this boundary.
+    const acceptedOutputBoundary =
+      result.stop === "max_tokens" &&
+      result.text.length > 0 &&
+      final.subtype === "success" &&
+      final.is_error === true &&
+      final.num_turns === 2 &&
+      exit.exitCode === 1 &&
+      relay.diagnostics().recoveryBlocked > 0
+    if (!ordinary && !acceptedToolBoundary && !acceptedOutputBoundary)
+      throw new ClaudeSubscriptionError(
+        "claude_subscription_protocol",
+        `Claude completion boundary was not accepted (stop ${result.stop}, subtype ${String(
+          final.subtype
+        )
+          .replace(/[^a-z_]/g, "")
+          .slice(
+            0,
+            64
+          )}, turns ${Number(final.num_turns)}, error ${final.is_error === true}, exit ${exit.exitCode}).`
+      )
+    if (
+      !acceptedOutputBoundary &&
+      nativeText !== undefined &&
+      nativeText !== result.text
+    )
+      throw new ClaudeSubscriptionError(
+        "claude_subscription_protocol",
+        `Claude assistant text differs from the captured response (native ${nativeText.length}, captured ${result.text.length} characters).`
+      )
     if (
       ordinary &&
       typeof final.result === "string" &&
       final.result !== result.text
     )
-      protocol()
+      throw new ClaudeSubscriptionError(
+        "claude_subscription_protocol",
+        `Claude final text differs from the captured response (native ${final.result.length}, captured ${result.text.length} characters).`
+      )
     // Validate names before returning any executable calls, even for nonstream callers.
     completion(request, result)
     return result

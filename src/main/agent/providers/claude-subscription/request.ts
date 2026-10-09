@@ -1,5 +1,9 @@
 import { invalid, object, onlyKeys } from "./errors"
 import { nativeToolName, translateHistory } from "./history"
+import {
+  checkClaudeSubscriptionContext,
+  supportsClaudeSubscriptionEffort,
+} from "./context"
 
 export interface InventoryTool {
   name: string
@@ -13,20 +17,27 @@ function schema(
 ): asserts value is Record<string, any> {
   if (!object(value) || depth > 32)
     invalid("Malformed or excessively nested JSON schema.")
+  const types = Array.isArray(value.type) ? value.type : [value.type]
   if (
     value.type !== undefined &&
-    ![
-      "object",
-      "array",
-      "string",
-      "number",
-      "integer",
-      "boolean",
-      "null",
-    ].includes(value.type)
+    (!types.length ||
+      types.some(
+        (type) =>
+          ![
+            "object",
+            "array",
+            "string",
+            "number",
+            "integer",
+            "boolean",
+            "null",
+          ].includes(type)
+      ) ||
+      new Set(types).size !== types.length)
   )
     invalid("Unsupported schema type.")
   onlyKeys(value, [
+    "$schema",
     "type",
     "title",
     "description",
@@ -55,6 +66,14 @@ function schema(
     "minProperties",
     "maxProperties",
   ])
+  if (
+    value.$schema !== undefined &&
+    ![
+      "http://json-schema.org/draft-07/schema#",
+      "https://json-schema.org/draft/2020-12/schema",
+    ].includes(value.$schema)
+  )
+    invalid("Unsupported JSON schema dialect.")
   for (const key of ["title", "description", "pattern", "format"]) {
     if (value[key] !== undefined && typeof value[key] !== "string")
       invalid("Malformed schema string constraint.")
@@ -199,7 +218,7 @@ export function validateRequest(body: Record<string, unknown>) {
   if (
     effort !== undefined &&
     (!["low", "medium", "high"].includes(String(effort)) ||
-      !/^claude-(?:sonnet-4-6|opus-4-[56])(?:-|$)/.test(body.model))
+      !supportsClaudeSubscriptionEffort(body.model))
   )
     invalid("Reasoning effort requires an explicitly supported Claude model.")
   const tools: InventoryTool[] = []
@@ -209,7 +228,8 @@ export function validateRequest(body: Record<string, unknown>) {
     for (const tool of body.tools) {
       if (!object(tool) || tool.type !== "function" || !object(tool.function))
         invalid("Only function tools are supported.")
-      onlyKeys(tool, ["type", "function"])
+      // MCP definitions carry host scheduling metadata, never native tool input.
+      onlyKeys(tool, ["type", "function", "effects"])
       onlyKeys(tool.function, ["name", "description", "parameters", "strict"])
       const fn = tool.function
       const native = nativeToolName(fn.name)
@@ -272,7 +292,22 @@ export function validateRequest(body: Record<string, unknown>) {
       }
     }
   }
-  const history = translateHistory(body.messages)
+  const replayNames = new Map(names)
+  const history = translateHistory(body.messages, (name) => {
+    const native = nativeToolName(name)
+    if (replayNames.has(native) && replayNames.get(native) !== name)
+      invalid(
+        "Tool namespace collision between built-in and external MCP identities."
+      )
+    replayNames.set(native, name as string)
+    return native
+  })
+  checkClaudeSubscriptionContext({
+    ...history,
+    model: body.model,
+    extraBody,
+    maxTokens,
+  })
   return {
     ...history,
     model: body.model,

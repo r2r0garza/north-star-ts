@@ -8,14 +8,29 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js"
 import type { InventoryTool } from "./request"
+import { inventoryIdentity } from "./history"
 
 export async function startInventory(tools: InventoryTool[]) {
   const path = `/${randomBytes(32).toString("hex")}`
+  const groups = new Map<string, InventoryTool[]>()
+  for (const tool of tools) {
+    const identity = inventoryIdentity(tool.name)
+    const group = groups.get(identity.server) ?? []
+    group.push({ ...tool, name: identity.name })
+    groups.set(identity.server, group)
+  }
+  const routes = new Map(
+    [...groups].map(([server, inventory]) => [
+      `${path}/${server}`,
+      { server, inventory },
+    ])
+  )
   const active = new Set<Server>()
   let inFlight = 0
   const listener = createServer(async (req, res) => {
+    const route = routes.get(req.url ?? "")
     if (
-      req.url !== path ||
+      !route ||
       req.headers.origin !== undefined ||
       req.headers.host !== host
     ) {
@@ -32,11 +47,13 @@ export async function startInventory(tools: InventoryTool[]) {
     }
     inFlight++
     const server = new Server(
-      { name: "north_star", version: "1.0.0" },
+      { name: route.server, version: "1.0.0" },
       { capabilities: { tools: {} } }
     )
     active.add(server)
-    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }))
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({
+      tools: route.inventory,
+    }))
     server.setRequestHandler(CallToolRequestSchema, async () => ({
       isError: true,
       content: [
@@ -83,9 +100,12 @@ export async function startInventory(tools: InventoryTool[]) {
   const host = `127.0.0.1:${(listener.address() as AddressInfo).port}`
   return {
     config: {
-      mcpServers: {
-        north_star: { type: "http", url: `http://${host}${path}` },
-      },
+      mcpServers: Object.fromEntries(
+        [...groups.keys()].map((server) => [
+          server,
+          { type: "http", url: `http://${host}${path}/${server}` },
+        ])
+      ),
     },
     async close() {
       const closed = new Promise<void>((resolve) =>

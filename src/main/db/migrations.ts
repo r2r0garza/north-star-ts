@@ -52,6 +52,7 @@ import {
   SCHEMA_V51_CONTEXT_SCOPES,
   SCHEMA_V52_MERGE_QUEUE,
   SCHEMA_V53_NAVIGATOR,
+  SCHEMA_V65,
   SCHEMA_V49_TABLES,
 } from "./schema"
 import { renameWorkTerms } from "./work-terms-migration"
@@ -135,6 +136,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureHealth,
   ensurePlaybookHookOwnership,
   ensureWorkspaceAnalyses,
+  ensureSubscriptionProviderConstraints,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -525,19 +527,21 @@ function ensureProjectPositionColumn(db: Database.Database): void {
   )
 }
 
-function ensureCodexSubscriptionProviderConstraints(
-  db: Database.Database
-): void {
+function ensureSubscriptionProviderConstraints(db: Database.Database): void {
   const row = db
     .prepare(
       "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'provider_accounts'"
     )
     .get() as { sql?: string } | undefined
   const sql = row?.sql ?? ""
-  if (sql.includes("codex_subscription") && sql.includes("codex_responses")) {
+  if (
+    sql.includes("codex_subscription") &&
+    sql.includes("codex_responses") &&
+    sql.includes("claude_subscription")
+  ) {
     return
   }
-  db.exec(SCHEMA_V43)
+  db.exec(SCHEMA_V65)
 }
 
 // Apply every migration newer than the database's current user_version, each in
@@ -597,7 +601,7 @@ export function runMigrations(
       ensureMissionIntegration(db)
       ensureNavigator(db)
       healAndRenameWorkTerms(db)
-      ensureCodexSubscriptionProviderConstraints(db)
+      ensureSubscriptionProviderConstraints(db)
       ensureProjectPositionColumn(db)
       ensureSubagentArtifactsTable(db)
       ensureWorkingDirectoryColumns(db)

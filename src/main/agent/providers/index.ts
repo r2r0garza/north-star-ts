@@ -1,3 +1,5 @@
+import { app } from "electron"
+import { buildClaudeSubscriptionClient } from "./claude-subscription/client"
 import { Portkey } from "portkey-ai"
 import OpenAI from "openai"
 import * as providerAccountsRepo from "../../db/repositories/provider-accounts"
@@ -44,6 +46,7 @@ export class NoActiveProviderError extends Error {
 // abort signal via extraArgs) are unchanged; the OpenAI-backed wrapper maps those
 // positional args onto the OpenAI SDK's own create(body, opts) shape internally.
 export interface LlmClient {
+  compatibilityProbes?: false
   chat: {
     completions: {
       create: (body: Record<string, unknown>, ...rest: unknown[]) => unknown
@@ -78,7 +81,8 @@ export interface LlmSelection {
 const clientCache = new Map<string, LlmClient>()
 
 // Drop all cached clients so the next resolve rebuilds. Called on any change to
-// the default selection or an account's credentials.
+// the default selection or an account's credentials. Active subscription requests
+// own their resources independently and are not canceled by cache invalidation.
 export function invalidate(): void {
   clientCache.clear()
 }
@@ -135,6 +139,13 @@ function wrapOpenAI(client: OpenAI): LlmClient {
 function buildClient(account: ProviderAccount): LlmClient {
   const cached = clientCache.get(account.id)
   if (cached) return cached
+  if (account.provider === "claude_subscription") {
+    const client = buildClaudeSubscriptionClient({
+      appData: app.getPath("userData"),
+    })
+    clientCache.set(account.id, client)
+    return client
+  }
   if (
     account.provider !== "portkey" &&
     account.provider !== "openai_compatible" &&
@@ -142,7 +153,7 @@ function buildClient(account: ProviderAccount): LlmClient {
     account.provider !== "codex_subscription"
   ) {
     throw new NoActiveProviderError(
-      `Provider "${account.provider}" is not wired yet. Pick a Portkey, OpenAI, OpenAI-compatible, or experimental Codex subscription account.`
+      `Provider "${account.provider}" is not wired yet. Pick a Portkey, OpenAI, OpenAI-compatible, or experimental subscription account.`
     )
   }
   const apiKey = getApiKey(account.id)
@@ -293,7 +304,8 @@ export function hasActiveProvider(): boolean {
       if (!account || !account.enabled) return false
       if (
         account.provider === "claude_code" ||
-        account.provider === "codex_cli"
+        account.provider === "codex_cli" ||
+        account.provider === "claude_subscription"
       ) {
         const models = modelsRepo.listModels(account.id)
         return modelId
@@ -417,6 +429,13 @@ function classifyLink(e: {
   name?: unknown
   message?: unknown
 }): "transient" | "deterministic" | "unknown" {
+  if (
+    typeof e.code === "string" &&
+    e.code.startsWith("claude_subscription_") &&
+    e.code !== "claude_subscription_upstream"
+  )
+    return "deterministic"
+
   // HTTP status present → authoritative. 408 (timeout), 429 (rate limit), and 5xx
   // (gateway/server) are transient; any other 4xx is deterministic.
   if (typeof e.status === "number") {
@@ -504,6 +523,8 @@ export async function createCompletion(
       withTokenParam(base, model, maxOutputTokens, param),
       ...extraArgs
     )
+
+  if (client.compatibilityProbes === false) return tryParam("max_tokens")
 
   const known = tokenParamByModel.get(model)
   if (known) return tryParam(known)

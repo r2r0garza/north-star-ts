@@ -39,6 +39,36 @@ beforeEach(() => {
 })
 
 describe.skipIf(!sqliteLoads)("process import/export", () => {
+  it("round-trips a keyless Claude subscription runtime override", () => {
+    db.prepare(
+      `INSERT INTO provider_accounts (id, provider, display_name, created_at)
+      VALUES ('claude-sub', 'claude_subscription', 'Personal Claude', 0)`
+    ).run()
+    const definition = createProcessDefinition({ name: "Subscription process" })
+    createPhase({
+      processId: definition.id,
+      key: "work",
+      name: "Work",
+      position: 0,
+      runtimeConfig: {
+        worker: {
+          accountId: "claude-sub",
+          provider: "claude_subscription",
+          modelId: "sonnet",
+        },
+      },
+    })
+    const exported = buildProcessExport(getProcessGraph(definition.id)!)
+    expect(exported.phases[0].runtimeConfig?.worker).toMatchObject({
+      provider: "claude_subscription",
+      modelId: "sonnet",
+    })
+    const imported = importProcessExport(exported)
+    expect(
+      getProcessGraph(imported.processId)!.phases[0].runtimeConfig?.worker
+    ).toMatchObject({ accountId: "claude-sub", modelId: "sonnet" })
+  })
+
   it("exports id-free JSON with edges keyed by phase key", () => {
     const graph = seedGraph()
     const exported = buildProcessExport(graph)
@@ -522,7 +552,9 @@ describe.skipIf(!sqliteLoads)("seat roles and proof steps (format v2)", () => {
   it("reads the pre-v51 contextMode values from older exports", () => {
     const def = createProcessDefinition({ name: "Legacy scopes" })
     createPhase({ processId: def.id, key: "lead", name: "Lead", position: 0 })
-    const exported = buildProcessExport(getProcessGraph(def.id)!) as unknown as {
+    const exported = buildProcessExport(
+      getProcessGraph(def.id)!
+    ) as unknown as {
       phases: Array<Record<string, unknown>>
     }
     delete exported.phases[0].contextScope
@@ -567,6 +599,9 @@ describe.skipIf(!sqliteLoads)("seat roles and proof steps (format v2)", () => {
     const graph = getProcessGraph(imported.processId)!
     expect(graph.phases[0].proofStep).toBe(false)
     expect(graph.phases[0].contextScope).toBe("step")
-    expect(graph.agents[0]).toMatchObject({ agentName: "coder", seatRole: null })
+    expect(graph.agents[0]).toMatchObject({
+      agentName: "coder",
+      seatRole: null,
+    })
   })
 })

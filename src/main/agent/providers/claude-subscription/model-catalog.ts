@@ -1,3 +1,4 @@
+import type { ClaudeSubscriptionCatalog } from "../../../../shared/claude-subscription"
 import { spawn } from "child_process"
 import { randomUUID } from "crypto"
 import { hostCliEnv } from "../../env/host-cli-env"
@@ -16,8 +17,13 @@ export function parseModelCatalog(value: unknown): Array<{ id: string }> {
   if (!Array.isArray(value) || !value.length || value.length > 256) protocol()
   const ids = new Set<string>()
   for (const model of value) {
-    // 2.1.295 advertises fable, but request routing for that alias is unqualified.
-    if (object(model) && (model.value === "default" || model.value === "fable"))
+    // Fable and its advertised long-context route are not qualified for routing.
+    if (
+      object(model) &&
+      (model.value === "default" ||
+        model.value === "fable" ||
+        model.value === "claude-fable-5-1[1m]")
+    )
       continue
     if (
       !object(model) ||
@@ -192,5 +198,40 @@ export async function discoverClaudeModels(
     await gate?.close()
     if (processResult) await processResult
     await files?.close()
+  }
+}
+
+// This explicit route passed installed-CLI synthetic routing qualification, not
+// live entitlement checks. It deliberately makes no long-context claim.
+export const CLAUDE_SUBSCRIPTION_FALLBACK_MODELS = [{ id: "claude-sonnet-4-6" }]
+
+export async function loadClaudeSubscriptionCatalog(
+  appData: string,
+  previous: Array<{ id: string }> = []
+): Promise<ClaudeSubscriptionCatalog> {
+  const controller = new AbortController()
+  try {
+    const catalog = await discoverClaudeModels(appData, controller)
+    return {
+      source: "discovered",
+      models: catalog.data,
+      hint: "CLI catalog refreshed without generation. Visibility does not establish model entitlement.",
+    }
+  } catch {
+    return previous.length
+      ? {
+          source: "retained",
+          models: previous,
+          hint: "CLI discovery failed. Existing and manual model entries were retained; recheck setup and retry refresh.",
+        }
+      : {
+          source: "fallback",
+          models: CLAUDE_SUBSCRIPTION_FALLBACK_MODELS.map((model) => ({
+            ...model,
+          })),
+          hint: "CLI discovery failed. Using a synthetically qualified reference route, not a verified entitlement list. Manual IDs remain available.",
+        }
+  } finally {
+    controller.abort()
   }
 }

@@ -210,7 +210,7 @@ export function compatibleVersion(
   return match![1]
 }
 
-export async function verifyCliCompatibility(
+export async function probeCliVersion(
   executable: string,
   cwd: string,
   env: NodeJS.ProcessEnv,
@@ -244,7 +244,16 @@ export async function verifyCliCompatibility(
       "Could not verify the installed Claude Code version. Recheck the official CLI installation."
     )
   }
-  const version = compatibleVersion(result.stdout.toString("utf8"))
+  return compatibleVersion(result.stdout.toString("utf8"))
+}
+
+export async function verifyCliCompatibility(
+  executable: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  signal: AbortSignal
+): Promise<string> {
+  const version = await probeCliVersion(executable, cwd, env, signal)
   await verifyPersonalSubscription(executable, cwd, env, signal)
   await guardManagedPolicy(env, signal)
   return version

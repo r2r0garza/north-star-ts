@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react"
+import { ClaudeSubscriptionSetup } from "./claude-subscription-setup"
 import { TabsContent } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -79,6 +80,11 @@ const PROVIDERS: Array<{ value: Provider; label: string; enabled: boolean }> = [
     enabled: true,
   },
   {
+    value: "claude_subscription",
+    label: "Claude Code Subscription - Experimental",
+    enabled: true,
+  },
+  {
     value: "claude_code",
     label: "Claude Code CLI - Experimental",
     enabled: true,
@@ -96,6 +102,7 @@ function requiresBaseUrl(provider: Provider): boolean {
   return (
     provider !== "openai" &&
     provider !== "codex_subscription" &&
+    provider !== "claude_subscription" &&
     !isCliProvider(provider)
   )
 }
@@ -235,7 +242,8 @@ export function ProvidersTab({ state }: { state: LlmState }) {
           <EmptyHeader>
             <EmptyTitle>No providers configured</EmptyTitle>
             <EmptyDescription>
-              Add a provider and API key to start a conversation.
+              Add a provider to start a conversation. API providers use a key;
+              subscription providers use your CLI login.
             </EmptyDescription>
           </EmptyHeader>
           <Button size="sm" onClick={() => setAdding(true)}>
@@ -515,11 +523,13 @@ function AccountCard({
               off
             </Badge>
           )}
-          {!isCliProvider(account.provider) && !account.hasKey && (
-            <Badge variant="destructive" className="shrink-0">
-              no key
-            </Badge>
-          )}
+          {!isCliProvider(account.provider) &&
+            account.provider !== "claude_subscription" &&
+            !account.hasKey && (
+              <Badge variant="destructive" className="shrink-0">
+                no key
+              </Badge>
+            )}
         </CollapsibleTrigger>
         <div className="flex shrink-0 items-center gap-2">
           <Switch
@@ -546,7 +556,12 @@ function AccountCard({
       </div>
 
       <CollapsibleContent className="flex flex-col gap-3 px-3 pb-3">
-        {isCliProvider(account.provider) ? (
+        {account.provider === "claude_subscription" ? (
+          <ClaudeSubscriptionSetup
+            accountId={account.id}
+            onModelsChanged={onChange}
+          />
+        ) : isCliProvider(account.provider) ? (
           <div className="rounded-md bg-muted px-3 py-2 text-xs">
             {cliStatus == null
               ? `Checking for ${providerLabel(account.provider)}...`
@@ -746,23 +761,44 @@ function NewAccountForm({
   const [provider, setProvider] = useState<Provider>("openai")
   const [displayName, setDisplayName] = useState("")
   const [baseUrl, setBaseUrl] = useState("")
+  const [subscriptionReady, setSubscriptionReady] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
 
   const needsBaseUrl = requiresBaseUrl(provider)
-  const canSave = !needsBaseUrl || baseUrl.trim().length > 0
+  const canSave =
+    !saving &&
+    (provider === "claude_subscription"
+      ? subscriptionReady
+      : !needsBaseUrl || baseUrl.trim().length > 0)
 
   async function save() {
     if (!canSave) return
-    const name = displayName.trim() || providerLabel(provider)
-    const account = await window.cowork.providers.create({
-      provider,
-      displayName: name,
-      baseUrl: baseUrl.trim() || null,
-      apiMode: isCodexSubscription(provider)
-        ? "codex_responses"
-        : "completions",
-    })
-    await onSaved(account.id)
-    onDone()
+    setSaving(true)
+    setSaveError(null)
+    try {
+      const name = displayName.trim() || providerLabel(provider)
+      const account = await window.cowork.providers.create({
+        provider,
+        displayName: name,
+        baseUrl:
+          provider === "claude_subscription" ? null : baseUrl.trim() || null,
+        apiMode: isCodexSubscription(provider)
+          ? "codex_responses"
+          : "completions",
+      })
+      if (account.subscriptionCatalog?.source === "fallback")
+        toast.message(account.subscriptionCatalog.hint)
+      await onSaved(account.id)
+      onDone()
+    } catch (error) {
+      setSaveError(
+        error instanceof Error ? error.message : "Could not save provider."
+      )
+      if (provider === "claude_subscription") setSubscriptionReady(false)
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
@@ -771,7 +807,11 @@ function NewAccountForm({
         <FieldLabel htmlFor="new-provider">Provider</FieldLabel>
         <Select
           value={provider}
-          onValueChange={(v) => setProvider(v as Provider)}
+          onValueChange={(v) => {
+            setProvider(v as Provider)
+            setSubscriptionReady(false)
+            setSaveError(null)
+          }}
         >
           <SelectTrigger id="new-provider">
             <SelectValue />
@@ -795,7 +835,15 @@ function NewAccountForm({
           placeholder="e.g. Work Portkey"
         />
       </Field>
-      {!isCliProvider(provider) && (
+      {provider === "claude_subscription" && (
+        <ClaudeSubscriptionSetup onChecked={setSubscriptionReady} />
+      )}
+      {saveError && (
+        <p role="alert" className="text-xs text-destructive">
+          {saveError}
+        </p>
+      )}
+      {!isCliProvider(provider) && provider !== "claude_subscription" && (
         <Field>
           <FieldLabel htmlFor="new-base">
             Base URL{needsBaseUrl ? "" : " (optional)"}
@@ -1097,13 +1145,31 @@ function AccountModelsSection({
   async function runImport() {
     setImporting(true)
     setImportError(null)
-    const res = await window.cowork.models.importFromGateway(account.id)
-    setImporting(false)
-    if (!res.ok) {
-      setImportError(res.error ?? "Import failed.")
-      return
+    try {
+      if (account.provider === "claude_subscription") {
+        const result =
+          await window.cowork.providers.refreshClaudeSubscriptionModels(
+            account.id
+          )
+        setImportError(
+          result.ok ? (result.catalog?.hint ?? null) : result.preflight.hint
+        )
+        if (result.ok) await loadModels()
+        return
+      }
+      const res = await window.cowork.models.importFromGateway(account.id)
+      if (!res.ok) {
+        setImportError(res.error ?? "Import failed.")
+        return
+      }
+      await loadModels()
+    } catch {
+      setImportError(
+        "Could not refresh models. Previous entries were retained."
+      )
+    } finally {
+      setImporting(false)
     }
-    await loadModels()
   }
 
   async function deleteAllModels() {
@@ -1286,7 +1352,13 @@ function AccountModelsSection({
                   onClick={runImport}
                   disabled={importing}
                 >
-                  {importing ? <Spinner /> : "Import from gateway"}
+                  {importing ? (
+                    <Spinner />
+                  ) : account.provider === "claude_subscription" ? (
+                    "Refresh CLI models"
+                  ) : (
+                    "Import from gateway"
+                  )}
                 </Button>
               </div>
             </div>

@@ -1,3 +1,12 @@
+import type {
+  ClaudeSubscriptionPreflight,
+  ClaudeSubscriptionRefresh,
+} from "../shared/claude-subscription"
+export type {
+  ClaudeSubscriptionPreflight,
+  ClaudeSubscriptionCatalog,
+  ClaudeSubscriptionRefresh,
+} from "../shared/claude-subscription"
 import { contextBridge, ipcRenderer, webUtils } from "electron"
 import type { IpcRendererEvent } from "electron"
 // Type-only imports — erased at build time, so better-sqlite3 is never pulled
@@ -2611,6 +2620,15 @@ const api = {
         version?: string
         error?: string
       }>,
+    preflightClaudeSubscription: () =>
+      ipcRenderer.invoke(
+        "providers:preflightClaudeSubscription"
+      ) as Promise<ClaudeSubscriptionPreflight>,
+    refreshClaudeSubscriptionModels: (id: string) =>
+      ipcRenderer.invoke(
+        "providers:refreshClaudeSubscriptionModels",
+        id
+      ) as Promise<ClaudeSubscriptionRefresh>,
     preflightCodexSubscription: (id: string) =>
       ipcRenderer.invoke(
         "providers:preflightCodexSubscription",

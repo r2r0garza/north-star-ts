@@ -29,6 +29,7 @@ import {
 } from "./agent"
 import { cancelAllQuestions } from "./agent/questions/broker"
 import { closeCliMcpBridge } from "./agent/mcp-server"
+import { shutdownClaudeSubscription } from "./agent/providers/claude-subscription/client"
 import {
   pickWorkspace,
   pickFiles,
@@ -1764,6 +1765,7 @@ app.on("before-quit", () => {
 // Stop the task runner (abort in-flight tasks; next boot's reconcile recovers
 // them) and flush the WAL + close the DB cleanly on quit.
 app.on("will-quit", () => {
+  shutdownClaudeSubscription()
   stopMemoryMaintenance()
   stopPlanMaintenance()
   void indexWatcher.stopAll()

@@ -1,5 +1,6 @@
-import { describe, it, expect } from "vitest"
-import { isTransientError } from "./index"
+import { describe, it, expect, vi } from "vitest"
+import { createCompletion, isTransientError, type LlmClient } from "./index"
+import { ClaudeSubscriptionError } from "./claude-subscription/errors"
 
 describe("isTransientError", () => {
   it("treats 408/429/5xx HTTP status as transient", () => {
@@ -93,5 +94,91 @@ describe("isTransientError", () => {
     ).toBe(false) // a real 4xx status short-circuits before the cause is consulted
     expect(isTransientError(new Error("bad request"))).toBe(false)
     expect(isTransientError({ message: "invalid argument" })).toBe(false)
+  })
+})
+
+describe("subscription attempt compatibility", () => {
+  const unsupported = () =>
+    Object.assign(
+      new Error("unsupported_parameter max_tokens; use max_completion_tokens"),
+      { status: 400 }
+    )
+  const client = (
+    create: LlmClient["chat"]["completions"]["create"],
+    probes = true
+  ): LlmClient => ({
+    ...(probes ? {} : { compatibilityProbes: false as const }),
+    chat: { completions: { create } },
+    models: { list: async () => ({ data: [] }) },
+  })
+  it("retains token-field probing for existing providers", async () => {
+    const create = vi
+      .fn()
+      .mockRejectedValueOnce(unsupported())
+      .mockResolvedValue("ok")
+    await expect(
+      createCompletion(client(create), "probe-regression", 10, {})
+    ).resolves.toBe("ok")
+    expect(create).toHaveBeenCalledTimes(2)
+    expect(create.mock.calls[1][0]).toMatchObject({ max_completion_tokens: 10 })
+  })
+  it("ignores another provider's learned token field and never probes", async () => {
+    const gateway = vi
+      .fn()
+      .mockRejectedValueOnce(unsupported())
+      .mockResolvedValue("ok")
+    await createCompletion(client(gateway), "shared-route", 10, {})
+    const failure = unsupported()
+    const create = vi.fn().mockRejectedValue(failure)
+    await expect(
+      createCompletion(client(create, false), "shared-route", 10, {})
+    ).rejects.toBe(failure)
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(create.mock.calls[0][0]).toEqual({
+      model: "shared-route",
+      max_tokens: 10,
+    })
+  })
+  it.each(["cli_missing", "cli_incompatible", "environment"])(
+    "keeps %s deterministic even with a 503 status",
+    (suffix) => {
+      expect(
+        isTransientError(
+          new ClaudeSubscriptionError(
+            `claude_subscription_${suffix}`,
+            "Setup failed",
+            503
+          )
+        )
+      ).toBe(false)
+    }
+  )
+  it("preserves genuine upstream status and Retry-After", () => {
+    const error = new ClaudeSubscriptionError(
+      "claude_subscription_upstream",
+      "Rate limited",
+      429,
+      { "retry-after": "4" }
+    )
+    expect(isTransientError(error)).toBe(true)
+    expect(error.headers).toEqual({ "retry-after": "4" })
+    expect(
+      isTransientError(
+        new ClaudeSubscriptionError(
+          "claude_subscription_upstream",
+          "Unavailable",
+          503
+        )
+      )
+    ).toBe(true)
+    expect(
+      isTransientError(
+        new ClaudeSubscriptionError(
+          "claude_subscription_upstream",
+          "Invalid",
+          400
+        )
+      )
+    ).toBe(false)
   })
 })

@@ -25,6 +25,29 @@ beforeEach(() => {
 })
 
 describe.skipIf(!sqliteLoads)("rig import/export", () => {
+  it("round-trips a keyless Claude subscription seat runtime", () => {
+    db.prepare(
+      `INSERT INTO provider_accounts (id, provider, display_name, created_at)
+      VALUES ('claude-sub', 'claude_subscription', 'Personal Claude', 0)`
+    ).run()
+    const rig = createRig({ name: "Subscription rig" })
+    const pod = createPod({ rigId: rig.id, key: "build", name: "Build" })
+    createSeat({
+      podId: pod.id,
+      key: "builder",
+      role: "builder",
+      runtimeConfig: { worker: { accountId: "claude-sub", modelId: "sonnet" } },
+    })
+    const exported = buildRigExport(getRigGraph(rig.id)!)
+    expect(exported.seats[0].runtimeConfig?.worker?.provider).toBe(
+      "claude_subscription"
+    )
+    const imported = importRigExport(exported)
+    expect(
+      getRigGraph(imported.rigId)!.seats[0].runtimeConfig?.worker
+    ).toMatchObject({ accountId: "claude-sub", modelId: "sonnet" })
+  })
+
   it("round-trips topology with fresh ids and no local account ids", () => {
     db.prepare(
       `INSERT INTO provider_accounts
@@ -32,19 +55,32 @@ describe.skipIf(!sqliteLoads)("rig import/export", () => {
        VALUES ('local-account', 'openai', 'OpenAI', NULL, NULL, 'responses', 1, 0, 0, NULL)`
     ).run()
     const rig = createRig({ name: "Orchestrated", cultureMd: "Stay aligned." })
-    const leadPod = createPod({ rigId: rig.id, key: "orchestration", name: "Orchestration" })
-    const buildPod = createPod({ rigId: rig.id, key: "implementation", name: "Implementation" })
+    const leadPod = createPod({
+      rigId: rig.id,
+      key: "orchestration",
+      name: "Orchestration",
+    })
+    const buildPod = createPod({
+      rigId: rig.id,
+      key: "implementation",
+      name: "Implementation",
+    })
     const lead = createSeat({ podId: leadPod.id, key: "lead", role: "lead" })
     createSeat({
       podId: buildPod.id,
       key: "builder",
       role: "builder",
-      agentRefId: 'agentref:v1:{"sourceKind":"github","scope":"workspace","definitionPath":"/private/path","nativeName":"builder"}',
+      agentRefId:
+        'agentref:v1:{"sourceKind":"github","scope":"workspace","definitionPath":"/private/path","nativeName":"builder"}',
       agentLabel: "GitHub: builder",
-      runtimeConfig: { worker: { accountId: "local-account", modelId: "gpt-5" } },
+      runtimeConfig: {
+        worker: { accountId: "local-account", modelId: "gpt-5" },
+      },
     })
     updatePod(leadPod.id, { leadSeatId: lead.id })
-    setOversight(rig.id, [{ overseerPodId: leadPod.id, overseenPodId: buildPod.id }])
+    setOversight(rig.id, [
+      { overseerPodId: leadPod.id, overseenPodId: buildPod.id },
+    ])
 
     const exported = buildRigExport(getRigGraph(rig.id)!)
     expect(JSON.stringify(exported)).not.toContain("local-account")
@@ -54,9 +90,14 @@ describe.skipIf(!sqliteLoads)("rig import/export", () => {
     const imported = importRigExport(exported)
     const copy = getRigGraph(imported.rigId)!
     expect(copy.rig.id).not.toBe(rig.id)
-    expect(copy.pods.map((pod) => pod.key)).toEqual(["orchestration", "implementation"])
+    expect(copy.pods.map((pod) => pod.key)).toEqual([
+      "orchestration",
+      "implementation",
+    ])
     expect(copy.oversight).toHaveLength(1)
     expect(copy.seats[1].runtimeConfig?.worker?.accountId).toBe("local-account")
-    expect(imported.warnings).toContain("builder@implementation references an unavailable agent.")
+    expect(imported.warnings).toContain(
+      "builder@implementation references an unavailable agent."
+    )
   })
 })

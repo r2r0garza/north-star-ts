@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createServer } from "http"
 import type { AddressInfo } from "net"
-import { mkdtemp, readdir, rm } from "fs/promises"
+import { mkdtemp, readdir, readFile, rm } from "fs/promises"
 import { tmpdir } from "os"
 import { join, resolve } from "path"
 
@@ -11,6 +11,7 @@ const state = vi.hoisted(() => ({
   version: "",
   spawns: 0,
   relay: undefined as any,
+  settings: undefined as any,
 }))
 vi.mock("child_process", async (original) => {
   const actual = await original<typeof import("child_process")>()
@@ -34,6 +35,10 @@ vi.mock("child_process", async (original) => {
           options
         )
       state.spawns++
+      state.settings = readFile(
+        _args[_args.indexOf("--settings") + 1],
+        "utf8"
+      ).then(JSON.parse)
       return actual.spawn(
         process.execPath,
         [
@@ -77,7 +82,10 @@ import {
   buildClaudeSubscriptionClient,
   shutdownClaudeSubscription,
 } from "./client"
-import { parseModelCatalog } from "./model-catalog"
+import {
+  loadClaudeSubscriptionCatalog,
+  parseModelCatalog,
+} from "./model-catalog"
 import * as managedPolicy from "./managed-policy"
 import { verifyPersonalSubscription } from "./auth-policy"
 import { ClaudeSubscriptionError } from "./errors"
@@ -135,7 +143,7 @@ beforeEach(async () => {
           ? {
               type: "tool_use",
               id: "call",
-              name: "mcp__north_star__read_file",
+              name: "mcp__ns__read_file",
               input: {},
             }
           : { type: "text", text: "hello" },
@@ -148,6 +156,20 @@ beforeEach(async () => {
       },
       { type: "message_stop" },
     ]
+    if (state.mode === "boundary-split-text") {
+      events[1].index = 1
+      events[2].index = 1
+      events.splice(
+        1,
+        0,
+        {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "hello" },
+        } as any,
+        { type: "content_block_stop", index: 0 } as any
+      )
+    }
     res.writeHead(200, { "content-type": "text/event-stream" })
     res.end(
       events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")
@@ -167,6 +189,28 @@ const clean = async () =>
   expect(
     (await readdir(join(root, "claude-subscription-transport"))).sort()
   ).toEqual(["cwd"])
+
+describe("split native assistant blocks", () => {
+  it("retains text when a subsequent tool-only assistant event has no text", async () => {
+    state.mode = "boundary-split-text"
+    await expect(
+      buildClaudeSubscriptionClient({ appData: root }).chat.completions.create(
+        body
+      )
+    ).resolves.toMatchObject({
+      choices: [
+        {
+          message: {
+            content: "hello",
+            tool_calls: [{ function: { name: "read_file" } }],
+          },
+        },
+      ],
+    })
+    expect(count).toBe(1)
+    await clean()
+  })
+})
 
 describe("repeated replay initialization", () => {
   it("accepts matching isolation inventories across historical frames", async () => {
@@ -191,6 +235,77 @@ describe("repeated replay initialization", () => {
       code: "claude_subscription_protocol",
     })
     expect(count).toBe(0)
+    await clean()
+  })
+})
+
+describe("context and auxiliary admission", () => {
+  it.each([256, 700, 1024, 2048])(
+    "keeps thinking configuration scoped to output cap %s",
+    async (max_tokens) => {
+      state.mode = "no-tools"
+      await buildClaudeSubscriptionClient({
+        appData: root,
+      }).chat.completions.create({
+        ...body,
+        max_tokens,
+        tools: [],
+      })
+      const settings = await state.settings
+      expect(settings.env.MAX_THINKING_TOKENS).toBe(
+        max_tokens < 1024 ? "0" : undefined
+      )
+      expect(JSON.parse(settings.env.CLAUDE_CODE_EXTRA_BODY).max_tokens).toBe(
+        max_tokens
+      )
+      expect(count).toBe(1)
+      await clean()
+    }
+  )
+  it("rejects oversized canonical history before subprocess or upstream startup", () => {
+    const client = buildClaudeSubscriptionClient({ appData: root })
+    expect(() =>
+      client.chat.completions.create({
+        ...body,
+        messages: [{ role: "user", content: "x".repeat(200000) }],
+      })
+    ).toThrowError(
+      expect.objectContaining({ code: "claude_subscription_context_overflow" })
+    )
+    expect(state.spawns).toBe(0)
+    expect(count).toBe(0)
+  })
+
+  it("accepts default nonstream auxiliary shapes on conservative aliases", async () => {
+    state.mode = "no-tools"
+    const client = buildClaudeSubscriptionClient({ appData: root })
+    await expect(
+      client.chat.completions.create({
+        model: "haiku",
+        max_tokens: 256,
+        messages: [
+          { role: "system", content: "Generate a title or digest." },
+          { role: "user", content: "canonical source" },
+        ],
+      })
+    ).resolves.toMatchObject({ choices: [{ message: { content: "hello" } }] })
+    expect(count).toBe(1)
+    await clean()
+  })
+
+  it("cancels nonstream auxiliary work with its caller signal", async () => {
+    state.mode = "stall"
+    const controller = new AbortController()
+    const client = buildClaudeSubscriptionClient({ appData: root })
+    const pending = client.chat.completions.create(body, undefined, {
+      signal: controller.signal,
+    })
+    const rejected = expect(pending).rejects.toMatchObject({
+      name: "AbortError",
+    })
+    await vi.waitFor(() => expect(count).toBe(1))
+    controller.abort()
+    await rejected
     await clean()
   })
 })
@@ -281,6 +396,35 @@ describe("compatibility preflight", () => {
 })
 
 describe("model discovery", () => {
+  it("returns explicit fallback status without generation on an unsupported handshake", async () => {
+    state.mode = "discovery-error"
+    const catalog = await loadClaudeSubscriptionCatalog(root)
+    expect(catalog.source).toBe("fallback")
+    expect(catalog.models).toEqual([{ id: "claude-sonnet-4-6" }])
+    expect(count).toBe(0)
+    await clean()
+  })
+  it("retains previous and manual entries when discovery fails", async () => {
+    state.mode = "discovery-wrong-id"
+    const previous = [{ id: "claude-custom-route" }]
+    expect(await loadClaudeSubscriptionCatalog(root, previous)).toMatchObject({
+      source: "retained",
+      models: previous,
+    })
+    expect(count).toBe(0)
+    await clean()
+  })
+  it("excludes the logged-in Fable long-context catalog entry without enabling it", () => {
+    expect(
+      parseModelCatalog([
+        { value: "default" },
+        { value: "opus" },
+        { value: "claude-fable-5-1[1m]" },
+        { value: "sonnet" },
+        { value: "haiku" },
+      ])
+    ).toEqual([{ id: "opus" }, { id: "sonnet" }, { id: "haiku" }])
+  })
   it("excludes the unqualified fable alias without discarding supported routes", () => {
     expect(
       parseModelCatalog([
@@ -483,6 +627,50 @@ describe("request-scoped subprocess lifecycle", () => {
     const pending = stream.next()
     expect(await stream.return()).toMatchObject({ done: true })
     expect(await pending).toMatchObject({ done: true })
+    await vi.waitFor(clean)
+  })
+  it("Stop cancels only its admitted stream on a shared client", async () => {
+    state.mode = "stall"
+    const client = buildClaudeSubscriptionClient({ appData: root })
+    const controller = new AbortController()
+    const first: any = await client.chat.completions.create(
+      { ...body, stream: true },
+      undefined,
+      { signal: controller.signal }
+    )
+    const second: any = await client.chat.completions.create({
+      ...body,
+      stream: true,
+    })
+    await Promise.all([first.next(), second.next()])
+    expect(count).toBe(2)
+    const stopped = expect(first.next()).rejects.toMatchObject({
+      name: "AbortError",
+    })
+    controller.abort()
+    await stopped
+    // The other stream is still live until its own owner ends it.
+    const pending = second.next()
+    expect(await second.return()).toMatchObject({ done: true })
+    expect(await pending).toMatchObject({ done: true })
+    await vi.waitFor(clean)
+  })
+  it("shutdown cancels all active generation owners and cleans their resources", async () => {
+    state.mode = "stall"
+    const streams: any[] = await Promise.all(
+      [0, 1].map(() =>
+        buildClaudeSubscriptionClient({
+          appData: root,
+        }).chat.completions.create({ ...body, stream: true })
+      )
+    )
+    await Promise.all(streams.map((stream) => stream.next()))
+    expect(count).toBe(2)
+    const stopped = streams.map((stream) =>
+      expect(stream.next()).rejects.toMatchObject({ name: "AbortError" })
+    )
+    shutdownClaudeSubscription()
+    await Promise.all(stopped)
     await vi.waitFor(clean)
   })
   it("positional abort is independent across concurrent cached-client requests", async () => {
