@@ -356,7 +356,14 @@ describe.skipIf(!sqliteLoads)(
       expect(captured).toHaveLength(1)
       expect(fixture.models).toEqual(["haiku"])
       expect(captured[0].max_tokens).toBe(256)
-      expect(captured[0].output_config?.effort).toBeUndefined()
+      if (process.env.NS_QUALIFY_HOST_LOOP_INSTALLED === "1") {
+        // Native alias targets may add a default effort; the host omits it.
+        expect([undefined, "medium"]).toContain(
+          captured[0].output_config?.effort
+        )
+      } else {
+        expect(captured[0].output_config?.effort).toBeUndefined()
+      }
       expect(captured[0].tools ?? []).toEqual([])
       await clean()
     }, 60000)

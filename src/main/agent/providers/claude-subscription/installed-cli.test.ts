@@ -469,7 +469,8 @@ describe.skipIf(!enabled)(
         })
         expect(result.choices[0].message.content).toBe("synthetic response")
         expect(capturedBody.max_tokens).toBe(256)
-        expect(capturedBody.thinking).toEqual({ type: "disabled" })
+        // Newer native alias targets omit thinking instead of sending disabled.
+        expect(capturedBody.thinking?.type ?? "disabled").toBe("disabled")
         expect(requests).toBe(1)
         await clean()
       },
@@ -519,7 +520,7 @@ describe.skipIf(!enabled)(
         stream: false,
         tools: [],
       })
-      expect(capturedBody.thinking).toEqual({ type: "adaptive" })
+      expect(capturedBody.thinking).toMatchObject({ type: "adaptive" })
       expect(requests).toBe(1)
       await clean()
     }, 60000)
