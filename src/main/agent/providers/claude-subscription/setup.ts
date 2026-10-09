@@ -12,7 +12,8 @@ import {
   rm,
   writeFile,
 } from "fs/promises"
-import { delimiter, join, resolve } from "path"
+import { delimiter, join, resolve, relative, isAbsolute } from "path"
+import { windowsPrivatePath } from "./windows-state"
 import { ClaudeSubscriptionError } from "./errors"
 import { guardProxyEnvironment } from "./admission"
 import { guardManagedPolicy } from "./managed-policy"
@@ -70,8 +71,12 @@ export function guardEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 export async function resolveExecutable(
   env: NodeJS.ProcessEnv
 ): Promise<string> {
-  for (const dir of (env.PATH ?? "").split(delimiter).filter(Boolean)) {
-    if (!dir.startsWith("/") && process.platform !== "win32") continue
+  for (const dir of (
+    Object.entries(env).find(([key]) => key.toUpperCase() === "PATH")?.[1] ?? ""
+  )
+    .split(delimiter)
+    .filter(Boolean)) {
+    if (!isAbsolute(dir)) continue
     for (const name of process.platform === "win32"
       ? ["claude.exe", "claude.cmd"]
       : ["claude"]) {
@@ -96,12 +101,17 @@ export async function resolveExecutable(
   )
 }
 
-export async function privateDirectories(appData: string) {
+export async function privateDirectories(
+  appData: string,
+  signal = new AbortController().signal
+) {
   const parent = await realpath(appData)
   const root = join(parent, "claude-subscription-transport")
-  await mkdir(root, { mode: 0o700 }).catch((error) => {
-    if (error.code !== "EEXIST") throw error
-  })
+  if (process.platform === "win32") await windowsPrivatePath(root, true, signal)
+  else
+    await mkdir(root, { mode: 0o700 }).catch((error) => {
+      if (error.code !== "EEXIST") throw error
+    })
   const verify = async (path: string) => {
     const stat = await lstat(path)
     if (
@@ -122,23 +132,48 @@ export async function privateDirectories(appData: string) {
     if (error.code !== "EEXIST") throw error
   })
   await verify(cwd)
+  if (process.platform === "win32") await windowsPrivatePath(cwd, false, signal)
   if ((await readdir(cwd)).length)
     throw new ClaudeSubscriptionError(
       "claude_subscription_private_state",
       "Subscription transport working directory must be empty."
     )
   const directory = await mkdtemp(join(root, "request-"))
+  if (process.platform === "win32") {
+    try {
+      await windowsPrivatePath(directory, false, signal)
+    } catch (error) {
+      await rm(directory, { recursive: true, force: true })
+      throw error
+    }
+  }
   return {
     cwd,
     directory,
     async file(name: string, value: string) {
       const path = resolve(directory, name)
-      if (!path.startsWith(directory + "/") && process.platform !== "win32")
+      const confined = relative(directory, path)
+      if (
+        !confined ||
+        confined === ".." ||
+        confined.startsWith("..\\") ||
+        confined.startsWith("../") ||
+        isAbsolute(confined) ||
+        name.includes(":")
+      )
         throw new Error("Invalid private file")
       await writeFile(path, value, { mode: 0o600, flag: "wx" })
+      if (process.platform === "win32")
+        await windowsPrivatePath(path, false, signal)
       return path
     },
-    close: () => rm(directory, { recursive: true, force: true }),
+    close: () =>
+      rm(directory, {
+        recursive: true,
+        force: true,
+        maxRetries: process.platform === "win32" ? 10 : 0,
+        retryDelay: 100,
+      }),
   }
 }
 
@@ -179,7 +214,8 @@ export async function verifyCliCompatibility(
   executable: string,
   cwd: string,
   env: NodeJS.ProcessEnv,
-  signal: AbortSignal
+  signal: AbortSignal,
+  qualificationPlatform = process.platform
 ): Promise<string> {
   if (signal.aborted) throw aborted()
   await guardManagedPolicy(env, signal)
@@ -209,7 +245,10 @@ export async function verifyCliCompatibility(
       "Could not verify the installed Claude Code version. Recheck the official CLI installation."
     )
   }
-  const version = compatibleVersion(result.stdout.toString("utf8"))
+  const version = compatibleVersion(
+    result.stdout.toString("utf8"),
+    qualificationPlatform
+  )
   await verifyPersonalSubscription(executable, cwd, env, signal)
   await guardManagedPolicy(env, signal)
   return version

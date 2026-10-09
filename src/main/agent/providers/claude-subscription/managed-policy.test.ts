@@ -21,7 +21,8 @@ const sources = [
   "/Library/Managed Preferences/fixture-user/com.anthropic.claudecode.plist",
   "/fixture-home/.claude/remote-settings.json",
 ]
-const guard = () => guardManagedPolicy({}, new AbortController().signal)
+const guard = () =>
+  guardManagedPolicy({}, new AbortController().signal, "darwin")
 const unmanaged = {
   exitCode: 0,
   stdout: Buffer.from("Enrolled via DEP: No\nMDM enrollment: No\n"),
@@ -69,7 +70,8 @@ describe("managed-policy preflight", () => {
   it("uses the child config directory without opening remote policy", async () => {
     await guardManagedPolicy(
       { CLAUDE_CONFIG_DIR: "/synthetic-config" },
-      new AbortController().signal
+      new AbortController().signal,
+      "darwin"
     )
     expect(lstat).toHaveBeenCalledWith("/synthetic-config/remote-settings.json")
   })
@@ -77,7 +79,7 @@ describe("managed-policy preflight", () => {
     const controller = new AbortController()
     controller.abort()
     await expect(
-      guardManagedPolicy({}, controller.signal)
+      guardManagedPolicy({}, controller.signal, "darwin")
     ).rejects.toMatchObject({ name: "AbortError" })
     expect(lstat).not.toHaveBeenCalled()
     expect(spawn).not.toHaveBeenCalled()

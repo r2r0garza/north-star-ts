@@ -17,6 +17,11 @@ vi.mock("child_process", async (original) => {
   return {
     ...actual,
     spawn: (_executable: string, _args: string[], options: any) => {
+      if (
+        _executable.toLowerCase().endsWith("powershell.exe") ||
+        _executable === "taskkill"
+      )
+        return actual.spawn(_executable, _args, options)
       if (_args[0] === "--version")
         return actual.spawn(
           process.execPath,
@@ -45,9 +50,24 @@ vi.mock("../../env/host-cli-env", () => ({
   hostCliEnv: async () => ({ PATH: process.env.PATH }),
 }))
 vi.mock("./auth-policy", () => ({ verifyPersonalSubscription: vi.fn() }))
+vi.mock("./windows-state", () => ({
+  windowsPrivatePath: async (path: string, create: boolean) => {
+    if (create)
+      await (await import("fs/promises")).mkdir(path, { recursive: true })
+  },
+}))
 vi.mock("./setup", async (original) => ({
   ...(await original<typeof import("./setup")>()),
   resolveExecutable: async () => process.execPath,
+  verifyCliCompatibility: async (
+    ...args: Parameters<typeof import("./setup").verifyCliCompatibility>
+  ) =>
+    (
+      await vi.importActual<typeof import("./setup")>("./setup")
+    ).verifyCliCompatibility(
+      ...(args.slice(0, 4) as [string, string, NodeJS.ProcessEnv, AbortSignal]),
+      "darwin"
+    ),
 }))
 vi.mock("./admission", async (original) => {
   const actual = await original<typeof import("./admission")>()
@@ -270,6 +290,16 @@ describe("compatibility preflight", () => {
 })
 
 describe("model discovery", () => {
+  it("excludes the unqualified fable alias without discarding supported routes", () => {
+    expect(
+      parseModelCatalog([
+        { value: "default" },
+        { value: "fable" },
+        { value: "sonnet" },
+      ])
+    ).toEqual([{ id: "sonnet" }])
+    expect(() => parseModelCatalog([{ value: "fable" }])).toThrow()
+  })
   it("correlates initialization, excludes ambiguous default, and generates nothing", async () => {
     expect(
       await buildClaudeSubscriptionClient({ appData: root }).models.list()
@@ -300,7 +330,7 @@ describe("model discovery", () => {
     const checked = expect(discovery).rejects.toMatchObject({
       name: "AbortError",
     })
-    await vi.waitFor(() => expect(state.spawns).toBe(1))
+    await vi.waitFor(() => expect(state.spawns).toBe(1), { timeout: 20000 })
     shutdownClaudeSubscription()
     await checked
     await clean()

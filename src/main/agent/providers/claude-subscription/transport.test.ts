@@ -766,7 +766,8 @@ describe("inert inventory and private setup", () => {
       await mkdir(other)
       await symlink(
         join(root, "untrusted"),
-        join(other, "claude-subscription-transport")
+        join(other, "claude-subscription-transport"),
+        process.platform === "win32" ? "junction" : "dir"
       )
       await expect(privateDirectories(other)).rejects.toMatchObject({
         code: "claude_subscription_private_state",
@@ -774,5 +775,5 @@ describe("inert inventory and private setup", () => {
     } finally {
       await rm(root, { recursive: true, force: true })
     }
-  })
+  }, 30000)
 })

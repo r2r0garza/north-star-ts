@@ -123,6 +123,14 @@ function captureChildProcess<T extends ExecResult | CapturedProcessResult>(
               // child already dead — nothing to do
             }
           }
+          const deadline = setTimeout(() => {
+            try {
+              killer.kill("SIGKILL")
+            } catch {}
+            fallback()
+          }, 5000)
+          killer.once("close", () => clearTimeout(deadline))
+          killer.once("error", () => clearTimeout(deadline))
           killer.on("error", fallback)
           killer.on("close", (code) => {
             if (code !== 0) fallback()

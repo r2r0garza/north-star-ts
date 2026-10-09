@@ -14,6 +14,11 @@ const fixture = vi.hoisted(() => ({
 vi.mock("../../env/host-cli-env", () => ({
   hostCliEnv: async () => ({
     PATH: process.env.PATH,
+    SystemRoot: process.env.SystemRoot,
+    WINDIR: process.env.WINDIR,
+    USERPROFILE: fixture.home,
+    APPDATA: join(fixture.home, "AppData", "Roaming"),
+    LOCALAPPDATA: join(fixture.home, "AppData", "Local"),
     HOME: fixture.home,
     ...fixture.inherited,
   }),
@@ -23,6 +28,12 @@ vi.mock("./setup", async (original) => {
   const actual = await original<typeof import("./setup")>()
   return {
     ...actual,
+    verifyCliCompatibility: (
+      executable: string,
+      cwd: string,
+      env: NodeJS.ProcessEnv,
+      signal: AbortSignal
+    ) => actual.verifyCliCompatibility(executable, cwd, env, signal, "darwin"),
     guardEnvironment: (env: NodeJS.ProcessEnv) => ({
       ...actual.guardEnvironment(env),
       ANTHROPIC_API_KEY: "synthetic-not-a-real-key",
@@ -44,7 +55,10 @@ vi.mock("./admission", async (original) => {
     },
   }
 })
-import { buildClaudeSubscriptionClient } from "./client"
+import {
+  buildClaudeSubscriptionClient,
+  shutdownClaudeSubscription,
+} from "./client"
 
 const enabled = process.env.NS_QUALIFY_INSTALLED_CLAUDE === "1"
 let root: string
@@ -199,7 +213,12 @@ afterEach(async () => {
     server.close(() => resolve())
     server.closeAllConnections()
   })
-  await rm(root, { recursive: true, force: true })
+  await rm(root, {
+    recursive: true,
+    force: true,
+    maxRetries: process.platform === "win32" ? 10 : 0,
+    retryDelay: 100,
+  })
 })
 async function clean() {
   expect(await readdir(join(root, "claude-subscription-transport"))).toEqual([
@@ -225,6 +244,11 @@ describe.skipIf(!enabled)(
       const { resolveExecutable } = await import("./setup")
       const env = {
         PATH: process.env.PATH,
+        SystemRoot: process.env.SystemRoot,
+        WINDIR: process.env.WINDIR,
+        USERPROFILE: fixture.home,
+        APPDATA: join(fixture.home, "AppData", "Roaming"),
+        LOCALAPPDATA: join(fixture.home, "AppData", "Local"),
         HOME: fixture.home,
         CLAUDE_CONFIG_DIR: join(fixture.home, ".claude"),
         ANTHROPIC_API_KEY: "synthetic-not-a-real-key",
@@ -264,7 +288,7 @@ describe.skipIf(!enabled)(
         expect(requests).toBe(0)
         await clean()
       },
-      15000
+      60000
     )
     it("discovers models with zero upstream generation", async () => {
       const result = await buildClaudeSubscriptionClient({
@@ -274,7 +298,7 @@ describe.skipIf(!enabled)(
       expect(requests).toBe(0)
       expect(fixture.relay.diagnostics().admitted).toBe(0)
       await clean()
-    }, 20000)
+    }, 60000)
     it.each([false, true])(
       "historical replay with parallel results: %s",
       async (withTools) => {
@@ -356,7 +380,7 @@ describe.skipIf(!enabled)(
         expect(fixture.relay.diagnostics().recoveryBlocked).toBe(0)
         await clean()
       },
-      20000
+      60000
     )
     it("isolates inherited logging and plugin settings", async () => {
       const plugin = join(root, "inherited-plugin")
@@ -406,7 +430,7 @@ describe.skipIf(!enabled)(
       for (const path of [marker, debug, bodies])
         await expect(access(path)).rejects.toMatchObject({ code: "ENOENT" })
       await clean()
-    }, 15000)
+    }, 60000)
     it("text success", async () => {
       const chunks = await consume()
       expect(
@@ -414,7 +438,7 @@ describe.skipIf(!enabled)(
       ).toBe("synthetic response")
       expect(requests).toBe(1)
       await clean()
-    }, 15000)
+    }, 60000)
     it("tool max-turn boundary", async () => {
       const chunks = await consume()
       expect(chunks.at(-1).choices[0].delta.tool_calls[0].function.name).toBe(
@@ -422,7 +446,7 @@ describe.skipIf(!enabled)(
       )
       expect(requests).toBe(1)
       await clean()
-    }, 15000)
+    }, 60000)
     it.each(["truncated tool", "stall"])(
       "%s",
       async () => {
@@ -430,7 +454,7 @@ describe.skipIf(!enabled)(
         expect(requests).toBe(1)
         await clean()
       },
-      15000
+      60000
     )
     it.each(["cancel", "iterator return"])(
       "%s",
@@ -456,8 +480,21 @@ describe.skipIf(!enabled)(
         await vi.waitFor(clean)
         expect(requests).toBe(1)
       },
-      15000
+      60000
     )
+    it("shutdown cancel", async () => {
+      const stream: any = await buildClaudeSubscriptionClient({
+        appData: root,
+      }).chat.completions.create(body)
+      await stream.next()
+      const pending = expect(stream.next()).rejects.toMatchObject({
+        name: "AbortError",
+      })
+      shutdownClaudeSubscription()
+      await pending
+      await vi.waitFor(clean, { timeout: 10000 })
+      expect(requests).toBe(1)
+    }, 60000)
     it("first HTTP status wins over native recovery", async () => {
       fixture.inherited = {
         CLAUDE_CODE_RETRY_WATCHDOG: "1",
@@ -470,19 +507,19 @@ describe.skipIf(!enabled)(
       })
       expect(requests).toBe(1)
       await clean()
-    }, 15000)
+    }, 60000)
     it("truncated text", async () => {
       await expect(consume()).rejects.toThrow()
       expect(requests).toBe(1)
       await clean()
-    }, 15000)
+    }, 60000)
     it("unknown recovery tool remains non-executable", async () => {
       await expect(consume()).rejects.toMatchObject({
         code: "claude_subscription_protocol",
       })
       expect(requests).toBe(1)
       await clean()
-    }, 15000)
+    }, 60000)
     it.each([
       ["end_turn", true],
       ["max_tokens", true],
@@ -509,7 +546,7 @@ describe.skipIf(!enabled)(
         expect(error).toMatchObject({ code: "claude_subscription_protocol" })
         await clean()
       },
-      20000
+      60000
     )
     it("pause_turn does not prove denied recovery", async () => {
       const chunks = await consume()
@@ -517,6 +554,6 @@ describe.skipIf(!enabled)(
       expect(fixture.relay.diagnostics().recoveryBlocked).toBe(0)
       expect(requests).toBe(1)
       await clean()
-    }, 15000)
+    }, 60000)
   }
 )

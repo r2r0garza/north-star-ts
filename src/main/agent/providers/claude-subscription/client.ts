@@ -305,7 +305,7 @@ async function execute(
     const env = guardEnvironment(await hostCliEnv())
     const executable = await resolveExecutable(env)
     if (signal.aborted) throw aborted()
-    files = await privateDirectories(options.appData)
+    files = await privateDirectories(options.appData, signal)
     await verifyCliCompatibility(executable, files.cwd, env, signal)
     inventory = await startInventory(request.tools)
     relay = await startAdmission({

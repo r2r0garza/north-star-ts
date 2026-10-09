@@ -16,7 +16,9 @@ export function parseModelCatalog(value: unknown): Array<{ id: string }> {
   if (!Array.isArray(value) || !value.length || value.length > 256) protocol()
   const ids = new Set<string>()
   for (const model of value) {
-    if (object(model) && model.value === "default") continue
+    // 2.1.295 advertises fable, but request routing for that alias is unqualified.
+    if (object(model) && (model.value === "default" || model.value === "fable"))
+      continue
     if (
       !object(model) ||
       typeof model.value !== "string" ||
@@ -51,13 +53,13 @@ export async function discoverClaudeModels(
           "Claude model discovery timed out; previous and manual model entries should be retained."
         )
       ),
-    15000
+    process.platform === "win32" ? 60000 : 15000
   )
   try {
     if (signal.aborted) throw aborted()
     const env = guardEnvironment(await hostCliEnv())
     const executable = await resolveExecutable(env)
-    files = await privateDirectories(appData)
+    files = await privateDirectories(appData, signal)
     await verifyCliCompatibility(executable, files.cwd, env, signal)
     gate = await startAdmission({ signal })
     // Never enable this gate: initialization has no permission to generate.

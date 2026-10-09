@@ -1,6 +1,7 @@
 import { spawn } from "child_process"
 import { describe, expect, it } from "vitest"
 import { captureSpawn } from "./spawn-util"
+import { once } from "events"
 
 const nodeChild = (code: string) =>
   spawn(process.execPath, ["-e", code], {
@@ -72,3 +73,32 @@ describe("captureSpawn", () => {
     expect(result.observedOutputBytes).toBe(10)
   })
 })
+
+describe.skipIf(process.platform !== "win32")(
+  "native Windows process tree",
+  () => {
+    it("terminates an owned descendant when the captured parent is aborted", async () => {
+      const child = nodeChild(`
+      const { spawn } = require('child_process')
+      const descendant = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
+      console.log(descendant.pid)
+      setInterval(() => {}, 1000)
+    `)
+      const controller = new AbortController()
+      const captured = captureSpawn(child, {
+        signal: controller.signal,
+        timeoutMs: 10000,
+        maxOutputBytes: 1024,
+        killGroup: true,
+      })
+      const [line] = await once(child.stdout!, "data")
+      const pid = Number(line.toString().trim())
+      expect(pid).toBeGreaterThan(0)
+      controller.abort()
+      const result = await captured
+      expect(result.aborted).toBe(true)
+      await new Promise((resolve) => setTimeout(resolve, 200))
+      expect(() => process.kill(pid, 0)).toThrow()
+    }, 15000)
+  }
+)

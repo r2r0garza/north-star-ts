@@ -2,15 +2,17 @@ import { lstat } from "fs/promises"
 import { homedir, userInfo } from "os"
 import { spawn } from "child_process"
 import { captureProcess } from "../../env/spawn-util"
-import { join } from "path"
+import { posix, win32 } from "path"
+import { guardWindowsRegistry } from "./windows-state"
 import { aborted, ClaudeSubscriptionError } from "./errors"
 
 export async function guardManagedPolicy(
   env: NodeJS.ProcessEnv,
-  signal: AbortSignal
+  signal: AbortSignal,
+  platform = process.platform
 ): Promise<void> {
   if (signal.aborted) throw aborted()
-  if (process.platform !== "darwin")
+  if (platform !== "darwin" && platform !== "win32")
     throw new ClaudeSubscriptionError(
       "claude_subscription_platform_unqualified",
       "Managed-policy qualification is currently limited to macOS."
@@ -27,17 +29,32 @@ export async function guardManagedPolicy(
       "Could not check local Claude managed-policy sources. Recheck host configuration."
     )
   }
-  const sources = [
-    join(base, "managed-settings.json"),
-    join(base, "managed-settings.d"),
-    join(base, "managed-mcp.json"),
-    join(preferences, domain),
-    join(preferences, username, domain),
-    join(
-      env.CLAUDE_CONFIG_DIR || join(env.HOME || homedir(), ".claude"),
-      "remote-settings.json"
-    ),
-  ]
+  const sources =
+    platform === "win32"
+      ? [
+          ...[
+            "managed-settings.json",
+            "managed-settings.d",
+            "managed-mcp.json",
+          ].map((name) => win32.join("C:\\Program Files\\ClaudeCode", name)),
+          win32.join(
+            env.CLAUDE_CONFIG_DIR ||
+              win32.join(env.HOME || env.USERPROFILE || homedir(), ".claude"),
+            "remote-settings.json"
+          ),
+        ]
+      : [
+          posix.join(base, "managed-settings.json"),
+          posix.join(base, "managed-settings.d"),
+          posix.join(base, "managed-mcp.json"),
+          posix.join(preferences, domain),
+          posix.join(preferences, username, domain),
+          posix.join(
+            env.CLAUDE_CONFIG_DIR ||
+              posix.join(env.HOME || homedir(), ".claude"),
+            "remote-settings.json"
+          ),
+        ]
   for (const source of sources) {
     try {
       await lstat(source)
@@ -52,6 +69,10 @@ export async function guardManagedPolicy(
       "claude_subscription_managed_policy",
       "Claude managed policy or a remote-policy cache is present. This experimental transport cannot verify compatibility with organization-managed settings. Use an organization-approved provider; do not remove or bypass policy."
     )
+  }
+  if (platform === "win32") {
+    await guardWindowsRegistry(env, signal)
+    return
   }
   const result = await captureProcess(
     spawn("/usr/bin/profiles", ["status", "-type", "enrollment"], {

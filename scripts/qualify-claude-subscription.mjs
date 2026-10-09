@@ -192,11 +192,13 @@ try {
     ENABLE_TOOL_SEARCH: "false",
     CLAUDE_CODE_MAX_RETRIES: "0",
   })
-  if (isolation) {
-    env.HOME = isolation.home
-    env.USERPROFILE = isolation.home
-    env.CLAUDE_CONFIG_DIR = isolation.config
-  }
+  const fixtureHome = isolation?.home ?? join(root, "home")
+  await mkdir(fixtureHome, { recursive: true })
+  env.HOME = fixtureHome
+  env.USERPROFILE = fixtureHome
+  env.APPDATA = join(fixtureHome, "AppData", "Roaming")
+  env.LOCALAPPDATA = join(fixtureHome, "AppData", "Local")
+  env.CLAUDE_CONFIG_DIR = isolation?.config ?? join(fixtureHome, ".claude")
   child = spawn(
     "claude",
     [
