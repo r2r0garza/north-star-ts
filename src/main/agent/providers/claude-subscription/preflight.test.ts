@@ -17,7 +17,10 @@ vi.mock("./setup", () => ({
   privateDirectories: mocks.files,
   probeCliVersion: mocks.version,
 }))
-vi.mock("./auth-policy", () => ({ verifyPersonalSubscription: mocks.auth }))
+vi.mock("./auth-policy", async (original) => ({
+  ...(await original<typeof import("./auth-policy")>()),
+  verifyPersonalSubscription: mocks.auth,
+}))
 vi.mock("./managed-policy", () => ({ guardManagedPolicy: mocks.policy }))
 import { preflightClaudeSubscription } from "./preflight"
 beforeEach(() => {
@@ -94,10 +97,34 @@ describe("safe subscription preflight", () => {
       compatible: true,
       loggedIn: null,
     })
-    expect(result.hint).toMatch(/personal Pro or Max/)
+    expect(result.hint).toMatch(/personal Claude Pro or Max/)
     expect(JSON.stringify(result)).not.toMatch(/email@|bearer secret/)
     expect(mocks.close).toHaveBeenCalledOnce()
   })
+  it.each(["organization_policy_unqualified", "routing_unqualified", "SECRET"])(
+    "exposes only allowlisted compatibility guidance for %s",
+    async (compatibility) => {
+      mocks.auth.mockRejectedValue(
+        Object.assign(
+          new ClaudeSubscriptionError(
+            "claude_subscription_account_unqualified",
+            "email@example.test SECRET"
+          ),
+          { compatibility }
+        )
+      )
+      const result = await preflightClaudeSubscription("/app-data")
+      expect(result.ok).toBe(false)
+      expect(JSON.stringify(result)).not.toMatch(/email@|SECRET/)
+      expect(result.hint).toContain(
+        compatibility === "organization_policy_unqualified"
+          ? "managed-policy continuity"
+          : compatibility === "routing_unqualified"
+            ? "routing is unqualified"
+            : "could not be verified"
+      )
+    }
+  )
   it("sanitizes unexpected failures", async () => {
     mocks.guard.mockImplementation(() => {
       throw new Error("private email token")

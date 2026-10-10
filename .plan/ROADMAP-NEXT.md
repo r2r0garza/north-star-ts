@@ -4,9 +4,11 @@
 > Missions are **Milestones**, and Slices are **User stories**. Each pending `106.x` plan has a mapping note at the top.
 
 1. **`109.4` — Claude Code inference across authentication and managed-policy configurations.**
-   Deferred follow-up for API-key, Team/Enterprise, token-only and unknown/new auth states: support official
-   CLI inference with capability-based setup, policy-preserving routing and accurate billing semantics.
-   Separate work-machine qualification; no policy bypass or broader auth enablement in personal-account v1.
+   Partial local implementation: sanitized auth compatibility diagnostics, Claude Code Inference identity,
+   managed-policy drift rechecks, and experimental static HTTPS Messages/skip-auth Bedrock gateway routing.
+   Personal Pro/Max manual regression and real Portkey/work-host qualification remain pending.
+   Managed hosts/policy, standalone API-key, Team/Enterprise and other unknown/new auth configurations
+   remain blocked on actual generation-child policy continuity. No policy bypass; native/package acceptance remains external.
    Independent of `109.3`; depends on `109.1`/`109.2`.
    [Plan](109.4-claude-code-authentication-and-managed-policy.md).
 2. **`109.5` — Host image vision and durable media history.** Address standalone image vision and

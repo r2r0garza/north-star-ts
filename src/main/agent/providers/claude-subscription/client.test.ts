@@ -360,6 +360,29 @@ describe("compatibility preflight", () => {
       await clean()
     }
   )
+  it.each(["generation", "discovery"])(
+    "rejects policy appearing after compatibility before %s startup",
+    async (operation) => {
+      vi.mocked(managedPolicy.guardManagedPolicy)
+        .mockResolvedValueOnce()
+        .mockResolvedValueOnce()
+        .mockRejectedValue(
+          new ClaudeSubscriptionError(
+            "claude_subscription_managed_policy",
+            "Managed policy appeared."
+          )
+        )
+      const client = buildClaudeSubscriptionClient({ appData: root })
+      await expect(
+        operation === "generation"
+          ? client.chat.completions.create(body)
+          : client.models.list()
+      ).rejects.toMatchObject({ code: "claude_subscription_managed_policy" })
+      expect(state.spawns).toBe(0)
+      expect(count).toBe(0)
+      await clean()
+    }
+  )
   it.each(["2.1.287", "2.2.0"])(
     "accepts newer CLI %s for generation and discovery and rechecks upgrades",
     async (version) => {

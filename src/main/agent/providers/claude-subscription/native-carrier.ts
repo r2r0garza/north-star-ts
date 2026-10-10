@@ -51,7 +51,9 @@ export function validateCarrier(
       c.version !== 1 ||
       c.provider !== "claude_subscription" ||
       typeof c.model !== "string" ||
-      !/^claude-[a-z0-9.-]+$/.test(c.model) ||
+      !/^(?:claude-[a-z0-9.-]+|(?:us|eu|apac|global)\.anthropic\.claude-[a-z0-9.:-]+)$/.test(
+        c.model
+      ) ||
       !/^[a-f0-9]{64}$/.test(c.prefix) ||
       !Array.isArray(c.blocks) ||
       !c.blocks.length ||

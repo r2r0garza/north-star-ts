@@ -76,7 +76,7 @@ describe("subscription account form", () => {
       select.dispatchEvent(new Event("change", { bubbles: true }))
     })
     expect(container.textContent).toContain(
-      "Claude Code Subscription - Experimental"
+      "Claude Code Inference - Experimental"
     )
     expect(container.querySelector('[id="new-base"]')).toBeNull()
     expect(container.querySelector('input[type="password"]')).toBeNull()
@@ -89,7 +89,7 @@ describe("subscription account form", () => {
     await click("Add")
     expect(create).toHaveBeenCalledWith({
       provider: "claude_subscription",
-      displayName: "Claude Code Subscription - Experimental",
+      displayName: "Claude Code Inference - Experimental",
       baseUrl: null,
       apiMode: "completions",
     })

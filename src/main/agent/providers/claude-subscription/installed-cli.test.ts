@@ -4,6 +4,7 @@ import type { AddressInfo } from "net"
 import { mkdtemp, mkdir, readdir, rm, writeFile, access } from "fs/promises"
 import { tmpdir } from "os"
 import { join } from "path"
+import { bedrockFrame } from "./fixtures/bedrock"
 
 const fixture = vi.hoisted(() => ({
   origin: "",
@@ -32,6 +33,9 @@ vi.mock("./setup", async (original) => {
       ...actual.guardEnvironment(env),
       ANTHROPIC_API_KEY: "synthetic-not-a-real-key",
       CLAUDE_CONFIG_DIR: join(fixture.home, ".claude"),
+      ...(env.ANTHROPIC_BASE_URL
+        ? { ANTHROPIC_AUTH_TOKEN: "synthetic-gateway-token" }
+        : {}),
     }),
   }
 })
@@ -97,6 +101,16 @@ beforeEach(async (context) => {
   await mkdir(fixture.home)
   server = createServer(async (req, res) => {
     requests++
+    if (scenario.includes("gateway")) {
+      expect(req.headers.authorization).toBe("Bearer synthetic-gateway-token")
+      expect(req.headers["x-portkey-api-key"]).toBe("synthetic-portkey")
+      expect(req.headers["x-portkey-provider"]).toBe("@aws-bedrock-use2")
+      expect(req.url).toBe(
+        scenario.includes("Bedrock")
+          ? "/model/us.anthropic.claude-sonnet-4-8/invoke-with-response-stream"
+          : "/v1/messages?beta=true"
+      )
+    }
     const chunks: Buffer[] = []
     for await (const chunk of req) chunks.push(Buffer.from(chunk))
     capturedBody = JSON.parse(Buffer.concat(chunks).toString("utf8"))
@@ -113,7 +127,11 @@ beforeEach(async (context) => {
       )
       return
     }
-    res.writeHead(200, { "content-type": "text/event-stream" })
+    res.writeHead(200, {
+      "content-type": scenario.includes("Bedrock gateway")
+        ? "application/vnd.amazon.eventstream"
+        : "text/event-stream",
+    })
     const tool = scenario.includes("tool")
     const events: any[] = [
       {
@@ -122,7 +140,9 @@ beforeEach(async (context) => {
           id: "msg_synthetic",
           type: "message",
           role: "assistant",
-          model: body.model,
+          model: scenario.includes("gateway")
+            ? "us.anthropic.claude-sonnet-4-8"
+            : body.model,
           content: [],
           stop_reason: null,
           stop_sequence: null,
@@ -236,7 +256,11 @@ beforeEach(async (context) => {
       scenario.includes("cancel") ||
       scenario.includes("return")
     ) {
-      res.write(wire(events.slice(0, 3)))
+      res.write(
+        scenario.includes("Bedrock gateway")
+          ? Buffer.concat(events.slice(0, 3).map(bedrockFrame))
+          : wire(events.slice(0, 3))
+      )
       return
     }
     if (scenario.includes("truncated")) {
@@ -254,7 +278,11 @@ beforeEach(async (context) => {
       res.end(wire(events.slice(0, -1)))
       return
     }
-    res.end(wire(events))
+    res.end(
+      scenario.includes("Bedrock gateway")
+        ? Buffer.concat(events.map(bedrockFrame))
+        : wire(events)
+    )
   })
   server.on("connection", (socket) => {
     sockets++
@@ -295,6 +323,163 @@ async function consume(signal?: AbortSignal) {
 describe.skipIf(!enabled)(
   "installed Claude synthetic transport qualification",
   () => {
+    it.each([
+      ["Bedrock", false],
+      ["Bedrock", true],
+      ["Messages", false],
+      ["Messages", true],
+    ] as const)(
+      "%s gateway streaming=%s preserves headers and host tool continuation",
+      async (protocol, stream) => {
+        await mkdir(join(fixture.home, ".claude"))
+        await writeFile(
+          join(fixture.home, ".claude/settings.json"),
+          JSON.stringify({
+            env: {
+              ANTHROPIC_BASE_URL: "https://synthetic-gateway.example",
+              ANTHROPIC_AUTH_TOKEN: "synthetic-gateway-token",
+              ANTHROPIC_CUSTOM_HEADERS:
+                "x-portkey-api-key:synthetic-portkey\nx-portkey-provider: @aws-bedrock-use2",
+              ANTHROPIC_MODEL: "us.anthropic.claude-sonnet-4-8",
+              ...(protocol === "Bedrock"
+                ? {
+                    CLAUDE_CODE_USE_BEDROCK: "1",
+                    CLAUDE_CODE_SKIP_BEDROCK_AUTH: "1",
+                  }
+                : {}),
+            },
+          })
+        )
+        const client = buildClaudeSubscriptionClient({ appData: root })
+        expect(await client.models.list()).toEqual({
+          data: [{ id: "us.anthropic.claude-sonnet-4-8" }],
+        })
+        expect(requests).toBe(0)
+        const result: any = await client.chat.completions.create({
+          ...body,
+          model: "us.anthropic.claude-sonnet-4-8",
+          stream,
+        })
+        const chunks: any[] = []
+        if (stream) for await (const chunk of result) chunks.push(chunk)
+        else chunks.push(result)
+        expect(requests).toBe(1)
+        if (protocol === "Bedrock")
+          expect(capturedBody.anthropic_version).toBe("bedrock-2023-05-31")
+        else expect(capturedBody.model).toBe("us.anthropic.claude-sonnet-4-8")
+        expect(fixture.relay.diagnostics().admitted).toBe(1)
+        expect(chunks.length).toBeGreaterThan(0)
+        const message = stream
+          ? {
+              role: "assistant",
+              content: null,
+              tool_calls: chunks.at(-1).choices[0].delta.tool_calls,
+              [nativeAssistant]:
+                chunks.at(-1).choices[0].delta[nativeAssistant],
+            }
+          : { role: "assistant", ...result.choices[0].message }
+        const { validateCarrier } = await import("./native-carrier")
+        expect(validateCarrier(message[nativeAssistant])).toBeDefined()
+        message.tool_calls = message.tool_calls.map((call: any) => ({
+          id: call.id,
+          type: call.type,
+          function: call.function,
+        }))
+        delete (message as any).reasoning_content
+        delete (message as any).refusal
+        const call = message.tool_calls[0]
+        const next: any = await client.chat.completions.create({
+          ...body,
+          model: "us.anthropic.claude-sonnet-4-8",
+          stream: false,
+          messages: [
+            ...body.messages,
+            message,
+            {
+              role: "tool",
+              tool_call_id: call.id,
+              content: "synthetic host result",
+            },
+          ],
+        })
+        expect(next.choices[0].message.tool_calls).toHaveLength(1)
+        expect(requests).toBe(2)
+        expect(
+          capturedBody.messages.some(
+            (m: any) =>
+              Array.isArray(m.content) &&
+              m.content.some((b: any) => b.type === "tool_result")
+          )
+        ).toBe(true)
+        await clean()
+      },
+      60000
+    )
+    it("Bedrock gateway cancel closes its admitted binary stream", async () => {
+      await mkdir(join(fixture.home, ".claude"))
+      await writeFile(
+        join(fixture.home, ".claude/settings.json"),
+        JSON.stringify({
+          env: {
+            ANTHROPIC_BASE_URL: "https://synthetic-gateway.example",
+            ANTHROPIC_AUTH_TOKEN: "synthetic-gateway-token",
+            ANTHROPIC_CUSTOM_HEADERS:
+              "x-portkey-api-key:synthetic-portkey\nx-portkey-provider: @aws-bedrock-use2",
+            CLAUDE_CODE_USE_BEDROCK: "1",
+            CLAUDE_CODE_SKIP_BEDROCK_AUTH: "1",
+          },
+        })
+      )
+      const controller = new AbortController()
+      const result: any = await buildClaudeSubscriptionClient({
+        appData: root,
+      }).chat.completions.create(
+        { ...body, model: "us.anthropic.claude-sonnet-4-8" },
+        undefined,
+        { signal: controller.signal }
+      )
+      const consume = (async () => {
+        for await (const _chunk of result) controller.abort()
+      })()
+      await expect(consume).rejects.toMatchObject({
+        name: "AbortError",
+      })
+      expect(requests).toBe(1)
+      await clean()
+    }, 60000)
+    it.each(["messages", "bedrock"])(
+      "official static gateway %s auth metadata uses a local sink without upstream discovery",
+      async (protocol) => {
+        const { verifyPersonalSubscription } =
+          await vi.importActual<typeof import("./auth-policy")>("./auth-policy")
+        const { resolveExecutable } = await import("./setup")
+        const env = {
+          PATH: process.env.PATH,
+          HOME: fixture.home,
+          USERPROFILE: fixture.home,
+          SystemRoot: process.env.SystemRoot,
+          WINDIR: process.env.WINDIR,
+          ANTHROPIC_BASE_URL: "https://must-not-contact.invalid",
+          ANTHROPIC_AUTH_TOKEN: "synthetic-gateway-token",
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+          DISABLE_AUTOUPDATER: "1",
+          ...(protocol === "bedrock"
+            ? {
+                CLAUDE_CODE_USE_BEDROCK: "1",
+                CLAUDE_CODE_SKIP_BEDROCK_AUTH: "1",
+              }
+            : {}),
+        }
+        await verifyPersonalSubscription(
+          await resolveExecutable(env),
+          root,
+          env,
+          new AbortController().signal
+        )
+        expect(requests).toBe(0)
+      },
+      10000
+    )
     it("official auth metadata rejects synthetic API-key authentication", async () => {
       const { verifyPersonalSubscription } =
         await vi.importActual<typeof import("./auth-policy")>("./auth-policy")

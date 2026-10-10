@@ -55,6 +55,8 @@ function waitForDrain(
 }
 import { ClaudeSubscriptionError, aborted } from "./errors"
 import { ResponseCapture, type CapturedResponse } from "./sse"
+import { BedrockCapture } from "./bedrock-stream"
+import type { GatewayRoute } from "./gateway"
 
 const excluded = new Set([
   "host",
@@ -94,16 +96,33 @@ interface RelayOptions {
   onDelta?: (kind: "text" | "reasoning", text: string) => void
   readIdleMs?: number
   downstreamIdleMs?: number
+  beforeForward?: () => Promise<void>
+  gateway?: GatewayRoute
+  model?: string
 }
 interface TestRelayOptions extends RelayOptions {
   upstream: string
 }
 
 export function startAdmission(options: RelayOptions) {
-  return createAdmission(options, new URL("https://api.anthropic.com"))
+  const upstream = new URL(
+    options.gateway?.upstream ?? "https://api.anthropic.com"
+  )
+  if (
+    upstream.protocol !== "https:" ||
+    upstream.username ||
+    upstream.password ||
+    upstream.search ||
+    upstream.hash
+  )
+    throw new ClaudeSubscriptionError(
+      "claude_subscription_gateway_unqualified",
+      "Gateway routing requires a static HTTPS destination."
+    )
+  return createAdmission(options, upstream)
 }
 
-// Separate entry point: production client never accepts an upstream override.
+// Test-only HTTP loopback; production destinations require HTTPS.
 export function startTestAdmission(options: TestRelayOptions) {
   const upstream = new URL(options.upstream)
   if (
@@ -146,10 +165,14 @@ async function createAdmission(options: RelayOptions, upstream: URL) {
       "claude_subscription_transport",
       "Claude subscription upstream connection failed."
     )
+  const bedrock = options.gateway?.protocol === "bedrock"
+  const endpoint = bedrock
+    ? `/model/${encodeURIComponent(options.model ?? "")}/invoke-with-response-stream`
+    : "/v1/messages"
   const listener = createServer(async (req, res) => {
     if (
-      (req.url !== `${route}/v1/messages` &&
-        req.url !== `${route}/v1/messages?beta=true`) ||
+      (req.url !== `${route}${endpoint}` &&
+        (bedrock || req.url !== `${route}${endpoint}?beta=true`)) ||
       req.method !== "POST" ||
       req.headers.origin !== undefined ||
       req.headers.host !== host
@@ -198,13 +221,24 @@ async function createAdmission(options: RelayOptions, upstream: URL) {
         return
       }
     }
-    const capture = new ResponseCapture(options.onDelta)
-    const target = new URL(
-      req.url!.endsWith("?beta=true")
-        ? "/v1/messages?beta=true"
-        : "/v1/messages",
-      upstream
-    )
+    try {
+      await options.beforeForward?.()
+      if (options.signal.aborted) throw aborted()
+    } catch (error) {
+      fail(
+        error instanceof ClaudeSubscriptionError ? error : safeTransportError()
+      )
+      res.writeHead(409).end()
+      req.resume()
+      return
+    }
+    const capture = bedrock
+      ? new BedrockCapture(options.onDelta)
+      : new ResponseCapture(options.onDelta)
+    const target = new URL(upstream.href)
+    target.pathname = `${upstream.pathname.replace(/\/$/, "")}${endpoint}`
+    target.search =
+      !bedrock && req.url!.endsWith("?beta=true") ? "?beta=true" : ""
     const upstreamReq = (
       upstream.protocol === "https:" ? httpsRequest : httpRequest
     )(target, {
@@ -262,7 +296,7 @@ async function createAdmission(options: RelayOptions, upstream: URL) {
         }
         if (
           !String(incoming.headers["content-type"] ?? "").startsWith(
-            "text/event-stream"
+            bedrock ? "application/vnd.amazon.eventstream" : "text/event-stream"
           )
         )
           throw safeTransportError()
