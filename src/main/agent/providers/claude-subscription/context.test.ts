@@ -49,7 +49,7 @@ describe("subscription context admission", () => {
       }
       expect(validateRequest(request).model).toBe(alias)
       expect(request.model).toBe(alias)
-      request.tools[0].function.description = "x".repeat(200000)
+      request.tools[0].function.description = "word ".repeat(160000)
       expect(() => validateRequest(request)).toThrow(
         /200000-token route budget/
       )
@@ -66,7 +66,7 @@ describe("subscription context admission", () => {
     "includes %s in the preflight and never mutates canonical input",
     (part) => {
       const request: Record<string, unknown> = { ...body }
-      const large = "x".repeat(200000)
+      const large = "word ".repeat(160000)
       if (part === "system")
         request.messages = [
           { role: "system", content: large },
@@ -104,13 +104,69 @@ describe("subscription context admission", () => {
     }
   )
 
-  it("counts UTF-8 bytes rather than underestimating non-English history", () => {
+  it("tokenizes non-English history rather than using chars/4", () => {
     expect(() =>
       validateRequest({
         ...body,
-        messages: [{ role: "user", content: "界".repeat(65000) }],
+        messages: [{ role: "user", content: "界".repeat(150000) }],
       })
     ).toThrow(/context exceeds/)
+  })
+
+  it.each(["opus", "claude-opus-4-6"])(
+    "admits a coding conversation on %s that exceeds the old byte budget",
+    (model) => {
+      const request = {
+        model,
+        max_tokens: 8192,
+        messages: [
+          {
+            role: "system",
+            content: "Help the user inspect and improve their code.\n".repeat(
+              450
+            ),
+          },
+          {
+            role: "user",
+            content: "const result = await readFile(path, 'utf8');\n".repeat(
+              3100
+            ),
+          },
+        ],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "read",
+              description: "Read a UTF-8 file in the workspace.\n".repeat(1100),
+              parameters: { type: "object" },
+            },
+          },
+        ],
+      }
+      const snapshot = JSON.stringify(request)
+      expect(
+        Buffer.byteLength(snapshot, "utf8") + 16384 + 8192
+      ).toBeGreaterThan(200000)
+      const result = validateRequest(request)
+      expect(result.model).toBe(model)
+      expect(result.system).toBe(request.messages[0].content)
+      expect(JSON.stringify(result.frames)).toContain(
+        request.messages[1].content.slice(0, 40)
+      )
+      expect(JSON.stringify(request)).toBe(snapshot)
+    }
+  )
+
+  it("labels the padded tokenizer estimate as approximate for Claude", () => {
+    expect(() =>
+      validateRequest({
+        ...body,
+        model: "claude-manual-1",
+        max_tokens: 32000,
+        messages: [{ role: "user", content: "<|endoftext|>" }],
+      })
+    ).toThrow(/o200k \+ 25% text safety margin, approximate for Claude/)
   })
 
   it.each([false, true])(

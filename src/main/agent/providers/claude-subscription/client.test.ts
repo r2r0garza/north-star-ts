@@ -271,7 +271,7 @@ describe("context and auxiliary admission", () => {
     expect(() =>
       client.chat.completions.create({
         ...body,
-        messages: [{ role: "user", content: "x".repeat(200000) }],
+        messages: [{ role: "user", content: "word ".repeat(160000) }],
       })
     ).toThrowError(
       expect.objectContaining({ code: "claude_subscription_context_overflow" })
