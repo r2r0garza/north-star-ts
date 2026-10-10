@@ -819,7 +819,11 @@ function NewAccountForm({
           <SelectContent>
             {PROVIDERS.filter(
               (p) =>
-                p.value !== "claude_subscription" || !window.cowork.isPackaged
+                ![
+                  "claude_subscription",
+                  "claude_code",
+                  "codex_cli",
+                ].includes(p.value) || !window.cowork.isPackaged
             ).map((p) => (
               <SelectItem key={p.value} value={p.value} disabled={!p.enabled}>
                 {p.label}

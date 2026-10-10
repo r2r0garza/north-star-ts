@@ -71,8 +71,9 @@ describe("subscription account form", () => {
         (option) => option.value
       )
       expect(options.includes("claude_subscription")).toBe(!isPackaged)
+      expect(options.includes("claude_code")).toBe(!isPackaged)
+      expect(options.includes("codex_cli")).toBe(!isPackaged)
       expect(options).toContain("codex_subscription")
-      expect(options).toContain("claude_code")
     }
   )
 
