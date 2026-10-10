@@ -80,7 +80,8 @@ describe("listWorkspaceDirectory", () => {
       entries: [],
       error: "Directory is unavailable.",
     })
-    await expect(listWorkspaceDirectory(root, root)).resolves.toMatchObject({
+    const outsidePath = join(root, "..", "outside")
+    await expect(listWorkspaceDirectory(root, outsidePath)).resolves.toMatchObject({
       entries: [],
       error: "Directory is unavailable.",
     })
