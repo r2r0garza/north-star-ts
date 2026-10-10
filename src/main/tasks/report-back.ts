@@ -1,4 +1,8 @@
-import { runCompletionReport } from "../agent"
+import { runCompletionReport, type ChatEvent } from "../agent"
+
+export type CompletionReportEvent =
+  | { type: "started" }
+  | { type: "event"; event: ChatEvent }
 import { getTask, listTasks } from "../db/repositories/tasks"
 import { getConversation } from "../db/repositories/conversations"
 import { appendEvent, listEvents } from "../db/repositories/task-events"
@@ -12,7 +16,11 @@ export class TaskReportBack {
 
   constructor(
     private readonly runner: TaskRunner,
-    private readonly onReported: (conversationId: string) => void
+    private readonly onReported: (conversationId: string) => void,
+    private readonly onStream?: (
+      conversationId: string,
+      event: CompletionReportEvent
+    ) => void
   ) {}
 
   start(): void {
@@ -77,19 +85,29 @@ export class TaskReportBack {
       return
     const conversationId = task.sourceConversationId
     const before = getMaxMessageSeq(conversationId)
-    const result = await runCompletionReport(
-      conversationId,
-      completionReportInstruction(task),
-      `The background task “${task.title ?? "Untitled task"}” ${task.status === "failed" ? "failed" : "finished"}, but I couldn't generate its completion report. Its result is available in task history; I haven't confirmed that the assignment was fulfilled.`
-    )
-    if (this.stopped || !getTask(taskId) || !getConversation(conversationId))
-      return
-    if (result.stopped && getMaxMessageSeq(conversationId) === before) return
-    appendEvent({
-      taskId,
-      type: "completion_reported",
-      payload: { completionEventId },
-    })
-    this.onReported(conversationId)
+    let started = false
+    try {
+      const result = await runCompletionReport(
+        conversationId,
+        completionReportInstruction(task),
+        `The background task “${task.title ?? "Untitled task"}” ${task.status === "failed" ? "failed" : "finished"}, but I couldn't generate its completion report. Its result is available in task history; I haven't confirmed that the assignment was fulfilled.`,
+        (event) => this.onStream?.(conversationId, { type: "event", event }),
+        () => {
+          started = true
+          this.onStream?.(conversationId, { type: "started" })
+        }
+      )
+      if (this.stopped || !getTask(taskId) || !getConversation(conversationId))
+        return
+      if (result.stopped && getMaxMessageSeq(conversationId) === before) return
+      appendEvent({
+        taskId,
+        type: "completion_reported",
+        payload: { completionEventId },
+      })
+    } finally {
+      if (started) this.onReported(conversationId)
+    }
+    if (!started) this.onReported(conversationId)
   }
 }

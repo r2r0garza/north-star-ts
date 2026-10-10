@@ -184,12 +184,24 @@ import { ensureChatVenv } from "./python/chat-venv"
 // The durable task runner — a singleton owned by the main process. Started in
 // app.whenReady (after the DB handlers register) and stopped on will-quit.
 const taskRunner = new TaskRunner()
-const taskReportBack = new TaskReportBack(taskRunner, (conversationId) => {
-  for (const window of BrowserWindow.getAllWindows()) {
-    if (!window.webContents.isDestroyed())
-      window.webContents.send("chat:reported", { conversationId })
+const taskReportBack = new TaskReportBack(
+  taskRunner,
+  (conversationId) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.webContents.isDestroyed())
+        window.webContents.send("chat:reported", { conversationId })
+    }
+  },
+  (conversationId, event) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.webContents.isDestroyed())
+        window.webContents.send("chat:report-stream", {
+          conversationId,
+          ...event,
+        })
+    }
   }
-})
+)
 // The workspace indexer (plan 008), driven as a deterministic task kind on the
 // runner above. Holds the runner reference so ensureRunning can enqueue.
 const indexService = new IndexService(taskRunner)

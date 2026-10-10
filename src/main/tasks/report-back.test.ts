@@ -45,12 +45,14 @@ function setup(status: "completed" | "failed" = "completed") {
     },
   } as TaskRunner
   const notified = vi.fn()
-  const service = new TaskReportBack(runner, notified)
+  const streamed = vi.fn()
+  const service = new TaskReportBack(runner, notified, streamed)
   return {
     source,
     task,
     service,
     notified,
+    streamed,
     event: () => listener(task.id, { type: "task_completed" }, 1),
   }
 }
@@ -88,6 +90,56 @@ describe.skipIf(!sqliteLoads)("background report-back", () => {
     await flush()
     expect(report.mock.calls[0][2]).toContain("couldn't generate")
     expect(s.notified).toHaveBeenCalledOnce()
+  })
+  it("forwards start and token events before reporting completion", async () => {
+    let finish!: (value: { content: string }) => void
+    report.mockImplementation(
+      (_id, _instruction, _fallback, onEvent, onStarted) => {
+        onStarted()
+        onEvent({ type: "token", delta: "Checked " })
+        onEvent({ type: "token", delta: "hello.html" })
+        return new Promise((resolve) => {
+          finish = resolve
+        })
+      }
+    )
+    const s = setup()
+    s.service.start()
+    expect(s.streamed.mock.calls).toEqual([
+      [s.source.id, { type: "started" }],
+      [
+        s.source.id,
+        { type: "event", event: { type: "token", delta: "Checked " } },
+      ],
+      [
+        s.source.id,
+        { type: "event", event: { type: "token", delta: "hello.html" } },
+      ],
+    ])
+    expect(s.notified).not.toHaveBeenCalled()
+    finish({ content: "Checked hello.html" })
+    await flush()
+    expect(s.notified).toHaveBeenCalledWith(s.source.id)
+  })
+  it("settles the stream notification even if report generation throws", async () => {
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {})
+    report.mockImplementation(
+      async (_id, _instruction, _fallback, _onEvent, onStarted) => {
+        onStarted()
+        throw new Error("Unexpected provider failure")
+      }
+    )
+    const s = setup()
+    s.service.start()
+    await flush()
+    expect(s.streamed).toHaveBeenCalledWith(s.source.id, { type: "started" })
+    expect(s.notified).toHaveBeenCalledWith(s.source.id)
+    expect(
+      listEvents(s.task.id).some(
+        (event) => event.type === "completion_reported"
+      )
+    ).toBe(false)
+    errorLog.mockRestore()
   })
   it("does not start reports after shutdown", async () => {
     const s = setup()

@@ -47,6 +47,23 @@ describe("preload database bridge", () => {
 })
 
 describe("preload shared subscriptions", () => {
+  it("delivers report stream events with their conversation and removes the listener", () => {
+    const callback = vi.fn()
+    const stop = electron.api.onCompletionReportStream(callback)
+    const [channel, listener] = electron.on.mock.calls[0]
+    expect(channel).toBe("chat:report-stream")
+    const started = { conversationId: "source", type: "started" }
+    const token = {
+      conversationId: "source",
+      type: "event",
+      event: { type: "token", delta: "Done" },
+    }
+    listener({}, started)
+    listener({}, token)
+    expect(callback.mock.calls).toEqual([[started], [token]])
+    stop()
+    expect(electron.removeListener).toHaveBeenCalledWith(channel, listener)
+  })
   it("keeps one task subscription until the last renderer consumer leaves", () => {
     const stopA = electron.api.tasks.onEvent(vi.fn())
     const stopB = electron.api.tasks.onEvent(vi.fn())

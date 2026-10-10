@@ -419,6 +419,23 @@ const api = {
       }>
     ).finally(done)
   },
+  onCompletionReportStream: (
+    cb: (
+      payload: { conversationId: string } & (
+        | { type: "started" }
+        | { type: "event"; event: ChatEvent }
+      )
+    ) => void
+  ) => {
+    const listener = (
+      _event: IpcRendererEvent,
+      payload: Parameters<typeof cb>[0]
+    ) => cb(payload)
+    ipcRenderer.on("chat:report-stream", listener)
+    return () => {
+      ipcRenderer.removeListener("chat:report-stream", listener)
+    }
+  },
   onCompletionReport: (cb: (conversationId: string) => void) => {
     const listener = (
       _event: IpcRendererEvent,

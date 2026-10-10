@@ -3798,16 +3798,20 @@ export async function runChat(
 export function runCompletionReport(
   conversationId: string,
   instruction: string,
-  fallback: string
+  fallback: string,
+  onEvent?: (event: ChatEvent) => void,
+  onStarted?: () => void
 ): Promise<ChatResult> {
   return serializeConversationTurn(conversationId, async () => {
     if (!getConversation(conversationId)) return { stopped: true }
     const abort = new AbortController()
     abortControllers.set(conversationId, abort)
     try {
+      onStarted?.()
       const result = await runAgentLoop({
         conversationId,
         abort,
+        onEvent,
         reportOnly: true,
         userMessage: "Write the background task completion report now.",
         completionInstruction: instruction,
