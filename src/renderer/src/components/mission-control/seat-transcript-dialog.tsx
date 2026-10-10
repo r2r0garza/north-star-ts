@@ -9,6 +9,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Markdown } from "@/components/markdown"
+import { ToolMediaPreview } from "@/components/tool-media-preview"
 import { cn } from "@/lib/utils"
 import type { Message } from "@/types"
 import {
@@ -96,6 +97,34 @@ export function SeatTranscriptDialog({
 }
 
 function TranscriptRow({ row }: { row: Message }) {
+  const [expanded, setExpanded] = useState(false)
+  if (row.role === "tool" && row.media?.length)
+    return (
+      <div className="space-y-2">
+        <button
+          type="button"
+          aria-expanded={expanded}
+          className="text-xs underline"
+          onClick={() => setExpanded(!expanded)}
+        >
+          {expanded ? "Hide" : "Show"} {row.toolName ?? "tool"} result and
+          stored images
+        </button>
+        {expanded && (
+          <>
+            <pre className="max-h-64 overflow-auto text-xs whitespace-pre-wrap">
+              {row.content}
+            </pre>
+            <ToolMediaPreview
+              key={row.id}
+              media={row.media}
+              conversationId={row.conversationId}
+              messageId={row.id}
+            />
+          </>
+        )}
+      </div>
+    )
   if (row.role === "tool")
     return (
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -119,7 +148,9 @@ function TranscriptRow({ row }: { row: Message }) {
       </Badge>
       {row.content?.trim() && (
         <Markdown
-          content={seatMail ? formatSeatMessageEvent(row.content!) : row.content!}
+          content={
+            seatMail ? formatSeatMessageEvent(row.content!) : row.content!
+          }
         />
       )}
       {row.toolCalls?.map((call) => (

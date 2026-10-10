@@ -1,4 +1,5 @@
 import type { Message as DbMessage } from "@/types"
+import type { ToolMediaReference } from "../../../shared/tool-media"
 import {
   formatSeatMessageEvent,
   isCommandCompletionEvent,
@@ -45,6 +46,9 @@ export interface ToolUse {
   args: Record<string, unknown> | null // parsed arguments (null if unparseable)
   rawArgs: string // original JSON string (shown verbatim if parse failed)
   result?: string // tool output (undefined while running)
+  media?: ToolMediaReference[]
+  resultMessageId?: string
+  conversationId?: string
   status: ToolStatus
   approval?: ToolApproval // set while a gated action awaits a human decision
 }
@@ -330,6 +334,9 @@ export function buildTimeline(rows: DbMessage[]): TimelineItem[] {
       const use = callById.get(m.toolCallId)
       if (use) {
         use.result = m.content ?? ""
+        use.media = m.media
+        use.resultMessageId = m.id
+        use.conversationId = m.conversationId
         use.status = isErrorResult(use.result) ? "error" : "done"
         use.label = deriveLabel(use.name, use.args, use.status)
       }

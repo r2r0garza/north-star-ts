@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto"
+import { cleanupToolMedia } from "../../media/tool-media"
 import { getDb } from "../connection"
 import type { Conversation, ConversationSearchResult, Mode } from "../types"
 
@@ -431,7 +432,10 @@ export function deleteConversation(id: string): void {
   const result = getDb()
     .prepare("DELETE FROM conversations WHERE id = ?")
     .run(id)
-  if (result.changes > 0) publishConversationChange([id])
+  if (result.changes > 0) {
+    cleanupToolMedia()
+    publishConversationChange([id])
+  }
 }
 
 // Delete several conversations in one transaction. Used by the runner's
@@ -453,5 +457,6 @@ export function deleteConversations(ids: string[]): void {
     }
     return changed
   })(unique)
+  cleanupToolMedia()
   publishConversationChange(deleted)
 }

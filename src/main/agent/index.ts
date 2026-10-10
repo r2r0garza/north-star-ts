@@ -170,7 +170,12 @@ import { contextUsageLog, type ContextUsageOutcome } from "./context/usage-log"
 import { generateTitle } from "./title"
 export { generateTitle } from "./title"
 import { sanitizeFailureContext } from "../tasks/process/failure-sanitizer"
-import { appendMessage, getMaxMessageSeq } from "../db/repositories/messages"
+import { replayToolMedia } from "../media/tool-media"
+import {
+  appendMessage,
+  listMessages,
+  getMaxMessageSeq,
+} from "../db/repositories/messages"
 import {
   findPriorToolCallLifecycleByInvocation,
   getToolCallLifecycle,
@@ -792,7 +797,15 @@ export type ChatEvent =
       name: string
       arguments: string
     }
-  | { type: "tool"; phase: "done"; id: string; name: string; result: string }
+  | {
+      type: "tool"
+      phase: "done"
+      id: string
+      name: string
+      result: string
+      messageId?: string
+      media?: import("../../shared/tool-media").ToolMediaReference[]
+    }
   // The agent wants to perform a gated action and needs the human to decide.
   // `id` is the tool-call id so the renderer can attach the approval card to the
   // right tool marker; `requestId` is the process-unique token the renderer
@@ -2621,7 +2634,8 @@ export async function runAgentLoop(
               result,
             })
           } else {
-            markToolCallSettled({
+            const lifecycle = markToolCallSettled({
+              images: settled.images,
               conversationId,
               toolCallId: call.id,
               state:
@@ -2631,17 +2645,28 @@ export async function runAgentLoop(
               result,
               error: error || isToolErrorResult(result) ? result : null,
             })
+            if (lifecycle?.result != null) settled.result = lifecycle.result
           }
         },
         onBatchSettled: (results) => {
           for (const { call, result } of results) {
-            appendMessage({
+            const storedResult = appendMessage({
               conversationId,
               role: "tool",
               content: result,
               toolCallId: call.id,
               toolName: call.name,
             })
+            if (storedResult.media?.length)
+              onEvent({
+                type: "tool",
+                phase: "done",
+                id: call.id,
+                name: call.name,
+                result,
+                messageId: storedResult.id,
+                media: storedResult.media,
+              })
             if (call.name === "exec_command") {
               const sessionId = parseCommandSessionId(result)
               if (sessionId) {
@@ -2692,6 +2717,7 @@ export async function runAgentLoop(
             markToolCallStarted({ conversationId, toolCallId: call.id })
           )
           const callImages: ToolImage[] = []
+          let acceptingImages = true
           const unavailable = unavailableToolResult(call.name, offeredNames)
           if (unavailable) return { result: unavailable }
           const reconciled = reconciledSideEffectingToolResult({
@@ -2891,7 +2917,12 @@ export async function runAgentLoop(
               : undefined,
             browser,
             emitImage: (image: ToolImage) => {
-              if (!callSignal.aborted) callImages.push(image)
+              if (
+                acceptingImages &&
+                !callSignal.aborted &&
+                callImages.length <= 3
+              )
+                callImages.push({ ...image })
             },
             skillResourceRoots,
             // present_plan calls this on approval; the selected backend is already
@@ -2978,43 +3009,47 @@ export async function runAgentLoop(
           // "always allow" rule is scoped to that specific server tool.
           const mcpCall = parsePrefixedName(call.name)
           let result: string
-          if (mcpCall) {
-            const outcome = await gate({
-              tool: call.name,
-              kind: "mcp",
-              summary: `Call ${mcpCall.serverName} · ${mcpCall.toolName}`,
-              identity: call.name,
-              detail: { server: mcpCall.serverName, tool: mcpCall.toolName },
-            })
-            result =
-              outcome === "approved"
-                ? renderContextEnvelope(
-                    {
-                      trust: "untrusted_data",
-                      channel: "mcp",
-                      source: call.name,
-                    },
-                    await getMcpManager().callTool(
-                      call.name,
-                      args,
-                      mcpWorkspace,
-                      callSignal
+          try {
+            if (mcpCall) {
+              const outcome = await gate({
+                tool: call.name,
+                kind: "mcp",
+                summary: `Call ${mcpCall.serverName} · ${mcpCall.toolName}`,
+                identity: call.name,
+                detail: { server: mcpCall.serverName, tool: mcpCall.toolName },
+              })
+              result =
+                outcome === "approved"
+                  ? renderContextEnvelope(
+                      {
+                        trust: "untrusted_data",
+                        channel: "mcp",
+                        source: call.name,
+                      },
+                      await getMcpManager().callTool(
+                        call.name,
+                        args,
+                        mcpWorkspace,
+                        callSignal
+                      )
                     )
-                  )
-                : `ERROR[mcp]: the user ${
-                    outcome === "blocked" ? "blocked" : "declined"
-                  } the call to ${mcpCall.serverName} · ${mcpCall.toolName}.`
-          } else {
-            result =
-              call.name === readSkillTool.definition.function.name
-                ? await readSkillTool.execute(args, ctx)
-                : !hasWorkspace && CHAT_SHELL_TOOL_NAMES.has(call.name)
-                  ? await runChatShellTool(call.name, args, ctx)
-                  : await runTool(call.name, args, ctx)
+                  : `ERROR[mcp]: the user ${
+                      outcome === "blocked" ? "blocked" : "declined"
+                    } the call to ${mcpCall.serverName} · ${mcpCall.toolName}.`
+            } else {
+              result =
+                call.name === readSkillTool.definition.function.name
+                  ? await readSkillTool.execute(args, ctx)
+                  : !hasWorkspace && CHAT_SHELL_TOOL_NAMES.has(call.name)
+                    ? await runChatShellTool(call.name, args, ctx)
+                    : await runTool(call.name, args, ctx)
+            }
+            // Keep the actual gate result, including recovered successes and the
+            // reason for a block, instead of a tool's generic blocked message.
+            return { result: gatedResult ?? result, images: callImages }
+          } finally {
+            acceptingImages = false
           }
-          // Keep the actual gate result, including recovered successes and the
-          // reason for a block, instead of a tool's generic blocked message.
-          return { result: gatedResult ?? result, images: callImages }
         },
       })
       if (
@@ -3026,7 +3061,12 @@ export async function runAgentLoop(
           "A tool outcome is unknown. Reconcile its effects before continuing."
         )
       }
-      const turnImages = toolResults.flatMap((result) => result.images)
+      const storedResults = listMessages(conversationId).filter(
+        (message) =>
+          message.role === "tool" &&
+          toolCalls.some((call) => call.id === message.toolCallId)
+      )
+      messages.push(...replayToolMedia(storedResults))
       appendCommandCompletionEvents({
         conversationId,
         messages,
@@ -3043,29 +3083,6 @@ export async function runAgentLoop(
           wakeTaskId: null,
         })
         if (mail) messages.push({ role: "user", content: mail.content })
-      }
-
-      // If any tool produced an image this round (browser_screenshot), inject it
-      // as a user message with image content parts so the vision model sees it on
-      // the next round-trip. `messages` is untyped (any[]) and passes straight to
-      // the gateway (createCompletion forwards it), so content parts need no type
-      // surgery. This is transient (not persisted via appendMessage): screenshots
-      // aren't durable across reload in Phase 1 — the tool's text result remains
-      // in the transcript as the record that a capture happened.
-      if (turnImages.length > 0) {
-        messages.push({
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: "Screenshot(s) from the agent browser tool call(s) above:",
-            },
-            ...turnImages.map((img) => ({
-              type: "image_url",
-              image_url: { url: `data:image/jpeg;base64,${img.jpegBase64}` },
-            })),
-          ],
-        })
       }
     }
   } catch (error) {

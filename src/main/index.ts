@@ -11,6 +11,7 @@ import { readFile, writeFile, unlink, mkdir, rm } from "fs/promises"
 import { existsSync } from "fs"
 import { config as loadEnv } from "dotenv"
 import { missionControlEnabled } from "./config/feature-flags"
+import { readMessageMedia } from "./media/tool-media"
 
 // Load .env.local before anything reads process.env. Provider API keys are
 // configured by the user in Settings and stored per provider account, encrypted
@@ -603,6 +604,37 @@ function createWindow(): void {
 // IPC handlers — the renderer reaches these through the preload bridge.
 // `chat` runs the agentic loop and streams events back to the calling renderer
 // over the "chat:event" channel; the invoke resolves with the final result.
+ipcMain.handle(
+  "media:read-message",
+  async (
+    event,
+    conversationId: unknown,
+    messageId: unknown,
+    mediaId: unknown
+  ) => {
+    const contents = mainWindow?.webContents
+    if (
+      !contents ||
+      event.sender !== contents ||
+      event.senderFrame !== contents.mainFrame ||
+      ![conversationId, messageId, mediaId].every(
+        (id) => typeof id === "string" && /^[a-zA-Z0-9_-]{1,128}$/.test(id)
+      )
+    ) {
+      return { error: "Image unavailable." }
+    }
+    try {
+      return await readMessageMedia(
+        conversationId as string,
+        messageId as string,
+        mediaId as string
+      )
+    } catch {
+      return { error: "Image unavailable." }
+    }
+  }
+)
+
 ipcMain.handle("chat", async (event, req: ChatRequest) => {
   const result = await runChat(
     req,

@@ -1,6 +1,8 @@
 # TODO: agent browser Phase 5 — durable in-transcript screenshots
 
-## Status: deferred (Phases 1–4 shipped)
+## Status: completed through shared 109.5 — 2026-10-10
+
+The canonical cross-provider implementation now lives in [109.5](../.plan/109.5-host-images-and-durable-media.md), with the [v1 media contract](../.plan/109.5-media-contract.md). This historical TODO remains linked for provenance; do not build a competing screenshot-only store. Automated qualification passed and the user accepted 109.5 after manual verification on 2026-10-10. Native packaged/platform/container and scale evidence limits remain recorded in the plan; distribution checks remain deferred until all 109.X work is done. The remainder below describes the original transient baseline, not current implementation.
 
 The agent browser (branch `feat/agent-browser`) shipped Phases 1–4: navigate/
 snapshot/screenshot, click/type/back, element pick, tabbed per-conversation

@@ -23,6 +23,39 @@ function message(
 }
 
 describe("buildTimeline", () => {
+  it("links durable media to its result message and conversation on reload", () => {
+    const call = message("assistant", "assistant", "")
+    call.toolCalls = [{ id: "call", name: "read_document", arguments: "{}" }]
+    const result = message("result", "tool", "Page 1 capture")
+    result.toolCallId = "call"
+    const media = [
+      {
+        version: 1 as const,
+        id: "image",
+        mediaType: "image/jpeg" as const,
+        width: 20,
+        height: 10,
+        byteLength: 3,
+        sha256: "abc",
+        order: 0,
+        alt: "Page 1",
+        createdAt: 1,
+        expiresAt: 2,
+        toolCallId: "call",
+        toolName: "read_document",
+      },
+    ]
+    const [group] = buildTimeline([call, { ...result, media }])
+    expect(group.kind).toBe("tools")
+    if (group.kind !== "tools") throw new Error("Expected tool group")
+    expect(group.calls[0]).toMatchObject({
+      media,
+      resultMessageId: "result",
+      conversationId: "conversation-1",
+      result: "Page 1 capture",
+    })
+  })
+
   it("hides persisted background command completion runtime events", () => {
     const content =
       'Runtime event: background command completion(s).\n\n[context provenance: trust=untrusted_data channel=command source="background_command_completion"]\n' +

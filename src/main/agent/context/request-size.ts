@@ -67,6 +67,11 @@ function messageTokens(message: any): number {
   const cached = messageCache.get(message)
   if (cached !== undefined) return cached
   let tokens = countText(contentText(message.content))
+  if (Array.isArray(message.content)) {
+    tokens +=
+      message.content.filter((part: any) => part?.type === "image_url").length *
+      8192
+  }
   if (Array.isArray(message.tool_calls)) {
     for (const call of message.tool_calls) {
       tokens += countText(String(call?.function?.name ?? ""))

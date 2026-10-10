@@ -35,6 +35,16 @@ beforeEach(() => {
 })
 
 describe("preload database bridge", () => {
+  it("reads stored media using only scoped identifiers", async () => {
+    await electron.api.db.messages.readMedia("conversation", "result", "image")
+    expect(electron.invoke).toHaveBeenCalledWith(
+      "media:read-message",
+      "conversation",
+      "result",
+      "image"
+    )
+  })
+
   it("forwards bounded conversation search arguments", async () => {
     await electron.api.db.conversations.search("release notes", { limit: 12 })
 

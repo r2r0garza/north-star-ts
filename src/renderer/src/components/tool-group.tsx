@@ -26,6 +26,7 @@ import { Bubble, BubbleContent } from "@/components/ui/bubble"
 import { Button } from "@/components/ui/button"
 import { Kbd } from "@/components/ui/kbd"
 import { Spinner } from "@/components/ui/spinner"
+import { ToolMediaPreview } from "@/components/tool-media-preview"
 import { cn } from "@/lib/utils"
 import { isErrorResult, type ToolUse } from "@/lib/timeline"
 import { allowsKindWide, kindWideLabel } from "../../../shared/approval-scope"
@@ -183,9 +184,7 @@ export function ToolGroup({ calls }: { calls: ToolUse[] }) {
       </CollapsibleTrigger>
       <CollapsibleContent className="max-w-full min-w-0">
         <div className="mt-1 flex max-w-full min-w-0 flex-col gap-1 pl-2">
-          {calls.map((c) => (
-            <ToolUseRow key={c.id} use={c} />
-          ))}
+          {open && calls.map((c) => <ToolUseRow key={c.id} use={c} />)}
         </div>
       </CollapsibleContent>
     </Collapsible>
@@ -310,6 +309,7 @@ function SubagentResults({ results }: { results: SubagentDisplayResult[] }) {
 }
 
 function ToolUseRow({ use }: { use: ToolUse }) {
+  const [open, setOpen] = useState(false)
   const Icon = iconFor(use.name)
   const error = use.status === "error"
   const interrupted = use.status === "interrupted"
@@ -318,7 +318,11 @@ function ToolUseRow({ use }: { use: ToolUse }) {
     use.name === "spawn_subagents" ? subagentResults(use.result) : null
   return (
     <div className="flex max-w-full min-w-0 flex-col gap-1">
-      <Collapsible className="w-full max-w-full min-w-0">
+      <Collapsible
+        open={open}
+        onOpenChange={setOpen}
+        className="w-full max-w-full min-w-0"
+      >
         <CollapsibleTrigger asChild>
           <button type="button" className="group/row w-full text-left">
             <Marker
@@ -379,6 +383,14 @@ function ToolUseRow({ use }: { use: ToolUse }) {
                   </BubbleContent>
                 </Bubble>
               )
+            )}
+            {open && use.media && use.media.length > 0 && (
+              <ToolMediaPreview
+                key={`${use.conversationId}:${use.resultMessageId}`}
+                media={use.media}
+                conversationId={use.conversationId}
+                messageId={use.resultMessageId}
+              />
             )}
             {interrupted && (
               <Bubble align="start" variant="muted">

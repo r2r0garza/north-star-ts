@@ -4,6 +4,7 @@ import {
   type NativeAssistantCarrier,
 } from "../../agent/providers/claude-subscription/native-carrier"
 import { randomUUID } from "crypto"
+import { messageMedia, cleanupToolMedia } from "../../media/tool-media"
 import { getDb } from "../connection"
 import {
   defaultTokenCounter,
@@ -39,6 +40,9 @@ function toMessage(row: MessageRow): Message {
   return {
     ...(row.role === "assistant" && row.native_assistant
       ? { nativeAssistant: readCarrier(row.native_assistant) }
+      : {}),
+    ...(row.role === "tool" && messageMedia(row.id).length
+      ? { media: messageMedia(row.id) }
       : {}),
     id: row.id,
     conversationId: row.conversation_id,
@@ -118,6 +122,16 @@ export function appendMessage(
       now,
       carrier ? JSON.stringify(carrier) : null
     )
+    if (input.role === "tool" && input.toolCallId) {
+      db.prepare(
+        `UPDATE tool_media SET message_id = ? WHERE conversation_id = ? AND tool_call_id = ? AND message_id IS NULL`
+      ).run(id, input.conversationId, input.toolCallId)
+      const media = messageMedia(id)
+      if (media.length)
+        db.prepare(
+          "UPDATE messages SET token_estimate = token_estimate + ? WHERE id = ?"
+        ).run(media.length * 8192, id)
+    }
     touchConversation(input.conversationId)
     return seq
   })
@@ -166,4 +180,5 @@ export function getMaxMessageSeq(conversationId: string): number {
 
 export function deleteMessage(id: string): void {
   getDb().prepare("DELETE FROM messages WHERE id = ?").run(id)
+  cleanupToolMedia()
 }

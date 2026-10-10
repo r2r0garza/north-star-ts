@@ -1,3 +1,4 @@
+import type { ToolMediaReference } from "../shared/tool-media"
 import type {
   ClaudeSubscriptionPreflight,
   ClaudeSubscriptionRefresh,
@@ -195,7 +196,15 @@ export type ChatEvent =
       name: string
       arguments: string
     }
-  | { type: "tool"; phase: "done"; id: string; name: string; result: string }
+  | {
+      type: "tool"
+      phase: "done"
+      id: string
+      name: string
+      result: string
+      media?: ToolMediaReference[]
+      messageId?: string
+    }
   | {
       type: "approval"
       id: string
@@ -1974,6 +1983,13 @@ const api = {
       },
     },
     messages: {
+      readMedia: (conversationId: string, messageId: string, mediaId: string) =>
+        ipcRenderer.invoke(
+          "media:read-message",
+          conversationId,
+          messageId,
+          mediaId
+        ) as Promise<{ dataUrl?: string; error?: string }>,
       list: (conversationId: string) =>
         ipcRenderer.invoke("db:messages:list", conversationId) as Promise<
           Message[]
