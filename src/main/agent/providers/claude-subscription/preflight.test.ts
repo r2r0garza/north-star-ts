@@ -125,6 +125,64 @@ describe("safe subscription preflight", () => {
       )
     }
   )
+  it.each([
+    [
+      "claude_subscription_managed_policy_probe",
+      "managed-policy sources",
+      "managed_policy_probe",
+    ],
+    ["claude_subscription_cli_probe", "version probe failed", "cli_probe"],
+    [
+      "claude_subscription_private_state",
+      "Private transport state",
+      "private_state",
+    ],
+  ])(
+    "identifies %s without raw native details",
+    async (code, hint, diagnostic) => {
+      mocks.version.mockRejectedValue(
+        new ClaudeSubscriptionError(
+          code,
+          "secret token /private/work/settings.json"
+        )
+      )
+      const result = await preflightClaudeSubscription("/app-data")
+      expect(result.ok).toBe(false)
+      expect(result.hint).toContain(hint)
+      expect(result.hint).toContain(`[setup:version:${diagnostic}]`)
+      expect(JSON.stringify(result)).not.toMatch(/secret|\/private\/work/)
+      expect(mocks.auth).not.toHaveBeenCalled()
+    }
+  )
+  it.each([
+    ["env", "environment"],
+    ["resolve", "executable"],
+    ["files", "private_state"],
+    ["version", "version"],
+    ["auth", "authentication"],
+    ["policy", "managed_policy"],
+  ] as const)(
+    "reports a fixed stage for unexpected %s failures",
+    async (mock, stage) => {
+      mocks[mock].mockRejectedValue(
+        Object.assign(new Error("secret email@example.test"), {
+          code: "SECRET_CODE",
+        })
+      )
+      const result = await preflightClaudeSubscription("/app-data")
+      expect(result.ok).toBe(false)
+      expect(result.hint).toContain(`[setup:${stage}]`)
+      expect(JSON.stringify(result)).not.toMatch(/secret|email@|SECRET_CODE/)
+    }
+  )
+  it("does not expose unrecognized typed error codes", async () => {
+    mocks.version.mockRejectedValue(
+      new ClaudeSubscriptionError("SECRET_CODE", "secret")
+    )
+    const result = await preflightClaudeSubscription("/app-data")
+    expect(result.hint).toContain("[setup:version]")
+    expect(result.hint).not.toMatch(/SECRET_CODE|secret/)
+  })
   it("sanitizes unexpected failures", async () => {
     mocks.guard.mockImplementation(() => {
       throw new Error("private email token")

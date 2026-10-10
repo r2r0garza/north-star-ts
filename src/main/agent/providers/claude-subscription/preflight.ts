@@ -30,7 +30,27 @@ function safeAuthReason(error: ClaudeSubscriptionError): AuthCompatibility {
     : "status_unavailable"
 }
 
+const stageHints = {
+  environment: "Could not read the host CLI environment.",
+  gateway: "Could not inspect the static CLI gateway configuration.",
+  environment_guard: "Could not validate the CLI environment.",
+  executable: "Could not resolve the official CLI executable.",
+  private_state:
+    "Could not prepare private setup state. Check application-data access permissions.",
+  version:
+    "Could not probe the CLI version or its startup managed-policy sources.",
+  authentication: "Could not verify CLI authentication metadata.",
+  managed_policy:
+    "Could not verify host managed-policy sources. Do not remove or bypass policy.",
+} as const
+
 const hints: Record<string, string> = {
+  claude_subscription_managed_policy_probe:
+    "Could not verify Claude managed-policy sources or macOS enrollment. Check whether the host permits policy inspection; do not remove or bypass policy.",
+  claude_subscription_cli_probe:
+    "The official CLI version probe failed or timed out. Confirm claude --version works on this host.",
+  claude_subscription_private_state:
+    "Private transport state could not be verified. Check application-data permissions; do not delete existing state to bypass this check.",
   claude_subscription_gateway_unqualified:
     "The static CLI gateway configuration is unqualified. HTTPS routing, static credentials and a supported wire protocol are required. Managed hosts/policy remain unsupported; do not bypass policy.",
   claude_subscription_cli_missing:
@@ -63,11 +83,19 @@ export async function preflightClaudeSubscription(
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 60000)
   let files: Awaited<ReturnType<typeof privateDirectories>> | undefined
+  let stage: keyof typeof stageHints = "environment"
   try {
-    const env = guardEnvironment(await gatewayEnvironment(await hostCliEnv()))
+    const hostEnv = await hostCliEnv()
+    stage = "gateway"
+    const gatewayEnv = await gatewayEnvironment(hostEnv)
+    stage = "environment_guard"
+    const env = guardEnvironment(gatewayEnv)
+    stage = "executable"
     const executable = await resolveExecutable(env)
     result.installed = true
+    stage = "private_state"
     files = await privateDirectories(appData, controller.signal)
+    stage = "version"
     result.version = await probeCliVersion(
       executable,
       files.cwd,
@@ -75,6 +103,7 @@ export async function preflightClaudeSubscription(
       controller.signal
     )
     result.compatible = true
+    stage = "authentication"
     await verifyPersonalSubscription(
       executable,
       files.cwd,
@@ -82,21 +111,25 @@ export async function preflightClaudeSubscription(
       controller.signal
     )
     result.loggedIn = true
+    stage = "managed_policy"
     await guardManagedPolicy(env, controller.signal)
     result.ok = true
     result.hint = gatewayRoute(env)
       ? "Static gateway configuration and CLI authentication metadata verified; live gateway compatibility and entitlement are not established. Entries share the CLI-selected credentials and may incur API charges."
       : "Personal Pro/Max CLI login verified. All configured subscription entries share this official CLI login; model visibility does not establish entitlement."
   } catch (error) {
+    result.hint = `${stageHints[stage]} [setup:${stage}]`
+    if (controller.signal.aborted)
+      result.hint = `CLI setup verification timed out. [setup:${stage}]`
     if (error instanceof ClaudeSubscriptionError) {
       if (error.code === "claude_subscription_cli_missing")
         result.installed = false
       if (error.code === "claude_subscription_cli_incompatible")
         result.compatible = false
-      result.hint =
-        error.code === "claude_subscription_account_unqualified"
-          ? authCompatibilityHint(safeAuthReason(error))
-          : (hints[error.code] ?? result.hint)
+      if (error.code === "claude_subscription_account_unqualified")
+        result.hint = `${authCompatibilityHint(safeAuthReason(error))} [setup:${stage}:account_unqualified]`
+      else if (Object.hasOwn(hints, error.code))
+        result.hint = `${hints[error.code]} [setup:${stage}:${error.code.replace("claude_subscription_", "")}]`
     }
   } finally {
     clearTimeout(timeout)
