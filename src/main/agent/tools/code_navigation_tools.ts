@@ -93,7 +93,7 @@ class TypeScriptNavigationProvider {
   private readonly workspace: string
 
   constructor(workspace: string) {
-    this.workspace = realpathSync(workspace)
+    this.workspace = realpathSync.native(workspace).replace(/\\/g, "/")
   }
 
   async workspaceSymbols(args: {
@@ -311,7 +311,7 @@ class TypeScriptNavigationProvider {
     if (!config) {
       const files = scanSupportedFiles(this.workspace)
       if (files.length === 0) return null
-      this.rootFiles = files
+      this.rootFiles = files.map((file) => file.replace(/\\/g, "/"))
       this.compilerOptions = {
         allowJs: true,
         checkJs: false,
@@ -324,7 +324,7 @@ class TypeScriptNavigationProvider {
       const parsed = ts.parseJsonConfigFileContent(
         config.json.config ?? {},
         ts.sys,
-        dirname(config.path),
+        dirname(config.path).replace(/\\/g, "/"),
         { noEmit: true, plugins: [] },
         config.path
       )
@@ -335,6 +335,7 @@ class TypeScriptNavigationProvider {
           return stat ? stat.size <= MAX_FILE_SIZE : false
         })
         .slice(0, MAX_PROJECT_FILES)
+        .map((file) => file.replace(/\\/g, "/"))
       this.compilerOptions = { ...parsed.options, noEmit: true, plugins: [] }
     }
     if ((this.rootFiles ?? []).length === 0) return null
@@ -408,7 +409,7 @@ class TypeScriptNavigationProvider {
     if (!existsSync(fileName)) {
       return { error: errorPayload("not_found", "File was not found.") }
     }
-    return { fileName }
+    return { fileName: fileName.replace(/\\/g, "/") }
   }
 
   private positionAt(
@@ -681,7 +682,7 @@ export async function semanticDiagnosticsForWorkspace(
 
 function provider(ctx: ToolContext): TypeScriptNavigationProvider {
   if (!ctx.workspace) throw new Error("Code navigation requires a workspace.")
-  const key = realpathSync(ctx.workspace)
+  const key = realpathSync.native(ctx.workspace)
   const existing = providers.get(key)
   if (existing) return existing
   const created = new TypeScriptNavigationProvider(key)
@@ -794,7 +795,10 @@ function isInside(parent: string, child: string): boolean {
 
 function relPath(workspace: string, fileName: string): string {
   const rel = relative(workspace, fileName)
-  return rel && !rel.startsWith("..") ? rel : basename(fileName)
+  return (rel && !rel.startsWith("..") ? rel : basename(fileName)).replace(
+    /\\/g,
+    "/"
+  )
 }
 
 function boundedExcerpt(text: string, start: number, length: number): string {

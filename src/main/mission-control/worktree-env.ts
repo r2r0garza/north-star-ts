@@ -8,6 +8,7 @@ import {
   readdir,
   readFile,
   symlink,
+  stat,
   unlink,
   writeFile,
 } from "fs/promises"
@@ -85,7 +86,13 @@ export async function prepareWorktreeEnvironment(input: {
     if (await lstat(target).catch(() => null)) continue
     try {
       await mkdir(path.dirname(target), { recursive: true })
-      await symlink(source, target)
+      await symlink(
+        path.resolve(source),
+        target,
+        process.platform === "win32" && (await stat(source)).isDirectory()
+          ? "junction"
+          : undefined
+      )
       await excludeFromGit(input.worktreeWorkspace, relative)
       linked.push(relative)
     } catch {

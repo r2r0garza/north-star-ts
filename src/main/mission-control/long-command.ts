@@ -48,12 +48,13 @@ export function runLongCommand(
     const isWin = process.platform === "win32"
     const child = spawn(
       isWin ? "cmd.exe" : "/bin/sh",
-      isWin ? ["/d", "/s", "/c", command] : ["-c", command],
+      isWin ? ["/d", "/s", "/c", `"${command}"`] : ["-c", command],
       {
         cwd: options.cwd,
         env: options.env ?? process.env,
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
+        windowsVerbatimArguments: isWin,
         // Its own process group, so stopping it stops what it spawned.
         detached: !isWin,
       }
@@ -64,10 +65,29 @@ export function runLongCommand(
     const keep = (text: string) =>
       text.length > OUTPUT_KEEP ? text.slice(-OUTPUT_KEEP) : text
     const stop = (why: "quiet" | "overall") => {
+      if (stoppedFor) return
       stoppedFor = why
       try {
         if (!isWin && child.pid) process.kill(-child.pid, "SIGKILL")
-        else child.kill("SIGKILL")
+        else if (isWin && child.pid) {
+          const killer = spawn(
+            "taskkill",
+            ["/pid", String(child.pid), "/T", "/F"],
+            { stdio: "ignore", windowsHide: true }
+          )
+          const fallback = () => {
+            if (child.exitCode === null) child.kill("SIGKILL")
+          }
+          const deadline = setTimeout(fallback, 5000)
+          killer.once("error", () => {
+            clearTimeout(deadline)
+            fallback()
+          })
+          killer.once("close", (code) => {
+            clearTimeout(deadline)
+            if (code !== 0) fallback()
+          })
+        } else child.kill("SIGKILL")
       } catch {
         child.kill("SIGKILL")
       }

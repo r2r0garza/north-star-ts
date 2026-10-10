@@ -49,7 +49,11 @@ describe("read_file_tool", () => {
     const outside = await mkdtemp(join(tmpdir(), "skill-resource-outside-"))
     try {
       await writeFile(join(outside, "secret.txt"), "secret\n")
-      await symlink(outside, join(skillRoot, "outside"))
+      await symlink(
+        outside,
+        join(skillRoot, "outside"),
+        process.platform === "win32" ? "junction" : "dir"
+      )
 
       const inactive = await readFileTool.execute(
         { path: "skill://missing/template.txt" },

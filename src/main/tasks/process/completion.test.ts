@@ -85,11 +85,16 @@ describe("phase completion boundary", () => {
     await expect(checkPhaseOutcome({ contract, outcome })).rejects.toThrow(
       "no workspace"
     )
-    await writeFile(join(root, "outside"), "private")
-    await symlink(join(root, "outside"), join(workspace, "link"))
+    await mkdir(join(root, "outside"))
+    await writeFile(join(root, "outside", "private.txt"), "private")
+    await symlink(
+      join(root, "outside"),
+      join(workspace, "link"),
+      process.platform === "win32" ? "junction" : "dir"
+    )
     await expect(
       checkPhaseOutcome({
-        contract: { ...contract, requiredArtifacts: ["link"] },
+        contract: { ...contract, requiredArtifacts: ["link/private.txt"] },
         outcome,
         workspace,
       })

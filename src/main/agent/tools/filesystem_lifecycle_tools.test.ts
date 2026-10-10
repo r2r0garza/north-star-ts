@@ -122,7 +122,11 @@ describe("filesystem lifecycle tools", () => {
 
   it("rejects final-component symlinks instead of deleting or moving their targets", async () => {
     await writeFile(join(external, "sentinel.txt"), "secret")
-    await symlink(join(external, "sentinel.txt"), join(workspace, "link.txt"))
+    await symlink(
+      process.platform === "win32" ? external : join(external, "sentinel.txt"),
+      join(workspace, "link.txt"),
+      process.platform === "win32" ? "junction" : "file"
+    )
 
     const stat = await statPathTool.execute({ path: "link.txt" }, { workspace })
     const del = await deletePathTool.execute(

@@ -1,5 +1,5 @@
 import { execFile } from "child_process"
-import { dirname } from "path"
+import { dirname, normalize } from "path"
 import { promisify } from "util"
 import { getWorkspaceByPath } from "../db/repositories/workspaces"
 import { getRunByWorkspace } from "../db/repositories/index-runs"
@@ -33,7 +33,7 @@ async function mainCheckoutOf(path: string): Promise<string | null> {
     const commonDir = stdout.trim()
     // A non-bare repository's common dir is <main checkout>/.git.
     if (commonDir.endsWith("/.git")) {
-      const candidate = dirname(commonDir)
+      const candidate = normalize(dirname(commonDir))
       if (candidate !== path) root = candidate
     }
   } catch {

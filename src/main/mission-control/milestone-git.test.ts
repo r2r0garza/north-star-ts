@@ -1,3 +1,8 @@
+import { vi } from "vitest"
+vi.setConfig({ testTimeout: 60_000 })
+const nodeCommand = (code: string) =>
+  `"${process.execPath}" -e "eval(Buffer.from('${Buffer.from(code).toString("base64")}', 'base64').toString('utf8'))"`
+
 import { execFileSync } from "child_process"
 import {
   existsSync,
@@ -33,6 +38,8 @@ function repo(): string {
   const root = mkdtempSync(path.join(tmpdir(), "mc-git-"))
   dirs.push(root)
   git(root, "init", "-b", "main")
+  git(root, "config", "core.autocrlf", "false")
+  git(root, "config", "core.eol", "lf")
   git(root, "config", "user.email", "test@example.com")
   git(root, "config", "user.name", "Test")
   writeFileSync(path.join(root, "README.md"), "base\n")
@@ -389,7 +396,9 @@ describe("regenerating generated files on a merge conflict", () => {
   // Rebuilds the "index" from the sources, as a repository's generator would.
   const INDEX_RULE = {
     paths: [".code-index/**"],
-    command: "mkdir -p .code-index && ls src > .code-index/files.txt",
+    command: nodeCommand(
+      "const fs = require('fs'); fs.mkdirSync('.code-index', { recursive: true }); fs.writeFileSync('.code-index/files.txt', fs.readdirSync('src').sort().join('\\n') + '\\n')"
+    ),
   }
 
   async function twoStoriesSharingTheIndex(extra: Record<string, string> = {}) {
@@ -474,7 +483,9 @@ describe("regenerating generated files on a merge conflict", () => {
     const preCommit = {
       paths: [".code-index/**"],
       command:
-        "mkdir -p .code-index && ls src > .code-index/files.txt && git diff --quiet -- .code-index",
+        nodeCommand(
+          "const fs = require('fs'); fs.mkdirSync('.code-index', { recursive: true }); fs.writeFileSync('.code-index/files.txt', fs.readdirSync('src').sort().join('\\n') + '\\n')"
+        ) + " && git diff --quiet -- .code-index",
     }
     const outcome = await mergeUserStory({
       root,

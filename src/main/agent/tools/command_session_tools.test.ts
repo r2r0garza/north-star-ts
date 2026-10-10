@@ -38,7 +38,7 @@ import type { ToolContext } from "./types"
 const MODEL_OUTPUT_BYTES = 192 * 1024
 
 const nodeCmd = (code: string) =>
-  `${JSON.stringify(process.execPath)} -e ${JSON.stringify(code)}`
+  `"${process.execPath}" -e "eval(Buffer.from('${Buffer.from(code).toString("base64")}', 'base64').toString('utf8'))"`
 
 function ctx(overrides: Partial<ToolContext> = {}): ToolContext {
   return {
@@ -249,7 +249,7 @@ function fakeWindowsPythonSpawn(seen: {
     child.stdout = new PassThrough()
     child.stderr = new PassThrough()
     child.stdin = new PassThrough()
-    Object.defineProperty(child, "pid", { value: 12345 })
+    Object.defineProperty(child, "pid", { value: undefined })
     child.kill = () => {
       setImmediate(() => {
         child.stdout.end()
@@ -371,9 +371,12 @@ describe("command session tools", () => {
     )
 
     expect(seen).toEqual([
-      { cwd: "/workspace/nested", workspace: "/workspace" },
+      {
+        cwd: resolve("/workspace", "nested"),
+        workspace: resolve("/workspace"),
+      },
     ])
-    expect(env.spawnedCwds).toEqual(["/workspace/nested"])
+    expect(env.spawnedCwds).toEqual([resolve("/workspace", "nested")])
   })
 
   it.skipIf(process.platform === "win32")(
@@ -444,7 +447,9 @@ describe("command session tools", () => {
       expect(exec.output).toBe("hello world")
       expect(compat).toContain("hello world")
       // The gate approves the command that actually runs, not the URI form.
-      expect(seen[0]?.command).toContain(`'${script}'`)
+      expect(seen[0]?.command).toContain(
+        process.platform === "win32" ? `"${script}"` : `'${script}'`
+      )
       expect(seen[0]?.command).not.toContain("skill://")
       expect(seen[0]?.skillResources).toEqual([
         { uri: "skill://demo/scripts/hello.js", path: script },
@@ -928,7 +933,7 @@ describe("command session tools", () => {
       await execCommandTool.execute(
         {
           command: nodeCmd(
-            `process.stdout.write(${JSON.stringify(expected)}); setTimeout(() => {}, 1000)`
+            `process.stdout.write(${JSON.stringify(prefix)} + 'y'.repeat(220 * 1024) + ${JSON.stringify(suffix)}); setTimeout(() => {}, 10000)`
           ),
           max_output_bytes: 1024 * 1024,
           background: true,
@@ -937,7 +942,18 @@ describe("command session tools", () => {
       )
     )
 
-    await new Promise((resolve) => setTimeout(resolve, 100))
+    await vi.waitFor(
+      async () => {
+        const ready = parseResult(
+          await pollCommandTool.execute(
+            { session_id: String(started.sessionId) },
+            ctx()
+          )
+        )
+        expect(ready.totalBytes).toBe(Buffer.byteLength(expected))
+      },
+      { timeout: 5000 }
+    )
     const withOutput = parseResult(
       await pollCommandTool.execute(
         {
@@ -1257,7 +1273,18 @@ describe("command session tools", () => {
       )
     )
 
-    await new Promise((resolve) => setTimeout(resolve, 100))
+    await vi.waitFor(
+      async () => {
+        const ready = parseResult(
+          await pollCommandTool.execute(
+            { session_id: String(started.sessionId) },
+            ctx()
+          )
+        )
+        expect(ready.totalBytes).toBe(9)
+      },
+      { timeout: 5000 }
+    )
 
     const polled = parseResult(
       await pollCommandTool.execute(

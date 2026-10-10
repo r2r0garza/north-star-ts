@@ -50,7 +50,9 @@ describe("resolveSkillResourcesInCommand", () => {
       "darwin"
     )
 
-    expect(result.command).toBe(`python3 '${tool}' --x "${tool}"`)
+    expect(result.command).toBe(
+      `python3 '${tool}' --x "${tool.replace(/["$\\]/g, (char) => "\\" + char)}"`
+    )
     expect(result.resources).toEqual([
       { uri: "skill://demo/scripts/tool.py", path: tool },
       { uri: "skill://demo/scripts/tool.py", path: tool },
@@ -108,7 +110,11 @@ describe("resolveSkillResourcesInCommand", () => {
     const outside = await mkdtemp(join(tmpdir(), "skill-cmd-outside-"))
     try {
       await writeFile(join(outside, "evil.sh"), "echo pwned\n")
-      await symlink(outside, join(skillRoot, "escape"))
+      await symlink(
+        outside,
+        join(skillRoot, "escape"),
+        process.platform === "win32" ? "junction" : "dir"
+      )
 
       for (const [command, message] of [
         ["sh skill://other/run.sh", "Call read_skill"],

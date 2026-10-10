@@ -80,7 +80,11 @@ describe("plan file lifecycle", () => {
     writeFileSync(unrelated, "old")
     utimesSync(unrelated, 1, 1)
     mkdirSync(path.join(plansDir, "nested.md"))
-    symlinkSync(expired, path.join(plansDir, "link.md"))
+    symlinkSync(
+      process.platform === "win32" ? path.join(plansDir, "nested.md") : expired,
+      path.join(plansDir, "link.md"),
+      process.platform === "win32" ? "junction" : "file"
+    )
 
     const result = await pruneExpiredPlanFiles(now)
 

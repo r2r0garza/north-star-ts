@@ -87,7 +87,11 @@ describe("listWorkspaceDirectory", () => {
   })
 
   it("returns symlinks but never treats them as expandable directories", async () => {
-    await symlink(join(root, "folder"), join(root, "folder-link"))
+    await symlink(
+      join(root, "folder"),
+      join(root, "folder-link"),
+      process.platform === "win32" ? "junction" : "dir"
+    )
     const result = await listWorkspaceDirectory(root, "")
     expect(result.entries).toContainEqual({
       name: "folder-link",

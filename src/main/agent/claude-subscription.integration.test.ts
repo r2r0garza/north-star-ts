@@ -665,7 +665,9 @@ describe.skipIf(!sqliteLoads)(
         abort,
         allowedToolNames: new Set(["read_file_tool"]),
       })
-      await vi.waitFor(() => expect(captured).toHaveLength(1))
+      await vi.waitFor(() => expect(captured).toHaveLength(1), {
+        timeout: 30000,
+      })
       abort.abort()
       const result = await pending
       expect(result).not.toHaveProperty("error")

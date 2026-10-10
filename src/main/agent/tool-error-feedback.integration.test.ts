@@ -2613,6 +2613,10 @@ describe.skipIf(!sqliteLoads)("tool batch durability and cancellation", () => {
     const conversation = createConversation({ mode: "interactive" })
     let finish!: (result: string) => void
     let lateImage!: () => void
+    let pendingEntered!: () => void
+    const entered = new Promise<void>((resolve) => {
+      pendingEntered = resolve
+    })
     let pendingSignal!: AbortSignal
     installTool(async (args, ctx) => {
       if (args.id === "bad") throw new Error("controlled read error")
@@ -2621,6 +2625,7 @@ describe.skipIf(!sqliteLoads)("tool batch durability and cancellation", () => {
       lateImage = () => ctx.emitImage?.({ jpegBase64: "late", alt: "late" })
       return new Promise((resolve) => {
         finish = resolve
+        pendingEntered()
       })
     })
     scriptedCompletions.push(() =>
@@ -2658,7 +2663,7 @@ describe.skipIf(!sqliteLoads)("tool batch durability and cancellation", () => {
           siblingsDone()
       },
     })
-    await siblings
+    await Promise.all([siblings, entered])
     expect(
       listToolCallLifecycle(conversation.id).map((r) => [
         r.toolCallId,
