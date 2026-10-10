@@ -1580,6 +1580,9 @@ function App(
               updateLiveTool(turn, event.id, (t) => ({
                 ...t,
                 result: event.result,
+                media: event.media,
+                resultMessageId: event.messageId,
+                conversationId: turnConvoId,
                 status: isErrorResult(event.result) ? "error" : "done",
                 label: deriveLabel(
                   t.name,

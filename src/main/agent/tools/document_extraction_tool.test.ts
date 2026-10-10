@@ -27,6 +27,7 @@ vi.mock("electron", () => ({
 }))
 
 import { readDocumentTool } from "./document_extraction_tool"
+import * as imageDecoder from "./image_decoder"
 
 let workspace: string
 
@@ -35,6 +36,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  vi.restoreAllMocks()
   await rm(workspace, { recursive: true, force: true })
 })
 
@@ -337,7 +339,86 @@ describe("read_document", () => {
     expect(result).toContain('"format": "png"')
     expect(result).toContain('"width": 640')
     expect(result).toContain('"height": 480')
-    expect(result).toContain("Image OCR and vision analysis")
+    expect(metadata(result).imagePixels).toBe("unavailable")
+    expect(result).toContain("no image delivery channel")
+  })
+
+  it("delivers authorized standalone pixels with source attribution", async () => {
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aY9sAAAAASUVORK5CYII=",
+      "base64"
+    )
+    await writeFile(join(workspace, "photo.png"), png)
+    const decode = vi
+      .spyOn(imageDecoder, "decodeImage")
+      .mockResolvedValue({ jpegBase64: "pixels", width: 1, height: 1 })
+    const emitImage = vi.fn()
+    const signal = new AbortController().signal
+    const result = await readDocumentTool.execute(
+      { path: "photo.png" },
+      { workspace, emitImage, signal }
+    )
+    expect(decode).toHaveBeenCalledWith(png, signal)
+    expect(emitImage).toHaveBeenCalledWith({
+      jpegBase64: "pixels",
+      alt: "photo.png — first frame (orientation applied)",
+    })
+    expect(metadata(result)).toMatchObject({
+      imagePixels: "delivered",
+      imageDimensions: { width: 1, height: 1 },
+    })
+  })
+
+  it("does not decode unauthorized files or emit after cancellation", async () => {
+    const decode = vi.spyOn(imageDecoder, "decodeImage")
+    const emitImage = vi.fn()
+    const denied = await readDocumentTool.execute(
+      { path: "../outside.png" },
+      { workspace, emitImage }
+    )
+    expect(denied).toContain("ERROR[not_allowed]")
+    expect(decode).not.toHaveBeenCalled()
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aY9sAAAAASUVORK5CYII=",
+      "base64"
+    )
+    await writeFile(join(workspace, "photo.png"), png)
+    const controller = new AbortController()
+    decode.mockImplementation(async () => {
+      controller.abort()
+      return { jpegBase64: "late", width: 1, height: 1 }
+    })
+    const result = await readDocumentTool.execute(
+      { path: "photo.png" },
+      { workspace, emitImage, signal: controller.signal }
+    )
+    expect(metadata(result).imagePixels).toBe("unavailable")
+    expect(emitImage).not.toHaveBeenCalled()
+  })
+
+  it("reports unsupported bytes and decoder failures without emitting", async () => {
+    const emitImage = vi.fn()
+    await writeFile(join(workspace, "bad.png"), "not an image")
+    const bad = await readDocumentTool.execute(
+      { path: "bad.png" },
+      { workspace, emitImage }
+    )
+    expect(metadata(bad).imagePixels).toBe("unsupported")
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aY9sAAAAASUVORK5CYII=",
+      "base64"
+    )
+    await writeFile(join(workspace, "broken.png"), png)
+    vi.spyOn(imageDecoder, "decodeImage").mockRejectedValue(
+      new Error("corrupt pixels")
+    )
+    const broken = await readDocumentTool.execute(
+      { path: "broken.png" },
+      { workspace, emitImage }
+    )
+    expect(metadata(broken).imagePixels).toBe("unavailable")
+    expect(broken).toContain("corrupt pixels")
+    expect(emitImage).not.toHaveBeenCalled()
   })
 
   it("rejects unsafe ZIP entries", async () => {

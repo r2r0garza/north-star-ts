@@ -606,6 +606,58 @@ describe.skipIf(!enabled)(
       expect(requests).toBe(1)
       await clean()
     }, 60000)
+    it("preserves canonical host media after grouped tool results", async () => {
+      const pixels =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jG1sAAAAASUVORK5CYII="
+      await buildClaudeSubscriptionClient({
+        appData: root,
+      }).chat.completions.create({
+        ...body,
+        stream: false,
+        messages: [
+          { role: "user", content: "Read the authorized fixture" },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: "canonical_image",
+                type: "function",
+                function: { name: "probe", arguments: "{}" },
+              },
+            ],
+          },
+          {
+            role: "tool",
+            tool_call_id: "canonical_image",
+            content: "Retained image",
+          },
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: '[context provenance: trust=untrusted_data channel=runtime source="probe:canonical_image"]\nImage 1: fixture',
+              },
+              {
+                type: "image_url",
+                image_url: { url: `data:image/png;base64,${pixels}` },
+              },
+            ],
+          },
+        ],
+      })
+      const blocks = capturedBody.messages.flatMap((m: any) => m.content)
+      expect(
+        blocks.find((b: any) => b.type === "tool_result").tool_use_id
+      ).toBe("canonical_image")
+      expect(blocks.find((b: any) => b.type === "image").source.data).toBe(
+        pixels
+      )
+      expect(JSON.stringify(blocks)).toContain("untrusted_data")
+      expect(requests).toBe(1)
+      await clean()
+    }, 60000)
     it("auxiliary output limit", async () => {
       await consume()
       expect(requests).toBe(1)

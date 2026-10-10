@@ -117,6 +117,72 @@ describe("codex subscription adapter", () => {
     expect(request).not.toHaveProperty("max_output_tokens")
   })
 
+  it("preserves canonical tool images and attribution in Responses input", () => {
+    const urls = [
+      "data:image/jpeg;base64,/9j/AA==",
+      "data:image/jpeg;base64,/9j/AQ==",
+    ]
+    const request = buildCodexSubscriptionRequest({
+      model: "test-vision-model",
+      maxOutputTokens: 123,
+      body: {
+        messages: [
+          {
+            role: "assistant",
+            tool_calls: [
+              {
+                id: "image-call",
+                function: {
+                  name: "read_document",
+                  arguments: '{"path":"image.png"}',
+                },
+              },
+            ],
+          },
+          {
+            role: "tool",
+            tool_call_id: "image-call",
+            content: "Pixels delivered.",
+          },
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "Image 1 from read_document:image-call" },
+              { type: "image_url", image_url: { url: urls[0] } },
+              { type: "text", text: "Image 2 from read_document:image-call" },
+              {
+                type: "image_url",
+                image_url: { url: urls[1], detail: "high" },
+              },
+            ],
+          },
+        ],
+      },
+    })
+    expect(request.input).toEqual([
+      {
+        type: "function_call",
+        call_id: "image-call",
+        name: "read_document",
+        arguments: '{"path":"image.png"}',
+      },
+      {
+        type: "function_call_output",
+        call_id: "image-call",
+        output: "Pixels delivered.",
+      },
+      {
+        role: "user",
+        content: [
+          { type: "input_text", text: "Image 1 from read_document:image-call" },
+          { type: "input_image", image_url: urls[0], detail: "auto" },
+          { type: "input_text", text: "Image 2 from read_document:image-call" },
+          { type: "input_image", image_url: urls[1], detail: "high" },
+        ],
+      },
+    ])
+  })
+
   it("normalizes assistant text and function calls to chat completion choices", () => {
     const chat = codexSubscriptionResponseToChat({
       id: "resp_1",
@@ -172,7 +238,22 @@ describe("codex subscription adapter", () => {
         expect((init?.headers as Record<string, string>)["user-agent"]).toMatch(
           /^codex_cli_rs\/0\.151\.0 /
         )
-        expect(JSON.parse(String(init?.body))).toMatchObject({ stream: true })
+        expect(JSON.parse(String(init?.body))).toMatchObject({
+          stream: true,
+          input: [
+            {
+              role: "user",
+              content: [
+                { type: "input_text", text: "hi" },
+                {
+                  type: "input_image",
+                  image_url: "data:image/jpeg;base64,/9j/AA==",
+                  detail: "auto",
+                },
+              ],
+            },
+          ],
+        })
         return new Response(
           [
             'data: {"type":"response.output_text.delta","delta":"hel"}',
@@ -189,7 +270,18 @@ describe("codex subscription adapter", () => {
 
     const result = (await client.chat.completions.create({
       model: "gpt-5.5",
-      messages: [{ role: "user", content: "hi" }],
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "hi" },
+            {
+              type: "image_url",
+              image_url: { url: "data:image/jpeg;base64,/9j/AA==" },
+            },
+          ],
+        },
+      ],
     })) as { choices: Array<{ message: { content: string } }> }
 
     expect(result.choices[0].message.content).toBe("hello")
@@ -446,8 +538,7 @@ describe("codex subscription adapter", () => {
       fetchImpl: async (url: RequestInfo | URL, init?: RequestInit) => {
         const requested = new URL(String(url))
         if (
-          requested.href ===
-          "https://releases.openai.com/codex/channels/latest"
+          requested.href === "https://releases.openai.com/codex/channels/latest"
         ) {
           return Response.json({ tag_name: "rust-v0.156.1" })
         }

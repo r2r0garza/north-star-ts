@@ -31,6 +31,22 @@ commands run on the host from that folder under an approval policy.
   Playbooks, a Navigator, Comms, health monitoring, and a merge queue. Enable it
   with `NEXT_mission_control=true`.
 
+### Subagents and Git isolation
+
+Normal conversation turns and background tasks write directly to the selected
+workspace. Read-only subagents inspect that workspace without creating writer
+worktrees. When a background agent delegates implementation through
+`spawn_subagents` with `access: "write"`, North Star creates an isolated Git
+worktree and branch for each writer. This keeps parallel writers from changing
+the same checkout and lets their committed results be reviewed independently.
+
+Successful writer branches can be staged through an integration branch when
+`prepare_integration` is requested. If a writer run is interrupted, North Star
+preserves its artifact record, blocks new writers for that repository, and shows
+the amber **Subagent cleanup** control so the worktree and branch can be
+reviewed before they are removed or preserved. Mission Control uses isolated
+worktrees independently as part of its execution model.
+
 ## Getting started
 
 Install dependencies, start the development app, then configure a provider account

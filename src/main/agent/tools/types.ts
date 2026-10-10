@@ -12,12 +12,10 @@ import type {
   SubagentResult,
 } from "../subagents/contracts"
 
-// A JPEG image a tool produced (currently browser_screenshot) that should be
-// shown to the vision-capable model. Tool results themselves are text-only (they
-// are persisted/replayed as strings), so a tool hands an image to the loop via
-// `emitImage`; the loop injects it as a follow-up user message with an image
-// content part before the next model round-trip. `alt` is a short caption used
-// as the text part alongside the image.
+// Sole producer contract for browser, PDF and authorized standalone image reads.
+// The host validates and persists successful emissions as app-owned media,
+// then projects the same attributed image parts for live and historical replay.
+// `alt` is untrusted source attribution, never an instruction.
 export interface ToolImage {
   jpegBase64: string
   alt: string

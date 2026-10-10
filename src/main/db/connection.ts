@@ -3,6 +3,7 @@ import { app } from "electron"
 import { join } from "path"
 import { runMigrations } from "./migrations"
 import { systemSlug } from "../config/system-name"
+import { cleanupToolMedia } from "../media/tool-media"
 
 // Singleton connection. Opened lazily on first access so it reads
 // app.getPath("userData") after the app is ready.
@@ -19,6 +20,7 @@ export function getDb(): Database.Database {
     db.pragma("foreign_keys = ON")
     db.pragma("busy_timeout = 5000")
     runMigrations(db)
+    cleanupToolMedia()
   }
   return db
 }

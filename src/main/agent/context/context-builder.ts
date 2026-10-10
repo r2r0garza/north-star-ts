@@ -11,13 +11,14 @@ import type { Message } from "../../db/types"
 import { renderContextEnvelope, type ContextProvenance } from "./provenance"
 import { isCommandCompletionEvent } from "../../../shared/runtime-messages"
 import { replayToolCallArguments } from "../tool-call-arguments"
+import { replayToolMedia, type MediaContentPart } from "../../media/tool-media"
 
 // An OpenAI-compatible chat message, the shape Portkey expects. The agent feeds
 // the array this builder returns straight into the chat completion request.
 export interface ChatMessage {
   [nativeAssistant]?: NativeAssistantCarrier
   role: "system" | "user" | "assistant" | "tool"
-  content: string | null
+  content: string | MediaContentPart[] | null
   tool_calls?: Array<{
     id: string
     type: "function"
@@ -135,6 +136,8 @@ export class ContextBuilder {
         ? "[context] history: full transcript"
         : `[context] history: messages after seq ${replacedThroughSeq} (replacement section admitted)`
     )
+    // Summary-covered images are intentionally not projected: a text summary
+    // provides no visual recall and must never recover pixels from another source.
     return [
       { role: "system", content: systemContent },
       ...replayHistory(history),
@@ -238,6 +241,14 @@ function replayHistory(history: Message[]): ChatMessage[] {
             }
       )
     }
+    messages.push(
+      ...replayToolMedia(
+        (message.toolCalls ?? []).flatMap((call) => {
+          const result = results.get(call.id)
+          return result ? [result] : []
+        })
+      )
+    )
   }
   return messages
 }

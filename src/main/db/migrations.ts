@@ -64,6 +64,18 @@ function ensureNativeAssistantColumn(db: Database.Database): void {
   addColumnIfMissing(db, "messages", "native_assistant", "TEXT")
 }
 
+function ensureToolMedia(db: Database.Database): void {
+  db.exec(`CREATE TABLE IF NOT EXISTS tool_media (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    assistant_message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    message_id TEXT REFERENCES messages(id) ON DELETE CASCADE,
+    tool_call_id TEXT NOT NULL,
+    descriptor TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS tool_media_conversation ON tool_media(conversation_id, tool_call_id);`)
+}
+
 const MIGRATIONS: Array<(db: Database.Database) => void> = [
   (db) => db.exec(SCHEMA_V1),
   (db) => db.exec(SCHEMA_V2),
@@ -142,6 +154,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureWorkspaceAnalyses,
   ensureSubscriptionProviderConstraints,
   ensureNativeAssistantColumn,
+  ensureToolMedia,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -611,6 +624,7 @@ export function runMigrations(
       ensureSubagentArtifactsTable(db)
       ensureWorkingDirectoryColumns(db)
       ensureNativeAssistantColumn(db)
+      ensureToolMedia(db)
     })()
   } finally {
     if (fkWasOn) db.pragma("foreign_keys = ON")

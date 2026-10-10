@@ -1,5 +1,6 @@
 import { basename, extname } from "path"
 import AdmZip from "adm-zip"
+import { decodeImage, inspectImage } from "./image_decoder"
 import { LocalEnvironment } from "../env/local"
 import type { Environment, StatInfo } from "../env/types"
 import { renderMetadata, toolError, truncateUtf8Text } from "./output"
@@ -101,7 +102,9 @@ async function readDocumentBytes(
       throw new HostFileError("not_a_file", `Not a regular file: ${path}`)
     }
     if (info.size > MAX_DOCUMENT_BYTES) throw oversized(info.size)
-    return { data: await env.readFile(readable.path), size: info.size }
+    const data = await env.readFile(readable.path)
+    if (data.length > MAX_DOCUMENT_BYTES) throw oversized(data.length)
+    return { data, size: data.length }
   }
   let opened
   try {
@@ -117,7 +120,23 @@ async function readDocumentBytes(
   }
   try {
     if (opened.size > MAX_DOCUMENT_BYTES) throw oversized(opened.size)
-    return { data: await opened.handle.readFile(), size: opened.size }
+    const buffer = Buffer.alloc(
+      Math.min(opened.size + 1, MAX_DOCUMENT_BYTES + 1)
+    )
+    let size = 0
+    while (size < buffer.length) {
+      const read = await opened.handle.read(
+        buffer,
+        size,
+        buffer.length - size,
+        size
+      )
+      if (!read.bytesRead) break
+      size += read.bytesRead
+    }
+    if (size > opened.size || size > MAX_DOCUMENT_BYTES)
+      throw new Error("Document changed size while reading; retry the read.")
+    return { data: buffer.subarray(0, size), size }
   } finally {
     await opened.handle.close()
   }
@@ -688,7 +707,15 @@ function imageMetadata(data: Buffer, path: string): Record<string, unknown> {
 }
 
 function extractImage(data: Buffer, path: string): ExtractedDocument {
-  const metadata = imageMetadata(data, path)
+  let metadata = imageMetadata(data, path)
+  const warnings = [
+    "Local decoding only; no OCR, network fetch or additional model request. Animated images use only the first frame; embedded orientation is applied. Transparency is composited on white. Output is JPEG, capped at 1568 pixels on the long edge and 2 MiB.",
+  ]
+  try {
+    metadata = { ...inspectImage(data) }
+  } catch (error) {
+    warnings.push((error as Error).message)
+  }
   return {
     type: "image",
     metadata,
@@ -699,9 +726,7 @@ function extractImage(data: Buffer, path: string): ExtractedDocument {
         location: {},
       },
     ],
-    warnings: [
-      "Image OCR and vision analysis are not part of document reading v1.",
-    ],
+    warnings,
   }
 }
 
@@ -775,7 +800,7 @@ export const readDocumentTool: Tool = {
     function: {
       name: "read_document",
       description:
-        "Read a bounded, provenance-preserving view of PDF, DOCX, XLSX, PPTX, IPYNB, or basic image metadata. " +
+        "Read a bounded, provenance-preserving view of PDF, DOCX, XLSX, PPTX, IPYNB, or JPEG, PNG, WebP and GIF images (first frame, embedded orientation applied). Supported standalone images are sent as bounded JPEG pixels when the image delivery channel is available; otherwise the result explicitly reports unavailable pixels. " +
         "PDF text is returned per page. A PDF page with no text layer (a scan, or slides exported as images) " +
         "is sent to you as an image instead — read those pages from the image; a few are sent per call, so use " +
         "the cursor to reach the rest. " +
@@ -843,6 +868,8 @@ export const readDocumentTool: Tool = {
         env,
         path
       ))
+      if (data.length > MAX_DOCUMENT_BYTES) throw oversized(data.length)
+      fileBytes = data.length
     } catch (error) {
       if (error instanceof HostFileError && error.code !== "read_failed") {
         return toolError(error.code, error.message)
@@ -896,6 +923,45 @@ export const readDocumentTool: Tool = {
     let pageImagesSent = 0
     let pageImagesAvailable = 0
     const emitImage = ctx.emitImage
+    let imagePixels: "delivered" | "unavailable" | "unsupported" | undefined
+    let imageDimensions: { width: number; height: number } | undefined
+    if (kind === "image") {
+      imagePixels = "unavailable"
+      if (!emitImage) {
+        doc.warnings.push(
+          "Image pixels unavailable: this tool context has no image delivery channel."
+        )
+      } else if (!pageBlocks.length) {
+        doc.warnings.push(
+          "Image pixels unavailable: the selected block window excludes the image."
+        )
+      } else {
+        try {
+          inspectImage(data)
+        } catch (error) {
+          imagePixels = "unsupported"
+          doc.warnings.push(
+            `Image pixels unsupported: ${(error as Error).message}`
+          )
+        }
+        if (imagePixels !== "unsupported") {
+          try {
+            const decoded = await decodeImage(data, ctx.signal)
+            if (ctx.signal?.aborted) throw new Error("Image decoding canceled.")
+            emitImage({
+              jpegBase64: decoded.jpegBase64,
+              alt: `${path} — first frame (orientation applied)`,
+            })
+            imagePixels = "delivered"
+            imageDimensions = { width: decoded.width, height: decoded.height }
+          } catch (error) {
+            doc.warnings.push(
+              `Image pixels unavailable: ${(error as Error).message}`
+            )
+          }
+        }
+      }
+    }
     for (const block of pageBlocks) {
       if (!block.imageOnly || block.location.page == null) continue
       pageImagesAvailable++
@@ -927,6 +993,8 @@ export const readDocumentTool: Tool = {
     return `${finalText}\n${renderMetadata({
       type: doc.type,
       fileBytes,
+      imagePixels,
+      imageDimensions,
       blockStart: filter.index,
       blocksReturned: pageBlocks.length,
       totalMatchingBlocks: matched.length,

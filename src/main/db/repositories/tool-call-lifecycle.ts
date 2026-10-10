@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "crypto"
 import { getDb } from "../connection"
+import { persistToolMedia } from "../../media/tool-media"
+import type { ToolImage } from "../../agent/tools/types"
 import type {
   ToolCallLifecycle,
   ToolCallLifecycleState,
@@ -258,6 +260,7 @@ export function markToolCallNotStarted(input: {
 }
 
 export function markToolCallSettled(input: {
+  images?: ToolImage[]
   conversationId: string
   toolCallId: string
   state: "settled_success" | "settled_error"
@@ -266,8 +269,24 @@ export function markToolCallSettled(input: {
   now?: number
 }): ToolCallLifecycle | undefined {
   const now = input.now ?? Date.now()
-  getDb()
-    .prepare(
+  const db = getDb()
+  return db.transaction(() => {
+    const current = getToolCallLifecycle(input.conversationId, input.toolCallId)
+    if (
+      input.state === "settled_success" &&
+      input.images?.length &&
+      current?.state === "started"
+    ) {
+      const persisted = persistToolMedia(
+        input.conversationId,
+        input.toolCallId,
+        current.toolName,
+        input.images
+      )
+      if (persisted.error)
+        input.result = `${input.result ?? ""}\nImage unavailable: ${persisted.error}`
+    }
+    db.prepare(
       `UPDATE tool_call_lifecycle
        SET state = ?,
            result = ?,
@@ -276,8 +295,7 @@ export function markToolCallSettled(input: {
            updated_at = ?
        WHERE conversation_id = ? AND tool_call_id = ?
          AND state NOT IN ('settled_success','settled_error','not_started','unknown')`
-    )
-    .run(
+    ).run(
       input.state,
       input.result ?? null,
       input.error ?? null,
@@ -286,7 +304,8 @@ export function markToolCallSettled(input: {
       input.conversationId,
       input.toolCallId
     )
-  return getToolCallLifecycle(input.conversationId, input.toolCallId)
+    return getToolCallLifecycle(input.conversationId, input.toolCallId)
+  })()
 }
 
 function updateState(input: {

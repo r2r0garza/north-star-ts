@@ -154,7 +154,31 @@ export function buildCodexSubscriptionRequest({
       continue
     }
     if (message.role === "user") {
-      input.push({ role: "user", content: textFromContent(message.content) })
+      const content = Array.isArray(message.content)
+        ? message.content.flatMap((part): Array<Record<string, unknown>> => {
+            if (typeof part === "string")
+              return [{ type: "input_text", text: part }]
+            if (!part || typeof part !== "object") return []
+            if (part.type === "image_url") {
+              const image = part.image_url
+              if (!image || typeof image.url !== "string")
+                throw new Error(
+                  "Invalid image content in Codex subscription request."
+                )
+              return [
+                {
+                  type: "input_image",
+                  image_url: image.url,
+                  detail: image.detail ?? "auto",
+                },
+              ]
+            }
+            return typeof part.text === "string"
+              ? [{ type: "input_text", text: part.text }]
+              : []
+          })
+        : textFromContent(message.content)
+      input.push({ role: "user", content })
     }
   }
 
