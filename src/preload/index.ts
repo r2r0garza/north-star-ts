@@ -419,6 +419,16 @@ const api = {
       }>
     ).finally(done)
   },
+  onCompletionReport: (cb: (conversationId: string) => void) => {
+    const listener = (
+      _event: IpcRendererEvent,
+      payload: { conversationId: string }
+    ) => cb(payload.conversationId)
+    ipcRenderer.on("chat:reported", listener)
+    return () => {
+      ipcRenderer.removeListener("chat:reported", listener)
+    }
+  },
   // Cancel the in-flight turn for a conversation (the Stop button). The chat()
   // promise above then resolves with `{ stopped: true }`.
   chatStop: (conversationId: string) =>

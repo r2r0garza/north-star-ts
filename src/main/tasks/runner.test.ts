@@ -35,13 +35,37 @@ vi.mock("../agent/abort", () => ({
   SHUTDOWN_ABORT_REASON,
   PAUSE_ABORT_REASON,
 }))
+let rawHandoff = false
 let loopImpl: (opts: RunAgentLoopOptions) => Promise<ChatResult>
 const loopCalls: RunAgentLoopOptions[] = []
 vi.mock("../agent", () => ({
   SHUTDOWN_ABORT_REASON,
   runAgentLoop: (opts: RunAgentLoopOptions) => {
     loopCalls.push(opts)
-    return loopImpl(opts)
+    return loopImpl(opts).then((result) => {
+      if (
+        !rawHandoff &&
+        opts.completionInstruction &&
+        !result.error &&
+        !result.stopped &&
+        result.content
+      ) {
+        return {
+          ...result,
+          content: JSON.stringify({
+            version: 1,
+            taskId: opts.taskId,
+            status: "completed",
+            summary: result.content,
+            changes: [],
+            verification: [],
+            unresolved: [],
+            nextAction: null,
+          }),
+        }
+      }
+      return result
+    })
   },
 }))
 
@@ -88,6 +112,7 @@ beforeEach(() => {
   db = new Database(":memory:")
   db.pragma("foreign_keys = ON")
   runMigrations(db)
+  rawHandoff = false
   loopCalls.length = 0
   cleanedPlanIds.length = 0
   loopImpl = async () => ({ content: "done" })
@@ -581,7 +606,8 @@ describe.skipIf(!sqliteLoads)("TaskRunner — enqueue + run", () => {
 
     const finished = getTask(task.id)!
     expect(finished.status).toBe("completed")
-    expect(finished.result).toBe("done")
+    expect(JSON.parse(finished.result as string).summary).toBe("done")
+    expect(loopCalls[0].completionInstruction).toContain(task.id)
 
     // The task runs in its OWN forked conversation, linked back to the source —
     // its messages never touch the live conversation.
@@ -1638,3 +1664,87 @@ describe.skipIf(!sqliteLoads)(
     })
   }
 )
+
+describe.skipIf(!sqliteLoads)("TaskRunner — structured handoff", () => {
+  it("fails closed on gibberish instead of reporting successful completion", async () => {
+    rawHandoff = true
+    const source = createConversation({ mode: "chat" })
+    const runner = new TaskRunner()
+    await runner.start()
+    const task = runner.enqueue({
+      conversationId: source.id,
+      message: "Fix settings",
+    })
+    await settle()
+    expect(getTask(task.id)?.status).toBe("failed")
+    expect(getTask(task.id)?.error).toContain("valid structured handoff")
+    expect(
+      listEvents(task.id).some((event) => event.type === "task_completed")
+    ).toBe(false)
+    await runner.stop()
+  })
+  it("completes and stores canonical JSON when the worker prefixes its handoff with prose", async () => {
+    rawHandoff = true
+    loopImpl = async (opts) => ({
+      content: `Summary\nAll four tasks completed successfully.\n\n${JSON.stringify(
+        {
+          version: 1,
+          taskId: opts.taskId,
+          status: "completed",
+          summary: "Inspected hello.html",
+          changes: ["Reviewed the HTML and JavaScript"],
+          verification: ["Code inspection only; no browser test"],
+          unresolved: [],
+          nextAction: null,
+        }
+      )}`,
+    })
+    const source = createConversation({ mode: "chat" })
+    const runner = new TaskRunner()
+    await runner.start()
+    const task = runner.enqueue({
+      conversationId: source.id,
+      message: "Inspect hello.html",
+    })
+    await settle()
+    expect(getTask(task.id)?.status).toBe("completed")
+    expect(JSON.parse(getTask(task.id)?.result as string)).toMatchObject({
+      taskId: task.id,
+      status: "completed",
+    })
+    expect(
+      listEvents(task.id).some((event) => event.type === "task_completed")
+    ).toBe(true)
+    expect(loopCalls).toHaveLength(1)
+    await runner.stop()
+  })
+  it("preserves blocked handoffs and does not retry the work", async () => {
+    rawHandoff = true
+    loopImpl = async (opts) => ({
+      content: JSON.stringify({
+        version: 1,
+        taskId: opts.taskId,
+        status: "blocked",
+        summary: "Partial work saved",
+        changes: ["Settings"],
+        verification: [],
+        unresolved: ["Missing account"],
+        nextAction: "Configure account",
+      }),
+    })
+    const source = createConversation({ mode: "chat" })
+    const runner = new TaskRunner()
+    await runner.start()
+    const task = runner.enqueue({
+      conversationId: source.id,
+      message: "Fix settings",
+    })
+    await settle()
+    expect(getTask(task.id)?.status).toBe("failed")
+    expect(JSON.parse(getTask(task.id)?.result as string).status).toBe(
+      "blocked"
+    )
+    expect(loopCalls).toHaveLength(1)
+    await runner.stop()
+  })
+})

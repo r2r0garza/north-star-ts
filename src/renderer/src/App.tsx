@@ -767,6 +767,25 @@ function App(
   // across conversations, so a per-conversation derivation is what stops one
   // conversation's spinner/Stop button from showing on another.
   const loading = conversationId !== null && runningConvos.has(conversationId)
+  const [reportRevision, setReportRevision] = useState(0)
+  useEffect(
+    () =>
+      window.cowork.onCompletionReport((id) => {
+        if (viewingRef.current === id) setReportRevision((value) => value + 1)
+        onConversationChanged()
+      }),
+    [onConversationChanged]
+  )
+  useEffect(() => {
+    if (!conversationId || loading || reportRevision === 0) return
+    let cancelled = false
+    void window.cowork.db.messages.list(conversationId).then((rows) => {
+      if (!cancelled) setTimeline(buildTimeline(rows))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [conversationId, loading, reportRevision])
   // A usable provider + model must be selected before any turn. Mirrors the
   // main-process resolveLlm gate (the backstop there returns the same error if a
   // stale selection slips through).

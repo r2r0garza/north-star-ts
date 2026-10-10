@@ -211,6 +211,7 @@ import {
 import type { Conversation } from "../db/types"
 import type { FailureContext, FailureStage } from "../db/types"
 import { runClaudeConversation, runCodexConversation } from "./cli"
+import { serializeConversationTurn } from "./conversation-turns"
 import { normalizeClaudeModel } from "./cli/claude"
 import { makePolicyEngine } from "./approval/engine"
 import { PlanModeClassifier } from "./approval/plan-mode-classifier"
@@ -923,6 +924,8 @@ export interface RunAgentLoopOptions {
   processPhaseRunId?: string
   // Process-only format instruction, refreshed even when resuming a transcript.
   processCompletionInstruction?: string
+  completionInstruction?: string
+  reportOnly?: boolean
   // Mission Control (plan 106.3): this worker runs a playbook's proof step, so
   // it is offered record_proof. The tool re-derives the user story, criteria, and
   // seats from the run itself; this flag only controls the offer.
@@ -1091,6 +1094,9 @@ export async function runAgentLoop(
       // Gates the MCP bridge's ask_user_question the same way it gates the
       // internal tool: a headless worker gets no question surface at all.
       suppressUserQuestions: opts.suppressUserQuestions,
+      completionInstruction: opts.completionInstruction,
+      reportOnly: opts.reportOnly,
+      reportProvider: effectiveAccount.provider,
       // Lends the CLI North Star's browser over the bridge (plan 045).
       provideBrowser: opts.provideBrowser,
       // The CLI paths return before `agentDir` is resolved below, so scope their
@@ -1347,6 +1353,7 @@ export async function runAgentLoop(
   // no filesystem tools; plan mode still drops mutating tools). Universal tools
   // (ask_user_question, read_skill, plan-mode handoff) bypass the allowlist.
   const applyAgentTools = (defs: { function: { name: string } }[]) => {
+    if (opts.reportOnly) return []
     const agentFiltered = externalToolAllowed
       ? defs.filter((d) => externalToolAllowed(d.function.name))
       : agentToolNames === null
@@ -1515,7 +1522,8 @@ export async function runAgentLoop(
     opts.processPhaseRunId &&
     opts.processCompletionInstruction
       ? `\n\n${opts.processCompletionInstruction}`
-      : "")
+      : "") +
+    (opts.completionInstruction ? `\n\n${opts.completionInstruction}` : "")
   const sections: ContextSection[] = [...(opts.extraContextSections ?? [])]
 
   const chatVenvOverlay = opts.chatPythonVenv
@@ -2671,6 +2679,8 @@ export async function runAgentLoop(
           }),
         signal: abort.signal,
         execute: async (call, _index, callSignal) => {
+          if (opts.reportOnly)
+            return { result: "Tools are disabled for this report-only turn." }
           const persistLifecycle = <T>(action: () => T): T => {
             try {
               return action()
@@ -3753,32 +3763,69 @@ export async function runChat(
   // Register the abort controller for this turn so the Stop button (chat:stop →
   // stopChat) can cancel it. One turn per conversation (the UI disables Send
   // while loading), so a plain Map keyed by conversation is enough.
-  const abort = new AbortController()
-  abortControllers.set(conversationId, abort)
-  try {
-    return await runAgentLoop({
-      conversationId,
-      workspace,
-      attachments,
-      skills,
-      userMessage: message,
-      planMode,
-      autoMode,
-      // Snapshot the opt-in at turn start. Process workers call runAgentLoop
-      // directly and intentionally do not consult this conversation preference.
-      conversationSubagentsEnabled:
-        settingsService.getConversations().allowConversationSubagents,
-      chatPythonVenv: true,
-      onEvent,
-      abort,
-      enqueueTask,
-      provideBrowser,
-    })
-  } finally {
-    // Release this turn's abort controller (only if it's still the current one —
-    // defensive against a future overlapping turn replacing it).
-    if (abortControllers.get(conversationId) === abort) {
-      abortControllers.delete(conversationId)
+  return serializeConversationTurn(conversationId, async () => {
+    const abort = new AbortController()
+    abortControllers.set(conversationId, abort)
+    try {
+      return await runAgentLoop({
+        conversationId,
+        workspace,
+        attachments,
+        skills,
+        userMessage: message,
+        planMode,
+        autoMode,
+        // Snapshot the opt-in at turn start. Process workers call runAgentLoop
+        // directly and intentionally do not consult this conversation preference.
+        conversationSubagentsEnabled:
+          settingsService.getConversations().allowConversationSubagents,
+        chatPythonVenv: true,
+        onEvent,
+        abort,
+        enqueueTask,
+        provideBrowser,
+      })
+    } finally {
+      // Release this turn's abort controller (only if it's still the current one —
+      // defensive against a future overlapping turn replacing it).
+      if (abortControllers.get(conversationId) === abort) {
+        abortControllers.delete(conversationId)
+      }
     }
-  }
+  })
+}
+
+export function runCompletionReport(
+  conversationId: string,
+  instruction: string,
+  fallback: string
+): Promise<ChatResult> {
+  return serializeConversationTurn(conversationId, async () => {
+    if (!getConversation(conversationId)) return { stopped: true }
+    const abort = new AbortController()
+    abortControllers.set(conversationId, abort)
+    try {
+      const result = await runAgentLoop({
+        conversationId,
+        abort,
+        reportOnly: true,
+        userMessage: "Write the background task completion report now.",
+        completionInstruction: instruction,
+        allowedToolNames: new Set(),
+        suppressUserQuestions: true,
+        conversationSubagentsEnabled: false,
+      })
+      if (
+        !result.stopped &&
+        (result.error || !result.content?.trim()) &&
+        getConversation(conversationId)
+      ) {
+        appendMessage({ conversationId, role: "assistant", content: fallback })
+      }
+      return result
+    } finally {
+      if (abortControllers.get(conversationId) === abort)
+        abortControllers.delete(conversationId)
+    }
+  })
 }

@@ -10,7 +10,8 @@ import type { Todo, TodoStatus } from "../db/types"
 export const TODO_RUN_KICKOFF =
   "Work through your task list to completion. Do each pending item in order, " +
   "marking it in_progress when you start and completed as soon as it's done " +
-  "(use the todo_write tool). When every item is completed, summarize what you did."
+  "(use the todo_write tool). When finished, return the required structured " +
+  "background task handoff without a separate user-facing summary."
 
 // Items that still represent work to do.
 export function actionableTodos(todos: Todo[]): Todo[] {

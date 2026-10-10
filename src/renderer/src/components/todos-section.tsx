@@ -48,12 +48,18 @@ export function TodosSection({
   // Drives the button so the user can't hand the same list off twice.
   const [activeTodoRun, setActiveTodoRun] = React.useState(false)
   const displayedConversationRef = React.useRef<string | null>(conversationId)
-  const activeTodoRunTaskRef = React.useRef<string | null>(null)
+  const refreshRef = React.useRef(0)
+  const snapshotRevisionRef = React.useRef(0)
+  const conversationRef = React.useRef(conversationId)
+  conversationRef.current = conversationId
 
   const refetch = React.useCallback(async () => {
+    const refresh = ++refreshRef.current
+    const isCurrent = () =>
+      refresh === refreshRef.current &&
+      conversationId === conversationRef.current
     if (!conversationId) {
       displayedConversationRef.current = null
-      activeTodoRunTaskRef.current = null
       setTodos([])
       setActiveTodoRun(false)
       return
@@ -68,6 +74,7 @@ export function TodosSection({
     const tasks = await window.cowork.db.tasks.list({
       sourceConversationId: conversationId,
     })
+    if (!isCurrent()) return
     const todoRun = tasks.find(
       (t) =>
         typeof t.input === "object" &&
@@ -81,10 +88,13 @@ export function TodosSection({
       "interrupted",
     ])
     setActiveTodoRun(!!todoRun && LIVE.has(todoRun.status))
-    activeTodoRunTaskRef.current = todoRun?.id ?? null
     const readFrom = todoRun ? todoRun.conversationId : conversationId
     displayedConversationRef.current = readFrom
-    setTodos(await window.cowork.db.todos.list(readFrom))
+    const revision = snapshotRevisionRef.current
+    const snapshot = await window.cowork.db.todos.list(readFrom)
+    if (isCurrent() && revision === snapshotRevisionRef.current) {
+      setTodos(snapshot)
+    }
   }, [conversationId])
   const refetchRef = React.useRef(refetch)
   refetchRef.current = refetch
@@ -101,6 +111,7 @@ export function TodosSection({
     if (!conversationId) return
     const unsubscribe = window.cowork.db.todos.onChange((payload) => {
       if (payload.conversationId === displayedConversationRef.current) {
+        snapshotRevisionRef.current++
         setTodos(payload.todos)
       }
     })
@@ -113,9 +124,12 @@ export function TodosSection({
     if (!conversationId) return
     const unsubscribe = window.cowork.tasks.onEvent((payload) => {
       const event = payload.event as TaskEventPayload
-      if (event.type === "token" || event.type === "stream_attempt") return
-      const activeTaskId = activeTodoRunTaskRef.current
-      if (!activeTaskId || payload.taskId !== activeTaskId) return
+      if (
+        event.type !== "status_change" &&
+        event.type !== "task_completed" &&
+        event.type !== "task_failed"
+      )
+        return
       void refetchRef.current()
     })
     return unsubscribe
@@ -129,10 +143,7 @@ export function TodosSection({
         autoMode: isAutoMode?.(conversationId) ?? false,
       })
       if (task) {
-        activeTodoRunTaskRef.current = task.id
-        displayedConversationRef.current = task.conversationId
-        setActiveTodoRun(true)
-        setTodos(await window.cowork.db.todos.list(task.conversationId))
+        await refetchRef.current()
         onRanInBackground?.()
       }
     } finally {
