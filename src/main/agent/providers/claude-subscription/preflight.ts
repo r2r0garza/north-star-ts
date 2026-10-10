@@ -9,6 +9,7 @@ import {
 import { verifyPersonalSubscription } from "./auth-policy"
 import { guardManagedPolicy } from "./managed-policy"
 import { ClaudeSubscriptionError } from "./errors"
+import { withWindowsProbeWorker } from "./windows-state"
 
 const hints: Record<string, string> = {
   claude_subscription_cli_missing:
@@ -44,29 +45,32 @@ export async function preflightClaudeSubscription(
   const timeout = setTimeout(() => controller.abort(), 60000)
   let files: Awaited<ReturnType<typeof privateDirectories>> | undefined
   try {
-    const env = guardEnvironment(await hostCliEnv())
-    const executable = await resolveExecutable(env)
-    result.installed = true
-    files = await privateDirectories(appData, controller.signal)
-    result.version = await probeCliVersion(
-      executable,
-      files.cwd,
-      env,
-      controller.signal
-    )
-    result.compatible = true
-    await verifyPersonalSubscription(
-      executable,
-      files.cwd,
-      env,
-      controller.signal
-    )
-    result.loggedIn = true
-    await guardManagedPolicy(env, controller.signal)
-    result.ok = true
-    result.hint =
-      "Personal Pro/Max CLI login verified. All configured subscription entries share this official CLI login; model visibility does not establish entitlement."
+    await withWindowsProbeWorker(controller.signal, async () => {
+      const env = guardEnvironment(await hostCliEnv())
+      const executable = await resolveExecutable(env)
+      result.installed = true
+      files = await privateDirectories(appData, controller.signal)
+      result.version = await probeCliVersion(
+        executable,
+        files.cwd,
+        env,
+        controller.signal
+      )
+      result.compatible = true
+      await verifyPersonalSubscription(
+        executable,
+        files.cwd,
+        env,
+        controller.signal
+      )
+      result.loggedIn = true
+      await guardManagedPolicy(env, controller.signal)
+      result.ok = true
+      result.hint =
+        "Personal Pro/Max CLI login verified. All configured subscription entries share this official CLI login; model visibility does not establish entitlement."
+    })
   } catch (error) {
+    result.ok = false
     if (error instanceof ClaudeSubscriptionError) {
       if (error.code === "claude_subscription_cli_missing")
         result.installed = false

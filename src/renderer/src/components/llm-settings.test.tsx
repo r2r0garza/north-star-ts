@@ -33,6 +33,7 @@ beforeEach(() => {
     .mockReset()
     .mockResolvedValue({ ok: true, version: "2.1.295", hint: "Ready" })
   window.cowork = {
+    isPackaged: false,
     providers: { create, preflightClaudeSubscription: preflight },
   } as unknown as typeof window.cowork
   container = document.createElement("div")
@@ -52,6 +53,29 @@ async function click(label: string) {
   )
 }
 describe("subscription account form", () => {
+  it.each([false, true])(
+    "only offers Anthropic Subscription in unpackaged builds (isPackaged: %s)",
+    async (isPackaged) => {
+      window.cowork.isPackaged = isPackaged
+      const state = {
+        accounts: [],
+        active: null,
+        secureOk: false,
+        reload: vi.fn().mockResolvedValue(undefined),
+        setAccounts: vi.fn(),
+        setActive: vi.fn(),
+      }
+      await act(async () => root.render(<ProvidersTab state={state} />))
+      await click("Add provider")
+      const options = [...container.querySelectorAll("option")].map(
+        (option) => option.value
+      )
+      expect(options.includes("claude_subscription")).toBe(!isPackaged)
+      expect(options).toContain("codex_subscription")
+      expect(options).toContain("claude_code")
+    }
+  )
+
   it("requires a successful setup check, omits key/upstream fields and creates a completions account", async () => {
     const reload = vi.fn().mockResolvedValue(undefined)
     const state = {

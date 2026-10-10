@@ -68,7 +68,7 @@ describe("batched Windows private state probe", () => {
     const [, args, options] = vi.mocked(spawn).mock.calls[0]
     expect(options).toMatchObject({
       windowsHide: true,
-      env: { NS_PRIVATE_PATHS: JSON.stringify(paths) },
+      env: { NS_PRIVATE_PATHS: "1" + paths[0].path + "\n0" + paths[1].path },
     })
     const script = Buffer.from((args as string[]).at(-1)!, "base64").toString(
       "utf16le"

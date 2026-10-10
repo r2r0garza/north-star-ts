@@ -11,6 +11,10 @@ import {
   verifyCliCompatibility,
 } from "./setup"
 import { JsonLines } from "./stream-json"
+import {
+  withWindowsProbeWorker,
+  closeWindowsProbeWorker,
+} from "./windows-state"
 import { aborted, ClaudeSubscriptionError, object, protocol } from "./errors"
 
 export function parseModelCatalog(value: unknown): Array<{ id: string }> {
@@ -39,6 +43,15 @@ export function parseModelCatalog(value: unknown): Array<{ id: string }> {
 }
 
 export async function discoverClaudeModels(
+  appData: string,
+  controller: AbortController
+): Promise<{ data: Array<{ id: string }> }> {
+  return withWindowsProbeWorker(controller.signal, () =>
+    discoverModels(appData, controller)
+  )
+}
+
+async function discoverModels(
   appData: string,
   controller: AbortController
 ): Promise<{ data: Array<{ id: string }> }> {
@@ -72,22 +85,25 @@ export async function discoverClaudeModels(
     void gate.response.catch((error) => {
       if (!signal.aborted) fail(error)
     })
-    const settings = await files.file(
-      "settings.json",
-      JSON.stringify({
-        disableAllHooks: true,
-        enabledPlugins: {
-          "cc-plugin-agents-md@builtin": false,
-          "cc-plugin-plugin-authoring@builtin": false,
-        },
-      })
-    )
-    const mcp = await files.file("mcp.json", JSON.stringify({ mcpServers: {} }))
-    const system = await files.file(
-      "system.txt",
-      "Model catalog discovery only. No generation authorized."
-    )
+    const [settings, mcp, system] = await files.files([
+      {
+        name: "settings.json",
+        value: JSON.stringify({
+          disableAllHooks: true,
+          enabledPlugins: {
+            "cc-plugin-agents-md@builtin": false,
+            "cc-plugin-plugin-authoring@builtin": false,
+          },
+        }),
+      },
+      { name: "mcp.json", value: JSON.stringify({ mcpServers: {} }) },
+      {
+        name: "system.txt",
+        value: "Model catalog discovery only. No generation authorized.",
+      },
+    ])
     if (signal.aborted) throw aborted()
+    await closeWindowsProbeWorker()
     const child = spawn(
       executable,
       [

@@ -55,22 +55,24 @@ export async function windowsProbe(
   return result.stdout.toString("utf8").trim()
 }
 
+// Probe scripts use .NET calls only: first use of cmdlets (Get-Acl, Get-Item,
+// ConvertFrom-Json, New-Object, Write-Output) loads modules and roughly doubles
+// cold PowerShell startup on Windows.
 const aclScript = `
 $ErrorActionPreference = 'Stop'
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-foreach ($entry in (ConvertFrom-Json $env:NS_PRIVATE_PATHS)) {
-$p = $entry.path
-if ($entry.create -and -not [System.IO.Directory]::Exists($p)) {
-  $security = New-Object System.Security.AccessControl.DirectorySecurity
+foreach ($entry in $env:NS_PRIVATE_PATHS.Split([char]10)) {
+$p = $entry.Substring(1)
+if ($entry[0] -eq [char]'1' -and -not [System.IO.Directory]::Exists($p)) {
+  $security = [System.Security.AccessControl.DirectorySecurity]::new()
   $security.SetOwner($sid)
   $security.SetAccessRuleProtection($true, $false)
-  $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+  $rule = [System.Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
   $security.AddAccessRule($rule)
-  [System.IO.Directory]::CreateDirectory($p, $security) | Out-Null
+  $null = [System.IO.Directory]::CreateDirectory($p, $security)
 }
-$item = Get-Item -LiteralPath $p -Force
-if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'reparse' }
-$acl = Get-Acl -LiteralPath $p
+if (([System.IO.File]::GetAttributes($p) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'reparse' }
+if ([System.IO.Directory]::Exists($p)) { $acl = [System.IO.Directory]::GetAccessControl($p) } else { $acl = [System.IO.File]::GetAccessControl($p) }
 if ($acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value) { throw 'owner' }
 $allowed = @($sid.Value, 'S-1-5-18', 'S-1-5-32-544')
 $userAccess = $false
@@ -83,7 +85,7 @@ foreach ($rule in $acl.GetAccessRules($true, $true, [System.Security.Principal.S
 }
 if (-not $userAccess) { throw 'access' }
 }
-Write-Output 'private'
+'private'
 `
 
 export async function windowsPrivatePath(
@@ -98,11 +100,18 @@ export async function windowsPrivatePaths(
   paths: { path: string; create?: boolean }[],
   signal = new AbortController().signal
 ): Promise<void> {
+  if (!paths.length || paths.some(({ path }) => !path || /[\0\r\n]/.test(path)))
+    throw new ClaudeSubscriptionError(
+      "claude_subscription_private_state",
+      "Subscription transport state is not private."
+    )
   const result = await windowsProbe(
     aclScript,
     {
       ...process.env,
-      NS_PRIVATE_PATHS: JSON.stringify(paths),
+      NS_PRIVATE_PATHS: paths
+        .map(({ path, create }) => (create ? "1" : "0") + path)
+        .join("\n"),
     },
     signal,
     "claude_subscription_private_state"
@@ -131,7 +140,7 @@ foreach ($hive in @([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win
     } finally { $base.Dispose() }
   }
 }
-if ($present) { Write-Output 'present' } else { Write-Output 'absent' }
+if ($present) { 'present' } else { 'absent' }
 `,
     env,
     signal,
@@ -172,19 +181,24 @@ export async function withWindowsProbeWorker<T>(
   }
 }
 
+// Requests: id TAB base64(script) TAB base64(paths). Responses: ok TAB id TAB
+// base64(output), or "failed". Base64 keeps paths/scripts as data and avoids
+// loading the JSON cmdlets.
 const workerScript = `
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-[Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
-[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$utf8 = [System.Text.UTF8Encoding]::new($false)
+[Console]::InputEncoding = $utf8
+[Console]::OutputEncoding = $utf8
 while ($null -ne ($line = [Console]::ReadLine())) {
   try {
-    $command = ConvertFrom-Json $line
-    $env:NS_PRIVATE_PATHS = $command.paths
-    $output = & ([ScriptBlock]::Create($command.script))
-    [Console]::WriteLine((ConvertTo-Json -Compress @{ id = $command.id; output = [string]($output -join "\n") }))
+    $parts = $line.Split([char]9)
+    if ($parts.Length -ne 3) { throw 'protocol' }
+    $env:NS_PRIVATE_PATHS = $utf8.GetString([Convert]::FromBase64String($parts[2]))
+    $output = & ([ScriptBlock]::Create($utf8.GetString([Convert]::FromBase64String($parts[1]))))
+    [Console]::WriteLine('ok' + [char]9 + $parts[0] + [char]9 + [Convert]::ToBase64String($utf8.GetBytes([string]($output -join [char]10))))
   } catch {
-    [Console]::WriteLine('{"failed":true}')
+    [Console]::WriteLine('failed')
     exit 1
   }
 }
@@ -278,22 +292,15 @@ class WindowsProbeWorker {
         if (this.buffer.length > 4096) return this.fail()
         let newline: number
         while ((newline = this.buffer.indexOf("\n")) !== -1) {
-          const line = this.buffer.slice(0, newline).trim()
+          const line = this.buffer.slice(0, newline).replace(/\r$/, "")
           this.buffer = this.buffer.slice(newline + 1)
-          try {
-            const response = JSON.parse(line)
-            if (
-              !this.pending ||
-              response.id !== this.pending.id ||
-              typeof response.output !== "string" ||
-              response.failed
-            )
-              return this.fail()
-            this.pending.resolve(response.output.trim())
-            this.pending = undefined
-          } catch {
-            this.fail()
-          }
+          const match = /^ok\t(\d+)\t([A-Za-z0-9+/]*={0,2})$/.exec(line)
+          if (!this.pending || !match || Number(match[1]) !== this.pending.id)
+            return this.fail()
+          this.pending.resolve(
+            Buffer.from(match[2], "base64").toString("utf8").trim()
+          )
+          this.pending = undefined
         }
       })
     }
@@ -305,8 +312,11 @@ class WindowsProbeWorker {
       return await new Promise<string>((resolve, reject) => {
         this.pending = { id, resolve, reject, code }
         this.child!.stdin.write(
-          JSON.stringify({ id, script, paths: env.NS_PRIVATE_PATHS ?? "" }) +
-            "\n",
+          [
+            id,
+            Buffer.from(script, "utf8").toString("base64"),
+            Buffer.from(env.NS_PRIVATE_PATHS ?? "", "utf8").toString("base64"),
+          ].join("\t") + "\n",
           (error) => {
             if (error) this.fail(code)
           }

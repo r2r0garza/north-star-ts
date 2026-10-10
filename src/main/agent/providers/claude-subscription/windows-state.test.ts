@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest"
-import { mkdtemp, mkdir, rm, copyFile, writeFile, realpath } from "fs/promises"
+import {
+  mkdtemp,
+  mkdir,
+  rm,
+  copyFile,
+  writeFile,
+  realpath,
+  symlink,
+} from "fs/promises"
 import { join } from "path"
 import { tmpdir } from "os"
 import { privateDirectories, resolveExecutable } from "./setup"
@@ -64,6 +72,57 @@ describe.skipIf(process.platform !== "win32")(
           code: "claude_subscription_private_state",
         })
         await files.close()
+      } finally {
+        await rm(root, { recursive: true, force: true })
+      }
+    }, 30000)
+    it("rejects missing paths, junctions, deny ACEs and invalid transport paths", async () => {
+      const root = await mkdtemp(join(tmpdir(), "ns reject é '-"))
+      const signal = new AbortController().signal
+      try {
+        await withWindowsProbeWorker(signal, async () => {
+          const files = await privateDirectories(root, signal)
+          try {
+            const junction = join(files.directory, "junction")
+            await symlink(files.cwd, junction, "junction")
+            await expect(windowsPrivatePath(junction)).rejects.toMatchObject({
+              code: "claude_subscription_private_state",
+            })
+          } finally {
+            await files.close()
+          }
+        })
+        await expect(
+          windowsPrivatePath(join(root, "missing"))
+        ).rejects.toMatchObject({
+          code: "claude_subscription_private_state",
+        })
+        await withWindowsProbeWorker(signal, async () => {
+          const files = await privateDirectories(root, signal)
+          try {
+            const path = await files.file("deny.txt", "synthetic")
+            await windowsProbe(
+              "$p = $env:NS_PRIVATE_PATHS; $acl = [System.IO.File]::GetAccessControl($p); $sid = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'); $rule = [System.Security.AccessControl.FileSystemAccessRule]::new($sid, 'Write', 'Deny'); $acl.AddAccessRule($rule); [System.IO.File]::SetAccessControl($p, $acl)",
+              { ...process.env, NS_PRIVATE_PATHS: path },
+              signal,
+              "fixture"
+            )
+            await expect(windowsPrivatePath(path)).rejects.toMatchObject({
+              code: "claude_subscription_private_state",
+            })
+          } finally {
+            await files.close()
+          }
+        })
+        for (const path of [
+          "",
+          "C:\\bad\npath",
+          "C:\\bad\rpath",
+          "C:\\bad\0path",
+        ])
+          await expect(windowsPrivatePath(path)).rejects.toMatchObject({
+            code: "claude_subscription_private_state",
+          })
       } finally {
         await rm(root, { recursive: true, force: true })
       }

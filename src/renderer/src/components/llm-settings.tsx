@@ -817,7 +817,10 @@ function NewAccountForm({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {PROVIDERS.map((p) => (
+            {PROVIDERS.filter(
+              (p) =>
+                p.value !== "claude_subscription" || !window.cowork.isPackaged
+            ).map((p) => (
               <SelectItem key={p.value} value={p.value} disabled={!p.enabled}>
                 {p.label}
                 {!p.enabled ? " - Coming Soon" : ""}

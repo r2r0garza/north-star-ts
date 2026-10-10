@@ -1,0 +1,391 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.9 [39m[90mC:/Users/r2r0garza/Documents/01-Projects/north-star-ts[39m
+
+ [32m✓[39m src/main/agent/providers/claude-subscription/windows-probe.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [2m[90m↓[39m[22m src/main/agent/providers/claude-subscription/windows-startup.measure.test.ts [2m([22m[2m1 test[22m[2m | [22m[33m1 skipped[39m[2m)[22m
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2msplit native assistant blocks[2m > [22m[2mretains text when a subsequent tool-only assistant event has no text
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2msplit native assistant blocks[2m > [22m[2mretains text when a subsequent tool-only assistant event has no text
+[22m[39m[claude-subscription] startup {
+  environment: [33m1[39m,
+  privateDirectories: [33m5[39m,
+  compatibility: [33m117[39m,
+  inventoryAndFiles: [33m6[39m,
+  nativeStartupAndUpstream: [33m145[39m,
+  firstDeltaMs: [33m273[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mrepeated replay initialization[2m > [22m[2maccepts matching isolation inventories across historical frames
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mrepeated replay initialization[2m > [22m[2maccepts matching isolation inventories across historical frames
+[22m[39m[claude-subscription] startup {
+  environment: [33m0[39m,
+  privateDirectories: [33m1[39m,
+  compatibility: [33m92[39m,
+  inventoryAndFiles: [33m4[39m,
+  nativeStartupAndUpstream: [33m224[39m,
+  firstDeltaMs: [33m321[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mcontext and auxiliary admission[2m > [22m[2mkeeps thinking configuration scoped to output cap 256
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mcontext and auxiliary admission[2m > [22m[2mkeeps thinking configuration scoped to output cap 256
+[22m[39m[claude-subscription] startup {
+  environment: [33m0[39m,
+  privateDirectories: [33m1[39m,
+  compatibility: [33m91[39m,
+  inventoryAndFiles: [33m3[39m,
+  nativeStartupAndUpstream: [33m149[39m,
+  firstDeltaMs: [33m244[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mcontext and auxiliary admission[2m > [22m[2mkeeps thinking configuration scoped to output cap 700
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mcontext and auxiliary admission[2m > [22m[2mkeeps thinking configuration scoped to output cap 700
+[22m[39m[claude-subscription] startup {
+  environment: [33m0[39m,
+  privateDirectories: [33m1[39m,
+  compatibility: [33m376[39m,
+  inventoryAndFiles: [33m4[39m,
+  nativeStartupAndUpstream: [33m222[39m,
+  firstDeltaMs: [33m602[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mcontext and auxiliary admission[2m > [22m[2mkeeps thinking configuration scoped to output cap 1024
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mcontext and auxiliary admission[2m > [22m[2mkeeps thinking configuration scoped to output cap 1024
+[22m[39m[claude-subscription] startup {
+  environment: [33m0[39m,
+  privateDirectories: [33m1[39m,
+  compatibility: [33m132[39m,
+  inventoryAndFiles: [33m3[39m,
+  nativeStartupAndUpstream: [33m180[39m,
+  firstDeltaMs: [33m316[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mcontext and auxiliary admission[2m > [22m[2mkeeps thinking configuration scoped to output cap 2048
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mcontext and auxiliary admission[2m > [22m[2mkeeps thinking configuration scoped to output cap 2048
+[22m[39m[claude-subscription] startup {
+  environment: [33m0[39m,
+  privateDirectories: [33m1[39m,
+  compatibility: [33m129[39m,
+  inventoryAndFiles: [33m3[39m,
+  nativeStartupAndUpstream: [33m271[39m,
+  firstDeltaMs: [33m404[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mcontext and auxiliary admission[2m > [22m[2maccepts default nonstream auxiliary shapes on conservative aliases
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mcontext and auxiliary admission[2m > [22m[2maccepts default nonstream auxiliary shapes on conservative aliases
+[22m[39m[claude-subscription] startup {
+  environment: [33m0[39m,
+  privateDirectories: [33m1[39m,
+  compatibility: [33m194[39m,
+  inventoryAndFiles: [33m3[39m,
+  nativeStartupAndUpstream: [33m265[39m,
+  firstDeltaMs: [33m463[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mcontext and auxiliary admission[2m > [22m[2mcancels nonstream auxiliary work with its caller signal
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mcontext and auxiliary admission[2m > [22m[2mcancels nonstream auxiliary work with its caller signal
+[22m[39m[claude-subscription] startup {
+  environment: [33m1[39m,
+  privateDirectories: [33m1[39m,
+  compatibility: [33m177[39m,
+  inventoryAndFiles: [33m3[39m,
+  nativeStartupAndUpstream: [33m303[39m,
+  firstDeltaMs: [33m485[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mcompatibility preflight[2m > [22m[2maccepts newer CLI 2.1.287 for generation and discovery and rechecks upgrades
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mcompatibility preflight[2m > [22m[2maccepts newer CLI 2.1.287 for generation and discovery and rechecks upgrades
+[22m[39m[claude-subscription] startup {
+  environment: [33m0[39m,
+  privateDirectories: [33m1[39m,
+  compatibility: [33m113[39m,
+  inventoryAndFiles: [33m3[39m,
+  nativeStartupAndUpstream: [33m315[39m,
+  firstDeltaMs: [33m431[39m
+}
+
+ [32m✓[39m src/main/agent/providers/claude-subscription/transport.test.ts [2m([22m[2m57 tests[22m[2m)[22m[33m 5906[2mms[22m[39m
+     [33m[2m✓[22m[39m uses stable private empty cwd and disposable restrictive files [33m 5713[2mms[22m[39m
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mcompatibility preflight[2m > [22m[2maccepts newer CLI 2.2.0 for generation and discovery and rechecks upgrades
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mcompatibility preflight[2m > [22m[2maccepts newer CLI 2.2.0 for generation and discovery and rechecks upgrades
+[22m[39m[claude-subscription] startup {
+  environment: [33m0[39m,
+  privateDirectories: [33m1[39m,
+  compatibility: [33m105[39m,
+  inventoryAndFiles: [33m3[39m,
+  nativeStartupAndUpstream: [33m203[39m,
+  firstDeltaMs: [33m313[39m
+}
+
+ [32m✓[39m src/main/agent/providers/claude-subscription/context.test.ts [2m([22m[2m17 tests[22m[2m)[22m[33m 374[2mms[22m[39m
+ [32m✓[39m src/main/agent/providers/claude-subscription/backpressure.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 219[2mms[22m[39m
+ [32m✓[39m src/main/agent/providers/claude-subscription/naming.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 142[2mms[22m[39m
+ [32m✓[39m src/main/agent/providers/claude-subscription/native-carrier.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m✓[39m src/main/agent/providers/claude-subscription/managed-policy.test.ts [2m([22m[2m20 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32m✓[39m src/main/agent/providers/claude-subscription/cache-wire.test.ts [2m([22m[2m25 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m src/main/agent/providers/claude-subscription/request.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 17[2mms[22m[39m
+ [32m✓[39m src/main/agent/providers/claude-subscription/linux-policy.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m src/main/agent/providers/claude-subscription/auth-policy.test.ts [2m([22m[2m22 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32m✓[39m src/main/agent/providers/claude-subscription/preflight.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 6[2mms[22m[39m
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mfinal result and denied recovery[2m > [22m[2mpreserves the complete first tool response after blocked recovery (stream false)
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+ [32m✓[39m src/main/agent/providers/claude-subscription/windows-policy.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mfinal result and denied recovery[2m > [22m[2mpreserves the complete first tool response after blocked recovery (stream true)
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mfinal result and denied recovery[2m > [22m[2mnever publishes tools at invalid final boundary boundary-zero-turns
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+ [2m[90m↓[39m[22m src/main/agent/providers/claude-subscription/installed-cli.test.ts [2m([22m[2m35 tests[22m[2m | [22m[33m35 skipped[39m[2m)[22m
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mfinal result and denied recovery[2m > [22m[2mnever publishes tools at invalid final boundary boundary-zero-turns
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+ [2m[90m↓[39m[22m src/main/agent/providers/claude-subscription/linux-setup.test.ts [2m([22m[2m8 tests[22m[2m | [22m[33m8 skipped[39m[2m)[22m
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mfinal result and denied recovery[2m > [22m[2mnever publishes tools at invalid final boundary boundary-one-turn
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mfinal result and denied recovery[2m > [22m[2mnever publishes tools at invalid final boundary boundary-one-turn
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mfinal result and denied recovery[2m > [22m[2mnever publishes tools at invalid final boundary boundary-extra-turns
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mfinal result and denied recovery[2m > [22m[2mnever publishes tools at invalid final boundary boundary-extra-turns
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mfinal result and denied recovery[2m > [22m[2mnever publishes tools at invalid final boundary boundary-missing-turns
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mfinal result and denied recovery[2m > [22m[2mnever publishes tools at invalid final boundary boundary-missing-turns
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mfinal result and denied recovery[2m > [22m[2mnever publishes tools at invalid final boundary boundary-late-assistant
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mfinal result and denied recovery[2m > [22m[2mnever publishes tools at invalid final boundary boundary-late-assistant
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mfinal result and denied recovery[2m > [22m[2mnever publishes tools at invalid final boundary boundary-late-stream
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mfinal result and denied recovery[2m > [22m[2mnever publishes tools at invalid final boundary boundary-late-stream
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mfinal result and denied recovery[2m > [22m[2mnever publishes tools at invalid final boundary boundary-duplicate-result
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mfinal result and denied recovery[2m > [22m[2mnever publishes tools at invalid final boundary boundary-duplicate-result
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mfinal result and denied recovery[2m > [22m[2mnever publishes tools at invalid final boundary recovery-error
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mfinal result and denied recovery[2m > [22m[2mnever publishes tools at invalid final boundary recovery-error
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mfinal result and denied recovery[2m > [22m[2mnever publishes tools at invalid final boundary recovery-bad-exit
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mfinal result and denied recovery[2m > [22m[2mnever publishes tools at invalid final boundary recovery-bad-exit
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mrequest-scoped subprocess lifecycle[2m > [22m[2mreplays zero-turn acknowledgements and agrees in streaming/nonstream modes
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mrequest-scoped subprocess lifecycle[2m > [22m[2mreplays zero-turn acknowledgements and agrees in streaming/nonstream modes
+[22m[39m[claude-subscription] startup {
+  environment: [33m0[39m,
+  privateDirectories: [33m1[39m,
+  compatibility: [33m70[39m,
+  inventoryAndFiles: [33m3[39m,
+  nativeStartupAndUpstream: [33m193[39m,
+  firstDeltaMs: [33m267[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mrequest-scoped subprocess lifecycle[2m > [22m[2mreplays zero-turn acknowledgements and agrees in streaming/nonstream modes
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mrequest-scoped subprocess lifecycle[2m > [22m[2mreplays zero-turn acknowledgements and agrees in streaming/nonstream modes
+[22m[39m[claude-subscription] startup {
+  environment: [33m0[39m,
+  privateDirectories: [33m1[39m,
+  compatibility: [33m83[39m,
+  inventoryAndFiles: [33m4[39m,
+  nativeStartupAndUpstream: [33m192[39m,
+  firstDeltaMs: [33m280[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mrequest-scoped subprocess lifecycle[2m > [22m[2mpublishes complete tools only at the accepted exit-1 max-turn boundary
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mrequest-scoped subprocess lifecycle[2m > [22m[2mfails closed and cleans up rewrite
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mrequest-scoped subprocess lifecycle[2m > [22m[2mfails closed and cleans up rewrite
+[22m[39m[claude-subscription] startup {
+  environment: [33m0[39m,
+  privateDirectories: [33m1[39m,
+  compatibility: [33m105[39m,
+  inventoryAndFiles: [33m3[39m,
+  nativeStartupAndUpstream: [33m177[39m,
+  firstDeltaMs: [33m286[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mrequest-scoped subprocess lifecycle[2m > [22m[2mfails closed and cleans up bad-exit
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mrequest-scoped subprocess lifecycle[2m > [22m[2mfails closed and cleans up bad-exit
+[22m[39m[claude-subscription] startup {
+  environment: [33m0[39m,
+  privateDirectories: [33m1[39m,
+  compatibility: [33m86[39m,
+  inventoryAndFiles: [33m3[39m,
+  nativeStartupAndUpstream: [33m138[39m,
+  firstDeltaMs: [33m228[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mrequest-scoped subprocess lifecycle[2m > [22m[2mearly iterator return aborts while next is pending
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mrequest-scoped subprocess lifecycle[2m > [22m[2mearly iterator return aborts while next is pending
+[22m[39m[claude-subscription] startup {
+  environment: [33m0[39m,
+  privateDirectories: [33m1[39m,
+  compatibility: [33m124[39m,
+  inventoryAndFiles: [33m3[39m,
+  nativeStartupAndUpstream: [33m168[39m,
+  firstDeltaMs: [33m296[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mrequest-scoped subprocess lifecycle[2m > [22m[2mStop cancels only its admitted stream on a shared client
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mrequest-scoped subprocess lifecycle[2m > [22m[2mStop cancels only its admitted stream on a shared client
+[22m[39m[claude-subscription] startup {
+  environment: [33m0[39m,
+  privateDirectories: [33m5[39m,
+  compatibility: [33m131[39m,
+  inventoryAndFiles: [33m4[39m,
+  nativeStartupAndUpstream: [33m175[39m,
+  firstDeltaMs: [33m315[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mrequest-scoped subprocess lifecycle[2m > [22m[2mStop cancels only its admitted stream on a shared client
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mrequest-scoped subprocess lifecycle[2m > [22m[2mStop cancels only its admitted stream on a shared client
+[22m[39m[claude-subscription] startup {
+  environment: [33m0[39m,
+  privateDirectories: [33m2[39m,
+  compatibility: [33m135[39m,
+  inventoryAndFiles: [33m5[39m,
+  nativeStartupAndUpstream: [33m193[39m,
+  firstDeltaMs: [33m335[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/windows-state.test.ts[2m > [22m[2mnative Windows private state[2m > [22m[2mmeasures equivalent separate and batched artifact ACL verification
+[22m[39mWindows artifact ACL timing { separateMs: [33m2879[39m, batchedMs: [33m792[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mrequest-scoped subprocess lifecycle[2m > [22m[2mshutdown cancels all active generation owners and cleans their resources
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mrequest-scoped subprocess lifecycle[2m > [22m[2mshutdown cancels all active generation owners and cleans their resources
+[22m[39m[claude-subscription] startup {
+  environment: [33m0[39m,
+  privateDirectories: [33m1[39m,
+  compatibility: [33m82[39m,
+  inventoryAndFiles: [33m3[39m,
+  nativeStartupAndUpstream: [33m135[39m,
+  firstDeltaMs: [33m221[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mrequest-scoped subprocess lifecycle[2m > [22m[2mshutdown cancels all active generation owners and cleans their resources
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mrequest-scoped subprocess lifecycle[2m > [22m[2mshutdown cancels all active generation owners and cleans their resources
+[22m[39m[claude-subscription] startup {
+  environment: [33m0[39m,
+  privateDirectories: [33m4[39m,
+  compatibility: [33m85[39m,
+  inventoryAndFiles: [33m2[39m,
+  nativeStartupAndUpstream: [33m149[39m,
+  firstDeltaMs: [33m240[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mrequest-scoped subprocess lifecycle[2m > [22m[2mpositional abort is independent across concurrent cached-client requests
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/client.test.ts[2m > [22m[2mrequest-scoped subprocess lifecycle[2m > [22m[2mpositional abort is independent across concurrent cached-client requests
+[22m[39m[claude-subscription] startup {
+  environment: [33m0[39m,
+  privateDirectories: [33m1[39m,
+  compatibility: [33m112[39m,
+  inventoryAndFiles: [33m3[39m,
+  nativeStartupAndUpstream: [33m131[39m,
+  firstDeltaMs: [33m247[39m
+}
+
+ [32m✓[39m src/main/agent/providers/claude-subscription/client.test.ts [2m([22m[2m63 tests[22m[2m)[22m[33m 20191[2mms[22m[39m
+     [33m[2m✓[22m[39m retains text when a subsequent tool-only assistant event has no text [33m 344[2mms[22m[39m
+     [33m[2m✓[22m[39m accepts matching isolation inventories across historical frames [33m 342[2mms[22m[39m
+     [33m[2m✓[22m[39m rejects inventory drift even when both inventories are individually allowed [33m 675[2mms[22m[39m
+     [33m[2m✓[22m[39m keeps thinking configuration scoped to output cap 700 [33m 624[2mms[22m[39m
+     [33m[2m✓[22m[39m keeps thinking configuration scoped to output cap 1024 [33m 452[2mms[22m[39m
+     [33m[2m✓[22m[39m keeps thinking configuration scoped to output cap 2048 [33m 419[2mms[22m[39m
+     [33m[2m✓[22m[39m accepts default nonstream auxiliary shapes on conservative aliases [33m 514[2mms[22m[39m
+     [33m[2m✓[22m[39m cancels nonstream auxiliary work with its caller signal [33m 586[2mms[22m[39m
+     [33m[2m✓[22m[39m accepts newer CLI 2.1.287 for generation and discovery and rechecks upgrades [33m 1267[2mms[22m[39m
+     [33m[2m✓[22m[39m accepts newer CLI 2.2.0 for generation and discovery and rechecks upgrades [33m 966[2mms[22m[39m
+     [33m[2m✓[22m[39m fails closed with cleanup on discovery-empty [33m 303[2mms[22m[39m
+     [33m[2m✓[22m[39m fails closed with cleanup on discovery-prose [33m 407[2mms[22m[39m
+     [33m[2m✓[22m[39m preserves the complete first tool response after blocked recovery (stream false) [33m 425[2mms[22m[39m
+     [33m[2m✓[22m[39m never publishes tools at invalid final boundary boundary-zero-turns [33m 528[2mms[22m[39m
+     [33m[2m✓[22m[39m never publishes tools at invalid final boundary boundary-one-turn [33m 562[2mms[22m[39m
+     [33m[2m✓[22m[39m never publishes tools at invalid final boundary boundary-extra-turns [33m 481[2mms[22m[39m
+     [33m[2m✓[22m[39m never publishes tools at invalid final boundary boundary-missing-turns [33m 502[2mms[22m[39m
+     [33m[2m✓[22m[39m never publishes tools at invalid final boundary boundary-late-assistant [33m 443[2mms[22m[39m
+     [33m[2m✓[22m[39m never publishes tools at invalid final boundary boundary-late-stream [33m 588[2mms[22m[39m
+     [33m[2m✓[22m[39m never publishes tools at invalid final boundary boundary-duplicate-result [33m 567[2mms[22m[39m
+     [33m[2m✓[22m[39m never publishes tools at invalid final boundary recovery-error [33m 529[2mms[22m[39m
+     [33m[2m✓[22m[39m never publishes tools at invalid final boundary recovery-bad-exit [33m 716[2mms[22m[39m
+     [33m[2m✓[22m[39m replays zero-turn acknowledgements and agrees in streaming/nonstream modes [33m 578[2mms[22m[39m
+     [33m[2m✓[22m[39m fails closed and cleans up rewrite [33m 304[2mms[22m[39m
+     [33m[2m✓[22m[39m early iterator return aborts while next is pending [33m 359[2mms[22m[39m
+     [33m[2m✓[22m[39m Stop cancels only its admitted stream on a shared client [33m 454[2mms[22m[39m
+     [33m[2m✓[22m[39m shutdown cancels all active generation owners and cleans their resources [33m 343[2mms[22m[39m
+[90mstdout[2m | src/main/agent/providers/claude-subscription/windows-state.test.ts[2m > [22m[2mnative Windows private state[2m > [22m[2mreuses one request worker with Unicode paths and rechecks changed ACLs
+[22m[39mWindows request worker checks ms [33m1354[39m
+
+ [32m✓[39m src/main/agent/providers/claude-subscription/windows-state.test.ts [2m([22m[2m9 tests[22m[2m)[22m[33m 28324[2mms[22m[39m
+     [33m[2m✓[22m[39m inherits private ACLs on every artifact and rejects path escapes and public existing state [33m 11447[2mms[22m[39m
+     [33m[2m✓[22m[39m rejects missing paths, junctions, deny ACEs and invalid transport paths [33m 2979[2mms[22m[39m
+     [33m[2m✓[22m[39m measures equivalent separate and batched artifact ACL verification [33m 6013[2mms[22m[39m
+     [33m[2m✓[22m[39m reuses one request worker with Unicode paths and rechecks changed ACLs [33m 1356[2mms[22m[39m
+     [33m[2m✓[22m[39m cancels a pending worker and isolates concurrent owners [33m 799[2mms[22m[39m
+     [33m[2m✓[22m[39m fails closed on an unexpected worker response without leaking output [33m 611[2mms[22m[39m
+     [33m[2m✓[22m[39m bounds a stalled worker and rejects subsequent probes [33m 5081[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m15 passed[39m[22m[2m | [22m[33m3 skipped[39m[90m (18)[39m
+[2m      Tests [22m [1m[32m266 passed[39m[22m[2m | [22m[33m44 skipped[39m[90m (310)[39m
+[2m   Start at [22m 02:10:06
+[2m   Duration [22m 28.71s[2m (transform 687ms, setup 0ms, import 2.79s, tests 55.24s, environment 2ms)[22m
+
