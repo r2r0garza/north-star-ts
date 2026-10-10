@@ -114,3 +114,19 @@
   Tool support is deliberately deferred: a shell-tool probe with `--allow-tool=shell` was rejected as
   too risky in an escalated signed-in environment, and the minimum safe non-interactive permission
   posture needs a separate decision. Revisit after Claude Code and Codex CLI are working.
+- **`045` — North Star MCP bridge for CLI providers.** After `042`, make North Star a second, distinct
+  MCP role: it remains a client of user-configured external servers, and also hosts a lazy,
+  authenticated Streamable HTTP server on an ephemeral `127.0.0.1` port for the Claude Code and Codex
+  subprocesses we launch. Inject the endpoint per turn (`claude --mcp-config`; Codex transient `-c`
+  override), never modify project/global CLI configs, and bind a short-lived bearer capability to the
+  server-known conversation/workspace/tool allowlist. Explicit adapters only—no blanket `runTool()`
+  export, no external MCP proxy, and no duplicate filesystem/shell tools. Side-effect policy remains
+  enforced server-side. **`045.2` is done**: the slices were inverted because `index_query` needs its
+  own changes first, so the bridge foundation shipped alongside the renderer-backed
+  `ask_user_question` round trip (conversation-scoped question broker, per-turn grants, Claude
+  `--mcp-config` / Codex `-c` injection, `will-quit` teardown). Registering the tool proved not to be
+  enough — both CLIs default to asking in prose — so the slice also ships three steering levers, of
+  which only a one-sentence Claude `--append-system-prompt` actually moves Claude (measured 0/6 without
+  it, 4/4 with); `045`'s out-of-scope line is amended to permit exactly that narrow steer.
+  **`045.1` remains**: extract the shared `index_query` service, add its adapter, widen the grant, add
+  the CLI-provider UI copy, and close the Codex steering gap (no per-run append flag exists).
