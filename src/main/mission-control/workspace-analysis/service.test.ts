@@ -302,7 +302,7 @@ describe.skipIf(!sqliteLoads)("WorkspaceAnalysisService", () => {
     const svc = service()
     await svc.analyze(feature.id)
     terminal.scripts.set(
-      ".venv/bin/python -m pip install -r requirements.txt",
+      `${path.join(".venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python")} -m pip install -r requirements.txt`,
       {
         exit: 0,
         effect: (cwd) => {
@@ -317,8 +317,8 @@ describe.skipIf(!sqliteLoads)("WorkspaceAnalysisService", () => {
     const { run } = await svc.applyFix(feature.id, "main-env:.:pip")
     expect(run?.steps.map((s) => s.command)).toEqual([
       "python3 -m venv .venv",
-      ".venv/bin/python -m pip install --upgrade pip",
-      ".venv/bin/python -m pip install -r requirements.txt",
+      `${path.join(".venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python")} -m pip install --upgrade pip`,
+      `${path.join(".venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python")} -m pip install -r requirements.txt`,
     ])
     const done = await settled(svc, feature.id)
     expect(done?.status).toBe("succeeded")
@@ -481,4 +481,19 @@ describe.skipIf(!sqliteLoads)("WorkspaceAnalysisService", () => {
       again.findings.some((f) => f.key === "worktree-env:model:notes/todo.md")
     ).toBe(true)
   })
+})
+
+vi.mock("../../agent/approval/shell-analyzer", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../agent/approval/shell-analyzer")>()
+  return {
+    ...actual,
+    analyzeShellCommand: (
+      ...args: Parameters<typeof actual.analyzeShellCommand>
+    ) => actual.analyzeShellCommand(args[0], "darwin", args[2]),
+    shellActionForCommand: (
+      ...args: Parameters<typeof actual.shellActionForCommand>
+    ) =>
+      actual.shellActionForCommand(args[0], { ...args[1], platform: "darwin" }),
+  }
 })

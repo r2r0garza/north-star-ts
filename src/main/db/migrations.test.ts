@@ -92,7 +92,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(64)
+    expect(db.pragma("user_version", { simple: true })).toBe(66)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
@@ -297,6 +297,166 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
+
+  it.each([
+    { version: 64, legacy: false },
+    { version: 999, legacy: false },
+    { version: 999, legacy: true },
+  ])(
+    "preserves accounts and dependents during subscription upgrade/self-heal ($version, legacy=$legacy)",
+    ({ version, legacy }) => {
+      const db = new Database(":memory:")
+      db.pragma("foreign_keys = ON")
+      runMigrations(db, { through: 64 })
+      if (legacy) {
+        db.pragma("foreign_keys = OFF")
+        db.exec(
+          schema.SCHEMA_V43.replace(",'codex_subscription'", "").replace(
+            ",'codex_responses'",
+            ""
+          )
+        )
+        db.pragma("foreign_keys = ON")
+      }
+      const providers = [
+        "portkey",
+        "openai_compatible",
+        "openai",
+        "claude_code",
+        "codex_cli",
+        "anthropic",
+        "google",
+        "azure_openai",
+        ...(legacy ? [] : ["codex_subscription"]),
+      ]
+      for (const [index, provider] of providers.entries()) {
+        db.prepare(
+          `INSERT INTO provider_accounts
+          (id, provider, display_name, base_url, encrypted_key, api_mode, enabled, created_at, last_used_at, position)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(
+          provider,
+          provider,
+          `Account ${index}`,
+          `https://example.test/${index}`,
+          Buffer.from([0, 255, index, 128]),
+          provider === "codex_subscription"
+            ? "codex_responses"
+            : index === 2
+              ? "responses"
+              : "completions",
+          index % 2,
+          100 + index,
+          index === 0 ? null : 200 + index,
+          providers.length - index
+        )
+        db.prepare(
+          `INSERT INTO models
+          (id, account_id, model_id, model_name, origin, favorite, created_at, updated_at)
+          VALUES (?, ?, 'route', 'Model', 'manual', 1, 300, 400)`
+        ).run(`model-${provider}`, provider)
+        db.prepare(
+          `INSERT INTO external_agent_model_mappings
+          (source_kind, source_model, normalized_source_model, destination_account_id, destination_model_id, created_at, updated_at)
+          VALUES ('claude', 'Source', 'source', ?, 'route', 500, 600)`
+        ).run(provider)
+      }
+      seedConversation(db, "subscription-upgrade")
+      db.prepare(
+        `INSERT INTO messages (id, conversation_id, seq, role, content, created_at)
+        VALUES ('history', 'subscription-upgrade', 0, 'assistant', 'Preserved history', 700)`
+      ).run()
+      const snapshot = () => ({
+        accounts: db
+          .prepare(
+            "SELECT * FROM provider_accounts ORDER BY position, created_at"
+          )
+          .all(),
+        models: db.prepare("SELECT * FROM models ORDER BY id").all(),
+        mappings: db
+          .prepare(
+            "SELECT * FROM external_agent_model_mappings ORDER BY destination_account_id"
+          )
+          .all(),
+        conversations: db
+          .prepare("SELECT * FROM conversations ORDER BY id")
+          .all(),
+        messages: db
+          .prepare(
+            "SELECT id, conversation_id, seq, role, content, tool_calls, tool_call_id, tool_name, token_estimate, created_at FROM messages ORDER BY id"
+          )
+          .all(),
+      })
+      const before = snapshot()
+      db.pragma(`user_version = ${version}`)
+      runMigrations(db)
+      expect(snapshot()).toEqual(before)
+      expect(db.pragma("user_version", { simple: true })).toBe(
+        version === 999 ? 999 : 66
+      )
+      expect(db.pragma("foreign_keys", { simple: true })).toBe(1)
+      expect(db.pragma("foreign_key_check")).toEqual([])
+      db.prepare(
+        `INSERT INTO provider_accounts (id, provider, display_name, created_at)
+        VALUES ('claude-sub', 'claude_subscription', 'Claude Subscription', 800)`
+      ).run()
+      db.prepare(
+        `INSERT INTO models (id, account_id, model_id, origin, created_at, updated_at)
+        VALUES ('claude-model', 'claude-sub', 'sonnet', 'manual', 800, 800)`
+      ).run()
+      expect(
+        db
+          .prepare(
+            "SELECT base_url, encrypted_key, api_mode FROM provider_accounts WHERE id = 'claude-sub'"
+          )
+          .get()
+      ).toEqual({
+        base_url: null,
+        encrypted_key: null,
+        api_mode: "completions",
+      })
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO cli_sessions
+        (conversation_id, provider, session_id, created_at, updated_at)
+        VALUES ('subscription-upgrade', 'claude_subscription', 'not-native', 0, 0)`
+          )
+          .run()
+      ).toThrow(/CHECK/)
+      const after = snapshot()
+      const schemaBefore = db
+        .prepare(
+          "SELECT sql FROM sqlite_schema WHERE name = 'provider_accounts'"
+        )
+        .get()
+      runMigrations(db)
+      expect(snapshot()).toEqual(after)
+      expect(
+        db
+          .prepare(
+            "SELECT sql FROM sqlite_schema WHERE name = 'provider_accounts'"
+          )
+          .get()
+      ).toEqual(schemaBefore)
+      expect(db.pragma("foreign_key_check")).toEqual([])
+      // The rebuilt parent still retains normal deletion cascades.
+      db.prepare("DELETE FROM provider_accounts WHERE id = ?").run(providers[0])
+      expect(
+        db
+          .prepare("SELECT * FROM models WHERE account_id = ?")
+          .all(providers[0])
+      ).toEqual([])
+      expect(
+        db
+          .prepare(
+            "SELECT * FROM external_agent_model_mappings WHERE destination_account_id = ?"
+          )
+          .all(providers[0])
+      ).toEqual([])
+      db.close()
+    }
+  )
 
   it("repairs stale provider constraints when user_version is already current", () => {
     const db = new Database(":memory:")
@@ -676,7 +836,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
 
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(64)
+    expect(db.pragma("user_version", { simple: true })).toBe(66)
     expect(
       (db.pragma("table_info(process_phases)") as Array<{ name: string }>).map(
         (c) => c.name
@@ -894,7 +1054,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(64)
+    expect(db.pragma("user_version", { simple: true })).toBe(66)
 
     // Reaped: orphan + its nested descendant, and all their state.
     const taskIds = (
@@ -988,7 +1148,7 @@ describe.skipIf(!sqliteLoads)(
 
       runMigrations(db)
 
-      expect(db.pragma("user_version", { simple: true })).toBe(64)
+      expect(db.pragma("user_version", { simple: true })).toBe(66)
       const columns = db.pragma("table_info(process_phase_agents)") as Array<{
         name: string
         notnull: number
@@ -1091,7 +1251,7 @@ describe.skipIf(!sqliteLoads)("context scopes migration (v51)", () => {
         ('a', 'd', 'a', 'A', 0, 'fresh'), ('b', 'd', 'b', 'B', 1, 'seat_session');
     `)
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(64)
+    expect(db.pragma("user_version", { simple: true })).toBe(66)
     // v51 moved them to the initiative scope; v54 renamed it to feature.
     expect(
       db
@@ -1190,7 +1350,7 @@ describe.skipIf(!sqliteLoads)("work terms migration (v54)", () => {
 
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(64)
+    expect(db.pragma("user_version", { simple: true })).toBe(66)
     const tables = db
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
       .pluck()
@@ -1323,7 +1483,7 @@ describe.skipIf(!sqliteLoads)("work terms migration (v54)", () => {
 
     // Running it again changes nothing.
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(64)
+    expect(db.pragma("user_version", { simple: true })).toBe(66)
     db.close()
   })
 })

@@ -1,3 +1,7 @@
+import {
+  nativeAssistant,
+  validateCarrier,
+} from "./providers/claude-subscription/native-carrier"
 import type { ToolCallDelta } from "./tool-stream"
 import { modelRequestPermits } from "./model-permits"
 import type { ApiMode, ModelRequestRetryBudget } from "../db/types"
@@ -67,10 +71,16 @@ export function mayRejectStreamOptions(error: unknown): boolean {
 // again; when it fails too, the request itself was bad and the retry's error
 // is the one thrown. Usage reporting never fails a turn on its own.
 export async function withStreamUsage<T>(
-  identity: { accountId: string; apiMode: ApiMode },
+  identity: {
+    accountId: string
+    apiMode: ApiMode
+    client?: { compatibilityProbes?: false }
+  },
   send: (streamOptions: typeof STREAM_USAGE_OPTIONS | undefined) => Promise<T>
 ): Promise<T> {
   if (!streamUsageRequested(identity)) return send(undefined)
+  if (identity.client?.compatibilityProbes === false)
+    return send(STREAM_USAGE_OPTIONS)
   try {
     return await send(STREAM_USAGE_OPTIONS)
   } catch (error) {
@@ -152,6 +162,8 @@ async function* idleGuarded<T>(
 }
 
 export interface CompletionRound {
+  nativeAssistant?: import("./providers/claude-subscription/native-carrier").NativeAssistantCarrier
+  refusal?: string
   text: string
   toolFragments: ToolCallDelta[]
   finishReason: string | null
@@ -332,7 +344,16 @@ function contentToText(content: unknown): string {
   if (Array.isArray(content)) {
     return content
       .map((part: any) =>
-        typeof part === "string" ? part : (part?.text ?? "")
+        typeof part === "string"
+          ? part
+          : [
+                "reasoning",
+                "thinking",
+                "reasoning_content",
+                "redacted_thinking",
+              ].includes(part?.type)
+            ? ""
+            : (part?.text ?? "")
       )
       .join("")
   }
@@ -447,6 +468,8 @@ async function consumeCompletionStream(
   }
 ): Promise<CompletionRound> {
   let text = ""
+  let nativeMetadata: CompletionRound["nativeAssistant"]
+  let refusal = ""
   const toolFragments: ToolCallDelta[] = []
   let finishReason: string | null = null
   let chunkCount = 0
@@ -469,8 +492,11 @@ async function consumeCompletionStream(
     const delta = choice?.delta
     if (!delta) continue
     deltaSeen = true
+    if (delta[nativeAssistant])
+      nativeMetadata = validateCarrier(delta[nativeAssistant])
     if (Object.prototype.hasOwnProperty.call(delta, "refusal")) {
       refusalFieldRecognized = true
+      refusal += contentToText(delta.refusal)
     }
     if (
       Object.prototype.hasOwnProperty.call(delta, "reasoning") ||
@@ -495,10 +521,32 @@ async function consumeCompletionStream(
     }
   }
 
-  const recoveredText = input.recoverVisibleText?.(text) ?? text
+  const refused =
+    refusal.trim().length > 0 ||
+    finishReason === "content_filter" ||
+    finishReason === "refusal"
+  if (refused) {
+    const explanation =
+      refusal.trim() || text.trim() || "The model declined this request."
+    if (!text.trim() || (refusal.trim() && !text.includes(refusal.trim()))) {
+      const piece = text.trim() ? `\n\n${explanation}` : explanation
+      text += piece
+      input.onAttemptEvent?.({
+        type: "text",
+        attemptId: input.attemptId,
+        delta: piece,
+      })
+    }
+    refusal = explanation
+  }
+  const recoveredText = refused
+    ? text
+    : (input.recoverVisibleText?.(text) ?? text)
   return {
+    ...(refused ? { refusal } : {}),
+    nativeAssistant: nativeMetadata,
     text,
-    toolFragments,
+    toolFragments: refused ? [] : toolFragments,
     finishReason,
     diagnostics: {
       code: "model_response_validation_failed",

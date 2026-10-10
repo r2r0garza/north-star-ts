@@ -29,6 +29,7 @@ import {
 } from "./agent"
 import { cancelAllQuestions } from "./agent/questions/broker"
 import { closeCliMcpBridge } from "./agent/mcp-server"
+import { shutdownClaudeSubscription } from "./agent/providers/claude-subscription/client"
 import {
   pickWorkspace,
   pickFiles,
@@ -121,6 +122,7 @@ import { getMcpManager } from "./agent/mcp"
 import { registerTaskHandlers } from "./ipc/task-handlers"
 import { registerIndexHandlers } from "./ipc/index-handlers"
 import { TaskRunner } from "./tasks/runner"
+import { TaskReportBack } from "./tasks/report-back"
 import { IndexService } from "./index/service"
 import { IndexWatcher } from "./index/watcher"
 import { SummaryService, SUMMARIZE_KIND } from "./summaries/service"
@@ -182,6 +184,24 @@ import { ensureChatVenv } from "./python/chat-venv"
 // The durable task runner — a singleton owned by the main process. Started in
 // app.whenReady (after the DB handlers register) and stopped on will-quit.
 const taskRunner = new TaskRunner()
+const taskReportBack = new TaskReportBack(
+  taskRunner,
+  (conversationId) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.webContents.isDestroyed())
+        window.webContents.send("chat:reported", { conversationId })
+    }
+  },
+  (conversationId, event) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.webContents.isDestroyed())
+        window.webContents.send("chat:report-stream", {
+          conversationId,
+          ...event,
+        })
+    }
+  }
+)
 // The workspace indexer (plan 008), driven as a deterministic task kind on the
 // runner above. Holds the runner reference so ensureRunning can enqueue.
 const indexService = new IndexService(taskRunner)
@@ -1657,6 +1677,7 @@ app.whenReady().then(async () => {
     run: dashboardService.execute,
   })
   await taskRunner.start()
+  taskReportBack.start()
   registerTaskHandlers(taskRunner)
   registerProcessHandlers(taskRunner, processService)
   registerIndexHandlers(taskRunner, indexService, indexWatcher)
@@ -1764,9 +1785,11 @@ app.on("before-quit", () => {
 // Stop the task runner (abort in-flight tasks; next boot's reconcile recovers
 // them) and flush the WAL + close the DB cleanly on quit.
 app.on("will-quit", () => {
+  shutdownClaudeSubscription()
   stopMemoryMaintenance()
   stopPlanMaintenance()
   void indexWatcher.stopAll()
+  taskReportBack.stop()
   void taskRunner.stop()
   // No new merge starts; one in flight either finishes its compare-and-swap
   // or leaves the branch untouched, and the next boot's reconcile resumes.

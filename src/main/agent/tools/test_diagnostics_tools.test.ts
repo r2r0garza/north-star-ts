@@ -106,7 +106,7 @@ function fakeEnv(opts: {
       throw new Error("not found")
     },
     async stat(path: string): Promise<StatInfo> {
-      const basename = path.split("/").pop()
+      const basename = path.split(/[\\/]/).pop()
       if (basename && basename === opts.lockfile) {
         return {
           size: 1,
@@ -378,7 +378,11 @@ describe("workspace diagnostics and test tools", () => {
 
   it("terminates a run's still-running test sessions when the run ends", async () => {
     vi.useFakeTimers()
-    const owner = { conversationId: "c1", workspace: "/workspace", runId: "run-1" }
+    const owner = {
+      conversationId: "c1",
+      workspace: "/workspace",
+      runId: "run-1",
+    }
     const env = fakeEnv({
       packageJson: { scripts: { test: "playwright test" } },
       neverExit: true,

@@ -3,6 +3,20 @@ import { delimiter } from "path"
 import { buildHostCliEnv, parseProbeOutput } from "./host-cli-env"
 
 describe("buildHostCliEnv", () => {
+  it.skipIf(process.platform !== "win32")(
+    "preserves GUI Path casing and adds USERPROFILE native installation fallback",
+    () => {
+      const env = buildHostCliEnv({
+        Path: "C:\\Windows\\System32",
+        USERPROFILE: "C:\\Users\\fixture-é",
+      })
+      expect(env.Path).toBeUndefined()
+      expect(env.PATH!.split(delimiter)[0]).toBe("C:\\Windows\\System32")
+      expect(env.PATH!.split(delimiter)).toContain(
+        "C:\\Users\\fixture-é/.local/bin"
+      )
+    }
+  )
   it("keeps the inherited PATH and adds common GUI-missing CLI locations", () => {
     const env = buildHostCliEnv({ PATH: "/custom/bin", HOME: "/Users/alice" })
     const paths = env.PATH!.split(delimiter)

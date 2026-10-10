@@ -1240,7 +1240,13 @@ class ChildProcessCommandHandle
       if (process.platform === "win32") {
         spawn("taskkill", ["/pid", String(this.child.pid), "/T", "/F"], {
           stdio: "ignore",
-        }).on("error", () => this.child.kill("SIGKILL"))
+        })
+          .on("error", () => {
+            if (!this.closed) this.child.kill("SIGKILL")
+          })
+          .on("close", (code) => {
+            if (code !== 0 && !this.closed) this.child.kill("SIGKILL")
+          })
         return
       }
       try {

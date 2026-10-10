@@ -1,0 +1,135 @@
+import { lstat } from "fs/promises"
+import { homedir, release, userInfo } from "os"
+import { spawn } from "child_process"
+import { captureProcess } from "../../env/spawn-util"
+import { posix, win32 } from "path"
+import { guardWindowsRegistry } from "./windows-state"
+import { aborted, ClaudeSubscriptionError } from "./errors"
+
+export async function guardManagedPolicy(
+  env: NodeJS.ProcessEnv,
+  signal: AbortSignal,
+  platform = process.platform
+): Promise<void> {
+  if (signal.aborted) throw aborted()
+  if (
+    !["darwin", "win32", "linux"].includes(platform) ||
+    (platform === "linux" &&
+      (env.WSL_DISTRO_NAME ||
+        env.WSL_INTEROP ||
+        /microsoft|wsl/i.test(release())))
+  )
+    throw new ClaudeSubscriptionError(
+      "claude_subscription_platform_unqualified",
+      "This host's managed-policy sources are unqualified. WSL requires separate Windows policy-inheritance qualification."
+    )
+  const base = "/Library/Application Support/ClaudeCode"
+  const preferences = "/Library/Managed Preferences"
+  const domain = "com.anthropic.claudecode.plist"
+  let username = ""
+  try {
+    if (platform === "darwin") username = userInfo().username
+  } catch {
+    throw new ClaudeSubscriptionError(
+      "claude_subscription_managed_policy_probe",
+      "Could not check local Claude managed-policy sources. Recheck host configuration."
+    )
+  }
+  const sources =
+    platform === "win32"
+      ? [
+          ...[
+            "managed-settings.json",
+            "managed-settings.d",
+            "managed-mcp.json",
+          ].map((name) => win32.join("C:\\Program Files\\ClaudeCode", name)),
+          win32.join(
+            env.CLAUDE_CONFIG_DIR ||
+              win32.join(env.HOME || env.USERPROFILE || homedir(), ".claude"),
+            "remote-settings.json"
+          ),
+        ]
+      : platform === "linux"
+        ? [
+            ...[
+              "managed-settings.json",
+              "managed-settings.d",
+              "managed-mcp.json",
+            ].map((name) => posix.join("/etc/claude-code", name)),
+            posix.join(
+              env.CLAUDE_CONFIG_DIR ||
+                posix.join(env.HOME || homedir(), ".claude"),
+              "remote-settings.json"
+            ),
+          ]
+        : [
+            posix.join(base, "managed-settings.json"),
+            posix.join(base, "managed-settings.d"),
+            posix.join(base, "managed-mcp.json"),
+            posix.join(preferences, domain),
+            posix.join(preferences, username, domain),
+            posix.join(
+              env.CLAUDE_CONFIG_DIR ||
+                posix.join(env.HOME || homedir(), ".claude"),
+              "remote-settings.json"
+            ),
+          ]
+  for (const source of sources) {
+    try {
+      await lstat(source)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue
+      throw new ClaudeSubscriptionError(
+        "claude_subscription_managed_policy_probe",
+        "Could not check local Claude managed-policy sources. Recheck host configuration."
+      )
+    }
+    throw new ClaudeSubscriptionError(
+      "claude_subscription_managed_policy",
+      "Claude managed policy or a remote-policy cache is present. This experimental transport cannot verify compatibility with organization-managed settings. Use an organization-approved provider; do not remove or bypass policy."
+    )
+  }
+  if (platform === "win32") {
+    await guardWindowsRegistry(env, signal)
+    return
+  }
+  if (platform === "linux") return
+  const result = await captureProcess(
+    spawn("/usr/bin/profiles", ["status", "-type", "enrollment"], {
+      env,
+      detached: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    }),
+    { signal, timeoutMs: 5000, maxOutputBytes: 4096, killGroup: true }
+  )
+  if (signal.aborted || result.aborted) throw aborted()
+  if (
+    result.exitCode !== 0 ||
+    result.signal ||
+    result.spawnError ||
+    result.timedOut ||
+    result.outputTruncated
+  )
+    throw new ClaudeSubscriptionError(
+      "claude_subscription_managed_policy_probe",
+      "Could not verify macOS management enrollment. Recheck host configuration."
+    )
+  const status = result.stdout.toString("utf8").trim()
+  if (
+    /^(?:Enrolled via DEP: (?:Yes|No)\r?\nMDM enrollment: (?:Yes(?: \(User Approved\))?|No))$/.test(
+      status
+    ) === false
+  )
+    throw new ClaudeSubscriptionError(
+      "claude_subscription_managed_policy_probe",
+      "Could not verify macOS management enrollment. Recheck host configuration."
+    )
+  if (
+    status !== "Enrolled via DEP: No\nMDM enrollment: No" &&
+    status !== "Enrolled via DEP: No\r\nMDM enrollment: No"
+  )
+    throw new ClaudeSubscriptionError(
+      "claude_subscription_managed_policy",
+      "This Mac is organization-managed. Managed-policy compatibility is unqualified; use an organization-approved provider and do not remove or bypass policy."
+    )
+}

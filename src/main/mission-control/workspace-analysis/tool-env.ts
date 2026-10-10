@@ -50,7 +50,7 @@ export function toolEnv(
     if (typeof v === "string") env[k] = v
   }
   if (platform === "win32") return env
-  const existing = (env.PATH ?? "").split(path.delimiter).filter(Boolean)
+  const existing = (env.PATH ?? "").split(":").filter(Boolean)
   const system = (dir: string) =>
     /^\/(usr\/)?s?bin$|^\/System\/|^\/Library\/Apple\//.test(dir)
   const firstSystem = existing.findIndex(system)
@@ -61,34 +61,34 @@ export function toolEnv(
   for (const dir of [...(shell ?? []).filter((d) => !system(d)), ...head])
     if (!paths.includes(dir)) paths.push(dir)
   for (const dir of [
-    path.join(home, "Library", "pnpm"),
-    path.join(home, "Library", "pnpm", "bin"),
-    path.join(home, ".local", "share", "pnpm"),
-    path.join(home, ".local", "bin"),
-    path.join(home, ".npm-global", "bin"),
+    path.posix.join(home, "Library", "pnpm"),
+    path.posix.join(home, "Library", "pnpm", "bin"),
+    path.posix.join(home, ".local", "share", "pnpm"),
+    path.posix.join(home, ".local", "bin"),
+    path.posix.join(home, ".npm-global", "bin"),
     "/opt/homebrew/bin",
     "/usr/local/bin",
-    path.join(home, ".local", "share", "mise", "shims"),
-    path.join(home, ".asdf", "shims"),
-    path.join(home, ".pyenv", "shims"),
-    path.join(home, ".rbenv", "shims"),
-    path.join(home, ".nodenv", "shims"),
-    path.join(home, ".volta", "bin"),
-    path.join(home, ".bun", "bin"),
-    path.join(home, ".deno", "bin"),
-    path.join(home, ".cargo", "bin"),
-    path.join(home, "go", "bin"),
-    path.join(home, ".dotnet"),
-    path.join(home, ".dotnet", "tools"),
-    path.join(home, ".sdkman", "candidates", "java", "current", "bin"),
-    path.join(home, ".sdkman", "candidates", "gradle", "current", "bin"),
-    path.join(home, ".sdkman", "candidates", "maven", "current", "bin"),
-    path.join(home, ".sdkman", "candidates", "kotlin", "current", "bin"),
-    path.join(home, "fvm", "default", "bin"),
-    path.join(home, ".pub-cache", "bin"),
-    path.join(home, ".composer", "vendor", "bin"),
-    path.join(home, ".config", "composer", "vendor", "bin"),
-    path.join(home, ".swiftly", "bin"),
+    path.posix.join(home, ".local", "share", "mise", "shims"),
+    path.posix.join(home, ".asdf", "shims"),
+    path.posix.join(home, ".pyenv", "shims"),
+    path.posix.join(home, ".rbenv", "shims"),
+    path.posix.join(home, ".nodenv", "shims"),
+    path.posix.join(home, ".volta", "bin"),
+    path.posix.join(home, ".bun", "bin"),
+    path.posix.join(home, ".deno", "bin"),
+    path.posix.join(home, ".cargo", "bin"),
+    path.posix.join(home, "go", "bin"),
+    path.posix.join(home, ".dotnet"),
+    path.posix.join(home, ".dotnet", "tools"),
+    path.posix.join(home, ".sdkman", "candidates", "java", "current", "bin"),
+    path.posix.join(home, ".sdkman", "candidates", "gradle", "current", "bin"),
+    path.posix.join(home, ".sdkman", "candidates", "maven", "current", "bin"),
+    path.posix.join(home, ".sdkman", "candidates", "kotlin", "current", "bin"),
+    path.posix.join(home, "fvm", "default", "bin"),
+    path.posix.join(home, ".pub-cache", "bin"),
+    path.posix.join(home, ".composer", "vendor", "bin"),
+    path.posix.join(home, ".config", "composer", "vendor", "bin"),
+    path.posix.join(home, ".swiftly", "bin"),
     "/usr/local/go/bin",
     "/opt/homebrew/sbin",
     "/usr/local/sbin",
@@ -104,7 +104,7 @@ export function toolEnv(
     "/sbin",
   ])
     if (!paths.includes(dir)) paths.push(dir)
-  env.PATH = paths.join(path.delimiter)
+  env.PATH = paths.join(":")
   // Tools must never stop to ask: a probe or a background step has no one to
   // answer. (The integrated terminal sets its own TERM and stays interactive.)
   env.CI = env.CI ?? "1"

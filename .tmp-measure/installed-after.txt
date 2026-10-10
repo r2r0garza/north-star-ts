@@ -1,0 +1,278 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.9 [39m[90mC:/Users/r2r0garza/Documents/01-Projects/north-star-ts[39m
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mhistorical replay with parallel results: false
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mhistorical replay with parallel results: false
+[22m[39m[claude-subscription] startup {
+  environment: [33m3[39m,
+  privateDirectories: [33m648[39m,
+  compatibility: [33m30[39m,
+  inventoryAndFiles: [33m20[39m,
+  nativeStartupAndUpstream: [33m422[39m,
+  firstDeltaMs: [33m1122[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mhistorical replay with parallel results: true
+[22m[39m[claude-subscription] wire { code: [32m'tool_result_mismatch'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mhistorical replay with parallel results: true
+[22m[39m[claude-subscription] startup {
+  environment: [33m3[39m,
+  privateDirectories: [33m642[39m,
+  compatibility: [33m29[39m,
+  inventoryAndFiles: [33m20[39m,
+  nativeStartupAndUpstream: [33m391[39m,
+  firstDeltaMs: [33m1085[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2misolates inherited logging and plugin settings
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2misolates inherited logging and plugin settings
+[22m[39m[claude-subscription] startup {
+  environment: [33m4[39m,
+  privateDirectories: [33m646[39m,
+  compatibility: [33m29[39m,
+  inventoryAndFiles: [33m19[39m,
+  nativeStartupAndUpstream: [33m385[39m,
+  firstDeltaMs: [33m1082[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mdisables native thinking for sub-minimum auxiliary output caps on haiku
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mdisables native thinking for sub-minimum auxiliary output caps on haiku
+[22m[39m[claude-subscription] startup {
+  environment: [33m4[39m,
+  privateDirectories: [33m640[39m,
+  compatibility: [33m29[39m,
+  inventoryAndFiles: [33m20[39m,
+  nativeStartupAndUpstream: [33m369[39m,
+  firstDeltaMs: [33m1061[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mdisables native thinking for sub-minimum auxiliary output caps on claude-haiku-4-5
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mdisables native thinking for sub-minimum auxiliary output caps on claude-haiku-4-5
+[22m[39m[claude-subscription] startup {
+  environment: [33m2[39m,
+  privateDirectories: [33m628[39m,
+  compatibility: [33m31[39m,
+  inventoryAndFiles: [33m19[39m,
+  nativeStartupAndUpstream: [33m349[39m,
+  firstDeltaMs: [33m1029[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mdisables native thinking for sub-minimum auxiliary output caps on claude-sonnet-4-6
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mdisables native thinking for sub-minimum auxiliary output caps on claude-sonnet-4-6
+[22m[39m[claude-subscription] startup {
+  environment: [33m2[39m,
+  privateDirectories: [33m622[39m,
+  compatibility: [33m28[39m,
+  inventoryAndFiles: [33m20[39m,
+  nativeStartupAndUpstream: [33m396[39m,
+  firstDeltaMs: [33m1068[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mresolves haiku natively with context above the old alias cap
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mresolves haiku natively with context above the old alias cap
+[22m[39m[claude-subscription] startup {
+  environment: [33m3[39m,
+  privateDirectories: [33m621[39m,
+  compatibility: [33m29[39m,
+  inventoryAndFiles: [33m24[39m,
+  nativeStartupAndUpstream: [33m366[39m,
+  firstDeltaMs: [33m1044[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mresolves sonnet natively with context above the old alias cap
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mresolves sonnet natively with context above the old alias cap
+[22m[39m[claude-subscription] startup {
+  environment: [33m2[39m,
+  privateDirectories: [33m642[39m,
+  compatibility: [33m30[39m,
+  inventoryAndFiles: [33m18[39m,
+  nativeStartupAndUpstream: [33m340[39m,
+  firstDeltaMs: [33m1033[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mresolves opus natively with context above the old alias cap
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mresolves opus natively with context above the old alias cap
+[22m[39m[claude-subscription] startup {
+  environment: [33m2[39m,
+  privateDirectories: [33m643[39m,
+  compatibility: [33m29[39m,
+  inventoryAndFiles: [33m20[39m,
+  nativeStartupAndUpstream: [33m342[39m,
+  firstDeltaMs: [33m1035[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mpreserves text plus tool blocks at the host-owned tool boundary
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mpreserves text plus tool blocks at the host-owned tool boundary
+[22m[39m[claude-subscription] startup {
+  environment: [33m2[39m,
+  privateDirectories: [33m639[39m,
+  compatibility: [33m29[39m,
+  inventoryAndFiles: [33m19[39m,
+  nativeStartupAndUpstream: [33m393[39m,
+  firstDeltaMs: [33m1082[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mpreserves native adaptive reasoning for ordinary output caps
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mpreserves native adaptive reasoning for ordinary output caps
+[22m[39m[claude-subscription] startup {
+  environment: [33m2[39m,
+  privateDirectories: [33m643[39m,
+  compatibility: [33m29[39m,
+  inventoryAndFiles: [33m20[39m,
+  nativeStartupAndUpstream: [33m343[39m,
+  firstDeltaMs: [33m1037[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mreconstructs user and historical tool-result base64 images
+[22m[39m[claude-subscription] wire { code: [32m'tool_result_mismatch'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mauxiliary output limit
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mauxiliary output limit
+[22m[39m[claude-subscription] startup {
+  environment: [33m3[39m,
+  privateDirectories: [33m641[39m,
+  compatibility: [33m29[39m,
+  inventoryAndFiles: [33m19[39m,
+  nativeStartupAndUpstream: [33m394[39m,
+  firstDeltaMs: [33m1085[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mpreserves response whitespace despite native final-result presentation
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mpreserves response whitespace despite native final-result presentation
+[22m[39m[claude-subscription] startup {
+  environment: [33m2[39m,
+  privateDirectories: [33m633[39m,
+  compatibility: [33m29[39m,
+  inventoryAndFiles: [33m19[39m,
+  nativeStartupAndUpstream: [33m394[39m,
+  firstDeltaMs: [33m1077[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mreplays opaque signed blocks across client recreation with synthetic usage buckets
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mreplays opaque signed blocks across client recreation with synthetic usage buckets
+[22m[39m[claude-subscription] startup {
+  environment: [33m3[39m,
+  privateDirectories: [33m622[39m,
+  compatibility: [33m29[39m,
+  inventoryAndFiles: [33m19[39m,
+  nativeStartupAndUpstream: [33m395[39m,
+  firstDeltaMs: [33m1067[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mreplays opaque signed blocks across client recreation with synthetic usage buckets
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mreplays opaque signed blocks across client recreation with synthetic usage buckets
+[22m[39m[claude-subscription] startup {
+  environment: [33m2[39m,
+  privateDirectories: [33m639[39m,
+  compatibility: [33m33[39m,
+  inventoryAndFiles: [33m22[39m,
+  nativeStartupAndUpstream: [33m354[39m,
+  firstDeltaMs: [33m1049[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mreplays opaque signed blocks across client recreation with synthetic usage buckets
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mreplays opaque signed blocks across client recreation with synthetic usage buckets
+[22m[39m[claude-subscription] startup {
+  environment: [33m3[39m,
+  privateDirectories: [33m628[39m,
+  compatibility: [33m28[39m,
+  inventoryAndFiles: [33m19[39m,
+  nativeStartupAndUpstream: [33m344[39m,
+  firstDeltaMs: [33m1022[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mtext success
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mtext success
+[22m[39m[claude-subscription] startup {
+  environment: [33m3[39m,
+  privateDirectories: [33m641[39m,
+  compatibility: [33m28[39m,
+  inventoryAndFiles: [33m19[39m,
+  nativeStartupAndUpstream: [33m382[39m,
+  firstDeltaMs: [33m1073[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mexternal tool inventory, canonical decoding and historical replay
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mexternal tool inventory, canonical decoding and historical replay
+[22m[39m[claude-subscription] wire { code: [32m'tool_result_mismatch'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mtool max-turn boundary
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mtruncated tool
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mstall
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mstall
+[22m[39m[claude-subscription] startup {
+  environment: [33m3[39m,
+  privateDirectories: [33m629[39m,
+  compatibility: [33m29[39m,
+  inventoryAndFiles: [33m22[39m,
+  nativeStartupAndUpstream: [33m404[39m,
+  firstDeltaMs: [33m1087[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mcancel
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2mcancel
+[22m[39m[claude-subscription] startup {
+  environment: [33m2[39m,
+  privateDirectories: [33m640[39m,
+  compatibility: [33m30[39m,
+  inventoryAndFiles: [33m19[39m,
+  nativeStartupAndUpstream: [33m387[39m,
+  firstDeltaMs: [33m1079[39m
+}
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2miterator return
+[22m[39m[claude-subscription] wire { code: [32m'unknown_cache_layout'[39m }
+
+[90mstdout[2m | src/main/agent/providers/claude-subscription/installed-cli.test.ts[2m > [22m[2minstalled Claude synthetic transport qualification[2m > [22m[2miterator return
+[22m[39m[claude-subscription] startup {
+  environment: [33m3[39m,
+  privateDirectories: [33m645[39m,
+  compatibility: [33m28[39m,
+  inventoryAndFiles: [33m19[39m,
+  nativeStartupAndUpstream: [33m404[39m,
+  firstDeltaMs: [33m1098[39m
+}
+

@@ -1,4 +1,5 @@
 import { app } from "electron"
+import { randomUUID } from "crypto"
 import { mkdir, realpath, stat } from "fs/promises"
 import { isAbsolute, join, resolve } from "path"
 import { stopNote } from "../abort"
@@ -125,10 +126,21 @@ export async function runCodexConversation(input: {
   // previously recorded no memory at all.
   memoryWorkspaceDir?: string
   userMessage?: string
+  completionInstruction?: string
+  reportOnly?: boolean
+  reportProvider?: string
   model?: string | null
   abort: AbortController
   onEvent: (event: ChatEvent) => void
 }): Promise<ChatResult> {
+  if (input.reportOnly) {
+    if (input.reportProvider === "codex_cli")
+      return {
+        error:
+          "Tool-free completion reporting is not supported by the Codex CLI provider.",
+      }
+    return runCliCompletionReport(input)
+  }
   let prompt = input.userMessage
   if (prompt !== undefined) {
     prompt = prompt || "Hello"
@@ -144,6 +156,9 @@ export async function runCodexConversation(input: {
       .find((message) => message.role === "user" && message.content)
     prompt = latestUser?.content ?? "Continue."
   }
+
+  if (input.completionInstruction)
+    prompt += `\n\n${input.completionInstruction}`
 
   // Visible prose this turn produced. Accumulated from the stream so a stopped
   // or failed turn still has its work recorded, not just a clean completion.
@@ -266,10 +281,21 @@ export async function runClaudeConversation(input: {
   // previously recorded no memory at all.
   memoryWorkspaceDir?: string
   userMessage?: string
+  completionInstruction?: string
+  reportOnly?: boolean
+  reportProvider?: string
   model?: string | null
   abort: AbortController
   onEvent: (event: ChatEvent) => void
 }): Promise<ChatResult> {
+  if (input.reportOnly) {
+    if (input.reportProvider === "codex_cli")
+      return {
+        error:
+          "Tool-free completion reporting is not supported by the Codex CLI provider.",
+      }
+    return runCliCompletionReport(input)
+  }
   let prompt = input.userMessage
   if (prompt !== undefined) {
     prompt = prompt || "Hello"
@@ -285,6 +311,9 @@ export async function runClaudeConversation(input: {
       .find((message) => message.role === "user" && message.content)
     prompt = latestUser?.content ?? "Continue."
   }
+
+  if (input.completionInstruction)
+    prompt += `\n\n${input.completionInstruction}`
 
   // Visible prose this turn produced. Accumulated from the stream so a stopped
   // or failed turn still has its work recorded, not just a clean completion.
@@ -407,4 +436,38 @@ export async function runClaudeConversation(input: {
       workspaceDir: input.memoryWorkspaceDir,
     }).catch((err) => console.warn("[memory] turn record failed:", err))
   }
+}
+
+async function runCliCompletionReport(input: {
+  conversation: Conversation
+  completionInstruction?: string
+  model?: string | null
+  abort: AbortController
+  onEvent: (event: ChatEvent) => void
+}): Promise<ChatResult> {
+  // Use a fresh tool-free session: resuming the CLI's native session would also
+  // resume its autonomous permissions and omit newer app transcript messages.
+  const history = listMessages(input.conversation.id)
+    .filter(
+      (message) => message.role === "user" || message.role === "assistant"
+    )
+    .map((message) => ({ role: message.role, content: message.content }))
+  const result = await runClaudeCode({
+    cwd: process.cwd(),
+    message: JSON.stringify(history),
+    sessionId: randomUUID(),
+    resume: false,
+    model: normalizeClaudeModel(input.model),
+    isolated: true,
+    systemPrompt: input.completionInstruction,
+    signal: input.abort.signal,
+    onEvent: () => {},
+  })
+  if (result.content)
+    appendMessage({
+      conversationId: input.conversation.id,
+      role: "assistant",
+      content: result.content,
+    })
+  return result
 }

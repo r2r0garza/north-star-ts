@@ -94,7 +94,7 @@ describe.skipIf(!sqliteLoads)("index_query_tool", () => {
     await buildIndex()
     // A user story's worktree: registered as a workspace (as a Process run
     // does) but never indexed itself.
-    const worktree = join(root, "..", `${root.split("/").pop()}-story`)
+    const worktree = `${root}-story`
     git("worktree", "add", "-q", worktree)
     const now = Date.now()
     db.prepare(

@@ -838,16 +838,16 @@ export function getInheritedEnv(
     if (typeof v === "string") env[k] = v
   }
   if (platform === "darwin") {
-    const paths = (env.PATH ?? "").split(path.delimiter).filter(Boolean)
+    const paths = (env.PATH ?? "").split(":").filter(Boolean)
     for (const dir of [
-      path.join(home, ".local", "bin"),
-      path.join(home, ".npm-global", "bin"),
+      path.posix.join(home, ".local", "bin"),
+      path.posix.join(home, ".npm-global", "bin"),
       "/opt/homebrew/bin",
       "/usr/local/bin",
     ]) {
       if (!paths.includes(dir)) paths.push(dir)
     }
-    env.PATH = paths.join(path.delimiter)
+    env.PATH = paths.join(":")
   }
   return env
 }

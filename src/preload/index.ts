@@ -1,3 +1,12 @@
+import type {
+  ClaudeSubscriptionPreflight,
+  ClaudeSubscriptionRefresh,
+} from "../shared/claude-subscription"
+export type {
+  ClaudeSubscriptionPreflight,
+  ClaudeSubscriptionCatalog,
+  ClaudeSubscriptionRefresh,
+} from "../shared/claude-subscription"
 import { contextBridge, ipcRenderer, webUtils } from "electron"
 import type { IpcRendererEvent } from "electron"
 // Type-only imports — erased at build time, so better-sqlite3 is never pulled
@@ -409,6 +418,33 @@ const api = {
         stopped?: boolean
       }>
     ).finally(done)
+  },
+  onCompletionReportStream: (
+    cb: (
+      payload: { conversationId: string } & (
+        | { type: "started" }
+        | { type: "event"; event: ChatEvent }
+      )
+    ) => void
+  ) => {
+    const listener = (
+      _event: IpcRendererEvent,
+      payload: Parameters<typeof cb>[0]
+    ) => cb(payload)
+    ipcRenderer.on("chat:report-stream", listener)
+    return () => {
+      ipcRenderer.removeListener("chat:report-stream", listener)
+    }
+  },
+  onCompletionReport: (cb: (conversationId: string) => void) => {
+    const listener = (
+      _event: IpcRendererEvent,
+      payload: { conversationId: string }
+    ) => cb(payload.conversationId)
+    ipcRenderer.on("chat:reported", listener)
+    return () => {
+      ipcRenderer.removeListener("chat:reported", listener)
+    }
   },
   // Cancel the in-flight turn for a conversation (the Stop button). The chat()
   // promise above then resolves with `{ stopped: true }`.
@@ -2611,6 +2647,15 @@ const api = {
         version?: string
         error?: string
       }>,
+    preflightClaudeSubscription: () =>
+      ipcRenderer.invoke(
+        "providers:preflightClaudeSubscription"
+      ) as Promise<ClaudeSubscriptionPreflight>,
+    refreshClaudeSubscriptionModels: (id: string) =>
+      ipcRenderer.invoke(
+        "providers:refreshClaudeSubscriptionModels",
+        id
+      ) as Promise<ClaudeSubscriptionRefresh>,
     preflightCodexSubscription: (id: string) =>
       ipcRenderer.invoke(
         "providers:preflightCodexSubscription",

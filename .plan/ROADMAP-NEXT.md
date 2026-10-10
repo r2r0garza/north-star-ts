@@ -3,14 +3,19 @@
 > **Note (2026-09-26):** the `106.x` plans predate a rename — Initiatives are now **Features**,
 > Missions are **Milestones**, and Slices are **User stories**. Each pending `106.x` plan has a mapping note at the top.
 
-1. **`092.1` — Agent lifecycle hook contract, storage, runner, and safety controls.** Define versioned
+1. **`109.5` — Host image vision and durable media history.** Address standalone image vision and
+   durable screenshot/scanned-PDF pixels together through bounded provider-neutral host storage, canonical
+   replay and transcript rendering. User accepted current limitations for completed `109.2`; this follow-up
+   remains separate from that slice's accepted native Linux/Windows qualification. Distribution checks remain deferred until all 109.X work is done.
+   [Plan](109.5-host-images-and-durable-media.md).
+2. **`092.1` — Agent lifecycle hook contract, storage, runner, and safety controls.** Define versioned
    event/result/metadata schemas, canonical guarded `.hook.cjs` + `.hook.json` storage under
    `~/.<system>/hooks/`, exact-source-hash review state, stable Agent-ref targeting, deterministic matching,
    and safe failure policies. Build the bounded short-lived child-process protocol with cancellation,
    process-tree cleanup, packaged-runtime coverage, and sanitized diagnostics. This slice establishes the
    executable-code boundary but does not yet connect hooks to agent lifecycles or add the full Hooks screen
    and AI authoring wizard; those remain deferred as `092.2` and `092.3`.
-2. **`045` — North Star MCP bridge for CLI providers.** After `042`, make North Star a second, distinct
+3. **`045` — North Star MCP bridge for CLI providers.** After `042`, make North Star a second, distinct
    MCP role: it remains a client of user-configured external servers, and also hosts a lazy,
    authenticated Streamable HTTP server on an ephemeral `127.0.0.1` port for the Claude Code and Codex
    subprocesses we launch. Inject the endpoint per turn (`claude --mcp-config`; Codex transient `-c`
@@ -26,8 +31,14 @@
    it, 4/4 with); `045`'s out-of-scope line is amended to permit exactly that narrow steer.
    **`045.1` remains**: extract the shared `index_query` service, add its adapter, widen the grant, add
    the CLI-provider UI copy, and close the Codex steering gap (no per-run append flag exists).
-3. **`067` — Conversation-scoped workspace checkpoints.** Add a reversible safety layer for autonomous
+4. **`067` — Conversation-scoped workspace checkpoints.** Add a reversible safety layer for autonomous
    edits using conversation+workspace-scoped, content-addressed app-data manifests and blobs. Provide
    bounded create/list/diff/restore operations with conflict-aware previews, explicit approval, quotas,
    retention, and crash-safe lifecycle handling. Preserve unrelated user changes and never wrap destructive
    `git reset`/`checkout`/`clean` operations.
+5. **`110` — Anthropic subscription usage investigation.** Investigate user-observed rapid Opus
+   allowance consumption versus native Claude Code with privacy-preserving per-round accounting and
+   explicitly approved, bounded matched trials. Separate uncached input, cache writes/reads, thinking/output,
+   retries, auxiliary calls and task quality; establish the cause before proposing remediation. Keep packaged
+   provider selection hidden pending evidence and an explicit release decision; `109.6` remains deferred.
+   [Plan](110-anthropic-subscription-usage-investigation.md).

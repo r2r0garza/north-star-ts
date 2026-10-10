@@ -242,6 +242,47 @@ beforeEach(() => {
 })
 
 describe.skipIf(!sqliteLoads)("ProcessService dispatch routing", () => {
+  it("dispatches a keyless subscription override through the normal agent loop", async () => {
+    db.prepare(
+      `INSERT INTO provider_accounts (id, provider, display_name, created_at)
+      VALUES ('claude-sub', 'claude_subscription', 'Personal Claude', 0)`
+    ).run()
+    const def = processes.createProcessDefinition({ name: "Subscription" })
+    processes.createPhase({
+      processId: def.id,
+      key: "work",
+      name: "Work",
+      position: 0,
+      runtimeConfig: { worker: { accountId: "claude-sub", modelId: "sonnet" } },
+    })
+    const { taskId } = seedTaskRow()
+    const run = processes.createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      taskId,
+      objective: "work",
+      status: "running",
+    })
+    await new ProcessService(fakeRunner).execute({
+      task: { id: taskId, input: { processRunId: run.id } } as never,
+      signal: new AbortController().signal,
+      emit: () => {},
+      workspace: undefined,
+    })
+    expect(loopCalls[0]).toMatchObject({
+      accountId: "claude-sub",
+      modelId: "sonnet",
+    })
+    expect(
+      processes.listPhaseRuns({ runId: run.id, parentId: null })[0]
+        .runtimeSnapshot?.worker
+    ).toMatchObject({
+      accountId: "claude-sub",
+      modelId: "sonnet",
+      source: "phase",
+    })
+  })
+
   it("uses and snapshots a phase worker runtime override", async () => {
     const def = processes.createProcessDefinition({ name: "T" })
     const phase = processes.createPhase({

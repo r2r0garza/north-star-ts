@@ -164,6 +164,7 @@ export interface ConversationSearchResult {
 }
 
 export interface Message {
+  nativeAssistant?: import("../agent/providers/claude-subscription/native-carrier").NativeAssistantCarrier
   id: string
   conversationId: string
   seq: number
@@ -429,6 +430,7 @@ export type Provider =
   | "claude_code"
   | "codex_cli"
   | "codex_subscription"
+  | "claude_subscription"
   | "anthropic"
   | "google"
   | "azure_openai"

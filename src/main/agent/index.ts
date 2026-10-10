@@ -1,3 +1,4 @@
+import { nativeAssistant } from "./providers/claude-subscription/native-carrier"
 import { randomUUID } from "crypto"
 import { readFile, stat } from "fs/promises"
 import { basename, dirname, isAbsolute } from "path"
@@ -210,6 +211,7 @@ import {
 import type { Conversation } from "../db/types"
 import type { FailureContext, FailureStage } from "../db/types"
 import { runClaudeConversation, runCodexConversation } from "./cli"
+import { serializeConversationTurn } from "./conversation-turns"
 import { normalizeClaudeModel } from "./cli/claude"
 import { makePolicyEngine } from "./approval/engine"
 import { PlanModeClassifier } from "./approval/plan-mode-classifier"
@@ -610,6 +612,7 @@ function validateModelRoundForLoop(input: {
   commandCompletionPending: boolean
   canRaiseOutputCap: boolean
 }): void {
+  if (input.round.refusal) return
   const structuredToolCalls = accumulateToolCalls(input.round.toolFragments)
   const recovered = extractTextToolCalls(input.round.text)
   const text = recovered.text.trim()
@@ -921,6 +924,8 @@ export interface RunAgentLoopOptions {
   processPhaseRunId?: string
   // Process-only format instruction, refreshed even when resuming a transcript.
   processCompletionInstruction?: string
+  completionInstruction?: string
+  reportOnly?: boolean
   // Mission Control (plan 106.3): this worker runs a playbook's proof step, so
   // it is offered record_proof. The tool re-derives the user story, criteria, and
   // seats from the run itself; this flag only controls the offer.
@@ -1089,6 +1094,9 @@ export async function runAgentLoop(
       // Gates the MCP bridge's ask_user_question the same way it gates the
       // internal tool: a headless worker gets no question surface at all.
       suppressUserQuestions: opts.suppressUserQuestions,
+      completionInstruction: opts.completionInstruction,
+      reportOnly: opts.reportOnly,
+      reportProvider: effectiveAccount.provider,
       // Lends the CLI North Star's browser over the bridge (plan 045).
       provideBrowser: opts.provideBrowser,
       // The CLI paths return before `agentDir` is resolved below, so scope their
@@ -1345,6 +1353,7 @@ export async function runAgentLoop(
   // no filesystem tools; plan mode still drops mutating tools). Universal tools
   // (ask_user_question, read_skill, plan-mode handoff) bypass the allowlist.
   const applyAgentTools = (defs: { function: { name: string } }[]) => {
+    if (opts.reportOnly) return []
     const agentFiltered = externalToolAllowed
       ? defs.filter((d) => externalToolAllowed(d.function.name))
       : agentToolNames === null
@@ -1513,7 +1522,8 @@ export async function runAgentLoop(
     opts.processPhaseRunId &&
     opts.processCompletionInstruction
       ? `\n\n${opts.processCompletionInstruction}`
-      : "")
+      : "") +
+    (opts.completionInstruction ? `\n\n${opts.completionInstruction}` : "")
   const sections: ContextSection[] = [...(opts.extraContextSections ?? [])]
 
   const chatVenvOverlay = opts.chatPythonVenv
@@ -2444,6 +2454,17 @@ export async function runAgentLoop(
         return { stopped: true }
       }
 
+      if (round.refusal) {
+        appendMessage({
+          conversationId,
+          role: "assistant",
+          content: text,
+          nativeAssistant: round.nativeAssistant,
+        })
+        completeModelRequestRetryBudget({ conversationId, logicalRoundId })
+        return { content: text, ...(hasTurnUsage ? { usage: turnUsage } : {}) }
+      }
+
       const structuredToolCalls = accumulateToolCalls(round.toolFragments)
       const recovered = extractTextToolCalls(text)
       text = recovered.text
@@ -2478,7 +2499,12 @@ export async function runAgentLoop(
       if (toolCalls.length === 0) {
         if (commandCompletionInbox.hasPending(commandCompletionOwner)) {
           if (text.trim()) {
-            appendMessage({ conversationId, role: "assistant", content: text })
+            appendMessage({
+              conversationId,
+              role: "assistant",
+              content: text,
+              nativeAssistant: round.nativeAssistant,
+            })
           }
           completeModelRequestRetryBudget({ conversationId, logicalRoundId })
           onEvent({ type: "command_wait", phase: "start" })
@@ -2504,7 +2530,12 @@ export async function runAgentLoop(
         }
         // No tool calls — this is the final answer. Persist it so the next turn
         // (and a reopened conversation) has the full transcript.
-        appendMessage({ conversationId, role: "assistant", content: text })
+        appendMessage({
+          conversationId,
+          role: "assistant",
+          content: text,
+          nativeAssistant: round.nativeAssistant,
+        })
         completeModelRequestRetryBudget({ conversationId, logicalRoundId })
         return {
           content: text,
@@ -2517,6 +2548,7 @@ export async function runAgentLoop(
       messages.push({
         role: "assistant",
         content: text || null,
+        [nativeAssistant]: round.nativeAssistant,
         tool_calls: toolCalls.map((c) => ({
           id: c.id,
           type: "function",
@@ -2530,6 +2562,7 @@ export async function runAgentLoop(
         conversationId,
         role: "assistant",
         content: text || null,
+        nativeAssistant: round.nativeAssistant,
         toolCalls: toolCalls.map((c) => ({
           id: c.id,
           name: c.name,
@@ -2646,6 +2679,8 @@ export async function runAgentLoop(
           }),
         signal: abort.signal,
         execute: async (call, _index, callSignal) => {
+          if (opts.reportOnly)
+            return { result: "Tools are disabled for this report-only turn." }
           const persistLifecycle = <T>(action: () => T): T => {
             try {
               return action()
@@ -3728,32 +3763,73 @@ export async function runChat(
   // Register the abort controller for this turn so the Stop button (chat:stop →
   // stopChat) can cancel it. One turn per conversation (the UI disables Send
   // while loading), so a plain Map keyed by conversation is enough.
-  const abort = new AbortController()
-  abortControllers.set(conversationId, abort)
-  try {
-    return await runAgentLoop({
-      conversationId,
-      workspace,
-      attachments,
-      skills,
-      userMessage: message,
-      planMode,
-      autoMode,
-      // Snapshot the opt-in at turn start. Process workers call runAgentLoop
-      // directly and intentionally do not consult this conversation preference.
-      conversationSubagentsEnabled:
-        settingsService.getConversations().allowConversationSubagents,
-      chatPythonVenv: true,
-      onEvent,
-      abort,
-      enqueueTask,
-      provideBrowser,
-    })
-  } finally {
-    // Release this turn's abort controller (only if it's still the current one —
-    // defensive against a future overlapping turn replacing it).
-    if (abortControllers.get(conversationId) === abort) {
-      abortControllers.delete(conversationId)
+  return serializeConversationTurn(conversationId, async () => {
+    const abort = new AbortController()
+    abortControllers.set(conversationId, abort)
+    try {
+      return await runAgentLoop({
+        conversationId,
+        workspace,
+        attachments,
+        skills,
+        userMessage: message,
+        planMode,
+        autoMode,
+        // Snapshot the opt-in at turn start. Process workers call runAgentLoop
+        // directly and intentionally do not consult this conversation preference.
+        conversationSubagentsEnabled:
+          settingsService.getConversations().allowConversationSubagents,
+        chatPythonVenv: true,
+        onEvent,
+        abort,
+        enqueueTask,
+        provideBrowser,
+      })
+    } finally {
+      // Release this turn's abort controller (only if it's still the current one —
+      // defensive against a future overlapping turn replacing it).
+      if (abortControllers.get(conversationId) === abort) {
+        abortControllers.delete(conversationId)
+      }
     }
-  }
+  })
+}
+
+export function runCompletionReport(
+  conversationId: string,
+  instruction: string,
+  fallback: string,
+  onEvent?: (event: ChatEvent) => void,
+  onStarted?: () => void
+): Promise<ChatResult> {
+  return serializeConversationTurn(conversationId, async () => {
+    if (!getConversation(conversationId)) return { stopped: true }
+    const abort = new AbortController()
+    abortControllers.set(conversationId, abort)
+    try {
+      onStarted?.()
+      const result = await runAgentLoop({
+        conversationId,
+        abort,
+        onEvent,
+        reportOnly: true,
+        userMessage: "Write the background task completion report now.",
+        completionInstruction: instruction,
+        allowedToolNames: new Set(),
+        suppressUserQuestions: true,
+        conversationSubagentsEnabled: false,
+      })
+      if (
+        !result.stopped &&
+        (result.error || !result.content?.trim()) &&
+        getConversation(conversationId)
+      ) {
+        appendMessage({ conversationId, role: "assistant", content: fallback })
+      }
+      return result
+    } finally {
+      if (abortControllers.get(conversationId) === abort)
+        abortControllers.delete(conversationId)
+    }
+  })
 }

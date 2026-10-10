@@ -1,3 +1,6 @@
+const nodeCommand = (code: string) =>
+  `"${process.execPath}" -e "eval(Buffer.from('${Buffer.from(code).toString("base64")}', 'base64').toString('utf8'))"`
+
 import { execFileSync } from "child_process"
 import {
   chmodSync,
@@ -25,6 +28,8 @@ function repoWithWorktree() {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "wt-env-")))
   dirs.push(root)
   git(root, "init", "-b", "main")
+  git(root, "config", "core.autocrlf", "false")
+  git(root, "config", "core.eol", "lf")
   git(root, "config", "user.email", "t@example.com")
   git(root, "config", "user.name", "T")
   writeFileSync(path.join(root, ".gitignore"), ".venv/\n")
@@ -87,7 +92,15 @@ describe("prepareWorktreeEnvironment", () => {
     const ok = await prepareWorktreeEnvironment({
       mainWorkspace: root,
       worktreeWorkspace: worktree,
-      setup: { linkPaths: [], steps: [step("ready", "touch .ready")] },
+      setup: {
+        linkPaths: [],
+        steps: [
+          step(
+            "ready",
+            nodeCommand("require('fs').writeFileSync('.ready', '')")
+          ),
+        ],
+      },
     })
     expect(ok).toMatchObject({ error: null })
     expect(ok?.steps).toMatchObject([
@@ -101,8 +114,11 @@ describe("prepareWorktreeEnvironment", () => {
       setup: {
         linkPaths: [],
         steps: [
-          step("boom", "echo nope >&2; exit 4"),
-          step("after", "touch .after"),
+          step("boom", nodeCommand("console.error('nope'); process.exit(4)")),
+          step(
+            "after",
+            nodeCommand("require('fs').writeFileSync('.after', '')")
+          ),
         ],
       },
     })
@@ -124,8 +140,19 @@ describe("prepareWorktreeEnvironment", () => {
       setup: {
         linkPaths: [],
         steps: [
-          { ...step("one", "touch first"), cwd: "api" },
-          step("two", "test -f api/first && touch second"),
+          {
+            ...step(
+              "one",
+              nodeCommand("require('fs').writeFileSync('first', '')")
+            ),
+            cwd: "api",
+          },
+          step(
+            "two",
+            nodeCommand(
+              "const fs = require('fs'); fs.accessSync('api/first'); fs.writeFileSync('second', '')"
+            )
+          ),
         ],
       },
     })

@@ -1,3 +1,4 @@
+import { resolve } from "path"
 import { describe, it, expect } from "vitest"
 import { stripAnsi } from "./ansi"
 import { normalizeCommand } from "./normalize"
@@ -21,7 +22,7 @@ import type { ToolAction } from "./types"
 
 // Build a shell action for the classifier under test.
 function shell(command: string): ToolAction {
-  return shellActionForCommand(command)
+  return shellActionForCommand(command, { platform: "darwin" })
 }
 
 function fileWrite(relPath: string): ToolAction {
@@ -252,7 +253,7 @@ describe("analyzeShellCommand", () => {
       "git",
       "wc",
     ])
-    expect(analysis.candidateWritePaths).toEqual(["/tmp/work/out.txt"])
+    expect(analysis.candidateWritePaths).toEqual([resolve("/tmp/work/out.txt")])
   })
 
   it("marks substitutions as approval-required and exposes the nested command", () => {
@@ -298,7 +299,7 @@ describe("analyzeShellCommand", () => {
     )
 
     expect(analysis.networkOperations).toEqual(["git pull"])
-    expect(analysis.outsideWorkspacePaths).toEqual(["/tmp/result.txt"])
+    expect(analysis.outsideWorkspacePaths).toEqual([resolve("/tmp/result.txt")])
   })
 
   it("does not treat dot-dot-prefixed in-workspace paths as escapes", () => {
@@ -311,7 +312,9 @@ describe("analyzeShellCommand", () => {
       }
     )
 
-    expect(analysis.candidateWritePaths).toEqual(["/repo/..cache/result.txt"])
+    expect(analysis.candidateWritePaths).toEqual([
+      resolve("/repo/..cache/result.txt"),
+    ])
     expect(analysis.outsideWorkspacePaths).toEqual([])
   })
 

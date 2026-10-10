@@ -13,6 +13,7 @@ function decide(
 ) {
   return classifier.classify(
     shellActionForCommand(command, {
+      platform: "darwin",
       cwd: workspace,
       workspace,
       readOnlyRoots: [SKILL, WORKSPACE_SKILL],

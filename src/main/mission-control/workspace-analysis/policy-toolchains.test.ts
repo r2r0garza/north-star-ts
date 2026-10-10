@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { vi, describe, expect, it } from "vitest"
 import {
   checkGeneratedCommand,
   checkGlob,
@@ -125,4 +125,19 @@ describe("toolchain versions", () => {
       })
     ).toBe("18.2")
   })
+})
+
+vi.mock("../../agent/approval/shell-analyzer", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../agent/approval/shell-analyzer")>()
+  return {
+    ...actual,
+    analyzeShellCommand: (
+      ...args: Parameters<typeof actual.analyzeShellCommand>
+    ) => actual.analyzeShellCommand(args[0], "darwin", args[2]),
+    shellActionForCommand: (
+      ...args: Parameters<typeof actual.shellActionForCommand>
+    ) =>
+      actual.shellActionForCommand(args[0], { ...args[1], platform: "darwin" }),
+  }
 })

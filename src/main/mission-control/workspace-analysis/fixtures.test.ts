@@ -10,7 +10,15 @@ import {
 } from "fs"
 import { tmpdir } from "os"
 import path from "path"
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest"
+import {
+  vi,
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+} from "vitest"
 import type {
   Finding,
   Fix,
@@ -66,7 +74,13 @@ function build(fixture: Fixture): string {
   for (const [link, target] of Object.entries(fixture.symlinks ?? {})) {
     const full = path.join(root, link)
     mkdirSync(path.dirname(full), { recursive: true })
-    symlinkSync(target, full)
+    symlinkSync(
+      process.platform === "win32"
+        ? path.resolve(path.dirname(full), target)
+        : target,
+      full,
+      process.platform === "win32" ? "junction" : "dir"
+    )
   }
   write(root, fixture.dirty ?? {})
   if (fixture.linkedWorktree) {
@@ -307,5 +321,20 @@ describe("workspace analysis fixtures", () => {
           )
       }
     })
+  }
+})
+
+vi.mock("../../agent/approval/shell-analyzer", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../agent/approval/shell-analyzer")>()
+  return {
+    ...actual,
+    analyzeShellCommand: (
+      ...args: Parameters<typeof actual.analyzeShellCommand>
+    ) => actual.analyzeShellCommand(args[0], "darwin", args[2]),
+    shellActionForCommand: (
+      ...args: Parameters<typeof actual.shellActionForCommand>
+    ) =>
+      actual.shellActionForCommand(args[0], { ...args[1], platform: "darwin" }),
   }
 })

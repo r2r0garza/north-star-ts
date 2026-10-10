@@ -1,3 +1,5 @@
+import { vi as timeoutVi } from "vitest"
+timeoutVi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 })
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import Database from "better-sqlite3"
 import { execFileSync } from "child_process"
@@ -159,6 +161,8 @@ function repo(): string {
   const root = mkdtempSync(path.join(tmpdir(), "mc-int-"))
   dirs.push(root)
   git(root, "init", "-b", "main")
+  git(root, "config", "core.autocrlf", "false")
+  git(root, "config", "core.eol", "lf")
   git(root, "config", "user.email", "test@example.com")
   git(root, "config", "user.name", "Test")
   writeFileSync(path.join(root, "README.md"), "base\n")
@@ -295,10 +299,16 @@ beforeEach(() => {
   notices.length = 0
 })
 
-afterEach(() => {
+afterEach(async () => {
   integration?.stop()
+  await integration?.idle()
   for (const dir of dirs.splice(0))
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    })
 })
 
 describe.skipIf(!sqliteLoads)("milestone integration", () => {

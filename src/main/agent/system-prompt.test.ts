@@ -9,7 +9,9 @@ vi.mock("electron", () => ({ app: { getAppPath: () => "/app" } }))
 let files: Record<string, string> = {}
 vi.mock("fs/promises", () => ({
   readFile: (p: string) => {
-    const hit = Object.keys(files).find((suffix) => p.endsWith(suffix))
+    const hit = Object.keys(files).find((suffix) =>
+      p.replace(/\\/g, "/").endsWith(suffix)
+    )
     if (hit) return Promise.resolve(files[hit])
     return Promise.reject(new Error(`ENOENT: ${p}`))
   },

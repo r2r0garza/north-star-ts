@@ -183,6 +183,8 @@ function repo(): string {
   const root = mkdtempSync(path.join(tmpdir(), "mc-nav-"))
   dirs.push(root)
   git(root, "init", "-b", "main")
+  git(root, "config", "core.autocrlf", "false")
+  git(root, "config", "core.eol", "lf")
   git(root, "config", "user.email", "test@example.com")
   git(root, "config", "user.name", "Test")
   writeFileSync(path.join(root, "shared.txt"), "one\ntwo\nthree\n")

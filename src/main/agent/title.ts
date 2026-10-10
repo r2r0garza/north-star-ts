@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto"
 import * as settingsService from "../settings/service"
 import { normalizeClaudeModel, runClaudeCode } from "./cli/claude"
+import { supportsClaudeSubscriptionEffort } from "./providers/claude-subscription/context"
 import {
   createCompletion,
   resolveLlm,
@@ -212,7 +213,11 @@ export async function generateTitle(
         client,
         model,
         TITLE_OUTPUT_TOKENS,
-        requestBody(message, true),
+        requestBody(
+          message,
+          target.account.provider !== "claude_subscription" ||
+            supportsClaudeSubscriptionEffort(model)
+        ),
         [],
         apiMode
       )

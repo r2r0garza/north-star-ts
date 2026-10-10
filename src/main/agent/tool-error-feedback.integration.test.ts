@@ -264,6 +264,99 @@ afterEach(() => {
 })
 
 describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
+  it.each(["textful", "textless", "partial", "markup", "filter", "reasoning"])(
+    "persists terminal refusal without tools or retries (%s)",
+    async (kind) => {
+      const workspace = await makeWorkspace()
+      const conversation = createConversation({ mode: "interactive" })
+      const markup =
+        '<tool_call>{"name":"exec_command","arguments":{"command":"echo should-not-run"}}</tool_call>'
+      scriptedCompletions.push(() =>
+        (async function* () {
+          yield {
+            choices: [
+              {
+                delta: {
+                  ...(kind === "textful"
+                    ? { content: "I cannot complete this request." }
+                    : {}),
+                  ...(kind === "markup"
+                    ? { content: `I declined this call: ${markup}` }
+                    : {}),
+                  ...(kind === "reasoning"
+                    ? {
+                        reasoning_content: "private thinking",
+                        reasoning: "more private thinking",
+                      }
+                    : {}),
+                  ...(kind === "partial"
+                    ? {
+                        tool_calls: [
+                          {
+                            index: 0,
+                            id: "denied",
+                            type: "function",
+                            function: {
+                              name: "exec_command",
+                              arguments: '{"command":',
+                            },
+                          },
+                        ],
+                      }
+                    : {}),
+                },
+                finish_reason: null,
+              },
+            ],
+          }
+          yield {
+            choices: [
+              {
+                delta:
+                  kind === "textless" || kind === "filter"
+                    ? {}
+                    : { refusal: "Request declined." },
+                finish_reason: kind === "filter" ? "content_filter" : "refusal",
+              },
+            ],
+          }
+        })()
+      )
+      const events: any[] = []
+      const result = await runAgentLoop({
+        conversationId: conversation.id,
+        workspace,
+        userMessage: "Perform the task",
+        abort: new AbortController(),
+        onEvent: (event) => events.push(event),
+      })
+      expect(result.error).toBeUndefined()
+      expect(result.content).toBeTruthy()
+      expect(result.content).not.toContain("private thinking")
+      if (kind === "markup") expect(result.content).toContain(markup)
+      expect(completionRequests).toHaveLength(1)
+      const history = listMessages(conversation.id)
+      const assistant = history.filter(
+        (message) => message.role === "assistant"
+      )
+      expect(assistant).toHaveLength(1)
+      expect(assistant[0].content).toBe(result.content)
+      expect(assistant[0].toolCalls).toBeNull()
+      expect(history.some((message) => message.role === "tool")).toBe(false)
+      expect(listToolCallLifecycle(conversation.id)).toEqual([])
+      expect(
+        events.some(
+          (event) =>
+            event.type === "approval_request" || event.type === "tool_start"
+        )
+      ).toBe(false)
+      expect(getBudget(conversation.id, "after-seq:1")).toMatchObject({
+        status: "completed",
+        attemptsConsumed: 1,
+      })
+    }
+  )
+
   it.each([
     { background: false, separateTurns: false },
     { background: false, separateTurns: true },
@@ -1374,10 +1467,6 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
   })
 
   it.each([
-    {
-      finishReason: "content_filter",
-      expected: "content filter",
-    },
     {
       finishReason: "unexpected_reason",
       expected: 'unsupported finish reason "unexpected_reason"',
@@ -2524,6 +2613,10 @@ describe.skipIf(!sqliteLoads)("tool batch durability and cancellation", () => {
     const conversation = createConversation({ mode: "interactive" })
     let finish!: (result: string) => void
     let lateImage!: () => void
+    let pendingEntered!: () => void
+    const entered = new Promise<void>((resolve) => {
+      pendingEntered = resolve
+    })
     let pendingSignal!: AbortSignal
     installTool(async (args, ctx) => {
       if (args.id === "bad") throw new Error("controlled read error")
@@ -2532,6 +2625,7 @@ describe.skipIf(!sqliteLoads)("tool batch durability and cancellation", () => {
       lateImage = () => ctx.emitImage?.({ jpegBase64: "late", alt: "late" })
       return new Promise((resolve) => {
         finish = resolve
+        pendingEntered()
       })
     })
     scriptedCompletions.push(() =>
@@ -2569,7 +2663,7 @@ describe.skipIf(!sqliteLoads)("tool batch durability and cancellation", () => {
           siblingsDone()
       },
     })
-    await siblings
+    await Promise.all([siblings, entered])
     expect(
       listToolCallLifecycle(conversation.id).map((r) => [
         r.toolCallId,

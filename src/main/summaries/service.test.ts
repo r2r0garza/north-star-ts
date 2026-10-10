@@ -18,6 +18,7 @@ vi.mock("../db/connection", () => ({ getDb: () => db }))
 let nextCompletion: unknown
 let nextError: unknown
 let completionCalls = 0
+const routing = vi.hoisted(() => ({ resolve: vi.fn() }))
 // The `base` arg passed to the last createCompletion call — lets tests assert the
 // assembled prompt (system + user messages) without exporting internal helpers.
 let lastBase: { messages?: { role: string; content: string }[] } | undefined
@@ -25,12 +26,15 @@ vi.mock("../agent/providers", () => {
   // Defined inside the factory (vi.mock is hoisted above module scope).
   class NoActiveProviderError extends Error {}
   return {
-    resolveLlm: () => ({
-      client: {},
-      model: "test-model",
-      accountId: "a1",
-      apiMode: "completions",
-    }),
+    resolveLlm: (selection: unknown) => {
+      routing.resolve(selection)
+      return {
+        client: {},
+        model: "test-model",
+        accountId: "a1",
+        apiMode: "completions",
+      }
+    },
     createCompletion: async (
       _client: unknown,
       _model: string,
@@ -65,6 +69,7 @@ vi.mock("../settings/service", () => ({
 import { SummaryService, SUMMARIZE_KIND } from "./service"
 import { NoActiveProviderError as FakeNoProvider } from "../agent/providers"
 import { appendMessage } from "../db/repositories/messages"
+import { createAccount } from "../db/repositories/provider-accounts"
 import {
   getConversationSummary,
   upsertConversationSummary,
@@ -270,6 +275,34 @@ describe.skipIf(!sqliteLoads)("SummaryService.execute (executor)", () => {
       workspace: undefined,
     })
     expect(res.error).toContain("missing conversationId")
+  })
+
+  it("resolves the source subscription account rather than the worker or global default", async () => {
+    const account = createAccount({
+      provider: "claude_subscription",
+      displayName: "source subscription",
+    })
+    const convId = freshConversation()
+    db.prepare("UPDATE conversations SET account_id = ? WHERE id = ?").run(
+      account.id,
+      convId
+    )
+    seedMessages(convId, 2)
+    routing.resolve.mockClear()
+    nextCompletion = { choices: [{ message: { content: "host digest" } }] }
+    await svc.execute({
+      task: summarizeTask(convId),
+      signal: abortSignal(),
+      emit: () => {},
+      workspace: undefined,
+    })
+    expect(routing.resolve).toHaveBeenCalledExactlyOnceWith({
+      accountId: account.id,
+      modelId: null,
+    })
+    expect(lastBase).not.toHaveProperty("reasoning_effort")
+    expect(lastBase).not.toHaveProperty("stream")
+    expect(getConversationSummary(convId)?.summary).toBe("host digest")
   })
 
   it("writes a summary from the LLM response and advances coverage", async () => {

@@ -404,6 +404,7 @@ describe("LocalEnvironment file ops", () => {
     const source = join(workspace, "script.sh")
     await writeFile(source, "#!/bin/sh\necho old\n")
     await chmod(source, 0o755)
+    const originalMode = (await env.stat(source)).mode
     const chmodThrough = env.chmod.bind(env)
     env.chmod = async (path, mode) => {
       if (path.includes(".north-star-")) {
@@ -427,7 +428,7 @@ describe("LocalEnvironment file ops", () => {
 
     expect(result).toContain("ERROR[commit_failed]")
     expect(await readFile(source, "utf8")).toBe("#!/bin/sh\necho old\n")
-    expect((await env.stat(source)).mode).toBe(0o755)
+    expect((await env.stat(source)).mode).toBe(originalMode)
     expect(
       (await env.readdir(workspace)).filter((entry) =>
         entry.name.includes(".north-star-")
@@ -453,17 +454,29 @@ describe("LocalEnvironment file ops", () => {
   })
 
   it("listDir round-trips special filenames with metadata-derived types", async () => {
-    const names = [
-      "has\nnewline.txt",
-      "has\rcarriage.txt",
-      "has\ttab.txt",
-      'quote"backslash\\.txt',
-      "日本語🚀.txt",
-      "plain-file",
-      "directory\nname",
-    ]
+    const directoryName =
+      process.platform === "win32" ? "directory name" : "directory\nname"
+    const names =
+      process.platform === "win32"
+        ? [
+            "space name.txt",
+            "apostrophe's.txt",
+            "日本語.txt",
+            "[brackets]&.txt",
+            "plain-file",
+            directoryName,
+          ]
+        : [
+            "has\nnewline.txt",
+            "has\rcarriage.txt",
+            "has\ttab.txt",
+            'quote"backslash\\.txt',
+            "日本語🚀.txt",
+            "plain-file",
+            "directory\nname",
+          ]
     for (const name of names) {
-      if (name === "directory\nname") {
+      if (name === directoryName) {
         await mkdir(join(workspace, name))
       } else {
         await writeFile(join(workspace, name), "x")
@@ -480,7 +493,7 @@ describe("LocalEnvironment file ops", () => {
       expect(byName.has(name)).toBe(true)
     }
     expect(byName.get("plain-file")!.isFile()).toBe(true)
-    expect(byName.get("directory\nname")!.isDirectory()).toBe(true)
+    expect(byName.get(directoryName)!.isDirectory()).toBe(true)
   })
 
   it("listDir stops at entry and UTF-8 name-byte caps", async () => {

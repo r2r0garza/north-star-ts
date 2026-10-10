@@ -1,5 +1,23 @@
 # Roadmap — Deferred
 
+- **`109.6` — Windows subscription startup optimization — IN PROGRESS, DEFERRED.**
+  Paused at the user's direction on 2026-10-10 pending investigation and resolution of unexpectedly rapid
+  Anthropic subscription allowance consumption in North Star compared with native Claude Code using Opus;
+  the cause is not yet established. Preserve existing implementation and measurement work for resumption.
+  Anthropic Subscription remains available for internal testing in unpackaged development builds but is
+  hidden from the provider picker in packaged builds. Startup latency improvements do not resolve usage
+  efficiency; resume once that concern is understood and addressed. Preserve private-state ACLs,
+  managed-policy/auth guards, request isolation and cleanup; native API/helper changes still require
+  measured justification and native/packaged regression evidence.
+  [Plan](109.6-windows-subscription-startup-optimization.md).
+
+- **`109.4` — Claude Code inference across authentication and managed-policy configurations.**
+  Deferred at the user's direction after work-host testing exposed unresolved managed-policy compatibility.
+  The attempted implementation and gateway/diagnostics follow-ups were reverted to the completed `109.3`
+  baseline (`acf31be`); personal Pro/Max inference remains unchanged. API-key, custom gateway,
+  Team/Enterprise, token-only and unknown/new auth support require a future policy-preserving design
+  and separately authorized qualification. Existing configurable Portkey/API providers remain available.
+  [Plan](109.4-claude-code-authentication-and-managed-policy.md).
 - **`105` — Required skills for individual Process phases.** Let an agent phase explicitly activate one
   required skill for every worker invocation, distinct from the phase-agent skill allowlist. Validate pool
   compatibility, fail before the LLM call when the skill is unavailable, snapshot resolved identity, and

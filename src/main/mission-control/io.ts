@@ -5,7 +5,10 @@ import type {
   RigGraph,
   SeatMemoryKind,
 } from "../db/types"
-import type { AgentDefinition, ExternalAgentSourceKind } from "../agent/agents/types"
+import type {
+  AgentDefinition,
+  ExternalAgentSourceKind,
+} from "../agent/agents/types"
 import { getDb } from "../db/connection"
 import {
   createPod,
@@ -15,7 +18,10 @@ import {
   setOversight,
   updatePod,
 } from "../db/repositories/rigs"
-import { createSeatMemory, listSeatMemories } from "../db/repositories/seat-memories"
+import {
+  createSeatMemory,
+  listSeatMemories,
+} from "../db/repositories/seat-memories"
 
 const PROVIDERS: ReadonlySet<Provider> = new Set([
   "portkey",
@@ -24,6 +30,7 @@ const PROVIDERS: ReadonlySet<Provider> = new Set([
   "claude_code",
   "codex_cli",
   "codex_subscription",
+  "claude_subscription",
   "anthropic",
   "google",
   "azure_openai",
@@ -63,7 +70,11 @@ export interface RigExport {
   oversight: Array<{ overseerPodKey: string; overseenPodKey: string }>
   // Active seat lessons (plan 106.7), only when the user opts in. Provenance
   // is stripped: on import they arrive active, marked "imported".
-  seatMemories?: Array<{ address: string; content: string; kind: SeatMemoryKind }>
+  seatMemories?: Array<{
+    address: string
+    content: string
+    kind: SeatMemoryKind
+  }>
 }
 
 export interface RigImportResult {
@@ -79,7 +90,10 @@ function portableRuntime(
   if (!worker) return null
   return {
     worker: {
-      provider: worker.provider ?? (worker.accountId ? providers.get(worker.accountId) : undefined) ?? null,
+      provider:
+        worker.provider ??
+        (worker.accountId ? providers.get(worker.accountId) : undefined) ??
+        null,
       modelId: worker.modelId ?? null,
     },
   }
@@ -99,7 +113,9 @@ function localRuntime(
   }
   const accountId = accounts.get(worker.provider)
   if (!accountId) {
-    warnings.push(`${context} uses ${worker.provider}, which has no local account; runtime now inherits.`)
+    warnings.push(
+      `${context} uses ${worker.provider}, which has no local account; runtime now inherits.`
+    )
     return null
   }
   return { worker: { accountId, modelId: worker.modelId ?? null } }
@@ -130,7 +146,9 @@ export function buildRigExport(
       name: pod.name,
       missionStatement: pod.missionStatement,
       cultureMd: pod.cultureMd,
-      leadSeatKey: pod.leadSeatId ? seatById.get(pod.leadSeatId)?.key ?? null : null,
+      leadSeatKey: pod.leadSeatId
+        ? (seatById.get(pod.leadSeatId)?.key ?? null)
+        : null,
       position: pod.position,
     })),
     seats: graph.seats.map((seat) => {
@@ -142,7 +160,11 @@ export function buildRigExport(
         role: seat.role,
         charter: seat.charter,
         agent: agent
-          ? { sourceKind: agent.sourceKind, nativeName: agent.nativeName, label: agent.label }
+          ? {
+              sourceKind: agent.sourceKind,
+              nativeName: agent.nativeName,
+              label: agent.label,
+            }
           : seat.agentRefId
             ? parsePortableAgent(seat.agentRefId, seat.agentLabel)
             : null,
@@ -160,7 +182,10 @@ export function buildRigExport(
     })),
     ...(options.includeMemories
       ? {
-          seatMemories: listSeatMemories({ rigId: graph.rig.id, status: "active" })
+          seatMemories: listSeatMemories({
+            rigId: graph.rig.id,
+            status: "active",
+          })
             .reverse()
             .map((memory) => ({
               address: memory.seatAddress,
@@ -172,11 +197,18 @@ export function buildRigExport(
   }
 }
 
-function parsePortableAgent(refId: string, label: string | null): PortableRigAgent | null {
+function parsePortableAgent(
+  refId: string,
+  label: string | null
+): PortableRigAgent | null {
   if (!refId.startsWith("agentref:v1:")) return null
   try {
-    const value = JSON.parse(refId.slice("agentref:v1:".length)) as Record<string, unknown>
-    return typeof value.sourceKind === "string" && typeof value.nativeName === "string"
+    const value = JSON.parse(refId.slice("agentref:v1:".length)) as Record<
+      string,
+      unknown
+    >
+    return typeof value.sourceKind === "string" &&
+      typeof value.nativeName === "string"
       ? {
           sourceKind: value.sourceKind as ExternalAgentSourceKind,
           nativeName: value.nativeName,
@@ -192,13 +224,17 @@ export function importRigExport(
   value: RigExport,
   agents: AgentDefinition[] = []
 ): RigImportResult {
-  if (value.formatVersion !== 1) throw new Error("Unsupported rig export version")
+  if (value.formatVersion !== 1)
+    throw new Error("Unsupported rig export version")
   const warnings: string[] = []
   const providerRows = getDb()
-    .prepare("SELECT id, provider FROM provider_accounts WHERE enabled = 1 ORDER BY position")
+    .prepare(
+      "SELECT id, provider FROM provider_accounts WHERE enabled = 1 ORDER BY position"
+    )
     .all() as Array<{ id: string; provider: Provider }>
   const accounts = new Map<Provider, string>()
-  for (const row of providerRows) if (!accounts.has(row.provider)) accounts.set(row.provider, row.id)
+  for (const row of providerRows)
+    if (!accounts.has(row.provider)) accounts.set(row.provider, row.id)
   const agentByPortableId = new Map(
     agents.map((agent) => [`${agent.sourceKind}:${agent.nativeName}`, agent])
   )
@@ -212,17 +248,31 @@ export function importRigExport(
     }
     for (const seat of value.seats) {
       const podId = podIds.get(seat.podKey)
-      if (!podId) throw new Error(`Seat ${seat.key} references missing pod ${seat.podKey}`)
+      if (!podId)
+        throw new Error(
+          `Seat ${seat.key} references missing pod ${seat.podKey}`
+        )
       const agent = seat.agent
-        ? agentByPortableId.get(`${seat.agent.sourceKind}:${seat.agent.nativeName}`)
+        ? agentByPortableId.get(
+            `${seat.agent.sourceKind}:${seat.agent.nativeName}`
+          )
         : null
-      if (seat.agent && !agent) warnings.push(`${seat.key}@${seat.podKey} references an unavailable agent.`)
+      if (seat.agent && !agent)
+        warnings.push(
+          `${seat.key}@${seat.podKey} references an unavailable agent.`
+        )
       const created = createSeat({
         ...seat,
         podId,
-        agentRefId: agent?.refId ?? (seat.agent ? portableAgentRef(seat.agent) : null),
+        agentRefId:
+          agent?.refId ?? (seat.agent ? portableAgentRef(seat.agent) : null),
         agentLabel: agent?.label ?? seat.agent?.label ?? null,
-        runtimeConfig: localRuntime(seat.runtimeConfig, accounts, warnings, `${seat.key}@${seat.podKey}`),
+        runtimeConfig: localRuntime(
+          seat.runtimeConfig,
+          accounts,
+          warnings,
+          `${seat.key}@${seat.podKey}`
+        ),
       })
       seatIds.set(`${seat.podKey}:${seat.key}`, created.id)
     }
@@ -240,7 +290,9 @@ export function importRigExport(
         overseenPodId: podIds.get(edge.overseenPodKey)!,
       }))
     )
-    const addresses = new Set(value.seats.map((seat) => `${seat.key}@${seat.podKey}`))
+    const addresses = new Set(
+      value.seats.map((seat) => `${seat.key}@${seat.podKey}`)
+    )
     for (const memory of value.seatMemories ?? []) {
       if (!addresses.has(memory.address)) {
         warnings.push(`Skipped a lesson for ${memory.address}: no such seat.`)

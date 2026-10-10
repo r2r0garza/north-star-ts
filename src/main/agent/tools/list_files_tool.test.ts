@@ -47,7 +47,11 @@ describe("list_files_tool", () => {
 
   it("rejects workspace symlinks to external directories without listing names", async () => {
     await writeFile(join(external, "external-sentinel.txt"), "secret\n")
-    await symlink(external, join(workspace, "outside"))
+    await symlink(
+      external,
+      join(workspace, "outside"),
+      process.platform === "win32" ? "junction" : "dir"
+    )
 
     const result = await listFilesTool.execute(
       { path: "outside" },
@@ -62,7 +66,11 @@ describe("list_files_tool", () => {
   it("lists workspace symlinks that resolve inside the workspace", async () => {
     await mkdir(join(workspace, "actual"), { recursive: true })
     await writeFile(join(workspace, "actual", "inside.txt"), "ok\n")
-    await symlink(join(workspace, "actual"), join(workspace, "link"))
+    await symlink(
+      join(workspace, "actual"),
+      join(workspace, "link"),
+      process.platform === "win32" ? "junction" : "dir"
+    )
 
     const result = await listFilesTool.execute({ path: "link" }, { workspace })
 

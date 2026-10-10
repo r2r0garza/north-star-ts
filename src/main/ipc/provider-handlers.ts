@@ -1,4 +1,11 @@
 import { app, ipcMain, shell } from "electron"
+import { getDb } from "../db/connection"
+import { preflightClaudeSubscription } from "../agent/providers/claude-subscription/preflight"
+import { loadClaudeSubscriptionCatalog } from "../agent/providers/claude-subscription/model-catalog"
+import type {
+  ClaudeSubscriptionCatalog,
+  ClaudeSubscriptionRefresh,
+} from "../../shared/claude-subscription"
 import { mkdir, writeFile } from "fs/promises"
 import path from "path"
 import * as providerAccountsRepo from "../db/repositories/provider-accounts"
@@ -43,6 +50,7 @@ import {
 // An account plus its masked key state, the shape the Settings UI renders.
 export interface AccountView extends ProviderAccount {
   maskedKey: string | null
+  subscriptionCatalog?: ClaudeSubscriptionCatalog
 }
 
 function toView(account: ProviderAccount): AccountView {
@@ -86,10 +94,7 @@ export interface AccountWithModels {
   models: ModelEntry[]
 }
 
-function applyCodexSubscriptionCatalog(
-  accountId: string,
-  ids: string[]
-): void {
+function applyCodexSubscriptionCatalog(accountId: string, ids: string[]): void {
   const previousIds = new Set(
     modelsRepo.listModels(accountId).map((model) => model.modelId)
   )
@@ -141,7 +146,71 @@ export async function refreshCodexSubscriptionModelsOnStartup(
   )
 }
 
+function rejectSubscriptionConfiguration(input: object): void {
+  const value = input as Record<string, unknown>
+  if (
+    (value.baseUrl !== undefined &&
+      value.baseUrl !== null &&
+      value.baseUrl !== "") ||
+    (value.apiMode !== undefined && value.apiMode !== "completions") ||
+    Object.keys(value).some(
+      (key) =>
+        !["provider", "displayName", "baseUrl", "apiMode", "enabled"].includes(
+          key
+        )
+    )
+  )
+    throw new Error(
+      "Claude subscription uses the official CLI login; custom upstream URLs, keys and API modes are not supported."
+    )
+}
+
+function applyClaudeSubscriptionCatalog(
+  accountId: string,
+  catalog: ClaudeSubscriptionCatalog
+): void {
+  if (catalog.source === "retained") return
+  for (const model of catalog.models) {
+    modelsRepo.addModel({
+      accountId,
+      modelId: model.id,
+      origin: catalog.source === "fallback" ? "seeded" : "gateway",
+    })
+  }
+}
+
+async function refreshClaudeSubscriptionModels(
+  accountId: string
+): Promise<ClaudeSubscriptionRefresh> {
+  const account = providerAccountsRepo.getAccount(accountId)
+  if (account?.provider !== "claude_subscription")
+    throw new Error("Claude subscription account not found.")
+  const appData = app.getPath("userData")
+  const preflight = await preflightClaudeSubscription(appData)
+  if (!preflight.ok) return { ok: false, preflight }
+  const catalog = await loadClaudeSubscriptionCatalog(
+    appData,
+    modelsRepo.listModels(accountId).map((model) => ({ id: model.modelId }))
+  )
+  getDb().transaction(() => {
+    if (
+      providerAccountsRepo.getAccount(accountId)?.provider !==
+      "claude_subscription"
+    )
+      throw new Error("Claude subscription account no longer exists.")
+    applyClaudeSubscriptionCatalog(accountId, catalog)
+  })()
+  return { ok: true, preflight, catalog }
+}
+
 export function registerProviderHandlers(): void {
+  ipcMain.handle("providers:preflightClaudeSubscription", () =>
+    preflightClaudeSubscription(app.getPath("userData"))
+  )
+  ipcMain.handle(
+    "providers:refreshClaudeSubscriptionModels",
+    (_e, id: string) => refreshClaudeSubscriptionModels(id)
+  )
   // Whether secure key storage is usable — the UI checks before offering to save.
   ipcMain.handle("providers:secureStorageAvailable", () =>
     secrets.isSecureStorageAvailable()
@@ -151,7 +220,23 @@ export function registerProviderHandlers(): void {
   ipcMain.handle("providers:list", () =>
     providerAccountsRepo.listAccounts().map(toView)
   )
-  ipcMain.handle("providers:create", (_e, input: CreateAccountInput) => {
+  ipcMain.handle("providers:create", async (_e, input: CreateAccountInput) => {
+    if (input.provider === "claude_subscription") {
+      rejectSubscriptionConfiguration(input)
+      const appData = app.getPath("userData")
+      const preflight = await preflightClaudeSubscription(appData)
+      if (!preflight.ok) throw new Error(preflight.hint)
+      const catalog = await loadClaudeSubscriptionCatalog(appData)
+      return getDb().transaction(() => {
+        const account = providerAccountsRepo.createAccount({
+          provider: "claude_subscription",
+          displayName: input.displayName,
+          apiMode: "completions",
+        })
+        applyClaudeSubscriptionCatalog(account.id, catalog)
+        return { ...toView(account), subscriptionCatalog: catalog }
+      })()
+    }
     const account = providerAccountsRepo.createAccount(input)
     if (account.provider === "claude_code") {
       for (const model of CLAUDE_CODE_MODELS) {
@@ -273,6 +358,10 @@ export function registerProviderHandlers(): void {
         enabled?: boolean
       }
     ) => {
+      if (
+        providerAccountsRepo.getAccount(id)?.provider === "claude_subscription"
+      )
+        rejectSubscriptionConfiguration(patch)
       const account = providerAccountsRepo.updateAccount(id, patch)
       const llm = settingsService.getLlm()
       if (!account.enabled && llm.activeAccountId === id) {
@@ -307,6 +396,13 @@ export function registerProviderHandlers(): void {
     "providers:setKey",
     (_e, id: string, plaintext: string): { ok: boolean; error?: string } => {
       try {
+        if (
+          providerAccountsRepo.getAccount(id)?.provider ===
+          "claude_subscription"
+        )
+          throw new Error(
+            "Claude subscription uses the official CLI login; API keys cannot be stored for this provider."
+          )
         secrets.setApiKey(id, plaintext)
         invalidateProviderClient()
         return { ok: true }
@@ -395,8 +491,13 @@ export function registerProviderHandlers(): void {
       const account = before
         ? providerAccountsRepo.getAccount(before.accountId)
         : undefined
-      if (account?.provider === "codex_subscription" && patch.modelId !== undefined) {
-        throw new Error("Codex subscription model IDs are managed by the gateway.")
+      if (
+        account?.provider === "codex_subscription" &&
+        patch.modelId !== undefined
+      ) {
+        throw new Error(
+          "Codex subscription model IDs are managed by the gateway."
+        )
       }
       const updated = modelsRepo.updateModel(id, patch)
       if (before && before.modelId !== updated.modelId) {
@@ -446,6 +547,20 @@ export function registerProviderHandlers(): void {
     "models:importFromGateway",
     async (_e, accountId: string): Promise<{ ok: boolean; error?: string }> => {
       try {
+        if (
+          providerAccountsRepo.getAccount(accountId)?.provider ===
+          "claude_subscription"
+        ) {
+          const result = await refreshClaudeSubscriptionModels(accountId)
+          return {
+            ok: result.ok,
+            error: !result.ok
+              ? result.preflight.hint
+              : result.catalog?.source !== "discovered"
+                ? result.catalog?.hint
+                : undefined,
+          }
+        }
         const ids = await fetchGatewayModelIds(accountId)
         const account = providerAccountsRepo.getAccount(accountId)
         if (account?.provider === "codex_subscription") {

@@ -766,7 +766,66 @@ function App(
   // from runningConvos, NOT a standalone flag: a single App instance is shared
   // across conversations, so a per-conversation derivation is what stops one
   // conversation's spinner/Stop button from showing on another.
-  const loading = conversationId !== null && runningConvos.has(conversationId)
+  const [reportTurns, setReportTurns] = useState<Map<string, LiveTurn>>(
+    new Map()
+  )
+  const loading =
+    conversationId !== null &&
+    (runningConvos.has(conversationId) || reportTurns.has(conversationId))
+  const reportGenerationRef = useRef(new Map<string, number>())
+  useEffect(
+    () =>
+      window.cowork.onCompletionReportStream((payload) => {
+        const id = payload.conversationId
+        if (payload.type === "started") {
+          reportGenerationRef.current.set(
+            id,
+            (reportGenerationRef.current.get(id) ?? 0) + 1
+          )
+        }
+        setReportTurns((prev) => {
+          const next = new Map(prev)
+          const turn = prev.get(id) ?? EMPTY_LIVE
+          if (payload.type === "started") next.set(id, EMPTY_LIVE)
+          else if (payload.event.type === "token") {
+            next.set(id, appendLiveText(turn, payload.event.delta))
+          } else if (payload.event.type === "stream_attempt") {
+            next.set(id, applyStreamAttempt(turn, payload.event))
+          }
+          return next
+        })
+      }),
+    []
+  )
+  useEffect(
+    () =>
+      window.cowork.onCompletionReport((id) => {
+        const generation = reportGenerationRef.current.get(id)
+        void window.cowork.db.messages
+          .list(id)
+          .then((rows) => {
+            if (generation !== reportGenerationRef.current.get(id)) return
+            if (viewingRef.current === id) {
+              setTimeline(buildTimeline(rows))
+            }
+            setReportTurns((prev) => {
+              const next = new Map(prev)
+              next.delete(id)
+              return next
+            })
+          })
+          .catch(() => {
+            if (generation !== reportGenerationRef.current.get(id)) return
+            setReportTurns((prev) => {
+              const next = new Map(prev)
+              next.delete(id)
+              return next
+            })
+          })
+        onConversationChanged()
+      }),
+    [onConversationChanged]
+  )
   // A usable provider + model must be selected before any turn. Mirrors the
   // main-process resolveLlm gate (the backstop there returns the same error if a
   // stale selection slips through).
@@ -1780,7 +1839,9 @@ function App(
   // live state — streamed text, tool rows, pending approval/question — reads from
   // this, so switching conversations just changes which entry we look up rather
   // than wiping a shared buffer.
-  const liveTurn = conversationId ? liveTurns.get(conversationId) : undefined
+  const liveTurn = conversationId
+    ? (reportTurns.get(conversationId) ?? liveTurns.get(conversationId))
+    : undefined
   const liveSegments = liveTurn?.segments ?? []
   const liveContent = liveMessageContent(liveSegments)
   const liveHasText = liveContent.trim().length > 0

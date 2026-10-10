@@ -139,6 +139,117 @@ beforeEach(() => {
 })
 
 describe.skipIf(!sqliteLoads)("model request retry coordinator", () => {
+  it("retains private native metadata from the completed stream only", async () => {
+    const { nativeAssistant } =
+      await import("./providers/claude-subscription/native-carrier")
+    const carrier = {
+      version: 1,
+      provider: "claude_subscription",
+      model: "claude-sonnet-4-6",
+      prefix: "a".repeat(64),
+      blocks: [{ type: "text", text: "answer" }],
+    }
+    const round = await createCompletionRoundWithRetry({
+      conversationId,
+      logicalRoundId: "native",
+      signal: new AbortController().signal,
+      isTransientError: () => false,
+      request: async () =>
+        streamChunk({
+          choices: [
+            {
+              delta: { content: "answer", [nativeAssistant]: carrier },
+              finish_reason: "stop",
+            },
+          ],
+        }),
+    })
+    expect(round.nativeAssistant).toEqual(carrier)
+    expect(round.text).toBe("answer")
+    expect(JSON.stringify(round.diagnostics)).not.toContain("blocks")
+  })
+  it("retains fragmented refusal and finish reason, discards tools, and never recovers refusal markup", async () => {
+    const recover = vi.fn((text: string) => text)
+    const events: any[] = []
+    const round = await createCompletionRoundWithRetry({
+      conversationId,
+      logicalRoundId: "refusal",
+      signal: new AbortController().signal,
+      isTransientError: () => false,
+      recoverVisibleText: recover,
+      onAttemptEvent: (event) => events.push(event),
+      request: async () =>
+        (async function* () {
+          yield {
+            choices: [
+              {
+                delta: {
+                  refusal: "Cannot ",
+                  reasoning_content: "hidden",
+                  tool_calls: [
+                    {
+                      index: 0,
+                      function: { name: "exec_command", arguments: "{" },
+                    },
+                  ],
+                },
+              },
+            ],
+          }
+          yield {
+            choices: [
+              { delta: { refusal: "help." }, finish_reason: "refusal" },
+            ],
+          }
+        })(),
+    })
+    expect(round).toMatchObject({
+      text: "Cannot help.",
+      refusal: "Cannot help.",
+      finishReason: "refusal",
+      toolFragments: [],
+    })
+    expect(round.diagnostics).toMatchObject({
+      refusalFieldRecognized: true,
+      reasoningFieldRecognized: true,
+      toolFragmentCount: 1,
+    })
+    expect(recover).not.toHaveBeenCalled()
+    expect(
+      events
+        .filter((event) => event.type === "text")
+        .map((event) => event.delta)
+        .join("")
+    ).toBe("Cannot help.")
+  })
+  it("does not treat a null refusal field as a refusal or leak reasoning into text", async () => {
+    const round = await createCompletionRoundWithRetry({
+      conversationId,
+      logicalRoundId: "not-refused",
+      signal: new AbortController().signal,
+      isTransientError: () => false,
+      request: async () =>
+        streamChunk({
+          choices: [
+            {
+              delta: {
+                content: [
+                  { type: "text", text: "Answer" },
+                  { type: "thinking", text: "hidden" },
+                  { type: "reasoning", text: "hidden" },
+                ],
+                refusal: null,
+                reasoning_content: "hidden",
+              },
+              finish_reason: "stop",
+            },
+          ],
+        }),
+    })
+    expect(round.text).toBe("Answer")
+    expect(round.refusal).toBeUndefined()
+  })
+
   it("uses capped exponential backoff with injected deterministic jitter", async () => {
     const clock = makeClock()
     const attempts: number[] = []
@@ -670,18 +781,6 @@ describe.skipIf(!sqliteLoads)("model request retry coordinator", () => {
         expected: { chunkCount: 0, choiceSeen: false, deltaSeen: false },
       },
       {
-        id: "refusal-only",
-        stream: streamChunk({
-          choices: [
-            { delta: { refusal: "blocked sentinel" }, finish_reason: "stop" },
-          ],
-        }),
-        expected: {
-          refusalFieldRecognized: true,
-          reasoningFieldRecognized: null,
-        },
-      },
-      {
         id: "reasoning-only",
         stream: streamChunk({
           choices: [
@@ -937,6 +1036,23 @@ describe("stream_options fallback (plan 108)", () => {
     )
     expect(sent).toEqual([undefined, { include_usage: true }])
   })
+
+  it.each([400, 422])(
+    "never probes stream usage for locally validated clients (HTTP %s)",
+    async (status) => {
+      const identity = {
+        accountId: "subscription",
+        apiMode: "completions" as const,
+        client: { compatibilityProbes: false as const },
+      }
+      const error = Object.assign(new Error("Bad request"), { status })
+      const send = vi.fn().mockRejectedValue(error)
+      await expect(withStreamUsage(identity, send)).rejects.toBe(error)
+      expect(send).toHaveBeenCalledTimes(1)
+      expect(send).toHaveBeenCalledWith({ include_usage: true })
+      expect(streamUsageRequested(identity)).toBe(true)
+    }
+  )
 
   it("retries once without stream_options and remembers the account", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {})

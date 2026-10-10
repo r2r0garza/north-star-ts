@@ -27,6 +27,11 @@ import {
 } from "../conversations/lifecycle"
 import { workingDirectoryOf } from "../db/repositories/workspaces"
 import { replaceTodos } from "../db/repositories/todos"
+import {
+  handoffInstruction,
+  parseTaskHandoff,
+  requiresHandoff,
+} from "./handoff"
 import type {
   FailureContext,
   PhaseRunStatus,
@@ -168,6 +173,7 @@ export { PAUSE_ABORT_REASON }
 // JSON on tasks.input by enqueue; read back on resume.
 interface TaskInput {
   kind: string
+  handoffVersion?: 1
   // The user message to run. Optional: a deterministic kind (008 workspace_index)
   // has no message — its executor reads config from the fields below instead.
   message?: string
@@ -412,6 +418,7 @@ export class TaskRunner {
     const kind = input.kind ?? DEFAULT_KIND
     const taskInput: TaskInput = {
       kind,
+      handoffVersion: 1,
       message: input.message,
       seedTodos: input.seedTodos,
       ...(input.autoMode ? { autoMode: true } : {}),
@@ -910,6 +917,9 @@ export class TaskRunner {
           // Surfaces this task's prior gate decisions in the approvals context
           // section (plan 021) so a resumed task re-grounds instead of re-asking.
           taskId,
+          completionInstruction: requiresHandoff(task)
+            ? handoffInstruction(taskId)
+            : undefined,
           // Honor the Auto mode the task was handed off with (see TaskInput).
           autoMode:
             (task.input as Partial<TaskInput> | null)?.autoMode === true,
@@ -995,6 +1005,15 @@ export class TaskRunner {
       } else if (result.error) {
         this.settleError(taskId, result.error, result.retryable === true)
       } else {
+        if (!capability.run && requiresHandoff(task)) {
+          const handoff = parseTaskHandoff(result.content, taskId)
+          result.content = JSON.stringify(handoff)
+          if (handoff.status !== "completed") {
+            updateTask(taskId, { result: result.content })
+            this.settleError(taskId, handoff.unresolved.join("\n"), false)
+            return
+          }
+        }
         updateTask(taskId, {
           status: "completed",
           result: result.content ?? null,

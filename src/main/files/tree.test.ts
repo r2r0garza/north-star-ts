@@ -80,14 +80,19 @@ describe("listWorkspaceDirectory", () => {
       entries: [],
       error: "Directory is unavailable.",
     })
-    await expect(listWorkspaceDirectory(root, root)).resolves.toMatchObject({
+    const outsidePath = join(root, "..", "outside")
+    await expect(listWorkspaceDirectory(root, outsidePath)).resolves.toMatchObject({
       entries: [],
       error: "Directory is unavailable.",
     })
   })
 
   it("returns symlinks but never treats them as expandable directories", async () => {
-    await symlink(join(root, "folder"), join(root, "folder-link"))
+    await symlink(
+      join(root, "folder"),
+      join(root, "folder-link"),
+      process.platform === "win32" ? "junction" : "dir"
+    )
     const result = await listWorkspaceDirectory(root, "")
     expect(result.entries).toContainEqual({
       name: "folder-link",

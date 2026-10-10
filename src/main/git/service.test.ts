@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import { execFileSync } from "child_process"
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "fs"
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
 import { GitService } from "./service"
@@ -225,9 +225,7 @@ describe.skipIf(!gitAvailable)("GitService", () => {
     expect(result).toMatchObject({ ok: false })
     expect(gitOutput(repo, "rev-parse", "HEAD")).toBe(before)
     expect(gitOutput(repo, "branch", "--show-current")).not.toBe("other")
-    expect(execFileSync("cat", [join(repo, "tracked.txt")]).toString()).toBe(
-      "local work\n"
-    )
+    expect(readFileSync(join(repo, "tracked.txt"), "utf8")).toBe("local work\n")
   })
 
   it("creates slash and Unicode branches from attached and detached HEAD", async () => {

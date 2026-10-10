@@ -127,6 +127,39 @@ describe("generateTitle", () => {
     )
   })
 
+  it.each(["haiku", "claude-haiku-4-5", "claude-sonnet-4-6"])(
+    "uses the selected subscription title route %s without an unsupported effort probe",
+    async (model) => {
+      const selection = {
+        accountId: "title-subscription",
+        modelId: "title-model",
+      }
+      mocks.resolveLlmTarget.mockReturnValue({
+        account: { provider: "claude_subscription" },
+        model,
+      })
+      mocks.resolveLlm.mockReturnValueOnce({
+        client: { chat: { completions: { create: vi.fn() } } },
+        model,
+        apiMode: "completions",
+      })
+      mocks.createCompletion.mockResolvedValue({
+        choices: [{ message: { content: "TITLE: Conversation Naming Fix" } }],
+      })
+      await expect(
+        generateTitle("fix title generation", selection)
+      ).resolves.toBe("Conversation Naming Fix")
+      expect(mocks.resolveLlm).toHaveBeenCalledWith(selection)
+      expect(mocks.runClaudeCode).not.toHaveBeenCalled()
+      expect(mocks.createCompletion).toHaveBeenCalledTimes(1)
+      const call = mocks.createCompletion.mock.calls[0]
+      expect(call[1]).toBe(model)
+      if (model === "claude-sonnet-4-6")
+        expect(call[3]).toHaveProperty("reasoning_effort", "low")
+      else expect(call[3]).not.toHaveProperty("reasoning_effort")
+    }
+  )
+
   it("retries without reasoning_effort when a provider rejects it", async () => {
     mocks.createCompletion
       .mockRejectedValueOnce(

@@ -55,6 +55,26 @@ describe.skipIf(!sqliteLoads)("provider-accounts repo", () => {
     ])
   })
 
+  it("persists Claude subscription accounts and manual models without credentials", () => {
+    const account = createAccount({
+      provider: "claude_subscription",
+      displayName: "Claude Code Subscription - Experimental",
+    })
+    expect(account.provider).toBe("claude_subscription")
+    expect(account.apiMode).toBe("completions")
+    expect(account.hasKey).toBe(false)
+    expect(account.baseUrl).toBeNull()
+    expect(getEncryptedKey(account.id)).toBeUndefined()
+    addModel({ accountId: account.id, modelId: "sonnet" })
+    expect(listModels(account.id).map((model) => model.modelId)).toEqual([
+      "sonnet",
+    ])
+    runMigrations(db)
+    expect(getAccount(account.id)).toEqual(account)
+    expect(listModels(account.id)).toHaveLength(1)
+    expect(db.pragma("foreign_key_check")).toEqual([])
+  })
+
   it("accepts the Codex CLI provider without credentials", () => {
     const account = createAccount({
       provider: "codex_cli",

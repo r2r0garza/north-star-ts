@@ -1,7 +1,7 @@
 import { execFile } from "child_process"
 import { access, constants } from "fs/promises"
 import { homedir } from "os"
-import { delimiter, join } from "path"
+import { join, posix } from "path"
 import { hostCliEnv } from "../agent/env/host-cli-env"
 import { dataDirName } from "../config/system-name"
 import { workspaceManagesPython } from "./project-python"
@@ -129,9 +129,9 @@ async function resolveBaseInterpreter(
   }
 
   let cltChecked: boolean | undefined
-  for (const dir of (env.PATH ?? "").split(delimiter)) {
+  for (const dir of (env.PATH ?? "").split(":")) {
     if (!dir) continue
-    const file = join(dir, "python3")
+    const file = posix.join(dir, "python3")
     if (!(await isExecutable(file))) continue
     if (platform === "darwin" && file === "/usr/bin/python3") {
       cltChecked ??= (
