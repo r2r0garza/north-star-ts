@@ -81,7 +81,7 @@ const PROVIDERS: Array<{ value: Provider; label: string; enabled: boolean }> = [
   },
   {
     value: "claude_subscription",
-    label: "Claude Code Inference - Experimental",
+    label: "Claude Code Subscription - Experimental",
     enabled: true,
   },
   {

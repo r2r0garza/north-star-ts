@@ -18,17 +18,12 @@ import { ClaudeSubscriptionError } from "./errors"
 import { guardProxyEnvironment } from "./admission"
 import { guardManagedPolicy } from "./managed-policy"
 import { verifyPersonalSubscription } from "./auth-policy"
-import { gatewayRoute, gatewayVariable } from "./gateway"
 
 const conflicts =
   /^(?:ANTHROPIC_(?:API_KEY|AUTH_TOKEN|BASE_URL|CUSTOM_HEADERS|PROFILE|FEDERATION_RULE_ID|ORGANIZATION_ID|WORKSPACE_ID|AWS_.*|FOUNDRY_.*|BEDROCK_.*|VERTEX_.*)|CLAUDE_CODE_(?:USE_BEDROCK|USE_VERTEX|USE_FOUNDRY|USE_MANTLE|USE_ANTHROPIC_AWS|SIMPLE|RESTRICTED|PROCESS_WRAPPER|SHELL_PREFIX|CLIENT_CERT|CLIENT_KEY|CLIENT_KEY_PASSPHRASE)|AWS_BEARER_TOKEN_BEDROCK|CLAUDE_CONFIG_DIR|CLAUDE_CODE_SAFE_MODE)$/
 export function guardEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const gateway = gatewayRoute(env)
   const found = Object.keys(env).filter(
-    (key) =>
-      conflicts.test(key.toUpperCase()) &&
-      env[key] &&
-      !(gateway && gatewayVariable(key))
+    (key) => conflicts.test(key.toUpperCase()) && env[key]
   )
   if (found.length)
     throw new ClaudeSubscriptionError(
@@ -43,7 +38,7 @@ export function guardEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
         key
       )
     )
-      if (!(gateway && key === "ANTHROPIC_MODEL")) delete clean[key]
+      delete clean[key]
   }
   return {
     ...clean,
@@ -55,7 +50,6 @@ export function guardEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
     DISABLE_AUTO_COMPACT: "1",
     ENABLE_TOOL_SEARCH: "false",
-    CLAUDE_CODE_ENABLE_AUTO_MODE: "0",
     CLAUDE_CODE_MAX_RETRIES: "0",
     CLAUDE_CODE_DISABLE_1M_CONTEXT: "1",
     CLAUDE_CODE_RETRY_WATCHDOG: "0",

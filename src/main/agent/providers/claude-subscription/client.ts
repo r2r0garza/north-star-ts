@@ -10,12 +10,6 @@ import type { LlmClient } from "../index"
 import { hostCliEnv } from "../../env/host-cli-env"
 import { captureProcess } from "../../env/spawn-util"
 import { startAdmission } from "./admission"
-import { guardManagedPolicy } from "./managed-policy"
-import {
-  gatewayEnvironment,
-  gatewayRoute,
-  gatewayChildEnvironment,
-} from "./gateway"
 import { startInventory } from "./mcp"
 import { validateRequest, type ValidatedRequest } from "./request"
 import {
@@ -340,7 +334,7 @@ async function execute(
   }
   try {
     if (signal.aborted) throw aborted()
-    const env = guardEnvironment(await gatewayEnvironment(await hostCliEnv()))
+    const env = guardEnvironment(await hostCliEnv())
     const executable = await resolveExecutable(env)
     if (signal.aborted) throw aborted()
     stage("environment")
@@ -352,9 +346,6 @@ async function execute(
     relay = await startAdmission({
       signal,
       frames: request.frames,
-      gateway: gatewayRoute(env),
-      model: request.model,
-      beforeForward: () => guardManagedPolicy(env, signal),
       onDelta: (kind, text) => {
         if (!firstDelta) {
           firstDelta = true
@@ -393,7 +384,6 @@ async function execute(
       { name: "manifest.json", value: JSON.stringify(request.tools) },
     ])
     if (signal.aborted) throw aborted()
-    await guardManagedPolicy(env, signal)
     await closeWindowsProbeWorker()
     stage("inventoryAndFiles")
     child = spawn(
@@ -402,7 +392,8 @@ async function execute(
       {
         cwd: files.cwd,
         env: {
-          ...gatewayChildEnvironment(env, relay.baseUrl),
+          ...env,
+          ANTHROPIC_BASE_URL: relay.baseUrl,
           CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(request.maxTokens),
         },
         detached: process.platform !== "win32",

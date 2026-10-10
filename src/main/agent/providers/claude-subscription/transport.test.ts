@@ -258,15 +258,7 @@ describe("request and canonical replay", () => {
     expect(request.names.get(TOOL_PREFIX + "read_file")).toBe("read_file")
     for (const tools of [
       [tool, tool],
-      [
-        {
-          ...tool,
-          function: {
-            ...tool.function,
-            name: "x".repeat(65 - TOOL_PREFIX.length),
-          },
-        },
-      ],
+      [{ ...tool, function: { ...tool.function, name: "x".repeat(65 - TOOL_PREFIX.length) } }],
       [
         {
           ...tool,
@@ -418,44 +410,6 @@ async function fixture(handler: RequestListener) {
 }
 
 describe("single admission relay", () => {
-  it("rejects policy drift before opening upstream and never retries admission", async () => {
-    let count = 0
-    const upstream = await fixture((_req, res) => {
-      count++
-      res.end()
-    })
-    const { ClaudeSubscriptionError } = await import("./errors")
-    const beforeForward = vi.fn(async () => {
-      throw new ClaudeSubscriptionError(
-        "claude_subscription_managed_policy",
-        "Managed policy appeared."
-      )
-    })
-    const relay = await startTestAdmission({
-      upstream: upstream.url,
-      signal: new AbortController().signal,
-      beforeForward,
-    })
-    try {
-      relay.enable()
-      const response = await fetch(relay.baseUrl + "/v1/messages", {
-        method: "POST",
-        body: "{}",
-      })
-      expect(response.status).toBe(409)
-      await expect(relay.response).rejects.toMatchObject({
-        code: "claude_subscription_managed_policy",
-      })
-      expect(
-        (await fetch(relay.baseUrl + "/v1/messages", { method: "POST" })).status
-      ).toBe(409)
-      expect(beforeForward).toHaveBeenCalledOnce()
-      expect(count).toBe(0)
-    } finally {
-      await relay.close()
-      await upstream.close()
-    }
-  })
   it("forwards only the installed-CLI qualified beta query and closes upstream sockets", async () => {
     let path: string | undefined
     const upstream = await fixture((req, res) => {

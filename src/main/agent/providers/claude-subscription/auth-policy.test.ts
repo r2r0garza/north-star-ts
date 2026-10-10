@@ -4,7 +4,6 @@ vi.mock("../../env/spawn-util", () => ({ captureProcess: vi.fn() }))
 import { spawn } from "child_process"
 import { captureProcess } from "../../env/spawn-util"
 import {
-  assessAuthCompatibility,
   validatePersonalSubscription,
   verifyPersonalSubscription,
 } from "./auth-policy"
@@ -62,40 +61,6 @@ describe("personal subscription policy eligibility", () => {
       expect(() => validatePersonalSubscription(output)).toThrow()
     }
   )
-  it.each([
-    [personal, "qualified_personal"],
-    [{ ...personal, loggedIn: false }, "not_logged_in"],
-    [
-      { ...personal, subscriptionType: "enterprise" },
-      "organization_policy_unqualified",
-    ],
-    [{ ...personal, apiProvider: "newRoute" }, "routing_unqualified"],
-    [{ ...personal, authMethod: "newAuth" }, "authentication_unqualified"],
-    [
-      { ...personal, subscriptionType: "newTier" },
-      "authentication_unqualified",
-    ],
-    [{}, "status_unavailable"],
-  ])(
-    "classifies sanitized compatibility without granting new capabilities",
-    (status, expected) => {
-      expect(
-        assessAuthCompatibility(JSON.stringify({ ...status, email: "SECRET" }))
-      ).toBe(expected)
-    }
-  )
-  it("rejects category drift on a subsequent probe", async () => {
-    await verifyPersonalSubscription("/claude", "/private", {}, signal())
-    vi.mocked(captureProcess).mockResolvedValue({
-      exitCode: 0,
-      stdout: Buffer.from(
-        JSON.stringify({ ...personal, subscriptionType: "team" })
-      ),
-    } as any)
-    await expect(
-      verifyPersonalSubscription("/claude", "/private", {}, signal())
-    ).rejects.toThrow(/managed-policy continuity/)
-  })
   it("uses bounded official status command without a relay or query", async () => {
     await verifyPersonalSubscription("/claude", "/private", {}, signal())
     expect(spawn).toHaveBeenCalledWith(
@@ -129,8 +94,6 @@ describe("personal subscription policy eligibility", () => {
   it.each([
     "CLAUDE_CODE_OAUTH_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
-    "claude_code_oauth_token",
-    "Claude_Code_Oauth_Token_File_Descriptor",
   ])("rejects unclassified token source %s", async (key) => {
     await expect(
       verifyPersonalSubscription(

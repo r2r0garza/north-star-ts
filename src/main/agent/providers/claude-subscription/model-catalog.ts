@@ -4,12 +4,6 @@ import { randomUUID } from "crypto"
 import { hostCliEnv } from "../../env/host-cli-env"
 import { captureProcess } from "../../env/spawn-util"
 import { startAdmission } from "./admission"
-import { guardManagedPolicy } from "./managed-policy"
-import {
-  gatewayEnvironment,
-  gatewayRoute,
-  gatewayChildEnvironment,
-} from "./gateway"
 import {
   guardEnvironment,
   privateDirectories,
@@ -69,20 +63,10 @@ export async function discoverClaudeModels(
   )
   try {
     if (signal.aborted) throw aborted()
-    const env = guardEnvironment(await gatewayEnvironment(await hostCliEnv()))
+    const env = guardEnvironment(await hostCliEnv())
     const executable = await resolveExecutable(env)
     files = await privateDirectories(appData, signal)
     await verifyCliCompatibility(executable, files.cwd, env, signal)
-    const gateway = gatewayRoute(env)
-    if (gateway) {
-      const model = env.ANTHROPIC_MODEL
-      if (!model || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(model))
-        throw new ClaudeSubscriptionError(
-          "claude_subscription_gateway_unqualified",
-          "Gateway discovery requires a configured ANTHROPIC_MODEL; no inference or remote model lookup was attempted."
-        )
-      return { data: [{ id: model }] }
-    }
     gate = await startAdmission({ signal })
     // Never enable this gate: initialization has no permission to generate.
     void gate.response.catch((error) => {
@@ -104,7 +88,6 @@ export async function discoverClaudeModels(
       "Model catalog discovery only. No generation authorized."
     )
     if (signal.aborted) throw aborted()
-    await guardManagedPolicy(env, signal)
     const child = spawn(
       executable,
       [

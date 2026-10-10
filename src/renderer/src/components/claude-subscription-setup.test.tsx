@@ -18,11 +18,13 @@ const ready = {
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
   preflight.mockReset().mockResolvedValue(ready)
-  refresh.mockReset().mockResolvedValue({
-    ok: true,
-    preflight: ready,
-    catalog: { source: "retained", hint: "Existing models retained" },
-  })
+  refresh
+    .mockReset()
+    .mockResolvedValue({
+      ok: true,
+      preflight: ready,
+      catalog: { source: "retained", hint: "Existing models retained" },
+    })
   window.cowork = {
     providers: {
       preflightClaudeSubscription: preflight,
@@ -51,7 +53,7 @@ describe("subscription setup controls", () => {
     expect(container.textContent).toContain("claude auth login")
     expect(container.textContent).toContain("usage credits or overages")
     expect(container.textContent).toContain(
-      "All inference entries share that CLI configuration"
+      "All subscription entries share that login"
     )
     expect(preflight).not.toHaveBeenCalled()
   })

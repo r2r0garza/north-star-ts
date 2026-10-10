@@ -39,7 +39,7 @@ export function ClaudeSubscriptionSetup({
     } catch {
       setStatus(null)
       setHint(
-        "Could not check Claude Code Inference setup. Recheck the official CLI installation and try again."
+        "Could not check subscription setup. Recheck the official CLI installation and try again."
       )
     } finally {
       setBusy(false)
@@ -49,25 +49,21 @@ export function ClaudeSubscriptionSetup({
   return (
     <div className="flex flex-col gap-2 rounded-md bg-muted px-3 py-2 text-xs">
       <p className="text-amber-700 dark:text-amber-300">
-        Experimental integration, not an officially supported API. Inference
-        uses credentials selected by your host's official Claude Code CLI;
-        personal Pro/Max or an experimental static gateway configuration. All
-        inference entries share that CLI configuration; adding another entry
-        does not select a different account.
+        Experimental integration, not an officially supported API. Uses your
+        host's official Claude Code CLI login; personal Pro/Max only. All
+        subscription entries share that login.
       </p>
       <p>
         Install the official native Claude Code CLI yourself, then run{" "}
         <code>claude auth login</code> in your terminal. North Star does not
-        install, update or sign in for you. Static gateway credentials are read
-        from the CLI user's settings.json env or host environment, never saved
-        in North Star. Managed hosts/policy, credential helpers and other cloud
-        configurations remain unqualified; do not bypass managed policy.
+        install, update or sign in for you. Organization, API-key and token-only
+        configurations are not supported in this release; do not bypass managed
+        policy.
       </p>
       <p>
-        Requests may incur gateway/API charges, consume subscription allowances
-        or use account-configured usage credits or overages. List-price cost
-        estimates are unverified and are not your bill. Model visibility does
-        not prove entitlement.
+        Requests consume subscription allowances and may use account-configured
+        usage credits or overages. List-price cost estimates are unverified and
+        are not your bill. Model visibility does not prove entitlement.
       </p>
       <p>
         North Star owns tools, approvals and conversation history. Container

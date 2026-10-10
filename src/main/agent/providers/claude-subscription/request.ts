@@ -193,9 +193,7 @@ export function validateRequest(body: Record<string, unknown>) {
   ])
   if (
     typeof body.model !== "string" ||
-    !/^(?:claude-[a-z0-9.-]+|sonnet|opus|haiku|(?:us|eu|apac|global)\.anthropic\.claude-[a-z0-9.:-]+)$/.test(
-      body.model
-    )
+    !/^(?:claude-[a-z0-9.-]+|sonnet|opus|haiku)$/.test(body.model)
   )
     invalid("An explicit Claude model is required.")
   if (body.stream !== undefined && typeof body.stream !== "boolean")
