@@ -7,6 +7,7 @@ import path from "path"
 import type { McpServer } from "../../db/types"
 import type { ToolEffects } from "../tools/types"
 import { utf8SafePrefix } from "../tools/output"
+import { hostCliEnv } from "../env/host-cli-env"
 import { systemDisplayName } from "../../config/system-name"
 import { McpOAuthProvider, startCallbackListener } from "./oauth"
 import { loadServers, resolveEnabledServer } from "./resolve"
@@ -167,11 +168,16 @@ export class McpManager {
           `MCP server "${server.name}" has no command configured.`
         )
       }
+      const inheritedEnv = getInheritedEnv()
       const transport = new StdioClientTransport({
         command: server.command,
         args: server.args,
-        // Merge configured env over the inherited default env (PATH, etc.).
-        env: { ...getInheritedEnv(), ...server.env },
+        // Merge configured env over the host environment so GUI-launched apps
+        // can resolve user-installed runtimes such as npx.
+        env: {
+          ...getInheritedEnv(await hostCliEnv(inheritedEnv)),
+          ...server.env,
+        },
       })
       try {
         await abortable(
