@@ -35,7 +35,10 @@
     ],
     "mac": {
       "target": "dmg",
-      "icon": "build/icon.icns"
+      "icon": "build/icon.icns",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "notarize": false
     },
     "win": {
       "target": "nsis",
