@@ -9,19 +9,14 @@
 > Mission Control, so Process UX investment remains worthwhile. `092.1` and `110`
 > moved to Deferred; low-value deferred plans were marked *dropped — pending re-review* in their own files.
 
-1. **`111` — Background delegation policy leak fix.** Rescoped to the fix only: background tasks currently
-   omit `conversationSubagentsEnabled`, which the shared loop treats as enabled. Snapshot the existing global
-   setting into task input, persist it through resume/retry/restart, and pass it explicitly. The per-chat
-   composer checkbox is deferred inside the plan.
-   [Plan](111-chat-worktrees-and-background-delegation-opt-in.md).
-2. **`112` — Trustworthy app launch and acceptance validation.** The last ~10% blocking Mission Control
+1. **`112` — Trustworthy app launch and acceptance validation.** The last ~10% blocking Mission Control
    from shipping. Rethink of the work preserved on `backup/qa-109-110-before-rethink-2026-10-04`: port its
    proven app-launch harness, seat browser, proof methods, bundled Playwright runner (workspace browser →
    Chrome → consented download) and wave-level acceptance suite; fix its weak point — recipes reviewed and
    authored by the user — with recipes that builders maintain and the harness verifies by running, an
    environment-vs-feature failure split with a bounded repair loop, and an honest *unverified* outcome.
    Sliced `112.1`–`112.4`. [Plan](112-app-run-recipes-and-acceptance-validation.md).
-3. **`104` — Deterministic command phases.** A phase that runs a reviewed command (tests, Playwright,
+2. **`104` — Deterministic command phases.** A phase that runs a reviewed command (tests, Playwright,
    build) with exit status as the result and no LLM interpretation. Must work in both standalone Processes
-   and Mission Control playbooks (playbooks run on the Process engine). Also a building block for item 2.
+   and Mission Control playbooks (playbooks run on the Process engine). Also a building block for item 1.
    [Plan](104-process-command-phases.md).
