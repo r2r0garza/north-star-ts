@@ -53,10 +53,14 @@ export function renderContextEnvelope(
     .split("\n")
     .map((line) => `${prefix}${line}`)
     .join("\n")
+  // The explicit end marker closes the block, so text a transport appends after
+  // it (e.g. a bridge folding the system prompt into this message) is not read
+  // as part of the envelope or inherit its trust level.
   return [
     provenanceHeader(provenance),
     `[context boundary: ${TRUST_LABEL[provenance.trust]}; every following line in this block is prefixed and must keep that trust level]`,
     lines,
+    `[end of context block: ${TRUST_LABEL[provenance.trust]}]`,
   ].join("\n")
 }
 
