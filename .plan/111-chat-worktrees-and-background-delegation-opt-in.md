@@ -1,6 +1,16 @@
 # PR111: Chat worktrees and background delegation opt-in
 
-> Status: **RESCOPED — LEAK FIX ONLY** (2026-10-11 roadmap review). Previously **PLANNED**.
+> Status: **RESCOPED — LEAK FIX IMPLEMENTED, AWAITING MANUAL VERIFICATION** (2026-10-11). Uncommitted; no push or publication. Original checkbox/locking proposal remains deferred.
+
+## Implementation evidence (2026-10-11)
+
+Chat `agent_chat`/`todo_run` tasks now persist an explicit `conversationSubagentsEnabled` boolean in `tasks.input`. The foreground loop supplies its turn-start snapshot through a runtime-only enqueue argument; direct task/Todos IPC uses the main-process global setting at enqueue. Nested task handoffs bind the persisted parent value and ignore attempted overrides. Execution, resume, manual retry, backoff and restart all read the durable snapshot; missing legacy values resolve false independently of source-conversation availability. Generic `task:start` is restricted to chat task kinds so renderer input cannot select an independent policy path. Process/Mission Control execution and shared-loop omission semantics are unchanged.
+
+Existing tool offering and `unavailableToolResult` dispatch enforcement already reject both stale spawn tools before tool execution, worker creation or repository leasing; no extra spawn implementation guard was needed. There is no separate progressive discovery route for these built-in tools: the runtime tool list and callbacks use the same delegation gates. Added regression coverage exercises true/false persistence, settings changes, a fresh runner, nested inheritance/override rejection, legacy source-less execution, resume/retry, argument-free tool handoffs, renderer IPC boundaries and stale named/batch writer calls. No composer UI, conversation locking or shell denylist was added.
+
+Verification: full suite passed (260 files, 2,858 tests; 6 files/96 tests skipped by existing environment/platform gates). TypeScript and production build passed. Writer/worktree regression tests run against their existing temporary repositories. Manual desktop/provider exercise has not been performed.
+
+Before authorizing a commit, manually test both delegation-setting values with a tool handoff and the Todos button; change the setting after enqueue and confirm the worker retains its original policy through pause/resume and retry/restart. With false, background work should remain usable but neither spawn tool should appear or execute. With true, confirm normal permitted read/write delegation, existing writer isolation and unchanged Process/Mission Control behavior. Commit/push/publication requires the user's explicit green light.
 
 ## Rescope decision (2026-10-11)
 

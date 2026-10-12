@@ -41,7 +41,11 @@ export type EnqueueTaskInput = {
   // runner stores it in the task's input blob so a resume/restart keeps it.
   autoMode?: boolean
 }
-export type EnqueueTask = (input: EnqueueTaskInput) => {
+// The second argument is runtime-owned, never part of model or renderer input.
+export type EnqueueTask = (
+  input: EnqueueTaskInput,
+  conversationSubagentsEnabled?: boolean
+) => {
   id: string
   status: string
 }

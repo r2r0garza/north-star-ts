@@ -913,7 +913,7 @@ export interface RunAgentLoopOptions {
   autoMode?: boolean
   // Whether this run may receive conversation delegation tools. `runChat` passes
   // the default-off user preference as a turn-start snapshot. Omitted means
-  // enabled so direct Process/task callers preserve their existing semantics.
+  // enabled so independent Process/Mission Control callers preserve their semantics.
   conversationSubagentsEnabled?: boolean
   // Subagent-tree depth of this run: 0 for a top-level (user- or task-driven)
   // turn, incremented each time an agent spawns a child via spawn_subagent.
@@ -1278,10 +1278,10 @@ export async function runAgentLoop(
     !!opts.suppressUserQuestions
   )
 
-  // Subagent spawning. Live conversations must explicitly opt in; direct Process
-  // and task callers omit the conversation-only flag and retain their authored
-  // delegation behavior. The remaining agent policy and depth gates only narrow
-  // that capability further.
+  // Subagent spawning. Live conversations and chat-originated background tasks
+  // pass an explicit snapshot; independent Process/Mission Control callers omit
+  // the flag and retain their authored delegation behavior. The remaining agent
+  // policy and depth gates only narrow that capability further.
   const delegationEnabled = opts.conversationSubagentsEnabled !== false
   const canSpawn =
     delegationEnabled &&
@@ -2912,7 +2912,10 @@ export async function runAgentLoop(
                   input: Parameters<NonNullable<typeof opts.enqueueTask>>[0]
                 ) => {
                   callSignal.throwIfAborted()
-                  return opts.enqueueTask!(input)
+                  return opts.enqueueTask!(
+                    input,
+                    opts.conversationSubagentsEnabled
+                  )
                 }
               : undefined,
             browser,

@@ -652,7 +652,8 @@ ipcMain.handle("chat", async (event, req: ChatRequest) => {
     },
     // Let a live turn hand work to the background (run_todos_in_background). The
     // runner singleton lives here; runChat can't import it (cycle).
-    (input) => taskRunner.enqueue(input),
+    (input, conversationSubagentsEnabled) =>
+      taskRunner.enqueue(input, conversationSubagentsEnabled),
     // Give the live turn a browser handle scoped to its conversation's tab and
     // bound to its abort signal. req.conversationId is already in scope here, so
     // no agent-loop signature change is needed to thread it (Option B).

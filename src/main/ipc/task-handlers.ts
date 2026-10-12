@@ -33,7 +33,17 @@ export function registerTaskHandlers(runner: TaskRunner): void {
         title?: string | null
       }
     ) => {
-      const task = runner.enqueue(input)
+      // Only chat kinds: any other kind would select an independent policy path.
+      const kind = input.kind ?? "agent_chat"
+      if (kind !== "agent_chat" && kind !== "todo_run") {
+        throw new Error(`task:start does not accept kind "${kind}"`)
+      }
+      const task = runner.enqueue({
+        conversationId: input.conversationId,
+        message: input.message,
+        kind,
+        title: input.title,
+      })
       const conversation = getConversation(input.conversationId)
       if (!conversation?.title && input.message.trim()) {
         void generateTitle(input.message)

@@ -101,6 +101,7 @@ import { upsertWorkspace } from "../db/repositories/workspaces"
 import * as processes from "../db/repositories/processes"
 import { ProcessService } from "../tasks/process/service"
 import { resolveApproval, runAgentLoop } from "."
+import { replaceTodos } from "../db/repositories/todos"
 import {
   repairDanglingToolCalls,
   unknownSideEffectingToolCalls,
@@ -1575,6 +1576,102 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
           onEvent: () => {},
         })
       ).toEqual({ content: "Done." })
+    }
+  )
+
+  it.each([false, true])(
+    "tool handoff carries the trusted %s snapshot, not model arguments",
+    async (enabled) => {
+      const workspace = await makeWorkspace()
+      const conversation = createConversation({ mode: "interactive" })
+      replaceTodos(conversation.id, [
+        { id: "one", content: "Work", status: "pending" },
+      ])
+      const enqueueTask = vi.fn(() => ({ id: "child-task", status: "queued" }))
+      scriptedCompletions.push(() =>
+        streamToolCalls([
+          {
+            id: "handoff",
+            name: "run_todos_in_background",
+            arguments: JSON.stringify({
+              conversationSubagentsEnabled: !enabled,
+            }),
+          },
+        ])
+      )
+      scriptedCompletions.push(() => streamText("Done."))
+      expect(
+        await runAgentLoop({
+          conversationId: conversation.id,
+          workspace,
+          userMessage: "Work",
+          abort: new AbortController(),
+          autoMode: true,
+          conversationSubagentsEnabled: enabled,
+          enqueueTask,
+        })
+      ).toEqual({ content: "Done." })
+      expect(enqueueTask).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "todo_run",
+          conversationId: conversation.id,
+        }),
+        enabled
+      )
+    }
+  )
+
+  it.each(["spawn_subagent", "spawn_subagents"])(
+    "rejects stale %s calls with delegation off",
+    async (name) => {
+      const workspace = await makeWorkspace()
+      const conversation = createConversation({ mode: "interactive" })
+      scriptedCompletions.push((request) => {
+        expect(request.tools).not.toContain("spawn_subagent")
+        expect(request.tools).not.toContain("spawn_subagents")
+        return streamToolCalls([
+          {
+            id: "stale-spawn",
+            name,
+            arguments: JSON.stringify(
+              name === "spawn_subagent"
+                ? { agent_name: "child", prompt: "Go" }
+                : {
+                    assignments: [
+                      {
+                        id: "writer",
+                        agent: { type: "ephemeral", profile: "general" },
+                        prompt: "Go",
+                        access: "write",
+                      },
+                    ],
+                  }
+            ),
+          },
+        ])
+      })
+      scriptedCompletions.push((request) => {
+        expect(JSON.stringify(request.messages)).toContain(
+          "ERROR[tool_unavailable]"
+        )
+        return streamText("Done.")
+      })
+      expect(
+        await runAgentLoop({
+          conversationId: conversation.id,
+          workspace,
+          userMessage: "Work",
+          abort: new AbortController(),
+          conversationSubagentsEnabled: false,
+        })
+      ).toEqual({ content: "Done." })
+      expect(completionRequests).toHaveLength(2)
+      expect(
+        db.prepare("SELECT COUNT(*) AS n FROM conversations").get()
+      ).toEqual({ n: 1 })
+      expect(db.prepare("SELECT COUNT(*) AS n FROM tasks").get()).toEqual({
+        n: 0,
+      })
     }
   )
 

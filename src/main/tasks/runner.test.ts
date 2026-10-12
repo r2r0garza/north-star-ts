@@ -35,6 +35,11 @@ vi.mock("../agent/abort", () => ({
   SHUTDOWN_ABORT_REASON,
   PAUSE_ABORT_REASON,
 }))
+let delegationSetting = false
+vi.mock("../settings/service", () => ({
+  getConversations: () => ({ allowConversationSubagents: delegationSetting }),
+}))
+
 let rawHandoff = false
 let loopImpl: (opts: RunAgentLoopOptions) => Promise<ChatResult>
 const loopCalls: RunAgentLoopOptions[] = []
@@ -113,6 +118,7 @@ beforeEach(() => {
   db.pragma("foreign_keys = ON")
   runMigrations(db)
   rawHandoff = false
+  delegationSetting = false
   loopCalls.length = 0
   cleanedPlanIds.length = 0
   loopImpl = async () => ({ content: "done" })
@@ -1747,4 +1753,117 @@ describe.skipIf(!sqliteLoads)("TaskRunner — structured handoff", () => {
     expect(loopCalls).toHaveLength(1)
     await runner.stop()
   })
+})
+
+describe.skipIf(!sqliteLoads)("TaskRunner — delegation snapshot", () => {
+  it.each([false, true])(
+    "persists %s across settings changes and a new runner",
+    async (enabled) => {
+      delegationSetting = enabled
+      const source = createConversation({ mode: "interactive" })
+      const producer = new TaskRunner()
+      const tasks = ["agent_chat", "todo_run"].map((kind) =>
+        producer.enqueue({
+          conversationId: source.id,
+          message: "Work",
+          kind,
+        })
+      )
+      for (const task of tasks) {
+        expect(getTask(task.id)?.input).toMatchObject({
+          conversationSubagentsEnabled: enabled,
+        })
+      }
+      delegationSetting = !enabled
+      const restarted = new TaskRunner()
+      await restarted.start()
+      await settle()
+      expect(
+        loopCalls.map((call) => call.conversationSubagentsEnabled)
+      ).toEqual([enabled, enabled])
+      await restarted.stop()
+    }
+  )
+
+  it.each([false, true])(
+    "inherits trusted %s for nested handoffs without widening",
+    async (enabled) => {
+      delegationSetting = !enabled
+      const source = createConversation({ mode: "interactive" })
+      const runner = new TaskRunner()
+      runner.enqueue({ conversationId: source.id, message: "Parent" }, enabled)
+      let childId = ""
+      loopImpl = async (opts) => {
+        if (!childId) {
+          childId = opts.enqueueTask!(
+            {
+              conversationId: opts.conversationId,
+              message: "Child",
+              kind: "todo_run",
+            },
+            !enabled
+          ).id
+        }
+        return { content: "done" }
+      }
+      await runner.start()
+      await settle()
+      expect(getTask(childId)?.input).toMatchObject({
+        conversationSubagentsEnabled: enabled,
+      })
+      expect(
+        loopCalls.map((call) => call.conversationSubagentsEnabled)
+      ).toEqual([enabled, enabled])
+      await runner.stop()
+    }
+  )
+
+  it.each(["agent_chat", "todo_run"])(
+    "legacy %s fails closed even without a source",
+    async (kind) => {
+      delegationSetting = true
+      const conversation = createConversation({ mode: "interactive" })
+      const task = createTask({
+        conversationId: conversation.id,
+        status: "paused",
+        input: { kind, message: "Legacy" },
+      })
+      const runner = new TaskRunner()
+      runner.registerKind(kind, {
+        autoResume: false,
+        hasIndependentSurface: true,
+      })
+      await runner.start()
+      runner.resume(task.id)
+      await settle()
+      expect(loopCalls[0]?.conversationSubagentsEnabled).toBe(false)
+      await runner.stop()
+    }
+  )
+
+  it.each([false, true])(
+    "retains %s on manual retry and resume",
+    async (enabled) => {
+      const source = createConversation({ mode: "interactive" })
+      const runner = new TaskRunner()
+      const task = runner.enqueue(
+        { conversationId: source.id, message: "Work" },
+        enabled
+      )
+      loopImpl = async () => ({ error: "failure" })
+      await runner.start()
+      await settle()
+      delegationSetting = !enabled
+      loopImpl = async () => ({ content: "done" })
+      runner.retryAgentTask(task.id)
+      await settle()
+      updateTask(task.id, { status: "paused" })
+      runner.resume(task.id)
+      await settle()
+      expect(
+        loopCalls.map((call) => call.conversationSubagentsEnabled)
+      ).toEqual([enabled, enabled, enabled])
+      await runner.stop()
+    }
+  )
 })

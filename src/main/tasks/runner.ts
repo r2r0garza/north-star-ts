@@ -1,5 +1,6 @@
 import { runAgentLoop, type ChatEvent, type ChatResult } from "../agent"
 import { TASK_LANE_SLOTS, type TaskLane } from "../../shared/task-lanes"
+import * as settingsService from "../settings/service"
 import { SHUTDOWN_ABORT_REASON, PAUSE_ABORT_REASON } from "../agent/abort"
 import {
   createTask,
@@ -164,6 +165,11 @@ export interface TaskKindCapability {
 // auto-resume via registerKind() at app init.
 const DEFAULT_KIND = "agent_chat"
 
+// Chat-originated kinds carry a persisted conversationSubagentsEnabled snapshot.
+function isChatTaskKind(kind: string): boolean {
+  return kind === DEFAULT_KIND || kind === "todo_run"
+}
+
 // PAUSE_ABORT_REASON (plan 008) is defined in the leaf `agent/abort` module (no
 // heavy imports) and imported above; re-exported here for back-compat. New callers
 // should import from `agent/abort` directly to avoid the runner-barrel cycle.
@@ -174,6 +180,7 @@ export { PAUSE_ABORT_REASON }
 interface TaskInput {
   kind: string
   handoffVersion?: 1
+  conversationSubagentsEnabled?: boolean
   // The user message to run. Optional: a deterministic kind (008 workspace_index)
   // has no message — its executor reads config from the fields below instead.
   message?: string
@@ -407,20 +414,32 @@ export class TaskRunner {
   // message is persisted into the PRIVATE transcript, so runOne calls
   // runAgentLoop with no fresh userMessage — a first run and a resume are the
   // exact same code path.
-  enqueue(input: {
-    conversationId: string
-    message: string
-    kind?: string
-    title?: string | null
-    seedTodos?: TaskInput["seedTodos"]
-    autoMode?: boolean
-  }): Task {
+  enqueue(
+    input: {
+      conversationId: string
+      message: string
+      kind?: string
+      title?: string | null
+      seedTodos?: TaskInput["seedTodos"]
+      autoMode?: boolean
+    },
+    conversationSubagentsEnabled?: boolean
+  ): Task {
     const kind = input.kind ?? DEFAULT_KIND
     const taskInput: TaskInput = {
       kind,
       handoffVersion: 1,
       message: input.message,
       seedTodos: input.seedTodos,
+      ...(isChatTaskKind(kind)
+        ? {
+            conversationSubagentsEnabled:
+              typeof conversationSubagentsEnabled === "boolean"
+                ? conversationSubagentsEnabled
+                : settingsService.getConversations()
+                    .allowConversationSubagents === true,
+          }
+        : {}),
       ...(input.autoMode ? { autoMode: true } : {}),
     }
 
@@ -911,6 +930,10 @@ export class TaskRunner {
           workspace,
         })
       } else {
+        const conversationSubagentsEnabled = isChatTaskKind(kindOf(task))
+          ? (task.input as Partial<TaskInput> | null)
+              ?.conversationSubagentsEnabled === true
+          : undefined
         result = await runAgentLoop({
           conversationId: task.conversationId,
           workspace,
@@ -926,7 +949,9 @@ export class TaskRunner {
           // A background task can itself hand off more work (e.g. a todo_run task
           // spawning another). Bind to this same runner so it goes through the one
           // enqueue seam — the producer contract holds recursively.
-          enqueueTask: (input) => this.enqueue(input),
+          conversationSubagentsEnabled,
+          enqueueTask: (input) =>
+            this.enqueue(input, conversationSubagentsEnabled),
           onEvent: (event) => {
             // A gate is blocking the loop: surface it as waiting_for_approval so
             // the panel can prompt. The agent's gate promise stays parked until
