@@ -1,5 +1,11 @@
 # Roadmap — Deferred
 
+- **`067` — Conversation-scoped workspace checkpoints.** Add a reversible safety layer for autonomous
+  edits using conversation+workspace-scoped, content-addressed app-data manifests and blobs. Provide
+  bounded create/list/diff/restore operations with conflict-aware previews, explicit approval, quotas,
+  retention, and crash-safe lifecycle handling. Preserve unrelated user changes and never wrap destructive
+  `git reset`/`checkout`/`clean` operations.
+
 - **`109.6` — Windows subscription startup optimization — IN PROGRESS, DEFERRED.**
   Paused at the user's direction on 2026-10-10 pending investigation and resolution of unexpectedly rapid
   Anthropic subscription allowance consumption in North Star compared with native Claude Code using Opus;

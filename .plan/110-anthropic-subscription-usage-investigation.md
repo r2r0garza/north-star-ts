@@ -1,13 +1,23 @@
 # PR110: Anthropic subscription usage investigation
 
 > Status: **PLANNED** (2026-10-10). Investigation requested after the user observed Opus exhausting subscription allowance substantially faster in North Star than in native Claude Code.
-> Evidence boundary: this is a user-observed difference, not a measured cache failure or an established token-to-allowance conversion. No root cause is established.
+> Evidence boundary: external measurements support headless-versus-interactive allowance weighting as a leading hypothesis, and North Star uses the implicated headless mode. Its contribution to the user-observed Opus difference, and any additional North Star overhead, remain unmeasured. No North Star cache failure, universal token-to-allowance conversion or root cause is established.
 > Release posture: Anthropic Subscription is hidden from the provider picker in packaged builds and remains available in unpackaged development builds for internal testing. Do not restore packaged visibility merely because transport tests pass.
 > References: [109 umbrella](109-claude-code-subscription-experimental.md), [109.3 replay/cache implementation](109.3-claude-subscription-replay-and-cache.md), [deferred 109.6 Windows startup work](109.6-windows-subscription-startup-optimization.md).
 
 ## Objective
 
 Determine whether, where, and why comparable Opus work consumes more Anthropic subscription allowance in North Star than in native Claude Code. Distinguish model workload, prompt-cache behavior, output/thinking, retries and auxiliary requests from local process-startup latency. Produce reproducible evidence and the smallest justified remediation proposal before changing the transport or restoring broader availability.
+
+## External evidence and leading hypothesis
+
+Reviewed 2026-10-11: the [Hermes Claude Subscription DirectSDK README](https://github.com/NousResearch/hermes-official-plugins/tree/main/claude-subscription-directsdk#subscription-usage-same-metering-as-claude--p-17x-the-interactive-tui) reports a September 9, 2026 comparison on a Pro plan using Sonnet 5 1M, approximately 500K fresh input tokens per arm and output pinned to `Hello!`. Direct `claude -p` measured 8.8–8.9 subscription session-meter percentage points per API-list-price-equivalent dollar; Hermes DirectSDK measured 8.9; interactive Claude Code TUI measured 4.9–5.4. The maintainer reports comparable wire-level usage buckets and attributes the approximately 1.7× difference to server-side headless-versus-interactive weighting.
+
+North Star's `buildInvocation` in `src/main/agent/providers/claude-subscription/client.ts` explicitly selects `--print` with stream-json input/output. This places North Star on the headless path implicated by the benchmark. A route-dependent allowance difference could therefore explain part of the observed drain even with healthy cache reuse and accurate token accounting; cache fixes alone would not establish interactive allowance parity.
+
+Treat this as third-party measured evidence, not an official Anthropic metering specification or a reproduced North Star result. The small Pro/Sonnet fresh-input comparison does not establish the multiplier for Opus, other plans, output/thinking-heavy work, current service behavior, Claude Desktop or VS Code. API list-price equivalent is a normalization used by that benchmark, not a subscription billing rule. Do not adopt the maintainer's universal headless-rate claim without further evidence.
+
+The same README describes historical replay-prefix cache failures and later fixes involving native reminders, first-turn context ordering and cache breakpoint placement. These are separate diagnostic leads, not proof of the same failures in North Star. North Star's `src/main/agent/providers/claude-subscription/cache-wire.ts` deliberately leaves native cache-marker relocation disabled pending byte-level CLI-layout qualification. Inspect the actual wire behavior before transferring any Hermes fix; do not assume our implementation already contains its cache mitigations.
 
 ## Task 1: Audit the actual usage path and competing hypotheses
 
@@ -33,7 +43,9 @@ Never log prompts, histories, tool arguments/results, thinking content/signature
 
 Design the experiment before spending subscription usage. Obtain fresh explicit user approval for real-service runs, including the task, exact model/settings, maximum generations or workload bounds, auxiliary/continuation allowance and stop conditions. This plan is not authorization to run live subscription calls. Start with offline and official-CLI synthetic loopback checks.
 
-Compare North Star Anthropic Subscription with native Claude Code against the same isolated repository baseline, task and definition of done, using the same account/plan, resolved Opus model and CLI version where feasible. Record effective reasoning settings, permissions, tool differences, summaries and context sizes. Run each trial from its own reversible workspace snapshot; do not let one trial's edits make the other easier. Use a controlled multi-round fixture to isolate request/cache effects, then a representative coding task to evaluate useful work per allowance consumed. Document remaining harness differences rather than claiming exact equivalence.
+Use three comparison arms: native interactive Claude Code TUI, direct official `claude -p`, and North Star Anthropic Subscription. First use a bounded controlled workload to compare interactive versus direct headless allowance consumption, then direct headless versus North Star to identify additional host/replay overhead. Match actual token buckets as well as model/settings where feasible; a route effect must not be inferred from unequal workloads alone. Keep all three arms in the evidence even if the first comparison supports a headless weighting difference.
+
+Compare against the same isolated repository baseline, task and definition of done, using the same account/plan, resolved Opus model and CLI version where feasible. Record effective reasoning settings, permissions, tool differences, summaries and context sizes. Run each trial from its own reversible workspace snapshot; do not let one trial's edits make the other easier. Use a controlled multi-round fixture to isolate request/cache effects, then a representative coding task to evaluate useful work per allowance consumed. Document remaining harness differences rather than claiming exact equivalence.
 
 Distinguish cold-cache and warm-continuation trials. Record trial order, timestamps, concurrent account activity and reset windows; avoid claiming cold-cache isolation when cross-run reuse cannot be ruled out. Capture user-visible subscription usage before/after when available, keeping short-window and longer-window/model-specific limits separate. Allow for delayed or coarse usage-meter updates. Report actual token buckets independently from observed allowance change; consult current official documentation for usage semantics rather than treating API list prices as subscription billing rules.
 
@@ -41,7 +53,7 @@ Distinguish cold-cache and warm-continuation trials. Record trial order, timesta
 
 ## Task 4: Diagnose and propose the minimum remediation
 
-Use the results to distinguish unstable request prefixes or cache placement from excess context, unnecessary calls, higher effective thinking/output, more tool rounds, or service/account-limit behavior. Investigate anomalies at the responsible layer instead of assuming a persistent CLI session is the solution.
+Use the results to distinguish headless-versus-interactive allowance weighting from unstable request prefixes or cache placement, excess context, unnecessary calls, higher effective thinking/output, more tool rounds, or other service/account-limit behavior. Report the observed route difference separately from any additional North Star overhead; neither excludes the other. If matched direct headless and North Star runs show comparable allowance consumption, document that result rather than manufacturing a local remediation for a service-side difference. Investigate anomalies at the responsible layer instead of assuming a persistent CLI session is the solution.
 
 For each supported cause, propose the smallest change and a controlled before/after check. Changes to cache-wire transforms require qualified CLI layouts and lossless preservation of native identity, system/tool markers, tool-result semantics and signed assistant metadata. Context reductions must preserve needed task state and canonical history semantics. Do not silently reduce reasoning quality or change model defaults to manufacture savings. Reusing inference sessions, changing transport ownership or altering existing isolation guarantees requires a separately reviewed design, not an incidental optimization.
 
