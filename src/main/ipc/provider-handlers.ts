@@ -355,6 +355,7 @@ export function registerProviderHandlers(): void {
       patch: {
         displayName?: string
         baseUrl?: string | null
+        acceptsImages?: boolean
         enabled?: boolean
       }
     ) => {

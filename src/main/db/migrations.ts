@@ -64,6 +64,17 @@ function ensureNativeAssistantColumn(db: Database.Database): void {
   addColumnIfMissing(db, "messages", "native_assistant", "TEXT")
 }
 
+// v68: per-account image input. Defaults on so existing accounts keep sending
+// tool images; text-only gateways turn it off in Settings.
+function ensureProviderImageInputColumn(db: Database.Database): void {
+  addColumnIfMissing(
+    db,
+    "provider_accounts",
+    "accepts_images",
+    "INTEGER NOT NULL DEFAULT 1"
+  )
+}
+
 function ensureToolMedia(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS tool_media (
     id TEXT PRIMARY KEY,
@@ -155,6 +166,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureSubscriptionProviderConstraints,
   ensureNativeAssistantColumn,
   ensureToolMedia,
+  ensureProviderImageInputColumn,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -625,6 +637,9 @@ export function runMigrations(
       ensureWorkingDirectoryColumns(db)
       ensureNativeAssistantColumn(db)
       ensureToolMedia(db)
+      // After ensureSubscriptionProviderConstraints: its V65 table rebuild
+      // predates this column and would drop it.
+      ensureProviderImageInputColumn(db)
     })()
   } finally {
     if (fkWasOn) db.pragma("foreign_keys = ON")

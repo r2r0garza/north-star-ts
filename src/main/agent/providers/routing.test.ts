@@ -50,6 +50,7 @@ beforeEach(() => {
     enabled: true,
     position: 0,
     apiMode: "completions",
+    acceptsImages: true,
     createdAt: 1,
     lastUsedAt: null,
   }

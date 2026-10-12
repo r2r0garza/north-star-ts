@@ -470,6 +470,10 @@ export interface ProviderAccount {
   // The OpenAI wire API this account speaks. Defaults to "completions"; only
   // consulted for openai/openai_compatible accounts (portkey ignores it).
   apiMode: ApiMode
+  // Whether the endpoint accepts image content parts (SCHEMA_V68). Off for
+  // text-only bridges (e.g. Copilot Bridge stringifies them as base64 text);
+  // the agent then withholds tool images and steers to text alternatives.
+  acceptsImages: boolean
   createdAt: number
   lastUsedAt: number | null
 }

@@ -15,6 +15,7 @@ interface ProviderAccountRow {
   base_url: string | null
   encrypted_key: Buffer | null
   api_mode: ApiMode
+  accepts_images: number
   enabled: number
   position: number
   created_at: number
@@ -33,6 +34,7 @@ function toAccount(row: ProviderAccountRow): ProviderAccount {
     enabled: row.enabled === 1,
     position: row.position,
     apiMode: row.api_mode,
+    acceptsImages: row.accepts_images !== 0,
     createdAt: row.created_at,
     lastUsedAt: row.last_used_at,
   }
@@ -119,6 +121,7 @@ export function updateAccount(
     displayName?: string
     baseUrl?: string | null
     apiMode?: ApiMode
+    acceptsImages?: boolean
     enabled?: boolean
   }
 ): ProviderAccount {
@@ -135,6 +138,10 @@ export function updateAccount(
   if (patch.apiMode !== undefined) {
     sets.push("api_mode = ?")
     args.push(patch.apiMode)
+  }
+  if (patch.acceptsImages !== undefined) {
+    sets.push("accepts_images = ?")
+    args.push(patch.acceptsImages ? 1 : 0)
   }
   if (patch.enabled !== undefined) {
     sets.push("enabled = ?")

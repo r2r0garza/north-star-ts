@@ -114,6 +114,8 @@ export class ContextBuilder {
       baseSystemPrompt: string
       sections?: ContextSection[]
       tokenBudget?: number
+      // false for a text-only provider: retained tool images are not replayed.
+      images?: boolean
     }
   ): ChatMessage[] {
     const budget = opts.tokenBudget ?? this.budget
@@ -140,7 +142,7 @@ export class ContextBuilder {
     // provides no visual recall and must never recover pixels from another source.
     return [
       { role: "system", content: systemContent },
-      ...replayHistory(history),
+      ...replayHistory(history, opts.images ?? true),
     ]
   }
 
@@ -211,7 +213,7 @@ export class ContextBuilder {
 }
 // Recovery can append tool results after a failure note or a later user turn.
 // Replay them immediately after their call, without changing durable history.
-function replayHistory(history: Message[]): ChatMessage[] {
+function replayHistory(history: Message[], images = true): ChatMessage[] {
   const results = new Map(
     history
       .filter((m) => m.role === "tool" && m.toolCallId)
@@ -241,14 +243,15 @@ function replayHistory(history: Message[]): ChatMessage[] {
             }
       )
     }
-    messages.push(
-      ...replayToolMedia(
-        (message.toolCalls ?? []).flatMap((call) => {
-          const result = results.get(call.id)
-          return result ? [result] : []
-        })
+    if (images)
+      messages.push(
+        ...replayToolMedia(
+          (message.toolCalls ?? []).flatMap((call) => {
+            const result = results.get(call.id)
+            return result ? [result] : []
+          })
+        )
       )
-    )
   }
   return messages
 }

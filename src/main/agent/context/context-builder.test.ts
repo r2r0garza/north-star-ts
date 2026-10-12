@@ -6,6 +6,14 @@ const messageRepo = vi.hoisted(() => ({
   listMessagesAfterSeq: vi.fn<() => Message[]>(),
 }))
 vi.mock("../../db/repositories/messages", () => messageRepo)
+// Stand-in for retained-image replay: one marker message per tool result that
+// carries media, so tests can see whether images were projected.
+vi.mock("../../media/tool-media", () => ({
+  replayToolMedia: (messages: Message[]) =>
+    messages.some((m) => m.media?.length)
+      ? [{ role: "user", content: "IMAGE" }]
+      : [],
+}))
 
 import {
   ContextBuilder,
@@ -72,6 +80,38 @@ describe("ContextBuilder — base behavior (pre-014 parity)", () => {
       content: "recovered result",
     })
     expect(out[4].content).toBe("you got cut off")
+  })
+
+  it("omits retained tool images for a text-only provider", () => {
+    const history: Message[] = [
+      msg(1, "user", "look"),
+      {
+        ...msg(2, "assistant", ""),
+        toolCalls: [
+          { id: "shot", name: "browser_screenshot", arguments: "{}" },
+        ],
+      },
+      {
+        ...msg(3, "tool", "Screenshot captured"),
+        toolCallId: "shot",
+        media: [{} as NonNullable<Message["media"]>[number]],
+      },
+    ]
+    messageRepo.listMessages.mockReturnValue(history)
+    const withImages = new ContextBuilder().build("c1", {
+      baseSystemPrompt: "SYS",
+    })
+    expect(withImages.at(-1)).toEqual({ role: "user", content: "IMAGE" })
+    const textOnly = new ContextBuilder().build("c1", {
+      baseSystemPrompt: "SYS",
+      images: false,
+    })
+    expect(textOnly.map((m) => m.role)).toEqual([
+      "system",
+      "user",
+      "assistant",
+      "tool",
+    ])
   })
 
   it("makes old malformed tool arguments safe to replay without changing stored history", () => {

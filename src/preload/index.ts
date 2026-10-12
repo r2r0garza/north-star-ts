@@ -2592,6 +2592,7 @@ const api = {
         displayName?: string
         baseUrl?: string | null
         apiMode?: "completions" | "responses" | "codex_responses"
+        acceptsImages?: boolean
         enabled?: boolean
       }
     ) =>

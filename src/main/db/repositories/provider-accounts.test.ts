@@ -42,6 +42,19 @@ describe.skipIf(!sqliteLoads)("provider-accounts repo", () => {
     expect(getAccount(a.id)?.baseUrl).toBe("https://x/v1")
   })
 
+  it("defaults to accepting images and persists the text-only toggle", () => {
+    const a = createAccount({
+      provider: "openai_compatible",
+      displayName: "Copilot Bridge",
+      baseUrl: "http://127.0.0.1:1234/v1",
+    })
+    expect(a.acceptsImages).toBe(true)
+    expect(updateAccount(a.id, { acceptsImages: false }).acceptsImages).toBe(
+      false
+    )
+    expect(getAccount(a.id)?.acceptsImages).toBe(false)
+  })
+
   it("accepts the Claude Code CLI provider without credentials", () => {
     const account = createAccount({
       provider: "claude_code",

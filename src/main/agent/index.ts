@@ -143,6 +143,7 @@ import { LocalEnvironment } from "./env/local"
 import { CHAT_VENV_PROMPT, resolveChatVenvOverlay } from "../python/chat-venv"
 import type { Environment } from "./env/types"
 import * as settingsService from "../settings/service"
+import { selectionAcceptsImages } from "./providers/image-input"
 import {
   resolveLlm,
   createCompletion,
@@ -1860,11 +1861,15 @@ export async function runAgentLoop(
   // stored transcript until summarization, or summary + complete uncovered tail
   // afterward. The array grows in-memory as the agent calls tools and we feed
   // results back; those turns are also persisted as they complete (below).
+  // A text-only provider (account setting) gets no image parts: retained tool
+  // images aren't replayed and tools fall back to text (no emitImage below).
+  const acceptsImages = selectionAcceptsImages(llmSelection)
   const messages: any[] = contextBuilder.build(conversationId, {
     baseSystemPrompt,
     sections,
     tokenBudget:
       settingsService.getIndexing().summarizeTokenThreshold || undefined,
+    images: acceptsImages,
   })
   if (
     modelUserContent !== undefined &&
@@ -2936,14 +2941,16 @@ export async function runAgentLoop(
                 }
               : undefined,
             browser,
-            emitImage: (image: ToolImage) => {
-              if (
-                acceptingImages &&
-                !callSignal.aborted &&
-                callImages.length <= 3
-              )
-                callImages.push({ ...image })
-            },
+            emitImage: acceptsImages
+              ? (image: ToolImage) => {
+                  if (
+                    acceptingImages &&
+                    !callSignal.aborted &&
+                    callImages.length <= 3
+                  )
+                    callImages.push({ ...image })
+                }
+              : undefined,
             skillResourceRoots,
             // present_plan calls this on approval; the selected backend is already
             // running, so the next loop iteration can safely unlock mutations.

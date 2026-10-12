@@ -67,6 +67,7 @@ export interface ResolvedClient {
   accountId: string
   apiMode: ApiMode
   provider: Provider
+  acceptsImages: boolean
 }
 
 // A per-conversation (or default) selection. Either field null → fall back to the
@@ -224,6 +225,7 @@ export function resolveLlm(
     accountId: account.id,
     apiMode: account.apiMode,
     provider: account.provider,
+    acceptsImages: account.acceptsImages,
   }
 }
 

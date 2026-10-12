@@ -432,6 +432,11 @@ function AccountCard({
     await onChange()
   }
 
+  async function setAcceptsImages(acceptsImages: boolean) {
+    await window.cowork.providers.update(account.id, { acceptsImages })
+    await onChange()
+  }
+
   async function checkCodexSubscription() {
     setPreflight(null)
     setPreflight(
@@ -592,6 +597,26 @@ function AccountCard({
                 }
               />
             </Field>
+
+            {!isCodexSubscription(account.provider) && (
+              <Field orientation="horizontal">
+                <div className="flex flex-1 flex-col gap-1">
+                  <FieldLabel htmlFor={`images-${account.id}`}>
+                    Accepts images
+                  </FieldLabel>
+                  <FieldDescription>
+                    Turn off for text-only endpoints (e.g. Copilot Bridge).
+                    Screenshots and page images are then withheld and the agent
+                    uses text alternatives.
+                  </FieldDescription>
+                </div>
+                <Switch
+                  id={`images-${account.id}`}
+                  checked={account.acceptsImages}
+                  onCheckedChange={(checked) => void setAcceptsImages(checked)}
+                />
+              </Field>
+            )}
 
             <Field>
               <FieldLabel htmlFor={`key-${account.id}`}>
@@ -819,11 +844,9 @@ function NewAccountForm({
           <SelectContent>
             {PROVIDERS.filter(
               (p) =>
-                ![
-                  "claude_subscription",
-                  "claude_code",
-                  "codex_cli",
-                ].includes(p.value) || !window.cowork.isPackaged
+                !["claude_subscription", "claude_code", "codex_cli"].includes(
+                  p.value
+                ) || !window.cowork.isPackaged
             ).map((p) => (
               <SelectItem key={p.value} value={p.value} disabled={!p.enabled}>
                 {p.label}

@@ -92,7 +92,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(67)
+    expect(db.pragma("user_version", { simple: true })).toBe(68)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
@@ -366,12 +366,16 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
         `INSERT INTO messages (id, conversation_id, seq, role, content, created_at)
         VALUES ('history', 'subscription-upgrade', 0, 'assistant', 'Preserved history', 700)`
       ).run()
+      // accepts_images is added by a later migration, so compare without it
+      // (its default is asserted below).
       const snapshot = () => ({
-        accounts: db
-          .prepare(
-            "SELECT * FROM provider_accounts ORDER BY position, created_at"
-          )
-          .all(),
+        accounts: (
+          db
+            .prepare(
+              "SELECT * FROM provider_accounts ORDER BY position, created_at"
+            )
+            .all() as Array<Record<string, unknown>>
+        ).map(({ accepts_images: _acceptsImages, ...account }) => account),
         models: db.prepare("SELECT * FROM models ORDER BY id").all(),
         mappings: db
           .prepare(
@@ -391,8 +395,15 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
       db.pragma(`user_version = ${version}`)
       runMigrations(db)
       expect(snapshot()).toEqual(before)
+      expect(
+        db
+          .prepare(
+            "SELECT DISTINCT accepts_images AS value FROM provider_accounts"
+          )
+          .all()
+      ).toEqual([{ value: 1 }])
       expect(db.pragma("user_version", { simple: true })).toBe(
-        version === 999 ? 999 : 67
+        version === 999 ? 999 : 68
       )
       expect(db.pragma("foreign_keys", { simple: true })).toBe(1)
       expect(db.pragma("foreign_key_check")).toEqual([])
@@ -494,6 +505,14 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
        VALUES ('codex-sub', 'codex_subscription', 'Codex Subscription', 'codex_responses', 1, 0, 0)`
     ).run()
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
+    // The constraint rebuild predates accepts_images; it must be restored.
+    expect(
+      db
+        .prepare(
+          "SELECT accepts_images FROM provider_accounts WHERE id = 'codex-sub'"
+        )
+        .get()
+    ).toEqual({ accepts_images: 1 })
     db.close()
   })
 
@@ -836,7 +855,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
 
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(67)
+    expect(db.pragma("user_version", { simple: true })).toBe(68)
     expect(
       (db.pragma("table_info(process_phases)") as Array<{ name: string }>).map(
         (c) => c.name
@@ -1054,7 +1073,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(67)
+    expect(db.pragma("user_version", { simple: true })).toBe(68)
 
     // Reaped: orphan + its nested descendant, and all their state.
     const taskIds = (
@@ -1148,7 +1167,7 @@ describe.skipIf(!sqliteLoads)(
 
       runMigrations(db)
 
-      expect(db.pragma("user_version", { simple: true })).toBe(67)
+      expect(db.pragma("user_version", { simple: true })).toBe(68)
       const columns = db.pragma("table_info(process_phase_agents)") as Array<{
         name: string
         notnull: number
@@ -1251,7 +1270,7 @@ describe.skipIf(!sqliteLoads)("context scopes migration (v51)", () => {
         ('a', 'd', 'a', 'A', 0, 'fresh'), ('b', 'd', 'b', 'B', 1, 'seat_session');
     `)
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(67)
+    expect(db.pragma("user_version", { simple: true })).toBe(68)
     // v51 moved them to the initiative scope; v54 renamed it to feature.
     expect(
       db
@@ -1350,7 +1369,7 @@ describe.skipIf(!sqliteLoads)("work terms migration (v54)", () => {
 
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(67)
+    expect(db.pragma("user_version", { simple: true })).toBe(68)
     const tables = db
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
       .pluck()
@@ -1483,7 +1502,7 @@ describe.skipIf(!sqliteLoads)("work terms migration (v54)", () => {
 
     // Running it again changes nothing.
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(67)
+    expect(db.pragma("user_version", { simple: true })).toBe(68)
     db.close()
   })
 })
