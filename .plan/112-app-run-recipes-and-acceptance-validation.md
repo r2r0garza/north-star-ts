@@ -1,6 +1,14 @@
 # PR112: Trustworthy app launch and acceptance validation (rethink of the backup QA work)
 
-> Status: **PLANNED** (2026-10-11). Design proposal; no application code changes in this task.
+> Status: **PLANNED** (2026-10-11; split into slice files 2026-10-12). Parent plan: problem, principles,
+> design, and method. The work is tracked in the slice files
+> [`112.1`](112.1-scenario-fixtures-harness-and-test-browser.md),
+> [`112.2`](112.2-live-model-scorecard-baseline.md),
+> [`112.3`](112.3-self-verifying-recipes-and-repair.md),
+> [`112.4`](112.4-exploratory-story-proofs.md), and
+> [`112.5`](112.5-wave-gate-and-durable-suite.md), each listed on its own in `ROADMAP-NEXT.md`.
+> Comes after [`104`](104-process-command-phases.md) (deterministic command phases), which the
+> pre-proof app check builds on.
 > Unblocks Mission Control ("Processes v2") from shipping: it can spec and build a user story but cannot
 > yet honestly *validate* one. Launch and check pieces are also usable from standalone Processes through
 > `104` command phases.
@@ -168,33 +176,22 @@ scorecard, stop patching and revisit the design section they belong to.
 
 ## Slices
 
-### 112.1 — Scenario fixtures, then port the harness and browser resolution
+Each slice has its own file with a port map (backup file → destination on main, and what changed on main
+since the backup branched), the design sections it implements, and its acceptance criteria. Order:
+`104` first, then `112.1` → `112.5`.
 
-Build the scenario fixtures and scorecard first, and record the baseline on main. Then port
-`backup:109.03` (harness, tools, recipe storage/validation) and the `backup:109.06` runner plus the
-three-step browser resolution and consent wait, with their tests. No user-facing editor requirement.
-Acceptance: the backup's harness tests pass on main; fixture projects start, smoke and tear down with no
-orphans; browser resolution picks workspace → Chrome → consent in that order.
+| Slice | File | Delivers | Design sections |
+|---|---|---|---|
+| `112.1` | [Scenario fixtures, harness, and test browser](112.1-scenario-fixtures-harness-and-test-browser.md) | Scenario fixtures, scorecard format, and the deterministic harness baseline; ported launch harness, `app_*` tools, recipe storage, bundled Playwright runner, and test browser resolution with consent and the paused phase clock | A (shape and storage only) |
+| `112.2` | [Live-model scorecard baseline](112.2-live-model-scorecard-baseline.md) | A dev-only scenario driver and the live-model scorecard (N ≥ 3 runs per scenario, as rates) on the `112.1` build, before any behavior change | Method |
+| `112.3` | [Self-verifying recipes and repair](112.3-self-verifying-recipes-and-repair.md) | Detectors → agent completion → verification; recipe state; `setup` / `prerequisites` / `.env` references; failure classification; bounded repair; plain-language escalation; the *unverified* outcome | A, B |
+| `112.4` | [Exploratory story proofs](112.4-exploratory-story-proofs.md) | Seat browser, proof methods, scratch-only QA writes, and the app check (a `104` phase) before the story `test` step | B (routing), C (pre-proof gate, story proof) |
+| `112.5` | [Wave gate and durable suite](112.5-wave-gate-and-durable-suite.md) | `merged` status and wave gate, the committed Playwright suite with a `webServer` generated from the verified recipe, fix stories with capped rounds, conflict smoke step, the runnable-skeleton rule, worktree dependency divergence, and planning-time serialization of overlapping stories | C (lifecycle, wave gate), D, E |
 
-### 112.2 — Self-verifying recipes and repair
-
-Detectors → agent completion → verification; recipe state; failure classification; bounded repair loop
-with plain-language escalation; the *unverified* outcome. Acceptance: deliberate breakages (missing env
-key, missing migration, wrong port, second service missing) are classified as environment failures and
-fixed by repair or escalated without user-supplied commands; no story attempt is burned by them.
-
-### 112.3 — Exploratory story proofs
-
-Port `backup:109.04` seat browser and `backup:109.05` proof methods; app-check gate before the `test`
-step (needs `104`). Acceptance: a story whose builder misread a criterion is rejected on exploratory
-evidence; proofs citing only builder tests or code reading are refused.
-
-### 112.4 — Wave gate and durable suite
-
-Port `backup:110` and the overlapping-story serialization (section E) with the suite's `webServer` generated from the verified recipe, plus the greenfield
-skeleton rule and worktree dependency divergence (section D). Acceptance: replay the backup's third-run
-scenario (two stories shaping the same UI) — the wave suite catches the merged defect and produces a fix
-story; the suite runs identically under the user's own `npx playwright test` when Playwright is installed.
+**Baseline split (2026-10-12).** `112.1` records only the deterministic *harness* baseline: fixtures start,
+smoke, and tear down. The *live-model* scorecard (repeated real runs per scenario, recorded as rates) needs
+a scenario driver and is its own slice, `112.2` (split out of the recipe slice the same day, which
+renumbered the later slices), recorded before the first behavior change it measures.
 
 ## Open questions
 
