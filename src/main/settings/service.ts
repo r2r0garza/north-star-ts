@@ -104,7 +104,8 @@ export interface IndexingSettings {
   summarizeMessageThreshold: number
   summarizeTokenThreshold: number
   // Debug aid: when on, each turn's assembled system prompt is written verbatim
-  // to system-prompt-logs/<mode> - <MM-DD-YYYY HH-MM-SS>.md. Off by default.
+  // to system-prompt-logs/<mode> - <MM-DD-YYYY HH-MM-SS>.md, and each model
+  // round's full message list beside it as JSON. Off by default.
   logSystemPrompt: boolean
 }
 

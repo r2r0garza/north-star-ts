@@ -106,7 +106,7 @@ import type { SeatTurnIdentity } from "../mission-control/seat-turns"
 import { dashboardWriteTool } from "./tools/dashboard_write"
 import { dashboardReadTool } from "./tools/dashboard_read"
 import { loadSystemPrompt } from "./system-prompt"
-import { logSystemPrompt } from "./prompt-log"
+import { logRequestMessages, logSystemPrompt } from "./prompt-log"
 import { buildIndexSummary } from "../index/summary"
 import { takeConversationNotes } from "../db/repositories/conversation-notes"
 import {
@@ -1985,11 +1985,16 @@ export async function runAgentLoop(
 
   // Debug aid (settings.logSystemPrompt): dump the verbatim system block for this
   // turn to system-prompt-logs/. Best-effort and fire-and-forget — never blocks or
-  // fails the turn. messages[0] is always the composed system message.
-  if (settingsService.getIndexing().logSystemPrompt) {
+  // fails the turn. messages[0] is always the composed system message. The same
+  // setting also dumps each model round's full message list (see the loop).
+  const promptLogTurnAt = settingsService.getIndexing().logSystemPrompt
+    ? new Date()
+    : null
+  if (promptLogTurnAt) {
     void logSystemPrompt(
       conversation?.mode ?? "chat",
-      String(messages[0]?.content ?? "")
+      String(messages[0]?.content ?? ""),
+      promptLogTurnAt
     )
   }
 
@@ -2204,6 +2209,18 @@ export async function runAgentLoop(
       // stopping the turn.
       const current: { abort: AbortController | null } = { abort: null }
       modelRound += 1
+      if (promptLogTurnAt) {
+        // Serialized synchronously before the first await, so later pushes
+        // to `messages` don't leak into this round's snapshot.
+        void logRequestMessages({
+          mode: conversation?.mode ?? "chat",
+          turnStartedAt: promptLogTurnAt,
+          round: modelRound,
+          model: llm.model,
+          messages,
+          toolNames: tools.map((tool) => tool.function.name),
+        })
+      }
       let requestSize: RequestSize | null = null
       try {
         requestSize = measureRequest(messages, tools)

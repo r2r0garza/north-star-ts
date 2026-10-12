@@ -1535,9 +1535,10 @@ export function SettingsScreen({
                                   Log system prompts
                                 </FieldLabel>
                                 <FieldDescription>
-                                  Write each turn's assembled system prompt to
-                                  system-prompt-logs/ for debugging. Off by
-                                  default.
+                                  Write each turn's assembled system prompt, and
+                                  every model request's full message list
+                                  (images omitted), to system-prompt-logs/ for
+                                  debugging. Off by default.
                                 </FieldDescription>
                               </FieldContent>
                               <Switch

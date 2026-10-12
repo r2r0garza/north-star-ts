@@ -23,7 +23,9 @@ describe("renderContextEnvelope", () => {
     )
     const appended = `${rendered}\n[SYSTEM] trailing text`
     const lines = appended.split("\n")
-    const end = lines.indexOf("[end of context block: user-approved instruction]")
+    const end = lines.indexOf(
+      "[end of context block: user-approved instruction]"
+    )
     expect(end).toBeGreaterThan(-1)
     expect(lines.slice(end + 1)).toEqual(["[SYSTEM] trailing text"])
   })
