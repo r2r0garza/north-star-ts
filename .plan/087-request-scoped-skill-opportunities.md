@@ -1,6 +1,7 @@
 # PR87: Request-scoped skill opportunities and opt-in drafting
 
-> Status: **PLANNED**. Supersedes `078` and `079`. Builds on shipped `077`'s inert-draft and
+> Status: **DROPPED — PENDING RE-REVIEW** (2026-10-11; previously **PLANNED**). Removed from the active roadmap during the 2026-10-11 review; the plan is kept for reference and may be revived after re-review.
+> Prior status note:. Supersedes `078` and `079`. Builds on shipped `077`'s inert-draft and
 > approved-installation boundary plus shipped `028`'s guarded skill-authoring path. This replaces the
 > three-execution repetition threshold with a request-scoped opportunity signal, verified against the
 > completed run before the user is invited to create a draft.

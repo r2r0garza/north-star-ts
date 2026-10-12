@@ -1,6 +1,7 @@
 # PR43: Copilot CLI provider
 
-> Status: **DEFERRED**.
+> Status: **DROPPED — PENDING RE-REVIEW** (2026-10-11; previously **DEFERRED**). Removed from the active roadmap during the 2026-10-11 review; the plan is kept for reference and may be revived after re-review.
+> Prior status note:.
 > Split out of `034` after live CLI probes on 2026-08-25/26. This keeps the
 > research and intended shape recorded, but implementation is intentionally last
 > behind Claude Code and Codex CLI.

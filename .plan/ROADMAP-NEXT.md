@@ -3,22 +3,25 @@
 > **Note (2026-09-26):** the `106.x` plans predate a rename — Initiatives are now **Features**,
 > Missions are **Milestones**, and Slices are **User stories**. Each pending `106.x` plan has a mapping note at the top.
 
-1. **`111` — Chat worktrees and background delegation opt-in.** Add a default-off North Star chat
-   checkbox controlling subagent spawning and associated writer worktrees. Persist the permission snapshot
-   through background handoffs, retries, resumes, and restarts; withhold both spawn tools and inject an
-   explicit no-worktrees instruction when off. Enabling permits, but does not require, delegation while
-   preserving existing isolation and approval safeguards.
+> **Review (2026-10-11):** re-prioritized around the product's differentiator. Processes are the main
+> attraction today; Mission Control is "Processes v2" — ~90% complete, gated behind `.env.local`, and not
+> yet shippable because user-story validation is missing. Users keep the choice of Processes and/or
+> Mission Control, so Process UX investment remains worthwhile. `092.1` and `110`
+> moved to Deferred; low-value deferred plans were marked *dropped — pending re-review* in their own files.
+
+1. **`111` — Background delegation policy leak fix.** Rescoped to the fix only: background tasks currently
+   omit `conversationSubagentsEnabled`, which the shared loop treats as enabled. Snapshot the existing global
+   setting into task input, persist it through resume/retry/restart, and pass it explicitly. The per-chat
+   composer checkbox is deferred inside the plan.
    [Plan](111-chat-worktrees-and-background-delegation-opt-in.md).
-2. **`092.1` — Agent lifecycle hook contract, storage, runner, and safety controls.** Define versioned
-   event/result/metadata schemas, canonical guarded `.hook.cjs` + `.hook.json` storage under
-   `~/.<system>/hooks/`, exact-source-hash review state, stable Agent-ref targeting, deterministic matching,
-   and safe failure policies. Build the bounded short-lived child-process protocol with cancellation,
-   process-tree cleanup, packaged-runtime coverage, and sanitized diagnostics. This slice establishes the
-   executable-code boundary but does not yet connect hooks to agent lifecycles or add the full Hooks screen
-   and AI authoring wizard; those remain deferred as `092.2` and `092.3`.
-3. **`110` — Anthropic subscription usage investigation.** Investigate user-observed rapid Opus
-   allowance consumption versus native Claude Code with privacy-preserving per-round accounting and
-   explicitly approved, bounded matched trials. Separate uncached input, cache writes/reads, thinking/output,
-   retries, auxiliary calls and task quality; establish the cause before proposing remediation. Keep packaged
-   provider selection hidden pending evidence and an explicit release decision; `109.6` remains deferred.
-   [Plan](110-anthropic-subscription-usage-investigation.md).
+2. **`112` — Trustworthy app launch and acceptance validation.** The last ~10% blocking Mission Control
+   from shipping. Rethink of the work preserved on `backup/qa-109-110-before-rethink-2026-10-04`: port its
+   proven app-launch harness, seat browser, proof methods, bundled Playwright runner (workspace browser →
+   Chrome → consented download) and wave-level acceptance suite; fix its weak point — recipes reviewed and
+   authored by the user — with recipes that builders maintain and the harness verifies by running, an
+   environment-vs-feature failure split with a bounded repair loop, and an honest *unverified* outcome.
+   Sliced `112.1`–`112.4`. [Plan](112-app-run-recipes-and-acceptance-validation.md).
+3. **`104` — Deterministic command phases.** A phase that runs a reviewed command (tests, Playwright,
+   build) with exit status as the result and no LLM interpretation. Must work in both standalone Processes
+   and Mission Control playbooks (playbooks run on the Process engine). Also a building block for item 2.
+   [Plan](104-process-command-phases.md).

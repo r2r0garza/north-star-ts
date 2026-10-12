@@ -1,6 +1,34 @@
 # PR111: Chat worktrees and background delegation opt-in
 
-> Status: **PLANNED** (2026-10-11). Analysis and implementation proposal only; no application code changes in this task.
+> Status: **RESCOPED — LEAK FIX ONLY** (2026-10-11 roadmap review). Previously **PLANNED**.
+
+## Rescope decision (2026-10-11)
+
+Ship only the policy-leak fix now. `TaskRunner` (`src/main/tasks/runner.ts`, the `runAgentLoop` call in
+task execution) omits `conversationSubagentsEnabled`, and the shared loop treats omission as enabled
+(`opts.conversationSubagentsEnabled !== false`). A background task can therefore spawn subagents even when
+the user's "Allow agents to delegate to subagents" setting is off.
+
+**In scope:** snapshot the existing global delegation setting as an explicit boolean when a chat-originated
+`agent_chat`/`todo_run` task is enqueued (both the `run_todos_in_background` tool and the Todos button
+route), persist it in `tasks.input`, and pass it into `runAgentLoop` on every execution, resume, retry and
+restart. Legacy chat-originated tasks without the field resolve to `false`. Background-to-background
+handoffs inherit the parent snapshot and cannot widen it. Process and Mission Control callers keep their
+own independent policy; do not change the loop's global omission semantics.
+
+**Acceptance:** with the setting off, a background worker is offered neither `spawn_subagent` nor
+`spawn_subagents`, and stale calls are rejected before any worker, lease or worktree is created; with it on,
+existing behavior is unchanged. Tests cover both values, both handoff routes, resume/retry and legacy tasks.
+
+**Deferred:** the per-chat composer checkbox, first-message locking and a background-specific permission
+separate from the global setting (the original proposal below). Revisit only if a single global setting
+proves insufficient in practice.
+
+---
+
+## Original proposal (deferred)
+
+> Original status: **PLANNED** (2026-10-11). Analysis and implementation proposal only; no application code changes in this task.
 > Decision: one default-off composer checkbox controls whether a chat-originated background task's main agent may spawn subagents. Writing subagents use the existing writer-worktree workflow; worktrees are not an independent opt-in. Background execution itself remains available when unchecked, and foreground delegation policy is unchanged.
 
 ## Objective and interpretation

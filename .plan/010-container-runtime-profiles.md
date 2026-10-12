@@ -1,6 +1,7 @@
 # PR10: Container runtime profiles — decouple Workspace from Runtime
 
-> Status: **NOT STARTED** — design note (2026-06-29). A small, deliberate evolution of the
+> Status: **DROPPED — PENDING RE-REVIEW** (2026-10-11; previously **NOT STARTED**). Removed from the active roadmap during the 2026-10-11 review; the plan is kept for reference and may be revived after re-review.
+> Prior status note: — design note (2026-06-29). A small, deliberate evolution of the
 > container backend shipped in `.plan/006`. The goal is to **kill a bad architectural assumption
 > now** ("one workspace = one container image forever") while keeping the implementation simple —
 > *not* to build image management or auto-routing. Starting hypothesis, not a locked spec.

@@ -1,6 +1,7 @@
 # PR55: Local filesystem openat helper
 
-> Status: **NOT STARTED**. Deferred security hardening required to complete
+> Status: **DROPPED — PENDING RE-REVIEW** (2026-10-11; previously **NOT STARTED**). Removed from the active roadmap during the 2026-10-11 review; the plan is kept for reference and may be revived after re-review.
+> Prior status note:. Deferred security hardening required to complete
 > `.debug/054-local-filesystem-parent-symlink-race.md`.
 
 ## Context

@@ -1,6 +1,7 @@
 # PR66: Notebook editing and cell execution
 
-> Status: **DEFERRED**. Depends on `063` for safe notebook reading and on a reviewed
+> Status: **DROPPED — PENDING RE-REVIEW** (2026-10-11; previously **DEFERRED**). Removed from the active roadmap during the 2026-10-11 review; the plan is kept for reference and may be revived after re-review.
+> Prior status note:. Depends on `063` for safe notebook reading and on a reviewed
 > kernel/runtime contract. Reading a notebook never implies executing it.
 
 ## Goal
