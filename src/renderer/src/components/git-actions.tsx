@@ -556,7 +556,7 @@ function CommitDialog({
   }
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl">
+      <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>Commit changes</DialogTitle>
           <DialogDescription>
@@ -564,40 +564,46 @@ function CommitDialog({
             work outside your selection is preserved.
           </DialogDescription>
         </DialogHeader>
-        <div className="max-h-72 space-y-2 overflow-auto rounded-md border p-2">
-          {loading ? (
-            <p className="text-sm text-muted-foreground">Loading changes…</p>
-          ) : (
-            (["tracked", "untracked"] as const).map((kind) => (
-              <FileGroup
-                key={kind}
-                title={kind === "tracked" ? "Tracked" : "Untracked"}
-                entries={groups[kind]}
-                selected={selected}
-                expanded={expanded[kind]}
-                onExpanded={() =>
-                  setExpanded((value) => ({ ...value, [kind]: !value[kind] }))
-                }
-                onSelect={(path, checked) =>
-                  setSelected((current) => {
-                    const next = new Set(current)
-                    checked ? next.add(path) : next.delete(path)
-                    return next
-                  })
-                }
-                onSelectAll={(checked) => toggleGroup(kind, checked)}
-              />
-            ))
+        <div className="flex min-h-0 flex-col gap-4 overflow-y-auto">
+          <div className="max-h-72 shrink-0 space-y-2 overflow-auto rounded-md border p-2">
+            {loading ? (
+              <p className="text-sm text-muted-foreground">Loading changes…</p>
+            ) : (
+              (["tracked", "untracked"] as const).map((kind) => (
+                <FileGroup
+                  key={kind}
+                  title={kind === "tracked" ? "Tracked" : "Untracked"}
+                  entries={groups[kind]}
+                  selected={selected}
+                  expanded={expanded[kind]}
+                  onExpanded={() =>
+                    setExpanded((value) => ({ ...value, [kind]: !value[kind] }))
+                  }
+                  onSelect={(path, checked) =>
+                    setSelected((current) => {
+                      const next = new Set(current)
+                      checked ? next.add(path) : next.delete(path)
+                      return next
+                    })
+                  }
+                  onSelectAll={(checked) => toggleGroup(kind, checked)}
+                />
+              ))
+            )}
+          </div>
+          <Textarea
+            value={message}
+            onChange={(event) => setMessage(event.target.value)}
+            placeholder="Commit message"
+            aria-label="Commit message"
+            className="field-sizing-fixed h-40 shrink-0 resize-none overflow-y-auto"
+            rows={6}
+          />
+          {aiError && (
+            <p className="text-sm break-words text-destructive">{aiError}</p>
           )}
         </div>
-        <Textarea
-          value={message}
-          onChange={(event) => setMessage(event.target.value)}
-          placeholder="Commit message"
-          rows={4}
-        />
-        {aiError && <p className="text-sm text-destructive">{aiError}</p>}
-        <DialogFooter>
+        <DialogFooter className="shrink-0">
           <Button
             type="button"
             variant="outline"

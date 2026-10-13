@@ -29,6 +29,10 @@ import {
 } from "./proof"
 import { collectSeatRoles, resolveSeatBindings } from "./seat-resolver"
 import {
+  commandCheckStatus,
+  MissingChecksError,
+} from "../process/command-checks"
+import {
   renderIntentChain,
   renderUserStoryObjective,
   userStoryCriteria,
@@ -276,6 +280,18 @@ export class UserStoryRunner {
     })
 
     if (request.userStory) this.assertProofStepCanRecord(graph, seatBindings)
+
+    // Workspace checks (plan 104): command steps name checks the workspace
+    // defines. A missing one fails here, naming it, before an attempt is spent.
+    const workspace = feature.workspaceId
+      ? getWorkspace(feature.workspaceId)
+      : undefined
+    const { missing } = commandCheckStatus(hookRow.processId, workspace)
+    if (missing.length > 0)
+      throw new MissingChecksError(
+        missing,
+        workspace ? (workspace.name ?? workspace.path) : null
+      )
 
     // The worktree is created last, once nothing else can refuse the launch.
     const isolated: IsolatedWorkspace | null =
@@ -873,9 +889,31 @@ function builderAddresses(root: ProcessRun): string[] {
   return [...addresses]
 }
 
-// Deterministic command phases arrive with plan 104. Until then no phase
-// qualifies, so a builder can never verify its own user story.
-function isCommandPhase(): boolean {
+// Whether `phaseKey` names a deterministic command phase (plan 104) anywhere in
+// this run tree that completed — exited 0. Its receipt, not a seat's word, is
+// the evidence, so a builder may cite it to verify its own user story.
+function completedCommandPhase(root: ProcessRun, phaseKey: string): boolean {
+  for (const run of runTree(root)) {
+    if (!run.processId) continue
+    const commandPhaseIds = new Set(
+      processes
+        .listPhases(run.processId)
+        .filter((phase) => phase.kind === "command" && phase.key === phaseKey)
+        .map((phase) => phase.id)
+    )
+    if (commandPhaseIds.size === 0) continue
+    if (
+      processes
+        .listPhaseRuns({ runId: run.id })
+        .some(
+          (phaseRun) =>
+            commandPhaseIds.has(phaseRun.phaseId) &&
+            phaseRun.status === "completed" &&
+            phaseRun.commandReceipt?.exitCode === 0
+        )
+    )
+      return true
+  }
   return false
 }
 
@@ -954,7 +992,7 @@ export function recordUserStoryProof(input: {
     criteria,
     verifier,
     builderAddresses: builderAddresses(root),
-    isCommandPhase,
+    isCommandPhase: (phaseKey) => completedCommandPhase(root, phaseKey),
     playbookRun,
     processRunId: root.id,
     maxProofRevisions: maxProofRevisions(feature),

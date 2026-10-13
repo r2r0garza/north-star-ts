@@ -227,6 +227,8 @@ const toPending = {
   startedAt: null,
   finishedAt: null,
   outputIdentity: null,
+  // A command phase (plan 104) re-runs from scratch; its old receipt goes.
+  commandReceipt: null,
 }
 
 // Is a phase a container (fan-out parent or on_each_subtask consumer of a fan-out
@@ -526,6 +528,7 @@ const frontierToPending = {
   failure: null,
   startedAt: null,
   finishedAt: null,
+  commandReceipt: null,
 }
 
 export function resetRunRecursive(input: ResetRunRecursiveInput): void {

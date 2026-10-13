@@ -139,6 +139,16 @@ import { toast } from "sonner"
 import { cn, formatRelativeTime } from "@/lib/utils"
 import { agentDisplay, agentRunTitle } from "@/lib/agent-display"
 import { runtimeBadgeDisplay } from "@/lib/runtime-display"
+import {
+  CommandBadge,
+  CommandPhaseEditor,
+  CommandReceiptView,
+  PhaseKindControl,
+  RunChecksPanel,
+  discardedBySwitch,
+  phaseKindOf,
+  useConfirmDiscard,
+} from "@/components/process-command-phase"
 import type {
   AgentSummary,
   AccountWithModels,
@@ -152,7 +162,10 @@ import type {
   ProcessPhase,
   ProcessPhaseAgent,
   ProcessPhaseAttempt,
+  ProcessPhaseKind,
   ProcessPhaseRun,
+  ProcessCommandConfig,
+  ResolvedProcessCommand,
   ProcessRuntimeConfig,
   ProcessRuntimeSelection,
   ProcessRuntimeSlot,
@@ -1544,6 +1557,13 @@ function PhaseCard({
   }, [addableAgentItems, poolAgentSearchQuery, poolAgentSourceFilter])
   // Collapsed by default — a built graph is mostly read; expand to edit.
   const [expanded, setExpanded] = useState(false)
+  // Execution kind (plan 104). Choosing Command on another kind opens the
+  // command editor as a draft; nothing is stored until a command is saved.
+  const kind = phaseKindOf(phase)
+  const isCommand = kind === "command"
+  const [commandDraft, setCommandDraft] = useState(false)
+  const shownKind: ProcessPhaseKind = commandDraft ? "command" : kind
+  const [confirmDiscard, confirmDiscardDialog] = useConfirmDiscard()
   const depCount = incoming.length
   // Sub-process picker (plan 038.1): candidate definitions minus self (the repo
   // hard-rejects self / cycles; this just avoids offering the trivial self-pick).
@@ -1572,7 +1592,56 @@ function PhaseCard({
     opacity: isDragging ? 0.6 : undefined,
   }
 
+  async function changeKind(next: ProcessPhaseKind) {
+    if (next === shownKind) return
+    if (next === "command") {
+      setCommandDraft(true)
+      return
+    }
+    if (commandDraft && next === kind) {
+      setCommandDraft(false)
+      return
+    }
+    const ok = await confirmDiscard(
+      `Make “${phase.name}” ${next === "agent" ? "an agent" : "a sub-process"} phase?`,
+      discardedBySwitch(phase, pool.length, next)
+    )
+    if (!ok) return
+    setCommandDraft(false)
+    if (next === "subprocess") {
+      const target = subprocessCandidates[0]
+      if (!target) return
+      await patchPhase({ kind: "subprocess", subprocessId: target.id })
+    } else {
+      await patchPhase({ kind: "agent" })
+    }
+  }
+
+  async function saveCommand(commandConfig: ProcessCommandConfig) {
+    if (!isCommand) {
+      const ok = await confirmDiscard(
+        `Make “${phase.name}” a command phase?`,
+        discardedBySwitch(phase, pool.length, "command")
+      )
+      if (!ok) return false
+    }
+    try {
+      await window.cowork.db.processes.phases.update(
+        phase.id,
+        isCommand ? { commandConfig } : { kind: "command", commandConfig }
+      )
+      setCommandDraft(false)
+      onChanged()
+      return true
+    } catch (err) {
+      toast.error(`Could not save command: ${err}`)
+      return false
+    }
+  }
+
   async function patchPhase(patch: {
+    kind?: ProcessPhaseKind
+    commandConfig?: ProcessCommandConfig | null
     name?: string
     key?: string
     routing?: PhaseRouting
@@ -1728,9 +1797,13 @@ function PhaseCard({
             <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/phase:rotate-90" />
             <span className="truncate font-medium">{phase.name}</span>
             <div className="flex shrink-0 flex-wrap items-center gap-1">
-              <Badge variant="outline" className="text-[10px]">
-                {phase.routing}
-              </Badge>
+              {isCommand ? (
+                <CommandBadge config={phase.commandConfig} />
+              ) : (
+                <Badge variant="outline" className="text-[10px]">
+                  {phase.routing}
+                </Badge>
+              )}
               {phase.gatePolicy === "approve" && (
                 <Badge variant="outline" className="text-[10px]">
                   gate
@@ -1804,9 +1877,11 @@ function PhaseCard({
                   </TooltipContent>
                 </Tooltip>
               )}
-              <Badge variant="secondary" className="text-[10px]">
-                {pool.length} {pool.length === 1 ? "agent" : "agents"}
-              </Badge>
+              {!isCommand && (
+                <Badge variant="secondary" className="text-[10px]">
+                  {pool.length} {pool.length === 1 ? "agent" : "agents"}
+                </Badge>
+              )}
               {depCount > 0 && (
                 <Badge variant="secondary" className="text-[10px]">
                   {depCount} dep{depCount === 1 ? "" : "s"}
@@ -1867,7 +1942,21 @@ function PhaseCard({
             </Tooltip>
           </div>
 
-          {!phase.subprocessId && (
+          <PhaseKindControl
+            value={shownKind}
+            allowSubprocess={subprocessCandidates.length > 0}
+            onChange={(next) => void changeKind(next)}
+          />
+          {shownKind === "command" && (
+            <CommandPhaseEditor
+              phaseId={phase.id}
+              saved={isCommand ? phase.commandConfig : null}
+              onSave={saveCommand}
+              onCancel={commandDraft ? () => setCommandDraft(false) : undefined}
+            />
+          )}
+
+          {!phase.subprocessId && shownKind !== "command" && (
             <div className="space-y-2 text-xs">
               <label className="flex items-center gap-2">
                 <span className="text-muted-foreground">Completion policy</span>
@@ -1911,7 +2000,7 @@ function PhaseCard({
             </div>
           )}
 
-          {providerModels.length > 0 && (
+          {providerModels.length > 0 && shownKind !== "command" && (
             <div className="space-y-2 rounded-md border border-dashed p-2">
               <div className="text-xs font-medium">Runtime profile</div>
               <div className="flex flex-wrap gap-2">
@@ -1952,31 +2041,33 @@ function PhaseCard({
 
           {/* Row 2: routing / gate / fan-out. */}
           <div className="flex flex-wrap items-center gap-4">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <label className="flex items-center gap-2 text-xs">
-                  <span className="text-muted-foreground">Routing</span>
-                  <Select
-                    value={phase.routing}
-                    onValueChange={(v) =>
-                      patchPhase({ routing: v as PhaseRouting })
-                    }
-                  >
-                    <SelectTrigger size="sm" className="text-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="single">single</SelectItem>
-                      <SelectItem value="dispatch">dispatch</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </label>
-              </TooltipTrigger>
-              <TooltipContent>
-                Single uses the first agent in the pool. Dispatch routes each
-                task to the best-matched agent in the pool.
-              </TooltipContent>
-            </Tooltip>
+            {shownKind !== "command" && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <label className="flex items-center gap-2 text-xs">
+                    <span className="text-muted-foreground">Routing</span>
+                    <Select
+                      value={phase.routing}
+                      onValueChange={(v) =>
+                        patchPhase({ routing: v as PhaseRouting })
+                      }
+                    >
+                      <SelectTrigger size="sm" className="text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="single">single</SelectItem>
+                        <SelectItem value="dispatch">dispatch</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </label>
+                </TooltipTrigger>
+                <TooltipContent>
+                  Single uses the first agent in the pool. Dispatch routes each
+                  task to the best-matched agent in the pool.
+                </TooltipContent>
+              </Tooltip>
+            )}
             <Tooltip>
               <TooltipTrigger asChild>
                 <label className="flex items-center gap-2 text-xs">
@@ -2002,160 +2093,150 @@ function PhaseCard({
                 Approve waits for human approval before releasing them.
               </TooltipContent>
             </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <label className="flex items-center gap-2 text-xs">
-                  <span className="text-muted-foreground">Fan-out</span>
-                  <Switch
-                    checked={phase.fanOut}
-                    onCheckedChange={(v) => patchPhase({ fanOut: v })}
-                  />
-                </label>
-              </TooltipTrigger>
-              <TooltipContent>
-                Split this phase into independent sub-tasks. Combine with
-                Sub-process to run the sub-process once per sub-task.
-              </TooltipContent>
-            </Tooltip>
+            {shownKind !== "command" && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <label className="flex items-center gap-2 text-xs">
+                    <span className="text-muted-foreground">Fan-out</span>
+                    <Switch
+                      checked={phase.fanOut}
+                      onCheckedChange={(v) => patchPhase({ fanOut: v })}
+                    />
+                  </label>
+                </TooltipTrigger>
+                <TooltipContent>
+                  Split this phase into independent sub-tasks. Combine with
+                  Sub-process to run the sub-process once per sub-task.
+                </TooltipContent>
+              </Tooltip>
+            )}
             {/* SUB-PROCESS phase (plan 038.1): run another definition as a nested
             run instead of an agent worker. Combinable with fan-out (plan 038.3): a
             phase with both decomposes into sub-tasks and runs the sub-process once
             per child. Only offered when there's a candidate definition to run. */}
-            {subprocessCandidates.length > 0 && (
+            {shownKind !== "command" && (
               <Tooltip>
                 <TooltipTrigger asChild>
                   <label className="flex items-center gap-2 text-xs">
-                    <span className="text-muted-foreground">Sub-process</span>
+                    <span className="text-muted-foreground">Dot-folder</span>
                     <Switch
-                      checked={!!phase.subprocessId}
-                      onCheckedChange={(v) =>
-                        patchPhase({
-                          subprocessId: v ? subprocessCandidates[0].id : null,
-                        })
-                      }
+                      checked={phase.dotFolder}
+                      onCheckedChange={(v) => patchPhase({ dotFolder: v })}
                     />
                   </label>
                 </TooltipTrigger>
                 <TooltipContent>
-                  Run another process definition as a nested run for this phase
-                  (once per fan-out child when fan-out is also on)
+                  {`Steer this phase's agent to write artifacts under a .${phase.key}/ folder`}
                 </TooltipContent>
               </Tooltip>
             )}
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <label className="flex items-center gap-2 text-xs">
-                  <span className="text-muted-foreground">Dot-folder</span>
-                  <Switch
-                    checked={phase.dotFolder}
-                    onCheckedChange={(v) => patchPhase({ dotFolder: v })}
-                  />
-                </label>
-              </TooltipTrigger>
-              <TooltipContent>
-                {`Steer this phase's agent to write artifacts under a .${phase.key}/ folder`}
-              </TooltipContent>
-            </Tooltip>
-            {!phase.fanOut && !phase.subprocessId && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <label className="flex items-center gap-2 text-xs">
-                    <span className="text-muted-foreground">Proof step</span>
-                    <Switch
-                      checked={phase.proofStep ?? false}
-                      onCheckedChange={(v) => patchPhase({ proofStep: v })}
-                    />
-                  </label>
-                </TooltipTrigger>
-                <TooltipContent>
-                  In a Mission Control user story run, this phase records the
-                  verified proof. Ignored by ordinary Process runs.
-                </TooltipContent>
-              </Tooltip>
-            )}
+            {!phase.fanOut &&
+              !phase.subprocessId &&
+              shownKind !== "command" && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <label className="flex items-center gap-2 text-xs">
+                      <span className="text-muted-foreground">Proof step</span>
+                      <Switch
+                        checked={phase.proofStep ?? false}
+                        onCheckedChange={(v) => patchPhase({ proofStep: v })}
+                      />
+                    </label>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    In a Mission Control user story run, this phase records the
+                    verified proof. Ignored by ordinary Process runs.
+                  </TooltipContent>
+                </Tooltip>
+              )}
             {/* Mission Control context scope (plan 106.4): only meaningful for
             a seat-role step; fan-out children always start fresh. Each option
             explains itself in a tooltip to its right, so nothing covers the
             open list. */}
-            {poolRoles.size > 0 && !phase.fanOut && !phase.subprocessId && (
-              <div className="flex items-center gap-2 text-xs">
-                <ContextScopeHelpButton />
-                <span className="-ml-1 text-muted-foreground">Context</span>
-                <Select
-                  value={phase.contextScope ?? "step"}
-                  onValueChange={(v) =>
-                    patchPhase({ contextScope: v as PhaseContextScope })
-                  }
-                  open={scopeListOpen}
-                  onOpenChange={(open) => {
-                    setScopeListOpen(open)
-                    if (open) setScopeHintOpen(false)
-                  }}
-                >
-                  <Tooltip
-                    open={scopeHintOpen && !scopeListOpen}
-                    onOpenChange={(open) =>
-                      setScopeHintOpen(open && !scopeListOpen)
+            {poolRoles.size > 0 &&
+              !phase.fanOut &&
+              !phase.subprocessId &&
+              shownKind !== "command" && (
+                <div className="flex items-center gap-2 text-xs">
+                  <ContextScopeHelpButton />
+                  <span className="-ml-1 text-muted-foreground">Context</span>
+                  <Select
+                    value={phase.contextScope ?? "step"}
+                    onValueChange={(v) =>
+                      patchPhase({ contextScope: v as PhaseContextScope })
                     }
+                    open={scopeListOpen}
+                    onOpenChange={(open) => {
+                      setScopeListOpen(open)
+                      if (open) setScopeHintOpen(false)
+                    }}
                   >
-                    <TooltipTrigger asChild>
-                      <SelectTrigger size="sm" className="text-xs">
-                        <SelectValue />
-                      </SelectTrigger>
-                    </TooltipTrigger>
-                    <TooltipContent side="right" sideOffset={8}>
-                      {CONTEXT_SCOPES[phase.contextScope ?? "step"].help}
-                    </TooltipContent>
-                  </Tooltip>
-                  <SelectContent>
-                    {(Object.keys(CONTEXT_SCOPES) as PhaseContextScope[]).map(
-                      (scope) => (
-                        <Tooltip key={scope}>
-                          <TooltipTrigger asChild>
-                            <SelectItem value={scope}>
-                              {CONTEXT_SCOPES[scope].label}
-                            </SelectItem>
-                          </TooltipTrigger>
-                          <TooltipContent side="right" sideOffset={8}>
-                            {CONTEXT_SCOPES[scope].help}
-                          </TooltipContent>
-                        </Tooltip>
-                      )
-                    )}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
+                    <Tooltip
+                      open={scopeHintOpen && !scopeListOpen}
+                      onOpenChange={(open) =>
+                        setScopeHintOpen(open && !scopeListOpen)
+                      }
+                    >
+                      <TooltipTrigger asChild>
+                        <SelectTrigger size="sm" className="text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                      </TooltipTrigger>
+                      <TooltipContent side="right" sideOffset={8}>
+                        {CONTEXT_SCOPES[phase.contextScope ?? "step"].help}
+                      </TooltipContent>
+                    </Tooltip>
+                    <SelectContent>
+                      {(Object.keys(CONTEXT_SCOPES) as PhaseContextScope[]).map(
+                        (scope) => (
+                          <Tooltip key={scope}>
+                            <TooltipTrigger asChild>
+                              <SelectItem value={scope}>
+                                {CONTEXT_SCOPES[scope].label}
+                              </SelectItem>
+                            </TooltipTrigger>
+                            <TooltipContent side="right" sideOffset={8}>
+                              {CONTEXT_SCOPES[scope].help}
+                            </TooltipContent>
+                          </Tooltip>
+                        )
+                      )}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
             {/* Per-phase VALIDATOR (plan 031.1): a second agent reviews this phase's
             output and sends it back with feedback until it passes, bounded. Not
             offered for a fan-out phase (sub-DAG review is plan 031.2) or a
             sub-process phase (its inner phases carry their own validators, 038.1). */}
-            {!phase.fanOut && !phase.subprocessId && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <label className="flex items-center gap-2 text-xs">
-                    <span className="text-muted-foreground">Validator</span>
-                    <Switch
-                      checked={phase.validator}
-                      onCheckedChange={(v) =>
-                        // Seed a concrete default cap (3) when enabling, so the field never
-                        // sits at the 0 sentinel — the validator is bounded by construction.
-                        patchPhase({
-                          validator: v,
-                          ...(v && phase.validatorMaxIterations < 1
-                            ? { validatorMaxIterations: 3 }
-                            : {}),
-                        })
-                      }
-                    />
-                  </label>
-                </TooltipTrigger>
-                <TooltipContent>
-                  After this phase completes, a second agent reviews its output
-                  and can send it back with feedback (bounded)
-                </TooltipContent>
-              </Tooltip>
-            )}
+            {!phase.fanOut &&
+              !phase.subprocessId &&
+              shownKind !== "command" && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <label className="flex items-center gap-2 text-xs">
+                      <span className="text-muted-foreground">Validator</span>
+                      <Switch
+                        checked={phase.validator}
+                        onCheckedChange={(v) =>
+                          // Seed a concrete default cap (3) when enabling, so the field never
+                          // sits at the 0 sentinel — the validator is bounded by construction.
+                          patchPhase({
+                            validator: v,
+                            ...(v && phase.validatorMaxIterations < 1
+                              ? { validatorMaxIterations: 3 }
+                              : {}),
+                          })
+                        }
+                      />
+                    </label>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    After this phase completes, a second agent reviews its
+                    output and can send it back with feedback (bounded)
+                  </TooltipContent>
+                </Tooltip>
+              )}
             {/* The "Request changes" rework cap (plan 029), only meaningful for an
             approve gate. 0 = unlimited. */}
             {phase.gatePolicy === "approve" &&
@@ -2190,153 +2271,159 @@ function PhaseCard({
 
           {/* Validator config (plan 031.1): the reviewer agent + iteration cap, shown
           only when the validator toggle is on. */}
-          {phase.validator && !phase.fanOut && !phase.subprocessId && (
-            <div className="flex flex-wrap items-center gap-4">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <label className="flex items-center gap-2 text-xs">
-                    <span className="text-muted-foreground">Reviewer</span>
-                    <Combobox
-                      items={filteredReviewerAgentItems}
-                      value={selectedReviewerAgent}
-                      inputValue={reviewerAgentSearchQuery}
-                      isItemEqualToValue={(a, b) => a?.value === b?.value}
-                      onInputValueChange={(next) =>
-                        setReviewerAgentSearchQuery(next)
-                      }
-                      onOpenChange={(open) => {
-                        if (!open) setReviewerAgentSearchQuery("")
-                      }}
-                      onValueChange={(item: { value: string } | null) => {
-                        setReviewerAgentSearchQuery("")
-                        if (!item) return
-                        void patchPhase({
-                          validatorAgent:
-                            item.value === OWN_AGENT ? null : item.value,
-                        })
-                      }}
-                    >
-                      <ComboboxTrigger className="flex h-7 max-w-64 min-w-44 items-center justify-between gap-1 rounded-[min(var(--radius-md),10px)] border border-input bg-transparent px-2.5 text-xs transition-colors hover:bg-accent/50 dark:bg-input/30">
-                        <ComboboxValue>
-                          {(
-                            item: (typeof reviewerAgentItems)[number] | null
-                          ) => (
-                            <span className="truncate">
-                              {item?.label ?? "Phase's own agent"}
-                            </span>
-                          )}
-                        </ComboboxValue>
-                      </ComboboxTrigger>
-                      <ComboboxContent className="w-80 min-w-80">
-                        <ComboboxInput
-                          placeholder="Search reviewer agents…"
-                          showTrigger={false}
-                        />
-                        {reviewerAgentSourceFilters.length > 1 && (
-                          <div className="flex flex-wrap gap-1 border-b border-border/60 p-1">
-                            <Button
-                              type="button"
-                              variant={
-                                !reviewerAgentSourceFilter
-                                  ? "secondary"
-                                  : "ghost"
-                              }
-                              size="xs"
-                              onClick={() => setReviewerAgentSourceFilter(null)}
-                            >
-                              All
-                            </Button>
-                            {reviewerAgentSourceFilters.map((source) => (
+          {phase.validator &&
+            !phase.fanOut &&
+            !phase.subprocessId &&
+            shownKind !== "command" && (
+              <div className="flex flex-wrap items-center gap-4">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <label className="flex items-center gap-2 text-xs">
+                      <span className="text-muted-foreground">Reviewer</span>
+                      <Combobox
+                        items={filteredReviewerAgentItems}
+                        value={selectedReviewerAgent}
+                        inputValue={reviewerAgentSearchQuery}
+                        isItemEqualToValue={(a, b) => a?.value === b?.value}
+                        onInputValueChange={(next) =>
+                          setReviewerAgentSearchQuery(next)
+                        }
+                        onOpenChange={(open) => {
+                          if (!open) setReviewerAgentSearchQuery("")
+                        }}
+                        onValueChange={(item: { value: string } | null) => {
+                          setReviewerAgentSearchQuery("")
+                          if (!item) return
+                          void patchPhase({
+                            validatorAgent:
+                              item.value === OWN_AGENT ? null : item.value,
+                          })
+                        }}
+                      >
+                        <ComboboxTrigger className="flex h-7 max-w-64 min-w-44 items-center justify-between gap-1 rounded-[min(var(--radius-md),10px)] border border-input bg-transparent px-2.5 text-xs transition-colors hover:bg-accent/50 dark:bg-input/30">
+                          <ComboboxValue>
+                            {(
+                              item: (typeof reviewerAgentItems)[number] | null
+                            ) => (
+                              <span className="truncate">
+                                {item?.label ?? "Phase's own agent"}
+                              </span>
+                            )}
+                          </ComboboxValue>
+                        </ComboboxTrigger>
+                        <ComboboxContent className="w-80 min-w-80">
+                          <ComboboxInput
+                            placeholder="Search reviewer agents…"
+                            showTrigger={false}
+                          />
+                          {reviewerAgentSourceFilters.length > 1 && (
+                            <div className="flex flex-wrap gap-1 border-b border-border/60 p-1">
                               <Button
-                                key={source.id}
                                 type="button"
                                 variant={
-                                  reviewerAgentSourceFilter === source.id
+                                  !reviewerAgentSourceFilter
                                     ? "secondary"
                                     : "ghost"
                                 }
                                 size="xs"
                                 onClick={() =>
-                                  setReviewerAgentSourceFilter(source.id)
+                                  setReviewerAgentSourceFilter(null)
                                 }
                               >
-                                {source.label}
+                                All
                               </Button>
-                            ))}
-                          </div>
-                        )}
-                        <ComboboxEmpty>No agents found.</ComboboxEmpty>
-                        <ComboboxList>
-                          {(
-                            item: (typeof filteredReviewerAgentItems)[number]
-                          ) => (
-                            <ComboboxItem key={item.value} value={item}>
-                              <span className="flex min-w-0 flex-col gap-0.5">
-                                <span className="truncate">{item.label}</span>
-                                {(item.description ||
-                                  ("source" in item && item.source)) && (
-                                  <span className="line-clamp-2 text-[10px] text-muted-foreground">
-                                    {[
-                                      item.description,
-                                      "source" in item
-                                        ? item.source
-                                        : undefined,
-                                    ]
-                                      .filter(Boolean)
-                                      .join(" · ")}
-                                  </span>
-                                )}
-                              </span>
-                            </ComboboxItem>
+                              {reviewerAgentSourceFilters.map((source) => (
+                                <Button
+                                  key={source.id}
+                                  type="button"
+                                  variant={
+                                    reviewerAgentSourceFilter === source.id
+                                      ? "secondary"
+                                      : "ghost"
+                                  }
+                                  size="xs"
+                                  onClick={() =>
+                                    setReviewerAgentSourceFilter(source.id)
+                                  }
+                                >
+                                  {source.label}
+                                </Button>
+                              ))}
+                            </div>
                           )}
-                        </ComboboxList>
-                      </ComboboxContent>
-                    </Combobox>
-                  </label>
-                </TooltipTrigger>
-                <TooltipContent>
-                  The agent that reviews this phase&apos;s output. Defaults to
-                  the phase&apos;s own first pool agent.
-                </TooltipContent>
-              </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <label className="flex items-center gap-2 text-xs">
-                    <span className="text-muted-foreground">
-                      Max iterations
-                    </span>
-                    <Input
-                      type="number"
-                      min={1}
-                      className="h-7 w-16 text-xs"
-                      // A legacy 0 (the engine's "use default" sentinel) reads as 3 here so
-                      // the control never shows 0; the floor is 1 (never zero reviews).
-                      value={
-                        phase.validatorMaxIterations < 1
-                          ? 3
-                          : phase.validatorMaxIterations
-                      }
-                      onChange={(e) => {
-                        const n = Math.max(
-                          1,
-                          Math.floor(Number(e.target.value) || 1)
-                        )
-                        patchPhase({ validatorMaxIterations: n })
-                      }}
-                    />
-                  </label>
-                </TooltipTrigger>
-                <TooltipContent>
-                  Max validator review rounds before escalating to a human gate
-                </TooltipContent>
-              </Tooltip>
-            </div>
-          )}
+                          <ComboboxEmpty>No agents found.</ComboboxEmpty>
+                          <ComboboxList>
+                            {(
+                              item: (typeof filteredReviewerAgentItems)[number]
+                            ) => (
+                              <ComboboxItem key={item.value} value={item}>
+                                <span className="flex min-w-0 flex-col gap-0.5">
+                                  <span className="truncate">{item.label}</span>
+                                  {(item.description ||
+                                    ("source" in item && item.source)) && (
+                                    <span className="line-clamp-2 text-[10px] text-muted-foreground">
+                                      {[
+                                        item.description,
+                                        "source" in item
+                                          ? item.source
+                                          : undefined,
+                                      ]
+                                        .filter(Boolean)
+                                        .join(" · ")}
+                                    </span>
+                                  )}
+                                </span>
+                              </ComboboxItem>
+                            )}
+                          </ComboboxList>
+                        </ComboboxContent>
+                      </Combobox>
+                    </label>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    The agent that reviews this phase&apos;s output. Defaults to
+                    the phase&apos;s own first pool agent.
+                  </TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <label className="flex items-center gap-2 text-xs">
+                      <span className="text-muted-foreground">
+                        Max iterations
+                      </span>
+                      <Input
+                        type="number"
+                        min={1}
+                        className="h-7 w-16 text-xs"
+                        // A legacy 0 (the engine's "use default" sentinel) reads as 3 here so
+                        // the control never shows 0; the floor is 1 (never zero reviews).
+                        value={
+                          phase.validatorMaxIterations < 1
+                            ? 3
+                            : phase.validatorMaxIterations
+                        }
+                        onChange={(e) => {
+                          const n = Math.max(
+                            1,
+                            Math.floor(Number(e.target.value) || 1)
+                          )
+                          patchPhase({ validatorMaxIterations: n })
+                        }}
+                      />
+                    </label>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    Max validator review rounds before escalating to a human
+                    gate
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+            )}
 
           {/* Sub-process config (plan 038.1): the definition this phase runs as a
           nested run, shown only when the sub-process toggle is on. Self is filtered
           out; the repo hard-rejects a cyclic pick (surfaced via the patch toast). */}
-          {phase.subprocessId && (
+          {phase.subprocessId && shownKind !== "command" && (
             <div className="flex flex-col gap-1.5">
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -2379,7 +2466,7 @@ function PhaseCard({
           {/* Row 3: agent pool. Hidden for a PURE sub-process phase (no worker to
           pool). A combined fan-out + sub-process phase (plan 038.3) still needs the
           pool for its decomposition pass, so show it when fan-out is on. */}
-          {(!phase.subprocessId || phase.fanOut) && (
+          {(!phase.subprocessId || phase.fanOut) && shownKind !== "command" && (
             <div className="flex flex-col gap-1.5">
               <span className="text-xs text-muted-foreground">
                 Agent pool
@@ -2616,6 +2703,7 @@ function PhaseCard({
           )}
         </div>
       </CollapsibleContent>
+      {confirmDiscardDialog}
     </Collapsible>
   )
 }
@@ -2835,6 +2923,10 @@ export function RunMonitor({
           })
           void refetchRef.current()
           setRefreshTick((t) => t + 1)
+        } else if (ev.type === "process_command_output") {
+          // A command phase's live output (plan 104): re-read its receipt.
+          void refetchRef.current()
+          setRefreshTick((t) => t + 1)
         } else if (
           ev.type === "status_change" ||
           ev.type === "task_completed" ||
@@ -2904,6 +2996,15 @@ export function RunMonitor({
   const phaseIsSubProcess = useCallback(
     (phaseId: string) =>
       !!graph?.phases.find((p) => p.id === phaseId)?.subprocessId,
+    [graph]
+  )
+
+  // The command phase (plan 104) for a phase id, or undefined for other kinds.
+  const commandPhase = useCallback(
+    (phaseId: string) => {
+      const phase = graph?.phases.find((p) => p.id === phaseId)
+      return phase?.kind === "command" ? phase : undefined
+    },
     [graph]
   )
 
@@ -3134,6 +3235,7 @@ export function RunMonitor({
           </p>
         )}
         <NewRunModal
+          processId={definition.id}
           open={newRunOpen}
           onOpenChange={setNewRunOpen}
           providerModels={providerModels}
@@ -3233,6 +3335,7 @@ export function RunMonitor({
       </div>
 
       <NewRunModal
+        processId={definition.id}
         open={newRunOpen}
         onOpenChange={setNewRunOpen}
         providerModels={providerModels}
@@ -3290,6 +3393,8 @@ export function RunMonitor({
               childrenAreSubProcess={
                 phaseIsSubProcess(pr.phaseId) && phaseIsContainer(pr.phaseId)
               }
+              commandPhase={commandPhase(pr.phaseId)}
+              resolvedCommand={run?.commandSnapshot?.[pr.phaseId] ?? null}
               refreshTick={refreshTick}
               workspacePath={workspacePath}
               onApprove={approve}
@@ -3402,6 +3507,8 @@ function PhaseRunItem({
   isContainer,
   isSubProcess,
   childrenAreSubProcess,
+  commandPhase,
+  resolvedCommand,
   refreshTick,
   workspacePath,
   onApprove,
@@ -3440,6 +3547,11 @@ function PhaseRunItem({
   // Whether this phase's CHILDREN each run a sub-process (a combined fan-out +
   // sub-process phase, plan 038.3): each child row gets its own nested-run block.
   childrenAreSubProcess: boolean
+  // Set when this is a deterministic command phase (plan 104): the row shows
+  // its command and receipt instead of an agent.
+  commandPhase?: ProcessPhase
+  // Its command as frozen on the run at start (null until resolved).
+  resolvedCommand?: ResolvedProcessCommand | null
   // Bumped on every live task event so the nested sub-process view re-fetches as
   // its child phases progress (plan 038.1).
   refreshTick: number
@@ -3485,7 +3597,9 @@ function PhaseRunItem({
       >
         <StatusIcon status={displayStatus} />
         <span className="min-w-0 flex-1 truncate font-medium">{name}</span>
-        {phaseRun.seatAddress ? (
+        {commandPhase ? (
+          <CommandBadge config={commandPhase.commandConfig} />
+        ) : phaseRun.seatAddress ? (
           <Tooltip>
             <TooltipTrigger asChild>
               <Badge variant="outline" className="h-5 gap-1 text-[10px]">
@@ -3509,6 +3623,14 @@ function PhaseRunItem({
         />
       </div>
 
+      {commandPhase && (
+        <CommandReceiptView
+          config={commandPhase.commandConfig}
+          resolved={resolvedCommand}
+          receipt={phaseRun.commandReceipt}
+          status={phaseRun.status}
+        />
+      )}
       <PhaseCompletionEvidence receipt={phaseRun.completionReceipt} />
       {phaseRun.failure && (
         <div className="flex flex-wrap gap-1.5 text-xs text-muted-foreground">
@@ -4984,11 +5106,13 @@ function FlagCard({
 // an objective + a REQUIRED working directory (a run's phase workers fail closed
 // without a cwd — plan 026). Mirrors project-dialog.tsx's folder-picker pattern.
 function NewRunModal({
+  processId,
   open,
   onOpenChange,
   providerModels,
   onRun,
 }: {
+  processId: string
   open: boolean
   onOpenChange: (open: boolean) => void
   providerModels: AccountWithModels[]
@@ -5003,6 +5127,8 @@ function NewRunModal({
   const [runtimeConfig, setRuntimeConfig] =
     useState<ProcessRuntimeConfig | null>(null)
   const [starting, setStarting] = useState(false)
+  // Every workspace check the process runs is defined for the folder (plan 104).
+  const [checksReady, setChecksReady] = useState(false)
 
   // Reset the form whenever the modal opens, so a reopen starts clean.
   useEffect(() => {
@@ -5032,7 +5158,7 @@ function NewRunModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex h-[calc(100vh-10rem)] max-h-[calc(100vh-3rem)] flex-col overflow-y-auto sm:max-w-2xl">
+      <DialogContent className="flex h-[calc(100vh-10rem)] max-h-[calc(100vh-3rem)] flex-col overflow-hidden sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>New run</DialogTitle>
           <DialogDescription>
@@ -5040,8 +5166,15 @@ function NewRunModal({
             project from scratch, or an existing codebase to modify.
           </DialogDescription>
         </DialogHeader>
-        <div className="flex min-h-0 flex-1 flex-col gap-3">
-          <div className="flex min-h-0 flex-1 flex-col gap-1.5">
+        {/* The body scrolls between the pinned header and footer: workspace
+            checks, environment setup, and Try it output can be taller than
+            the dialog. The objective fills spare room but keeps a usable
+            height when the rest needs the space. */}
+        <div
+          className="-mx-1 flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-1"
+          data-testid="new-run-body"
+        >
+          <div className="flex min-h-40 flex-1 flex-col gap-1.5">
             <label className="text-xs font-medium text-muted-foreground">
               Objective
             </label>
@@ -5097,6 +5230,13 @@ function NewRunModal({
               </Button>
             )}
           </div>
+          {folder && open && (
+            <RunChecksPanel
+              processId={processId}
+              workspacePath={folder}
+              onReadyChange={setChecksReady}
+            />
+          )}
           {providerModels.length > 0 && (
             <div className="flex flex-col gap-1.5">
               <RuntimePicker
@@ -5127,7 +5267,7 @@ function NewRunModal({
           <Button
             type="button"
             onClick={run}
-            disabled={starting || !folder.trim()}
+            disabled={starting || !folder.trim() || !checksReady}
           >
             <Play className="size-4" />
             {starting ? "Starting…" : "Run"}

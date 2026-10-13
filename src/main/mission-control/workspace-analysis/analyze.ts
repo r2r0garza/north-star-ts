@@ -37,6 +37,8 @@ import {
   installsEditable,
   RECIPES,
   venvDir,
+  venvPython,
+  type EnvState,
   type ProbeDef,
   type ProbeOutcome,
   type Recipe,
@@ -1596,4 +1598,177 @@ async function setupExcerpts(
     add(f, scripts ?? null, 1500)
   }
   return out.slice(0, 14)
+}
+
+// ── Environment facts (plan 104) ─────────────────────────────────────────────
+// What a command needs to know to run this workspace's tools: each project's
+// environment, whether it exists, the interpreter it provides, and the setup
+// that creates it. The same recipes as the full analysis, without Git, the
+// ignored-file scan, toolchains, or findings, so it's quick enough to read
+// when someone defines a workspace check.
+
+const PYTHON_ECOSYSTEMS = new Set<EcosystemId>([
+  "uv",
+  "poetry",
+  "pipenv",
+  "pip",
+])
+const MAX_FACT_ROOTS = 8
+// Test runners worth naming, found in a venv's site-packages.
+const PYTHON_TOOLS = ["pytest", "nox", "tox"]
+
+export interface EnvironmentFact {
+  // Workspace-relative project root; "" is the workspace root.
+  root: string
+  ecosystem: EcosystemId
+  manager: string
+  // "Python environment", "JavaScript dependencies", …
+  noun: string
+  // `none`: the ecosystem keeps dependencies outside the project.
+  status: "ready" | "missing" | "stale" | "none"
+  evidence: string
+  // Workspace-relative path to the project's own interpreter, when it has one
+  // in the workspace (a venv's python). Commands should call it by path:
+  // nothing is activated.
+  interpreter: string | null
+  // The manager's own runner (`uv run`, `poetry run`, `pipenv run`): works
+  // wherever the manager keeps its environment, inside the project or not.
+  runner: string | null
+  // Notable tools installed in that environment (e.g. pytest).
+  tools: string[]
+  // Commands that create or refresh the environment, in order.
+  setup: CommandSpec[]
+}
+
+export async function environmentFacts(
+  workspace: string,
+  platform: NodeJS.Platform = process.platform
+): Promise<EnvironmentFact[]> {
+  await warmShellPath()
+  const inventory = await detectProjects(
+    walk(workspace, MAX_FILES),
+    reader(workspace)
+  )
+  const facts: EnvironmentFact[] = []
+  for (const root of inventory.roots.slice(0, MAX_FACT_ROOTS)) {
+    const ctx: RecipeContext = {
+      root,
+      rootAbs: path.join(workspace, root.dir),
+      workspaceAbs: workspace,
+      ignored: [],
+      platform,
+    }
+    if (root.ecosystems.some((id) => PYTHON_ECOSYSTEMS.has(id))) {
+      const pin = inventory.pins.find(
+        (p) =>
+          p.tool === "python" &&
+          p.kind === "range" &&
+          p.file === path.posix.join(root.dir, "pyproject.toml")
+      )
+      ctx.requiresPython = pin?.required ?? null
+      ctx.python = await choosePython(ctx.requiresPython, ctx.rootAbs)
+    }
+    for (const id of root.ecosystems) {
+      if (APPLE_ONLY.has(id) && platform !== "darwin") continue
+      const recipe = RECIPES[id]
+      let state = recipe.envState?.(ctx) ?? null
+      let interpreter: string | null = null
+      let tools: string[] = []
+      if (PYTHON_ECOSYSTEMS.has(id) && state?.present) {
+        const venv = venvDir(ctx)
+        interpreter = path.posix.join(
+          root.dir,
+          venvPython(venv, platform).replace(/\\/g, "/")
+        )
+        tools = installedPythonTools(path.join(ctx.rootAbs, venv))
+      } else if (id === "poetry" || id === "pipenv") {
+        // Poetry and Pipenv keep their environment outside the project by
+        // default: ask the manager where it is (read-only).
+        const external = await externalPythonEnv(id, ctx.rootAbs)
+        state = external.state
+        if (external.path) tools = installedPythonTools(external.path)
+      }
+      facts.push({
+        root: root.dir,
+        ecosystem: id,
+        manager: ECOSYSTEM_INFO[id].manager,
+        noun: ENV_NOUN[id] ?? `${ECOSYSTEM_INFO[id].manager} setup`,
+        status: !state
+          ? "none"
+          : !state.present
+            ? "missing"
+            : state.staleAgainst
+              ? "stale"
+              : "ready",
+        evidence: state
+          ? state.staleAgainst
+            ? `${state.evidence}, but ${state.staleAgainst} changed since`
+            : state.evidence
+          : "Dependencies live outside the project",
+        interpreter,
+        runner: PYTHON_RUNNERS[id] ?? null,
+        tools,
+        setup: inWorkspace(root.dir, recipe.setup(ctx, "main")),
+      })
+    }
+  }
+  return facts
+}
+
+const PYTHON_RUNNERS: Partial<Record<EcosystemId, string>> = {
+  uv: "uv run",
+  poetry: "poetry run",
+  pipenv: "pipenv run",
+}
+
+async function externalPythonEnv(
+  id: "poetry" | "pipenv",
+  rootAbs: string
+): Promise<{ state: EnvState; path: string | null }> {
+  const label = id === "poetry" ? "Poetry" : "Pipenv"
+  const result =
+    id === "poetry"
+      ? await run("poetry", ["env", "info", "--path"], {
+          cwd: rootAbs,
+          timeoutMs: 15_000,
+        })
+      : await run("pipenv", ["--venv"], { cwd: rootAbs, timeoutMs: 15_000 })
+  if (result.missing)
+    return {
+      state: { present: false, evidence: `${label} isn't installed` },
+      path: null,
+    }
+  const envPath = result.stdout.trim().split("\n").pop()?.trim() ?? ""
+  if (!result.ok || !envPath || !existsSync(envPath))
+    return {
+      state: {
+        present: false,
+        evidence: `${label} has no environment for it yet`,
+      },
+      path: null,
+    }
+  return {
+    state: { present: true, evidence: `${label} environment at ${envPath}` },
+    path: envPath,
+  }
+}
+
+function installedPythonTools(venv: string): string[] {
+  const sitePackages: string[] = []
+  try {
+    for (const lib of ["lib", "Lib"]) {
+      const libDir = path.join(venv, lib)
+      if (!existsSync(libDir)) continue
+      if (lib === "Lib") sitePackages.push(path.join(libDir, "site-packages"))
+      else
+        for (const entry of readdirSync(libDir))
+          if (entry.startsWith("python"))
+            sitePackages.push(path.join(libDir, entry, "site-packages"))
+    }
+  } catch {
+    return []
+  }
+  return PYTHON_TOOLS.filter((tool) =>
+    sitePackages.some((dir) => existsSync(path.join(dir, tool)))
+  )
 }

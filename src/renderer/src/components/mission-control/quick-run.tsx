@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { RuntimePicker, nextRuntimeConfig } from "@/components/process-screen"
+import { RunChecksPanel } from "@/components/process-command-phase"
 import type {
   AccountWithModels,
   AgentSummary,
@@ -73,6 +74,8 @@ export function QuickRunDialog({
   const [roles, setRoles] = useState<string[] | null>(null)
   const [roleAgents, setRoleAgents] = useState<Record<string, string>>({})
   const [starting, setStarting] = useState(false)
+  // Every workspace check the definition runs is defined for the folder.
+  const [checksReady, setChecksReady] = useState(false)
 
   // User story playbooks first (their run hook), then every other definition.
   const playbookOptions = useMemo(
@@ -140,7 +143,11 @@ export function QuickRunDialog({
 
   const missingRole = (roles ?? []).some((role) => !roleAgents[role])
   const canStart =
-    !!processId && !!folder.trim() && roles !== null && !missingRole
+    !!processId &&
+    !!folder.trim() &&
+    roles !== null &&
+    !missingRole &&
+    checksReady
 
   async function pickFolder() {
     const picked = await window.cowork.pickWorkspace()
@@ -170,7 +177,7 @@ export function QuickRunDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="flex max-h-[calc(100vh-3rem)] flex-col overflow-hidden sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Quick run</DialogTitle>
           <DialogDescription>
@@ -178,7 +185,12 @@ export function QuickRunDialog({
             It shows in History while it runs.
           </DialogDescription>
         </DialogHeader>
-        <div className="flex flex-col gap-4">
+        {/* Scrolls between the pinned header and footer: workspace checks,
+            environment setup, and Try it output can outgrow the window. */}
+        <div
+          className="-mx-1 flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-1"
+          data-testid="quick-run-body"
+        >
           <div className="flex flex-col gap-1.5">
             <Label>Playbook or process</Label>
             <Select value={processId} onValueChange={setProcessId}>
@@ -305,6 +317,13 @@ export function QuickRunDialog({
                 </div>
               ))}
             </div>
+          )}
+          {processId && folder && open && (
+            <RunChecksPanel
+              processId={processId}
+              workspacePath={folder}
+              onReadyChange={setChecksReady}
+            />
           )}
           {providers.length > 0 && (
             <div className="flex flex-col gap-1.5">

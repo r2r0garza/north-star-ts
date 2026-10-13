@@ -39,6 +39,10 @@ import type {
   ProcessPhaseAttempt,
   ProcessPhaseRun,
   ProcessRuntimeConfig,
+  ProcessCommandConfig,
+  ProcessPhaseKind,
+  WorkspaceCheck,
+  WorkspaceChecks,
   ProcessRunStatus,
   PhaseRunStatus,
   PhaseRouting,
@@ -178,6 +182,9 @@ import type {
   ProcessImportResult,
   ProcessRunIncidentExport,
 } from "../main/process/io"
+import type { EnvironmentFact } from "../main/mission-control/workspace-analysis/analyze"
+import type { EnvironmentSetupRun } from "../main/process/environment-setup"
+import type { CommandTrial } from "../main/process/try-command"
 
 // Streaming events emitted during a chat turn (mirrors ChatEvent in the agent).
 export type ChatEvent =
@@ -258,6 +265,14 @@ export type RunnerLifecycleEvent =
       // "validator" use the generic approve card; "flag" uses the rework card.
       gateKind?: "phase" | "validator" | "flag"
       failure?: FailureContext | null
+    }
+  // A command phase's output advanced (plan 104). Live tail only (not stored):
+  // re-read the phase-run's bounded receipt.
+  | {
+      type: "process_command_output"
+      runId: string
+      phaseRunId: string
+      phaseKey: string
     }
 
 // The full event vocabulary a task emits, live or replayed from task_events.
@@ -376,6 +391,8 @@ function releaseTaskSubscription(): void {
 // The typed API exposed to the renderer as `window.cowork`.
 // This is the ONLY surface the UI can use to reach the main process.
 const api = {
+  saveFileLink: (conversationId: string, href: string) =>
+    ipcRenderer.invoke("files:save-link", conversationId, href) as Promise<string>,
   subagents: {
     artifacts: (workspace?: string) =>
       ipcRenderer.invoke("subagents:artifacts", workspace) as Promise<
@@ -562,6 +579,69 @@ const api = {
       workspacePath?: string | null
       runtimeConfig?: ProcessRuntimeConfig | null
     }) => ipcRenderer.invoke("process:startRun", input) as Promise<ProcessRun>,
+    // Ask AI for a command phase (plan 104): an inert proposal to review.
+    draftCommand: (
+      input: { instruction?: string | null } & (
+        | { phaseId: string }
+        | { check: string; processId?: string | null; workspacePath: string }
+      )
+    ) =>
+      ipcRenderer.invoke("process:draftCommand", input) as Promise<{
+        command: string
+        cwd: string | null
+        rationale: string
+      }>,
+    // Workspace checks (plan 104): what a process needs defined in a
+    // workspace, and defining (or, with null, removing) one.
+    checkStatus: (input: { processId: string; workspacePath: string }) =>
+      ipcRenderer.invoke("process:checkStatus", input) as Promise<{
+        required: string[]
+        missing: string[]
+        checks: WorkspaceChecks
+      }>,
+    // Try it (plan 104): run a check's command once and follow its output.
+    tryCheck: (input: {
+      workspacePath: string
+      check: WorkspaceCheck
+      timeoutMs?: number
+    }) =>
+      ipcRenderer.invoke("process:tryCheck", input) as Promise<CommandTrial>,
+    checkTrialStatus: (id: string) =>
+      ipcRenderer.invoke(
+        "process:checkTrialStatus",
+        id
+      ) as Promise<CommandTrial | null>,
+    cancelCheckTrial: (id: string) =>
+      ipcRenderer.invoke("process:cancelCheckTrial", id) as Promise<void>,
+    // A workspace's project environments, and setting them up (plan 104).
+    workspaceEnvironment: (input: { workspacePath: string }) =>
+      ipcRenderer.invoke("process:workspaceEnvironment", input) as Promise<
+        EnvironmentFact[]
+      >,
+    startEnvironmentSetup: (input: { workspacePath: string }) =>
+      ipcRenderer.invoke(
+        "process:startEnvironmentSetup",
+        input
+      ) as Promise<EnvironmentSetupRun>,
+    environmentSetupStatus: (runId: string) =>
+      ipcRenderer.invoke(
+        "process:environmentSetupStatus",
+        runId
+      ) as Promise<EnvironmentSetupRun | null>,
+    cancelEnvironmentSetup: (runId: string) =>
+      ipcRenderer.invoke(
+        "process:cancelEnvironmentSetup",
+        runId
+      ) as Promise<void>,
+    setWorkspaceCheck: (input: {
+      workspacePath: string
+      name: string
+      check: WorkspaceCheck | null
+    }) =>
+      ipcRenderer.invoke(
+        "process:setWorkspaceCheck",
+        input
+      ) as Promise<Workspace>,
     // Quick run (plan 106.9): the seat roles a definition needs bound, and a
     // run with no feature whose roles bind to the picked agents (role → ref).
     quickRunRoles: (processId: string) =>
@@ -2028,6 +2108,7 @@ const api = {
           name?: string
           generatedFiles?: GeneratedFilesRule[]
           worktreeSetup?: WorktreeSetup
+          commandChecks?: WorkspaceChecks
         }
       ) =>
         ipcRenderer.invoke(
@@ -2172,6 +2253,8 @@ const api = {
           validatorAgent?: string | null
           subprocessId?: string | null
           runtimeConfig?: ProcessRuntimeConfig | null
+          kind?: ProcessPhaseKind
+          commandConfig?: ProcessCommandConfig | null
           position: number
         }) =>
           ipcRenderer.invoke(
@@ -2200,6 +2283,8 @@ const api = {
             proofStep?: boolean
             contextScope?: PhaseContextScope
             runtimeConfig?: ProcessRuntimeConfig | null
+            kind?: ProcessPhaseKind
+            commandConfig?: ProcessCommandConfig | null
             position?: number
           }
         ) =>
@@ -2858,6 +2943,13 @@ export type {
   ProcessPhaseAttempt,
   ProcessPhaseRun,
   ProcessRuntimeConfig,
+  ProcessCommandConfig,
+  ProcessCommandReceipt,
+  ProcessCommandStatus,
+  ProcessPhaseKind,
+  ResolvedProcessCommand,
+  WorkspaceCheck,
+  WorkspaceChecks,
   ProcessRuntimeSelection,
   ProcessRuntimeSlot,
   ProcessRuntimeSnapshot,
@@ -2966,6 +3058,7 @@ export type {
   ProcessImportResult,
   ProcessRunIncidentExport,
 } from "../main/process/io"
+export type { EnvironmentFact, EnvironmentSetupRun, CommandTrial }
 // Re-export the ask_user_question types so the renderer can type the panel.
 export type {
   Question,

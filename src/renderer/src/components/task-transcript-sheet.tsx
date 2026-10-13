@@ -154,7 +154,10 @@ export function TaskTranscriptSheet({
                         )}
                       >
                         {item.role === "assistant" ? (
-                          <Markdown content={item.content} />
+                          <Markdown
+                            content={item.content}
+                            conversationId={task?.conversationId}
+                          />
                         ) : (
                           item.content
                         )}

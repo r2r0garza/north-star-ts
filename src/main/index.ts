@@ -12,6 +12,7 @@ import { existsSync } from "fs"
 import { config as loadEnv } from "dotenv"
 import { missionControlEnabled } from "./config/feature-flags"
 import { readMessageMedia } from "./media/tool-media"
+import { saveFileLink } from "./files/save-link"
 
 // Load .env.local before anything reads process.env. Provider API keys are
 // configured by the user in Settings and stored per provider account, encrypted
@@ -129,6 +130,9 @@ import { IndexWatcher } from "./index/watcher"
 import { SummaryService, SUMMARIZE_KIND } from "./summaries/service"
 import { ProcessService, PROCESS_RUN_KIND } from "./tasks/process/service"
 import { registerProcessHandlers } from "./ipc/process-handlers"
+import { EnvironmentSetupService } from "./process/environment-setup"
+import { CommandTrialService } from "./process/try-command"
+import { productionCommandDeps } from "./tasks/process/command-executor-deps"
 import { UserStoryRunner } from "./mission-control/user-story-runner"
 import { MilestoneIntegration } from "./mission-control/integration"
 import {
@@ -588,7 +592,7 @@ function createWindow(): void {
 
   // Open external links in the user's browser, not inside the app window.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url)
+    if (/^(https?:|mailto:)/i.test(url)) void shell.openExternal(url)
     return { action: "deny" }
   })
 
@@ -632,6 +636,23 @@ ipcMain.handle(
     } catch {
       return { error: "Image unavailable." }
     }
+  }
+)
+
+ipcMain.handle(
+  "files:save-link",
+  async (event, conversationId: unknown, href: unknown) => {
+    const contents = mainWindow?.webContents
+    if (
+      !contents ||
+      event.sender !== contents ||
+      event.senderFrame !== contents.mainFrame ||
+      typeof conversationId !== "string" ||
+      typeof href !== "string"
+    ) {
+      throw new Error("Invalid file download request.")
+    }
+    return saveFileLink(conversationId, href)
   }
 )
 
@@ -1712,7 +1733,12 @@ app.whenReady().then(async () => {
   await taskRunner.start()
   taskReportBack.start()
   registerTaskHandlers(taskRunner)
-  registerProcessHandlers(taskRunner, processService)
+  registerProcessHandlers(
+    taskRunner,
+    processService,
+    new EnvironmentSetupService(terminalService),
+    new CommandTrialService(() => productionCommandDeps())
+  )
   registerIndexHandlers(taskRunner, indexService, indexWatcher)
   registerDashboardHandlers(taskRunner, dashboardService)
   registerMissionControlHandlers(

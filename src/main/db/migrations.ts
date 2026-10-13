@@ -75,6 +75,29 @@ function ensureProviderImageInputColumn(db: Database.Database): void {
   )
 }
 
+// v69: deterministic command phases (plan 104). An explicit execution kind on
+// each phase (existing sub-process phases backfill as `subprocess`), the
+// persisted command config, the run-side execution receipt and frozen command
+// snapshot, and each workspace's named checks.
+function ensureProcessCommandPhases(db: Database.Database): void {
+  if (!tableExists(db, "process_phases")) return
+  const hadKind = columnExists(db, "process_phases", "kind")
+  addColumnIfMissing(
+    db,
+    "process_phases",
+    "kind",
+    "TEXT NOT NULL DEFAULT 'agent' CHECK (kind IN ('agent','command','subprocess'))"
+  )
+  addColumnIfMissing(db, "process_phases", "command_config", "TEXT")
+  addColumnIfMissing(db, "process_phase_runs", "command_receipt", "TEXT")
+  addColumnIfMissing(db, "process_runs", "command_snapshot", "TEXT")
+  addColumnIfMissing(db, "workspaces", "command_checks", "TEXT")
+  if (!hadKind)
+    db.exec(
+      "UPDATE process_phases SET kind = 'subprocess' WHERE subprocess_id IS NOT NULL"
+    )
+}
+
 function ensureToolMedia(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS tool_media (
     id TEXT PRIMARY KEY,
@@ -167,6 +190,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureNativeAssistantColumn,
   ensureToolMedia,
   ensureProviderImageInputColumn,
+  ensureProcessCommandPhases,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -637,6 +661,7 @@ export function runMigrations(
       ensureWorkingDirectoryColumns(db)
       ensureNativeAssistantColumn(db)
       ensureToolMedia(db)
+      ensureProcessCommandPhases(db)
       // After ensureSubscriptionProviderConstraints: its V65 table rebuild
       // predates this column and would drop it.
       ensureProviderImageInputColumn(db)

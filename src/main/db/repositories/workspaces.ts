@@ -1,6 +1,13 @@
 import { randomUUID } from "crypto"
 import { getDb } from "../connection"
+import {
+  normalizeWorkspaceChecks,
+  parseCheckName,
+  parseWorkspaceCheck,
+} from "../../../shared/process-command"
 import type {
+  WorkspaceCheck,
+  WorkspaceChecks,
   GeneratedFilesRule,
   Workspace,
   WorktreeSetup,
@@ -13,6 +20,7 @@ interface WorkspaceRow {
   name: string | null
   generated_files: string | null
   worktree_setup: string | null
+  command_checks: string | null
   created_at: number
   updated_at: number
 }
@@ -24,8 +32,17 @@ function toWorkspace(row: WorkspaceRow): Workspace {
     name: row.name,
     generatedFiles: parseGeneratedFiles(row.generated_files),
     worktreeSetup: parseWorktreeSetup(row.worktree_setup),
+    commandChecks: parseCommandChecks(row.command_checks),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  }
+}
+
+function parseCommandChecks(value: string | null): WorkspaceChecks {
+  try {
+    return normalizeWorkspaceChecks(JSON.parse(value ?? "{}"))
+  } catch {
+    return {}
   }
 }
 
@@ -131,7 +148,8 @@ export function normalizeWorktreeSetup(value: unknown): WorktreeSetup {
             .map((c) => ({ label: c.label || c.command, command: c.command }))
         : []
     const shared = item.kind === "python-shared-venv"
-    const venv = shared && typeof item.venv === "string" ? relativePath(item.venv) : null
+    const venv =
+      shared && typeof item.venv === "string" ? relativePath(item.venv) : null
     steps.push({
       id,
       label,
@@ -227,9 +245,21 @@ export function updateWorkspace(
     name?: string
     generatedFiles?: GeneratedFilesRule[]
     worktreeSetup?: WorktreeSetup
+    commandChecks?: WorkspaceChecks
   }
 ): Workspace {
   const now = Date.now()
+  if (patch.commandChecks !== undefined) {
+    // Validate every entry: a malformed check is an error here, not dropped.
+    const checks: WorkspaceChecks = {}
+    for (const [name, check] of Object.entries(patch.commandChecks))
+      checks[parseCheckName(name)] = parseWorkspaceCheck(check, name)
+    getDb()
+      .prepare(
+        "UPDATE workspaces SET command_checks = ?, updated_at = ? WHERE id = ?"
+      )
+      .run(JSON.stringify(checks), now, id)
+  }
   if (patch.name !== undefined) {
     getDb()
       .prepare("UPDATE workspaces SET name = ?, updated_at = ? WHERE id = ?")
@@ -254,6 +284,21 @@ export function updateWorkspace(
       .run(JSON.stringify(normalizeWorktreeSetup(patch.worktreeSetup)), now, id)
   }
   return getWorkspace(id)!
+}
+
+// Define (or, with null, remove) one named check on a workspace (plan 104).
+export function setWorkspaceCheck(
+  id: string,
+  name: string,
+  check: WorkspaceCheck | null
+): Workspace {
+  const workspace = getWorkspace(id)
+  if (!workspace) throw new Error("Workspace not found")
+  const key = parseCheckName(name)
+  const next = { ...workspace.commandChecks }
+  if (check) next[key] = parseWorkspaceCheck(check, key)
+  else delete next[key]
+  return updateWorkspace(id, { commandChecks: next })
 }
 
 export function deleteWorkspace(id: string): void {

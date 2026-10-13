@@ -12,6 +12,13 @@ import type {
 } from "../../shared/mission-control/plan-changes"
 import type { UserStoryNarrative } from "../../shared/mission-control/story"
 import type { OverlapPolicy } from "../../shared/mission-control/waves"
+import type {
+  ProcessCommandConfig,
+  ProcessCommandReceipt,
+  ProcessPhaseKind,
+  ResolvedProcessCommand,
+  WorkspaceChecks,
+} from "../../shared/process-command"
 
 // A conversation's view/mode. One per view: Chat / Interactive / North Star.
 export type Mode = "chat" | "interactive" | "north_star"
@@ -102,6 +109,9 @@ export interface Workspace {
   name: string | null
   generatedFiles: GeneratedFilesRule[]
   worktreeSetup: WorktreeSetup
+  // What each named check runs here (plan 104): command phases name a check,
+  // so one process works across workspaces. No defaults.
+  commandChecks: WorkspaceChecks
   createdAt: number
   updatedAt: number
 }
@@ -286,6 +296,8 @@ export type FailureStage =
   | "decomposition"
   | "reviewer"
   | "subprocess"
+  // A deterministic command phase's execution (plan 104).
+  | "command"
   | "scheduler"
 
 export interface FailureContext {
@@ -1090,9 +1102,24 @@ export type ProcessRuntimeSnapshot = Partial<
   Record<ProcessRuntimeSlot, ProcessRuntimeSnapshotSelection>
 >
 
+export type {
+  ProcessPhaseKind,
+  ProcessCommandConfig,
+  ProcessCommandReceipt,
+  ProcessCommandStatus,
+  ResolvedProcessCommand,
+  WorkspaceCheck,
+  WorkspaceChecks,
+} from "../../shared/process-command"
+
 export interface ProcessPhase {
   // Omitted only in pre-contract in-memory callers; persisted rows are explicit.
   completionContract?: PhaseCompletionContract
+  // How the phase executes (plan 104). Persisted rows are explicit; in-memory
+  // callers that omit it mean `agent` (or `subprocess` when subprocessId is set).
+  kind?: ProcessPhaseKind
+  // The persisted command a `command` phase runs. Null for other kinds.
+  commandConfig?: ProcessCommandConfig | null
   id: string
   processId: string
   key: string
@@ -1194,6 +1221,11 @@ export interface ProcessRun {
   // at run start, and the container this run executes for. Null for Processes.
   seatBindings?: SeatBindingsSnapshot | null
   missionControl?: MissionControlRunLink | null
+  // The exact command each command phase runs (plan 104), keyed by phase id:
+  // resolved against the workspace's checks when the run is first driven and
+  // frozen, so editing a check or the definition mid-run changes nothing.
+  // Null until resolved; cleared by Retry so a fixed check applies.
+  commandSnapshot?: Record<string, ResolvedProcessCommand> | null
   status: ProcessRunStatus
   startedAt: number | null
   finishedAt: number | null
@@ -1247,6 +1279,9 @@ export interface ProcessPhaseRun {
   // Mission Control and for agent-name-bound phases.
   seatAddress?: string | null
   runtimeSnapshot?: ProcessRuntimeSnapshot | null
+  // A command phase's execution receipt (plan 104). Lives on the run side so a
+  // later edit of the definition never rewrites what ran. Null for other kinds.
+  commandReceipt?: ProcessCommandReceipt | null
 }
 
 export interface ProcessPhaseAttempt {

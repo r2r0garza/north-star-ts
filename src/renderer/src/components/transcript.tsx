@@ -30,6 +30,7 @@ export type LiveSegment =
   | { kind: "tools"; calls: ToolUse[] }
 
 interface ChangedFilesCallbacks {
+  conversationId?: string
   workspace: string
   onOpenHtml: (relPath: string) => void
   onReviewFiles: () => void
@@ -50,6 +51,7 @@ export const SettledTranscript = memo(function SettledTranscript({
   findQuery,
   latestAssistantKey,
   workspace,
+  conversationId,
   onOpenHtml,
   onReviewFiles,
 }: SettledTranscriptProps) {
@@ -65,6 +67,7 @@ export const SettledTranscript = memo(function SettledTranscript({
         item.key === latestAssistantKey
       }
       workspace={workspace}
+      conversationId={conversationId}
       onOpenHtml={onOpenHtml}
       onReviewFiles={onReviewFiles}
     />
@@ -87,6 +90,7 @@ const SettledTranscriptRow = memo(function SettledTranscriptRow({
   findQuery,
   copyAlwaysVisible,
   workspace,
+  conversationId,
   onOpenHtml,
   onReviewFiles,
 }: SettledTranscriptRowProps) {
@@ -130,7 +134,11 @@ const SettledTranscriptRow = memo(function SettledTranscriptRow({
               )}
             >
               {item.role === "assistant" ? (
-                <Markdown content={item.content} findQuery={findQuery} />
+                <Markdown
+                  content={item.content}
+                  findQuery={findQuery}
+                  conversationId={conversationId}
+                />
               ) : (
                 <ConversationFindText text={item.content} query={findQuery} />
               )}
@@ -171,6 +179,7 @@ export function LiveTranscriptTurn({
   streamRetrying,
   findQuery,
   workspace,
+  conversationId,
   onOpenHtml,
   onReviewFiles,
 }: LiveTranscriptTurnProps) {
@@ -187,6 +196,7 @@ export function LiveTranscriptTurn({
               segment={segment}
               findQuery={findQuery}
               workspace={workspace}
+              conversationId={conversationId}
               onOpenHtml={onOpenHtml}
               onReviewFiles={onReviewFiles}
             />
@@ -236,6 +246,7 @@ const LiveTranscriptSegment = memo(function LiveTranscriptSegment({
   segment,
   findQuery,
   workspace,
+  conversationId,
   onOpenHtml,
   onReviewFiles,
 }: LiveTranscriptSegmentProps) {
@@ -260,6 +271,7 @@ const LiveTranscriptSegment = memo(function LiveTranscriptSegment({
           content={segment.text}
           mode="streaming"
           findQuery={findQuery}
+          conversationId={conversationId}
         />
       </BubbleContent>
     </Bubble>

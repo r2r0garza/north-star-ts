@@ -98,6 +98,14 @@ export type RunnerLifecycleEvent =
       gateKind?: "phase" | "validator" | "flag"
       failure?: FailureContext | null
     }
+  // A command phase's output advanced (plan 104). Ephemeral (live tail only):
+  // the bounded receipt is on the phase-run row, so the monitor re-reads it.
+  | {
+      type: "process_command_output"
+      runId: string
+      phaseRunId: string
+      phaseKey: string
+    }
 
 // The full vocabulary written to task_events / streamed on the live tail: the
 // agent's own streaming events plus the runner's lifecycle events. Reusing the
@@ -1101,11 +1109,16 @@ export class TaskRunner {
   }
 
   // Persist an event to the durable log and forward it to live subscribers.
-  // Token deltas and attempt checkpoints are ephemeral; the durable transcript
-  // lives in `messages`, so stream state only belongs on the live tail.
+  // Token deltas, attempt checkpoints, and command-output ticks are ephemeral;
+  // the durable transcript lives in `messages` (and command receipts on their
+  // phase-runs), so stream state only belongs on the live tail.
   private emit(taskId: string, event: TaskEventPayload): void {
     let eventId = 0
-    if (event.type !== "token" && event.type !== "stream_attempt") {
+    if (
+      event.type !== "token" &&
+      event.type !== "stream_attempt" &&
+      event.type !== "process_command_output"
+    ) {
       eventId = appendEvent({ taskId, type: event.type, payload: event }).id
     }
     for (const listener of this.listeners) {

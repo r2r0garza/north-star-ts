@@ -74,7 +74,7 @@ describe.skipIf(!sqliteLoads)("process import/export", () => {
     const exported = buildProcessExport(graph)
     const text = JSON.stringify(exported)
 
-    expect(exported.formatVersion).toBe(2)
+    expect(exported.formatVersion).toBe(3)
     expect(exported.phases[0].runtimeConfig).toMatchObject({
       worker: { provider: "openai", modelId: "gpt-5.5" },
       validator: { provider: "anthropic", modelId: "opus" },
@@ -532,7 +532,7 @@ describe.skipIf(!sqliteLoads)("seat roles and proof steps (format v2)", () => {
     createPhaseAgent({ phaseId: phase.id, seatRole: "qa", position: 0 })
 
     const exported = buildProcessExport(getProcessGraph(def.id)!)
-    expect(exported.formatVersion).toBe(2)
+    expect(exported.formatVersion).toBe(3)
     expect(exported.phases[0]).toMatchObject({
       proofStep: true,
       contextScope: "user_story",
@@ -603,5 +603,155 @@ describe.skipIf(!sqliteLoads)("seat roles and proof steps (format v2)", () => {
       agentName: "coder",
       seatRole: null,
     })
+  })
+})
+
+describe.skipIf(!sqliteLoads)("command phases (format v3, plan 104)", () => {
+  const config = {
+    source: "literal" as const,
+    command: "pnpm test",
+    cwd: "packages/app",
+    timeoutMs: 120_000,
+    maxOutputBytes: 8192,
+  }
+
+  it("exports the kind and the exact command, and round-trips them", () => {
+    const def = createProcessDefinition({ name: "Ship" })
+    const build = createPhase({
+      processId: def.id,
+      key: "build",
+      name: "Build",
+      position: 0,
+    })
+    const test = createPhase({
+      processId: def.id,
+      key: "test",
+      name: "Test",
+      position: 1,
+      kind: "command",
+      commandConfig: config,
+    })
+    createEdge({ processId: def.id, fromPhaseId: build.id, toPhaseId: test.id })
+
+    const exported = buildProcessExport(getProcessGraph(def.id)!)
+    expect(exported.formatVersion).toBe(3)
+    expect(exported.phases[0]).toMatchObject({ kind: "agent", command: null })
+    expect(exported.phases[1]).toMatchObject({
+      kind: "command",
+      command: config,
+      agents: [],
+    })
+
+    const imported = importProcessExport(JSON.parse(JSON.stringify(exported)))
+    const phases = getProcessGraph(imported.processId)!.phases
+    expect(phases.find((p) => p.key === "test")).toMatchObject({
+      kind: "command",
+      commandConfig: config,
+    })
+    expect(
+      stripVolatile(buildProcessExport(getProcessGraph(imported.processId)!))
+    ).toEqual(stripVolatile(exported))
+  })
+
+  it("round-trips a workspace-check phase by name, with no command attached", () => {
+    const def = createProcessDefinition({ name: "Portable" })
+    createPhase({
+      processId: def.id,
+      key: "test",
+      name: "Test",
+      position: 0,
+      kind: "command",
+      commandConfig: {
+        source: "check",
+        check: "test",
+        timeoutMs: 60_000,
+        maxOutputBytes: 4096,
+      },
+    })
+    const exported = buildProcessExport(getProcessGraph(def.id)!)
+    expect(exported.phases[0].command).toEqual({
+      source: "check",
+      check: "test",
+      timeoutMs: 60_000,
+      maxOutputBytes: 4096,
+    })
+    const imported = importProcessExport(JSON.parse(JSON.stringify(exported)))
+    expect(
+      getProcessGraph(imported.processId)!.phases[0].commandConfig
+    ).toEqual(exported.phases[0].command)
+  })
+
+  it("imports old exports without a kind as agent or sub-process phases", () => {
+    createProcessDefinition({ name: "Child" })
+    const v2 = minimalExport()
+    v2.formatVersion = 2
+    v2.phases.push({
+      ...v2.phases[0],
+      key: "nested",
+      name: "Nested",
+      subprocess: { name: "Child" },
+      position: 2,
+    })
+    const phases = getProcessGraph(importProcessExport(v2).processId)!.phases
+    expect(phases.map((p) => [p.key, p.kind])).toEqual([
+      ["only", "agent"],
+      ["nested", "subprocess"],
+    ])
+  })
+
+  it("rejects an invalid command without writing anything", () => {
+    const bad = (command: unknown, extra: Record<string, unknown> = {}) => {
+      const input = minimalExport() as unknown as Record<string, unknown>
+      const phases = input.phases as Array<Record<string, unknown>>
+      Object.assign(phases[0], { kind: "command", command, ...extra })
+      return input
+    }
+    expect(() =>
+      importProcessExport(bad({ ...config, cwd: "../elsewhere" }))
+    ).toThrow(/inside the workspace/)
+    expect(() => importProcessExport(bad({ ...config, cwd: "/etc" }))).toThrow(
+      /relative to the workspace/
+    )
+    expect(() => importProcessExport(bad({ ...config, timeoutMs: 1 }))).toThrow(
+      /timeoutMs/
+    )
+    expect(() => importProcessExport(bad(null))).toThrow(/must be an object/)
+    expect(() =>
+      importProcessExport(bad(config, { subprocess: { name: "Child" } }))
+    ).toThrow(/command phase with a sub-process/)
+    expect(() => importProcessExport(bad(config, { fanOut: true }))).toThrow(
+      /fan out/
+    )
+    const agentWithCommand = minimalExport() as unknown as Record<
+      string,
+      unknown
+    >
+    ;(agentWithCommand.phases as Array<Record<string, unknown>>)[0].command =
+      config
+    expect(() => importProcessExport(agentWithCommand)).toThrow(
+      /only allowed on a command phase/
+    )
+    expect(listProcessDefinitions()).toHaveLength(0)
+  })
+
+  it("drops an agent pool listed on a command phase, with a warning", () => {
+    const input = minimalExport()
+    input.formatVersion = 3
+    Object.assign(input.phases[0], {
+      kind: "command",
+      command: config,
+      agents: [
+        {
+          agent: { legacyName: "tester" },
+          skills: null,
+          tools: null,
+          position: 0,
+        },
+      ],
+    })
+    const result = importProcessExport(input)
+    const graph = getProcessGraph(result.processId)!
+    expect(graph.agents).toHaveLength(0)
+    expect(result.warnings.join(" ")).toContain("agent pool was not imported")
   })
 })
