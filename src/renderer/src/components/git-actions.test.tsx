@@ -147,6 +147,64 @@ describe("GitActions commit dialog", () => {
     expect(document.body.textContent).toContain("add-notes")
   })
 
+  it("keeps long AI messages in a bounded editor and preserves the commit controls", async () => {
+    const commitMessage = `feat: update workspace\n\n${"Detailed change description.\n".repeat(100)}`
+    window.cowork.git.status = vi.fn().mockResolvedValue({
+      isRepo: true,
+      entries: [
+        { path: "src/app.ts", kind: "modified", index: " ", worktree: "M" },
+      ],
+    })
+    window.cowork.git.generateCommitMessage = vi.fn().mockResolvedValue({
+      ok: true,
+      commitMessage,
+    })
+    await act(async () => {
+      renderGitActions()
+    })
+
+    click(document.querySelector('button[aria-label*="Git actions"]')!)
+    click(
+      Array.from(document.querySelectorAll('[role="menuitem"]')).find(
+        (item) => item.textContent === "Commit…"
+      )!
+    )
+    await act(async () => {})
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!
+    click(dialog.querySelector('[role="checkbox"]')!)
+    const generate = Array.from(dialog.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Create Commit Message")
+    )!
+    await act(async () => {
+      click(generate)
+    })
+
+    const editor = dialog.querySelector<HTMLTextAreaElement>("textarea")!
+    expect(editor.value).toBe(commitMessage)
+    expect(editor.className).toContain("field-sizing-fixed")
+    expect(editor.className).not.toContain("field-sizing-content")
+    expect(editor.className).toContain("h-40")
+    expect(editor.className).toContain("resize-none")
+    expect(editor.className).toContain("overflow-y-auto")
+    expect(dialog.className).toContain("max-h-[calc(100dvh-2rem)]")
+    expect(dialog.className).toContain("sm:max-w-xl")
+    const body = editor.parentElement!
+    expect(body.className).toContain("min-h-0")
+    expect(body.className).toContain("overflow-y-auto")
+    const footer = dialog.querySelector('[data-slot="dialog-footer"]')!
+    expect(body.contains(footer)).toBe(false)
+    expect(footer.className).toContain("shrink-0")
+    expect(
+      Array.from(footer.querySelectorAll("button")).find(
+        (button) => button.textContent === "Commit"
+      )?.disabled
+    ).toBe(false)
+    expect(window.cowork.git.generateCommitMessage).toHaveBeenCalledWith(
+      "/workspace",
+      ["src/app.ts"]
+    )
+  })
+
   it("clears the commit message when reopened", async () => {
     await act(async () => {
       renderGitActions()

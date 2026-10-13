@@ -148,6 +148,7 @@ function TranscriptRow({ row }: { row: Message }) {
       </Badge>
       {row.content?.trim() && (
         <Markdown
+          conversationId={row.conversationId}
           content={
             seatMail ? formatSeatMessageEvent(row.content!) : row.content!
           }

@@ -26,13 +26,19 @@ vi.mock("@/components/markdown", () => ({
   Markdown: ({
     content,
     mode = "settled",
+    conversationId,
   }: {
     content: string
     mode?: string
+    conversationId?: string
   }) => {
     bump(`md:${mode}:${content.slice(0, 12)}`)
     return (
-      <div data-testid="markdown" data-mode={mode}>
+      <div
+        data-testid="markdown"
+        data-mode={mode}
+        data-conversation-id={conversationId}
+      >
         {content}
       </div>
     )
@@ -131,6 +137,7 @@ function render({
                 findQuery={findQuery}
                 latestAssistantKey={latestAssistantKey}
                 workspace=""
+                conversationId="conv-chat"
                 onOpenHtml={noop}
                 onReviewFiles={noop}
               />
@@ -143,6 +150,7 @@ function render({
                   streamRetrying={streamRetrying}
                   findQuery={findQuery}
                   workspace=""
+                  conversationId="conv-chat"
                   onOpenHtml={noop}
                   onReviewFiles={noop}
                 />
@@ -272,4 +280,12 @@ describe("transcript render boundaries", () => {
     render({ live: null, latestAssistantKey: null })
     expect(alwaysVisible()).toBe(0)
   })
+})
+
+it("passes the conversation to settled and streaming download links without a workspace", () => {
+  render({ live: [{ kind: "text", text: "Download file" }] })
+  const markdown = container.querySelectorAll('[data-testid="markdown"]')
+  expect(markdown.length).toBe(2)
+  for (const element of markdown)
+    expect(element.getAttribute("data-conversation-id")).toBe("conv-chat")
 })

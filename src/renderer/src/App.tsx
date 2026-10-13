@@ -3305,6 +3305,7 @@ function App(
                 findQuery={activeConversationFindQuery}
                 latestAssistantKey={latestSettledAssistantKey}
                 workspace={transcriptWorkspace}
+                conversationId={conversationId ?? undefined}
                 onOpenHtml={openTranscriptHtml}
                 onReviewFiles={reviewTranscriptFiles}
               />
@@ -3318,6 +3319,7 @@ function App(
                   streamRetrying={liveTurn?.streamRetrying ?? false}
                   findQuery={activeConversationFindQuery}
                   workspace={transcriptWorkspace}
+                  conversationId={conversationId ?? undefined}
                   onOpenHtml={openTranscriptHtml}
                   onReviewFiles={reviewTranscriptFiles}
                 />

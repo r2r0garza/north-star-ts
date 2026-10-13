@@ -28,9 +28,14 @@ import {
   sanitizeFailureContext,
   sanitizeFailureText,
 } from "./failure-sanitizer"
+import {
+  commandOutcomeText,
+  renderCommandReceiptSummary,
+} from "../../../shared/process-command"
 import type {
   FailureContext,
   FailureStage,
+  ProcessCommandReceipt,
   ProcessFlag,
   ProcessGraph,
   ProcessPhase,
@@ -142,6 +147,31 @@ export type RunSubProcess = (input: {
   signal: AbortSignal
 }) => Promise<PhaseResult>
 
+// The outcome of a COMMAND phase (plan 104): the receipt of what ran, or why it
+// never started. Exit code 0 with no `error` completes the phase; anything else
+// fails it. There is no retry and no LLM judgement of the output.
+export interface CommandPhaseResult {
+  // Null when the command never spawned (no workspace, blocked by policy, …).
+  receipt: ProcessCommandReceipt | null
+  // Set when the command did not run to a clean exit, e.g. a policy block, a
+  // spawn error, or a cleanup failure after an otherwise clean exit.
+  error?: string
+  code?: string
+  stopped?: boolean
+}
+
+// Runs a command phase's persisted command through the run's Environment.
+// Injected so tests can stub it; the service's implementation never calls a
+// model. `onStart` is called with the `running` receipt immediately before the
+// command spawns (the crash-safety marker); `onProgress` with bounded snapshots.
+export type RunCommand = (input: {
+  phaseRun: ProcessPhaseRun
+  phase: ProcessPhase
+  signal: AbortSignal
+  onStart: (receipt: ProcessCommandReceipt) => void
+  onProgress: (receipt: ProcessCommandReceipt) => void
+}) => Promise<CommandPhaseResult>
+
 // The outcome of a fan-out phase's decomposition pass: a list of sub-task
 // briefings, or an error/stop like a normal phase (plan 025.1).
 export interface DecomposeResult {
@@ -230,6 +260,10 @@ export interface SchedulerCtx {
   // sub-process phases needs none; a sub-process phase with no runner injected fails
   // loudly (like a fan-out phase with no decomposer). Inert when unwired.
   runSubProcess?: RunSubProcess
+  // Runs a COMMAND phase (plan 104). Optional so a graph with no command phases
+  // needs none; a command phase with no runner fails loudly. Never falls back to
+  // an agent worker.
+  runCommand?: RunCommand
   // The current sub-process nesting depth (plan 038.1). 0 for a top-level run; the
   // service increments it for a nested run. Threaded to runSubProcess for the
   // MAX_PROCESS_DEPTH backstop.
@@ -533,6 +567,32 @@ function collectApprovalEvidence(phaseRun: ProcessPhaseRun): {
   validations: ApprovalValidation[]
   evidenceWarnings: string[]
 } {
+  // A command phase (plan 104) has no transcript; its receipt is the evidence.
+  const receipt = phaseRun.commandReceipt
+  if (receipt) {
+    const output = [receipt.stdout, receipt.stderr]
+      .filter((part) => part.trim())
+      .join("\n")
+    return {
+      artifacts: [],
+      validations: [
+        {
+          label: receipt.command,
+          status:
+            receipt.status === "completed" && receipt.exitCode === 0
+              ? "passed"
+              : "failed",
+          command: receipt.command,
+          output: output.slice(-4000),
+        },
+      ],
+      evidenceWarnings: receipt.outputTruncated
+        ? [
+            `Command output was truncated: ${receipt.capturedOutputBytes} of ${receipt.observedOutputBytes} bytes kept.`,
+          ]
+        : [],
+    }
+  }
   if (!phaseRun.taskId) {
     return {
       artifacts: [],
@@ -774,6 +834,11 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
   for (const pr of processes.listPhaseRuns({ runId: run.id })) {
     if (pr.status !== "running" && pr.status !== "ready") continue
     const phase = phasesById.get(pr.phaseId)
+    // A command phase that already spawned may have had side effects, so it is
+    // never silently replayed (plan 104): reconcileInterruptedCommands settles it
+    // `failed` once the walk's helpers exist. One that never spawned (no receipt)
+    // resets to pending below and runs normally.
+    if (phase?.kind === "command" && pr.commandReceipt) continue
     const isContainerParent =
       pr.parentId === null && phase !== undefined && isContainer(phase)
     if (isContainerParent) {
@@ -1156,6 +1221,21 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       parentId: childRun.parentId,
     })
     const prompt = childPrompts.get(childRun.id)
+    if (phase.kind === "command") {
+      // Authoring rejects per-child command phases (v1); never run an agent for one.
+      inFlight.set(
+        childRun.id,
+        Promise.resolve().then(() => {
+          failCommandPhase(phase, childRun, {
+            receipt: null,
+            code: "command_per_child_unsupported",
+            error: "A command phase cannot run once per sub-task (v1).",
+          })
+          return childRun.id
+        })
+      )
+      return
+    }
     const promise = (
       phase.subprocessId
         ? runSubProcessWithRetry(phase, childRun, prompt)
@@ -1210,6 +1290,29 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       parentId: pr.parentId,
     })
     const promise = runSubProcessWithRetry(phase, pr).then(() => pr.id)
+    inFlight.set(pr.id, promise)
+  }
+
+  // Dispatch a COMMAND phase (plan 104): set it `running` and run its persisted
+  // command through the injected executor. Like a normal phase it holds one
+  // PER_RUN_CONCURRENCY slot and settles exactly once off the concrete result.
+  const dispatchCommand = (phase: ProcessPhase): void => {
+    const pr = runByPhaseId.get(phase.id)!
+    processes.updatePhaseRun(pr.id, {
+      status: "running",
+      startedAt: Date.now(),
+      commandReceipt: null,
+    })
+    ctx.emit({
+      type: "process_phase",
+      runId: run.id,
+      phaseRunId: pr.id,
+      phaseKey: phase.key,
+      agentName: null,
+      status: "running",
+      parentId: pr.parentId,
+    })
+    const promise = runCommandPhase(phase, pr).then(() => pr.id)
     inFlight.set(pr.id, promise)
   }
 
@@ -1992,6 +2095,157 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
     emitPhase(phase, phaseRun.id, "completed")
   }
 
+  // Run + settle a COMMAND phase (plan 104). No retry: re-running a command that
+  // may have had side effects is the user's call (Retry run / Request changes).
+  const runCommandPhase = async (
+    phase: ProcessPhase,
+    phaseRun: ProcessPhaseRun
+  ): Promise<void> => {
+    if (!ctx.runCommand) {
+      failCommandPhase(phase, phaseRun, {
+        receipt: null,
+        code: "command_runner_missing",
+        error: "command phase has no runner configured",
+      })
+      return
+    }
+    let result: CommandPhaseResult
+    try {
+      result = await ctx.runCommand({
+        phase,
+        phaseRun,
+        signal: ctx.signal,
+        onStart: (receipt) => {
+          processes.updatePhaseRun(phaseRun.id, { commandReceipt: receipt })
+          emitCommandOutput(phase, phaseRun.id)
+        },
+        onProgress: (receipt) => {
+          processes.updatePhaseRun(phaseRun.id, { commandReceipt: receipt })
+          emitCommandOutput(phase, phaseRun.id)
+        },
+      })
+    } catch (err) {
+      result = {
+        receipt: processes.getPhaseRun(phaseRun.id)?.commandReceipt ?? null,
+        code: "command_executor_failed",
+        error: errMessage(err),
+      }
+    }
+    if (result.stopped || ctx.signal.aborted) {
+      // Keep what ran. On a resumable abort the row stays `running` with this
+      // receipt, so the resumed run reconciles it as interrupted (no replay).
+      if (result.receipt)
+        processes.updatePhaseRun(phaseRun.id, {
+          commandReceipt: result.receipt,
+        })
+      settleStoppedPhaseRun(phase, phaseRun.id)
+      return
+    }
+    const receipt = result.receipt
+    if (
+      !result.error &&
+      receipt?.status === "completed" &&
+      receipt.exitCode === 0
+    ) {
+      processes.updatePhaseRun(phaseRun.id, {
+        status: "completed",
+        error: null,
+        failure: null,
+        commandReceipt: receipt,
+        // The phase's official output, derived from the receipt (never from a
+        // transcript): what downstream kickoffs read via collectUpstream.
+        resultContent: renderCommandReceiptSummary(receipt),
+        finishedAt: Date.now(),
+        iteration: 1,
+      })
+      emitPhase(phase, phaseRun.id, "completed")
+      return
+    }
+    failCommandPhase(phase, phaseRun, result)
+  }
+
+  const failCommandPhase = (
+    phase: ProcessPhase,
+    phaseRun: ProcessPhaseRun,
+    result: CommandPhaseResult
+  ): void => {
+    const receipt = result.receipt
+    const latest = processes.getPhaseRun(phaseRun.id) ?? phaseRun
+    const code =
+      result.code ??
+      (receipt?.status === "timed_out"
+        ? "command_timed_out"
+        : receipt?.status === "interrupted"
+          ? "command_interrupted"
+          : "command_failed")
+    const message =
+      result.error ??
+      (receipt
+        ? `The command ${commandOutcomeText(receipt)}.`
+        : "The command did not run.")
+    const failure = processFailure({
+      code,
+      stage: "command",
+      message,
+      retryable: false,
+      attempt: 1,
+      maxAttempts: 1,
+      run,
+      phase,
+      phaseRun: latest,
+      taskId: ctx.taskId,
+    })
+    persistPhaseFailure({
+      phase,
+      phaseRun: latest,
+      failure,
+      patch: {
+        status: "failed",
+        error: failure.message,
+        failure,
+        ...(receipt ? { commandReceipt: receipt } : {}),
+        finishedAt: Date.now(),
+        iteration: 1,
+      },
+      emitStatus: "failed",
+    })
+  }
+
+  // Live output for the monitor: an ephemeral event (not stored in task_events)
+  // that tells it to re-read the phase-run's bounded receipt.
+  const emitCommandOutput = (phase: ProcessPhase, phaseRunId: string): void => {
+    ctx.emit({
+      type: "process_command_output",
+      runId: run.id,
+      phaseRunId,
+      phaseKey: phase.key,
+    })
+  }
+
+  // A command phase left `running` WITH a receipt by a crash, quit, or pause
+  // (plan 104): it may have started side effects, so it is settled `failed`
+  // (interrupted) and waits for an explicit Retry instead of being re-run.
+  const reconcileInterruptedCommands = (): void => {
+    for (const pr of processes.listPhaseRuns({ runId: run.id })) {
+      if (pr.status !== "running" && pr.status !== "ready") continue
+      const phase = phasesById.get(pr.phaseId)
+      if (phase?.kind !== "command" || !pr.commandReceipt) continue
+      const receipt: ProcessCommandReceipt = {
+        ...pr.commandReceipt,
+        status: "interrupted",
+        error:
+          "The app stopped while this command was running, so its outcome is unknown. " +
+          "It was not re-run automatically because it may already have had side effects. " +
+          "Retry the run to run it again.",
+      }
+      failCommandPhase(phase, pr, {
+        receipt,
+        code: "command_interrupted",
+        error: receipt.error!,
+      })
+    }
+  }
+
   const emitPhase = (
     phase: ProcessPhase,
     phaseRunId: string,
@@ -2114,6 +2368,8 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
     emitPhase(phase, phaseRunId, "cancelled")
   }
 
+  reconcileInterruptedCommands()
+
   // ── the walk ──────────────────────────────────────────────────────────────
   while (true) {
     if (ctx.signal.aborted) {
@@ -2208,7 +2464,8 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
     if (!flagPending)
       for (const phase of ready) {
         if (inFlight.size >= PER_RUN_CONCURRENCY) break
-        if (phase.fanOut) dispatchDecompose(phase)
+        if (phase.kind === "command") dispatchCommand(phase)
+        else if (phase.fanOut) dispatchDecompose(phase)
         else if (phase.subprocessId) dispatchSubProcess(phase)
         else dispatch(phase)
       }

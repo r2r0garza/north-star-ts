@@ -18,9 +18,15 @@ import {
 } from "../../db/repositories/tasks"
 import { listMessages } from "../../db/repositories/messages"
 import {
+  getWorkspace,
   upsertWorkspace,
   workingDirectoryOf,
 } from "../../db/repositories/workspaces"
+import {
+  commandCheckStatus,
+  MissingChecksError,
+  resolveRunCommands,
+} from "../../process/command-checks"
 import * as processes from "../../db/repositories/processes"
 import * as settingsService from "../../settings/service"
 import { addConversationNote } from "../../db/repositories/conversation-notes"
@@ -81,6 +87,7 @@ import {
   type Decompose,
   type DecomposeResult,
   type PhaseResult,
+  type RunCommand,
   type RunPhase,
   type RunSubProcess,
   type Validate,
@@ -91,6 +98,10 @@ import {
   resetSubProcessChild,
 } from "./flagback"
 import { unknownSideEffectingToolCalls } from "../../agent/repair"
+import { makePolicyEngine } from "../../agent/approval/engine"
+import { productionCommandDeps } from "./command-executor-deps"
+import { executeProcessCommand } from "./command-executor"
+import { renderContextEnvelope } from "../../agent/context/provenance"
 
 // The DAG orchestrator task kind (plan 025). One ProcessService per app, holding
 // the runner reference so startRun can enqueue the process_run task. The executor
@@ -351,6 +362,10 @@ export type RunSettledListener = (processRunId: string) => void
 export class ProcessService {
   constructor(private readonly runner: TaskRunner) {}
 
+  // The shared approval engine (plan 104): command phases are authorized by the
+  // same rules as a worker's command tool and the dashboard refresh.
+  private readonly policy = makePolicyEngine()
+
   private readonly settledListeners = new Set<RunSettledListener>()
 
   onRunSettled(listener: RunSettledListener): () => void {
@@ -401,6 +416,24 @@ export class ProcessService {
     const workspaceId = input.workspacePath?.trim()
       ? upsertWorkspace(input.workspacePath.trim()).id
       : null
+
+    // Workspace checks (plan 104): every check the process runs must be
+    // defined for this workspace before anything starts. No defaults.
+    {
+      const sourceConversation = input.sourceConversationId
+        ? getConversation(input.sourceConversationId)
+        : undefined
+      const checkWorkspaceId = workspaceId ?? sourceConversation?.workspaceId
+      const workspace = checkWorkspaceId
+        ? getWorkspace(checkWorkspaceId)
+        : undefined
+      const { missing } = commandCheckStatus(input.processId, workspace)
+      if (missing.length > 0)
+        throw new MissingChecksError(
+          missing,
+          workspace ? (workspace.name ?? workspace.path) : null
+        )
+    }
 
     const run = processes.createProcessRun({
       processId: input.processId,
@@ -472,6 +505,9 @@ export class ProcessService {
 
     const tx = getDb().transaction(() => {
       resetRunRecursive({ taskId: run.taskId!, run, graph, mode: "frontier" })
+      // Re-resolve workspace checks on Retry (plan 104), so fixing a check's
+      // command is enough to retry; completed command phases don't re-run.
+      this.clearCommandSnapshots(run)
     })
     tx()
 
@@ -915,8 +951,10 @@ export class ProcessService {
     emit: Parameters<TaskExecutor>[0]["emit"]
     depth: number
   }): Promise<void> {
-    const { run, graph, taskId, signal, emit, depth } = input
+    const { graph, taskId, signal, emit, depth } = input
+    let { run } = input
     try {
+      run = this.ensureCommandSnapshot(run, graph)
       await runScheduler({
         run,
         graph,
@@ -936,6 +974,7 @@ export class ProcessService {
         // Sub-process phases (plan 038.1): run a nested definition inline. The depth
         // rides in so the closure enforces MAX_PROCESS_DEPTH and recurses at depth+1.
         runSubProcess: this.makeRunSubProcess(run, taskId, emit),
+        runCommand: this.makeRunCommand(run),
         processDepth: depth,
         failureDiagnosticDir: processFailureDiagnosticDir(),
         // Cross-phase flag-back (plan 031.2): the definition's autonomy toggle, and
@@ -1487,6 +1526,82 @@ export class ProcessService {
         if (inSession) seatSessions!.markSessionActivity(worker.id, false)
         releaseSeat?.()
       }
+    }
+  }
+
+  // Freeze the exact command of every command phase on the run (plan 104),
+  // resolving workspace checks against the run's workspace. Done once, the
+  // first time the run is driven (a nested run on its first drive); Retry
+  // clears it. A check the workspace doesn't define fails the run before any
+  // phase runs.
+  private ensureCommandSnapshot(
+    run: ProcessRun,
+    graph: ProcessGraph
+  ): ProcessRun {
+    if (run.commandSnapshot) return run
+    if (!graph.phases.some((phase) => phase.kind === "command")) return run
+    const owner =
+      run.workspaceId || run.workingDirectory
+        ? run
+        : run.sourceConversationId
+          ? getConversation(run.sourceConversationId)
+          : undefined
+    const workspace = owner?.workspaceId
+      ? getWorkspace(owner.workspaceId)
+      : undefined
+    const resolved = resolveRunCommands(graph, workspace?.commandChecks ?? {})
+    if ("missing" in resolved)
+      throw new MissingChecksError(
+        resolved.missing,
+        workspace ? (workspace.name ?? workspace.path) : null
+      )
+    return processes.updateProcessRun(run.id, {
+      commandSnapshot: resolved.snapshot,
+    })
+  }
+
+  private clearCommandSnapshots(root: ProcessRun): void {
+    const runs = [root]
+    for (let i = 0; i < runs.length && i < 256; i++) {
+      processes.updateProcessRun(runs[i].id, { commandSnapshot: null })
+      for (const phaseRun of processes.listPhaseRuns({ runId: runs[i].id })) {
+        const child = processes.getProcessRunByParentPhaseRunId(phaseRun.id)
+        if (child) runs.push(child)
+      }
+    }
+  }
+
+  // Build the RunCommand closure for a run (plan 104): run a command phase's
+  // frozen command in the run's workspace (a Mission Control story's
+  // worktree) through the configured Environment. No conversation, no agent,
+  // no model request.
+  private makeRunCommand(run: ProcessRun): RunCommand {
+    return async ({ phase, phaseRun, signal, onStart, onProgress }) => {
+      const config = processes.getProcessRun(run.id)?.commandSnapshot?.[
+        phase.id
+      ]
+      if (!config)
+        return {
+          receipt: null,
+          code: "command_missing",
+          error: phase.commandConfig
+            ? "This command phase was added after the run started. Start a new run to include it."
+            : "This command phase has no valid saved command. Edit the phase and save its command.",
+        }
+      const source = run.sourceConversationId
+        ? getConversation(run.sourceConversationId)
+        : undefined
+      return executeProcessCommand(
+        {
+          config,
+          workspace: runPlace(run, source).workspace,
+          phaseRunId: phaseRun.id,
+          signal,
+          onStart,
+          onProgress,
+        },
+        productionCommandDeps(this.policy)
+      )
     }
   }
 
@@ -2095,7 +2210,18 @@ export class ProcessService {
         ? this.aggregateChildContent(run.id, pr.id)
         : src.subprocessId
           ? this.aggregateSubProcessContent(pr.id)
-          : pr.resultContent
+          : src.kind === "command" && pr.resultContent
+            ? // A command phase's receipt summary (plan 104) carries raw shell
+              // output: hand it on as data, the way run_shell_tool output is.
+              renderContextEnvelope(
+                {
+                  trust: "untrusted_data",
+                  channel: "command",
+                  source: `process_phase:${src.key}`,
+                },
+                pr.resultContent
+              )
+            : pr.resultContent
       results.push({ phaseName: src.name, phaseKey: src.key, content })
     }
     return results

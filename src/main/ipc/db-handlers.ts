@@ -23,6 +23,9 @@ import type {
   PhaseGatePolicy,
   PhaseRouting,
   PhaseContextScope,
+  ProcessCommandConfig,
+  ProcessPhaseKind,
+  WorkspaceChecks,
   ProcessRunStatus,
   ProcessRuntimeConfig,
 } from "../db/types"
@@ -221,6 +224,7 @@ export function registerDbHandlers(
         name?: string
         generatedFiles?: GeneratedFilesRule[]
         worktreeSetup?: WorktreeSetup
+        commandChecks?: WorkspaceChecks
       }
     ) => workspaces.updateWorkspace(id, patch)
   )
@@ -390,6 +394,8 @@ export function registerDbHandlers(
         subprocessId?: string | null
         proofStep?: boolean
         contextScope?: PhaseContextScope
+        kind?: ProcessPhaseKind
+        commandConfig?: ProcessCommandConfig | null
         position: number
       }
     ) => processes.createPhase(input)
@@ -416,6 +422,8 @@ export function registerDbHandlers(
         subprocessId?: string | null
         proofStep?: boolean
         contextScope?: PhaseContextScope
+        kind?: ProcessPhaseKind
+        commandConfig?: ProcessCommandConfig | null
         position?: number
       }
     ) => processes.updatePhase(id, patch)

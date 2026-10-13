@@ -162,6 +162,13 @@ export type {
   ProcessPhaseAttempt,
   ProcessPhaseRun,
   ProcessRuntimeConfig,
+  ProcessCommandConfig,
+  ProcessCommandReceipt,
+  ProcessCommandStatus,
+  ProcessPhaseKind,
+  ResolvedProcessCommand,
+  WorkspaceCheck,
+  WorkspaceChecks,
   ProcessRuntimeSelection,
   ProcessRuntimeSlot,
   ProcessRuntimeSnapshot,
@@ -173,6 +180,9 @@ export type {
   PhaseGatePolicy,
   EdgeTrigger,
   ProcessImportResult,
+  EnvironmentFact,
+  EnvironmentSetupRun,
+  CommandTrial,
 } from "../../preload/index"
 
 // Mission Control rig definition types (plan 106.1).

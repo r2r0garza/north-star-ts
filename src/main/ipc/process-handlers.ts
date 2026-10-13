@@ -1,4 +1,8 @@
+import { existsSync } from "fs"
 import { readFile, writeFile } from "fs/promises"
+import { environmentFacts } from "../mission-control/workspace-analysis/analyze"
+import type { EnvironmentSetupService } from "../process/environment-setup"
+import type { CommandTrialService } from "../process/try-command"
 import { basename } from "path"
 import {
   app,
@@ -10,7 +14,7 @@ import {
 } from "electron"
 import type { TaskRunner } from "../tasks/runner"
 import type { ProcessService } from "../tasks/process/service"
-import type { ProcessRuntimeConfig } from "../db/types"
+import type { ProcessRuntimeConfig, WorkspaceCheck } from "../db/types"
 import { getProcessRun } from "../db/repositories/processes"
 import {
   exportProcessDefinition,
@@ -18,6 +22,16 @@ import {
   importProcessExport,
   type ProcessImportResult,
 } from "../process/io"
+import {
+  draftCommand,
+  type CommandDraftRequest,
+} from "../process/command-draft"
+import { commandCheckStatus } from "../process/command-checks"
+import {
+  getWorkspaceByPath,
+  setWorkspaceCheck,
+  upsertWorkspace,
+} from "../db/repositories/workspaces"
 import { agentSources } from "../agent/agents/sources"
 import { loadAgents } from "../agent/agents/loader"
 import {
@@ -33,8 +47,52 @@ import {
 // events by the run's task id. Call after the runner + ProcessService are built.
 export function registerProcessHandlers(
   runner: TaskRunner,
-  processService: ProcessService
+  processService: ProcessService,
+  environmentSetup: EnvironmentSetupService,
+  commandTrials: CommandTrialService
 ): void {
+  // Try it (plan 104): run a check's command once, as typed, in its
+  // workspace, through the command-phase executor; poll for live output.
+  ipcMain.handle(
+    "process:tryCheck",
+    (
+      _e,
+      input: {
+        workspacePath: string
+        check: WorkspaceCheck
+        timeoutMs?: number
+      }
+    ) => commandTrials.start(input)
+  )
+  ipcMain.handle("process:checkTrialStatus", (_e, id: string) =>
+    commandTrials.status(id)
+  )
+  ipcMain.handle("process:cancelCheckTrial", (_e, id: string) =>
+    commandTrials.cancel(id)
+  )
+  // A workspace's project environments (plan 104): whether each exists, its
+  // interpreter, and how it's set up. Setting one up runs the analysis
+  // recipes' own commands (the renderer names only the workspace), one at a
+  // time in the integrated terminal.
+  ipcMain.handle(
+    "process:workspaceEnvironment",
+    async (_e, input: { workspacePath: string }) =>
+      existsSync(input.workspacePath)
+        ? environmentFacts(input.workspacePath)
+        : []
+  )
+  ipcMain.handle(
+    "process:startEnvironmentSetup",
+    (_e, input: { workspacePath: string }) =>
+      environmentSetup.start(input.workspacePath)
+  )
+  ipcMain.handle("process:environmentSetupStatus", (_e, runId: string) =>
+    environmentSetup.status(runId)
+  )
+  ipcMain.handle("process:cancelEnvironmentSetup", (_e, runId: string) =>
+    environmentSetup.cancel(runId)
+  )
+
   // Start a new run of a definition. Returns the created ProcessRun.
   ipcMain.handle(
     "process:startRun",
@@ -48,6 +106,38 @@ export function registerProcessHandlers(
         runtimeConfig?: ProcessRuntimeConfig | null
       }
     ) => processService.startRun(input)
+  )
+
+  // Ask AI for a command phase (plan 104): an inert proposal for the builder to
+  // show. It is never saved or run here.
+  ipcMain.handle("process:draftCommand", (_e, input: CommandDraftRequest) =>
+    draftCommand(input)
+  )
+
+  // Workspace checks (plan 104): which checks a process needs in a workspace
+  // and which it lacks, and defining one. Run start refuses a missing check.
+  ipcMain.handle(
+    "process:checkStatus",
+    (_e, input: { processId: string; workspacePath: string }) => {
+      const workspace = getWorkspaceByPath(input.workspacePath)
+      return commandCheckStatus(input.processId, workspace)
+    }
+  )
+  ipcMain.handle(
+    "process:setWorkspaceCheck",
+    (
+      _e,
+      input: {
+        workspacePath: string
+        name: string
+        check: WorkspaceCheck | null
+      }
+    ) =>
+      setWorkspaceCheck(
+        upsertWorkspace(input.workspacePath).id,
+        input.name,
+        input.check
+      )
   )
 
   // Quick run (plan 106.9): any definition against an objective, with no

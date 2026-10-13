@@ -1,4 +1,5 @@
 import { parseCompletionContract } from "../../process/completion-contract"
+import { parseCommandConfig } from "../../../shared/process-command"
 import { randomUUID } from "crypto"
 import { getDb } from "../connection"
 import { contextForProcessRun, recordEvent } from "./mc-events"
@@ -20,7 +21,11 @@ import type {
   PhaseContextScope,
   ProcessPhase,
   ProcessPhaseAgent,
+  ProcessPhaseKind,
   ProcessPhaseRun,
+  ProcessCommandConfig,
+  ProcessCommandReceipt,
+  ResolvedProcessCommand,
   ProcessRuntimeConfig,
   ProcessRuntimeSnapshot,
   ProcessRun,
@@ -71,6 +76,8 @@ interface ProcessPhaseRow {
   validator_max_iterations: number
   validator_agent: string | null
   subprocess_id: string | null
+  kind: ProcessPhaseKind | null
+  command_config: string | null
   proof_step: number
   context_mode: string | null
   position: number
@@ -105,6 +112,8 @@ function toPhase(row: ProcessPhaseRow): ProcessPhase {
     validatorMaxIterations: row.validator_max_iterations,
     validatorAgent: row.validator_agent,
     subprocessId: row.subprocess_id,
+    kind: row.kind ?? (row.subprocess_id ? "subprocess" : "agent"),
+    commandConfig: parseStoredCommandConfig(row.command_config),
     proofStep: row.proof_step === 1,
     contextScope: parseContextScope(row.context_mode),
     runtimeConfig: parseRuntimeConfig(row.runtime_config),
@@ -169,6 +178,7 @@ interface ProcessRunRow {
   parent_phase_run_id: string | null
   seat_bindings: string | null
   mission_control: string | null
+  command_snapshot: string | null
   status: ProcessRunStatus
   started_at: number | null
   finished_at: number | null
@@ -193,6 +203,9 @@ function toRun(row: ProcessRunRow): ProcessRun {
     runtimeConfig: parseRuntimeConfig(row.runtime_config),
     seatBindings: parseJson<SeatBindingsSnapshot>(row.seat_bindings),
     missionControl: parseJson<MissionControlRunLink>(row.mission_control),
+    commandSnapshot: parseJson<Record<string, ResolvedProcessCommand>>(
+      row.command_snapshot
+    ),
     status: row.status,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
@@ -224,6 +237,7 @@ interface ProcessPhaseRunRow {
   output_identity: string | null
   source_child_run_id: string | null
   seat_address: string | null
+  command_receipt: string | null
 }
 
 function toPhaseRun(row: ProcessPhaseRunRow): ProcessPhaseRun {
@@ -255,6 +269,20 @@ function toPhaseRun(row: ProcessPhaseRunRow): ProcessPhaseRun {
     sourceChildRunId: row.source_child_run_id,
     seatAddress: row.seat_address,
     runtimeSnapshot: parseRuntimeSnapshot(row.runtime_snapshot),
+    commandReceipt: parseJson<ProcessCommandReceipt>(row.command_receipt),
+  }
+}
+
+// A stored config that no longer parses (hand-edited DB, older bounds) reads as
+// null, so the phase fails visibly at dispatch instead of running something else.
+function parseStoredCommandConfig(
+  value: string | null
+): ProcessCommandConfig | null {
+  if (value === null) return null
+  try {
+    return parseCommandConfig(JSON.parse(value))
+  } catch {
+    return null
   }
 }
 
@@ -481,9 +509,60 @@ function assertSubprocessValid(
     throw new Error("sub-process would create a cycle")
 }
 
+// The kind-specific invariants (plan 104), checked against a phase's EFFECTIVE
+// state before any write:
+//   agent      — no command config, no sub-process;
+//   command    — a valid bounded command config, no sub-process, and none of the
+//                LLM-only features (fan-out, validator, proof step);
+//   subprocess — a sub-process reference and no command config.
+// Returns the normalized command config to store.
+function assertPhaseKindValid(state: {
+  kind: ProcessPhaseKind
+  subprocessId: string | null
+  commandConfig: unknown
+  fanOut: boolean
+  validator: boolean
+  proofStep: boolean
+}): ProcessCommandConfig | null {
+  switch (state.kind) {
+    case "agent":
+      if (state.commandConfig != null)
+        throw new Error("An agent phase cannot have a command.")
+      if (state.subprocessId)
+        throw new Error("An agent phase cannot run a sub-process.")
+      return null
+    case "subprocess":
+      if (!state.subprocessId)
+        throw new Error("A sub-process phase needs a process to run.")
+      if (state.commandConfig != null)
+        throw new Error("A sub-process phase cannot have a command.")
+      return null
+    case "command":
+      if (state.subprocessId)
+        throw new Error("A command phase cannot run a sub-process.")
+      if (state.fanOut) throw new Error("A command phase cannot fan out (v1).")
+      if (state.validator)
+        throw new Error("A command phase cannot have an LLM validator.")
+      if (state.proofStep)
+        throw new Error("A command phase cannot be the proof step.")
+      if (state.commandConfig == null)
+        throw new Error("A command phase needs a command to run.")
+      return parseCommandConfig(state.commandConfig)
+    default:
+      throw new Error(`Unknown phase kind: ${String(state.kind)}`)
+  }
+}
+
+function isPhaseKind(value: unknown): value is ProcessPhaseKind {
+  return value === "agent" || value === "command" || value === "subprocess"
+}
+
 export function createPhase(input: {
   completionContract?: PhaseCompletionContract
   runtimeConfig?: ProcessRuntimeConfig | null
+  // Defaults to `subprocess` when subprocessId is set, else `agent`.
+  kind?: ProcessPhaseKind
+  commandConfig?: ProcessCommandConfig | null
   processId: string
   key: string
   name: string
@@ -501,11 +580,21 @@ export function createPhase(input: {
   position: number
 }): ProcessPhase {
   const contract = parseCompletionContract(input.completionContract)
+  const kind = input.kind ?? (input.subprocessId ? "subprocess" : "agent")
+  if (!isPhaseKind(kind)) throw new Error(`Unknown phase kind: ${String(kind)}`)
+  const commandConfig = assertPhaseKindValid({
+    kind,
+    subprocessId: input.subprocessId ?? null,
+    commandConfig: input.commandConfig ?? null,
+    fanOut: !!input.fanOut,
+    validator: !!input.validator,
+    proofStep: !!input.proofStep,
+  })
   assertSubprocessValid(input.processId, input.subprocessId, input.fanOut)
   const id = randomUUID()
   getDb()
     .prepare(
-      "INSERT INTO process_phases (id, process_id, key, name, routing, gate_policy, fan_out, max_rework_rounds, dot_folder, validator, validator_max_iterations, validator_agent, subprocess_id, position, completion_contract, runtime_config, proof_step, context_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO process_phases (id, process_id, key, name, routing, gate_policy, fan_out, max_rework_rounds, dot_folder, validator, validator_max_iterations, validator_agent, subprocess_id, position, completion_contract, runtime_config, proof_step, context_mode, kind, command_config) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .run(
       id,
@@ -525,7 +614,9 @@ export function createPhase(input: {
       JSON.stringify(contract),
       stringifyRuntimeConfig(input.runtimeConfig),
       input.proofStep ? 1 : 0,
-      contextScopeValue(input.contextScope)
+      contextScopeValue(input.contextScope),
+      kind,
+      commandConfig ? JSON.stringify(commandConfig) : null
     )
   return getPhase(id)!
 }
@@ -565,25 +656,91 @@ export function updatePhase(
     contextScope?: PhaseContextScope
     runtimeConfig?: ProcessRuntimeConfig | null
     position?: number
+    kind?: ProcessPhaseKind
+    commandConfig?: ProcessCommandConfig | null
   }
 ): ProcessPhase {
+  const current = getPhase(id)
+  if (!current) throw new Error("Phase not found")
+  patch = { ...patch }
+  // The effective kind (plan 104). An explicit kind wins; otherwise toggling the
+  // sub-process reference (the pre-104 builder control) moves an agent phase to
+  // `subprocess` and back.
+  const currentKind = current.kind ?? "agent"
+  let nextKind: ProcessPhaseKind = currentKind
+  if (patch.kind !== undefined) {
+    if (!isPhaseKind(patch.kind))
+      throw new Error(`Unknown phase kind: ${String(patch.kind)}`)
+    nextKind = patch.kind
+  } else if (patch.subprocessId !== undefined && currentKind !== "command") {
+    nextKind = patch.subprocessId ? "subprocess" : "agent"
+  }
+  // A kind switch drops the other kinds' configuration the patch doesn't set,
+  // so the switch is one atomic write. Anything the patch DOES set is checked
+  // as-is below (an explicit contradiction is rejected, never coerced).
+  if (nextKind !== currentKind) {
+    if (nextKind !== "subprocess" && patch.subprocessId === undefined)
+      patch.subprocessId = null
+    if (nextKind !== "command" && patch.commandConfig === undefined)
+      patch.commandConfig = null
+    if (nextKind === "command") {
+      if (patch.fanOut === undefined) patch.fanOut = false
+      if (patch.validator === undefined) patch.validator = false
+      if (patch.proofStep === undefined) patch.proofStep = false
+      if (patch.validatorAgent === undefined) patch.validatorAgent = null
+      if (patch.runtimeConfig === undefined) patch.runtimeConfig = null
+    }
+  }
+  if (
+    nextKind === "command" &&
+    currentKind !== "command" &&
+    getDb()
+      .prepare(
+        "SELECT 1 FROM process_edges WHERE to_phase_id = ? AND trigger = 'on_each_subtask' LIMIT 1"
+      )
+      .get(id)
+  )
+    throw new Error(
+      "A command phase can only depend on whole phases. Change its on-each-sub-task dependency to on complete first."
+    )
+  const commandConfig = assertPhaseKindValid({
+    kind: nextKind,
+    subprocessId:
+      patch.subprocessId !== undefined
+        ? patch.subprocessId
+        : current.subprocessId,
+    commandConfig:
+      patch.commandConfig !== undefined
+        ? patch.commandConfig
+        : (current.commandConfig ?? null),
+    fanOut: patch.fanOut !== undefined ? patch.fanOut : current.fanOut,
+    validator:
+      patch.validator !== undefined ? patch.validator : current.validator,
+    proofStep:
+      patch.proofStep !== undefined ? patch.proofStep : !!current.proofStep,
+  })
   // Validate the sub-process/fan-out combination against the EFFECTIVE state (the
   // patch may set only one side, so read the current phase for the other) before
   // any write (plan 038.1).
   if (patch.subprocessId !== undefined || patch.fanOut !== undefined) {
-    const current = getPhase(id)
-    if (current) {
-      const nextSubprocessId =
-        patch.subprocessId !== undefined
-          ? patch.subprocessId
-          : current.subprocessId
-      const nextFanOut =
-        patch.fanOut !== undefined ? patch.fanOut : current.fanOut
-      assertSubprocessValid(current.processId, nextSubprocessId, nextFanOut)
-    }
+    const nextSubprocessId =
+      patch.subprocessId !== undefined
+        ? patch.subprocessId
+        : current.subprocessId
+    const nextFanOut =
+      patch.fanOut !== undefined ? patch.fanOut : current.fanOut
+    assertSubprocessValid(current.processId, nextSubprocessId, nextFanOut)
   }
   const sets: string[] = []
   const values: unknown[] = []
+  if (nextKind !== currentKind) {
+    sets.push("kind = ?")
+    values.push(nextKind)
+  }
+  if (patch.commandConfig !== undefined || nextKind !== currentKind) {
+    sets.push("command_config = ?")
+    values.push(commandConfig ? JSON.stringify(commandConfig) : null)
+  }
   if (patch.completionContract !== undefined) {
     sets.push("completion_contract = ?")
     values.push(
@@ -650,12 +807,20 @@ export function updatePhase(
     sets.push("position = ?")
     values.push(patch.position)
   }
-  if (sets.length > 0) {
-    values.push(id)
-    getDb()
-      .prepare(`UPDATE process_phases SET ${sets.join(", ")} WHERE id = ?`)
-      .run(...values)
-  }
+  getDb().transaction(() => {
+    if (sets.length > 0) {
+      values.push(id)
+      getDb()
+        .prepare(`UPDATE process_phases SET ${sets.join(", ")} WHERE id = ?`)
+        .run(...values)
+    }
+    // A command phase runs no agent, so its pool is discarded with the switch
+    // (the builder confirms this first).
+    if (nextKind === "command" && currentKind !== "command")
+      getDb()
+        .prepare("DELETE FROM process_phase_agents WHERE phase_id = ?")
+        .run(id)
+  })()
   return getPhase(id)!
 }
 
@@ -691,6 +856,8 @@ export function createPhaseAgent(input: {
   position: number
 }): ProcessPhaseAgent {
   const identity = phaseAgentIdentity(input)
+  if (getPhase(input.phaseId)?.kind === "command")
+    throw new Error("A command phase runs no agent, so it has no agent pool.")
   const id = randomUUID()
   getDb()
     .prepare(
@@ -770,6 +937,15 @@ export function createEdge(input: {
   toPhaseId: string
   trigger?: EdgeTrigger
 }): ProcessEdge {
+  // One command per fan-out child is out of scope for v1 (plan 104), so a
+  // command phase waits for its whole upstream.
+  if (
+    input.trigger === "on_each_subtask" &&
+    getPhase(input.toPhaseId)?.kind === "command"
+  )
+    throw new Error(
+      "A command phase can only depend on whole phases (on complete), not on each sub-task."
+    )
   const id = randomUUID()
   getDb()
     .prepare(
@@ -912,6 +1088,7 @@ export function updateProcessRun(
     title?: string | null
     startedAt?: number | null
     finishedAt?: number | null
+    commandSnapshot?: Record<string, ResolvedProcessCommand> | null
   }
 ): ProcessRun {
   const sets: string[] = []
@@ -919,6 +1096,14 @@ export function updateProcessRun(
   if (patch.status !== undefined) {
     sets.push("status = ?")
     values.push(patch.status)
+  }
+  if (patch.commandSnapshot !== undefined) {
+    sets.push("command_snapshot = ?")
+    values.push(
+      patch.commandSnapshot === null
+        ? null
+        : JSON.stringify(patch.commandSnapshot)
+    )
   }
   if (patch.title !== undefined) {
     sets.push("title = ?")
@@ -1042,6 +1227,7 @@ export function updatePhaseRun(
     completionReceipt?: PhaseCompletionReceipt | null
     runtimeSnapshot?: ProcessRuntimeSnapshot | null
     seatAddress?: string | null
+    commandReceipt?: ProcessCommandReceipt | null
   }
 ): ProcessPhaseRun {
   const sets: string[] = []
@@ -1117,6 +1303,14 @@ export function updatePhaseRun(
   if (patch.seatAddress !== undefined) {
     sets.push("seat_address = ?")
     values.push(patch.seatAddress)
+  }
+  if (patch.commandReceipt !== undefined) {
+    sets.push("command_receipt = ?")
+    values.push(
+      patch.commandReceipt === null
+        ? null
+        : JSON.stringify(patch.commandReceipt)
+    )
   }
   if (sets.length > 0) {
     values.push(id)

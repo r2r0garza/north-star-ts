@@ -3,6 +3,7 @@ import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { Markdown } from "./markdown"
+import { toast } from "sonner"
 
 const { mermaidRender } = vi.hoisted(() => ({
   mermaidRender: vi.fn(),
@@ -23,7 +24,8 @@ function mount(
   content: string,
   mode?: "settled" | "streaming",
   findQuery?: string,
-  preserveSoftBreaks?: boolean
+  preserveSoftBreaks?: boolean,
+  conversationId?: string
 ) {
   act(() => {
     root.render(
@@ -32,6 +34,7 @@ function mount(
         mode={mode}
         findQuery={findQuery}
         preserveSoftBreaks={preserveSoftBreaks}
+        conversationId={conversationId}
       />
     )
   })
@@ -192,8 +195,12 @@ describe("Markdown modes", () => {
   it("can preserve soft line breaks for editable prose previews", () => {
     mount("First line\nSecond line", undefined, undefined, true)
 
-    expect(container.firstElementChild?.className).toContain("[&_p]:whitespace-pre-line")
-    expect(container.querySelector("p")?.textContent).toBe("First line\nSecond line")
+    expect(container.firstElementChild?.className).toContain(
+      "[&_p]:whitespace-pre-line"
+    )
+    expect(container.querySelector("p")?.textContent).toBe(
+      "First line\nSecond line"
+    )
   })
 
   it("renders prose, GFM, links, and inline code equivalently", () => {
@@ -219,5 +226,50 @@ describe("Markdown modes", () => {
 
     expect(container.innerHTML).toBe(defaultHtml)
     expect(mermaidRender).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("Markdown file links", () => {
+  it("saves local links through IPC rather than opening them externally", async () => {
+    const saveFileLink = vi
+      .fn()
+      .mockResolvedValue("/Users/test/Downloads/preguntas.md")
+    const showSuccess = vi
+      .spyOn(toast, "success")
+      .mockImplementation(() => "saved")
+    vi.stubGlobal("cowork", { saveFileLink })
+    for (const href of [
+      "preguntas.md",
+      "file:///repo/preguntas.md",
+      "/repo/preguntas.md",
+      "sandbox:/mnt/data/preguntas.md",
+    ]) {
+      mount(`[Download](${href})`, "settled", "", false, "conv-1")
+      const link = container.querySelector("a")!
+      expect(link.getAttribute("href")).toBe(href)
+      expect(link.getAttribute("target")).toBeNull()
+      await act(async () => link.click())
+      expect(saveFileLink).toHaveBeenLastCalledWith("conv-1", href)
+      expect(showSuccess).toHaveBeenLastCalledWith(
+        "Saved to Downloads: /Users/test/Downloads/preguntas.md"
+      )
+    }
+    vi.unstubAllGlobals()
+  })
+  it("shows file failures in the app instead of falling back to the OS", async () => {
+    const saveFileLink = vi.fn().mockRejectedValue(new Error("File not found"))
+    const showError = vi.spyOn(toast, "error").mockImplementation(() => "error")
+    vi.stubGlobal("cowork", { saveFileLink })
+    mount("[Download](missing.md)", "settled", "", false, "conv-1")
+    await act(async () => container.querySelector("a")!.click())
+    expect(showError).toHaveBeenCalledWith("File not found")
+    vi.unstubAllGlobals()
+  })
+  it("keeps web links external and blocks executable schemes", () => {
+    mount("[Web](https://example.com) [Unsafe](javascript:alert%281%29)")
+    const links = container.querySelectorAll("a")
+    expect(links[0].target).toBe("_blank")
+    expect(links[0].getAttribute("href")).toBe("https://example.com")
+    expect(links[1].getAttribute("href")).toBe("")
   })
 })

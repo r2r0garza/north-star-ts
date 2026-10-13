@@ -173,7 +173,7 @@ function envAt(
 
 // ── Python ──────────────────────────────────────────────────────────────────
 
-const venvPython = (dir: string, platform: NodeJS.Platform) =>
+export const venvPython = (dir: string, platform: NodeJS.Platform) =>
   platform === "win32" ? `${dir}\\Scripts\\python.exe` : `${dir}/bin/python`
 
 export function venvDir(ctx: RecipeContext): string {

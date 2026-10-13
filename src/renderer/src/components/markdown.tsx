@@ -8,7 +8,7 @@ import {
   useRef,
   useState,
 } from "react"
-import ReactMarkdown from "react-markdown"
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown"
 import type { Components } from "react-markdown"
 import remarkGfm from "remark-gfm"
 import rehypeHighlight from "rehype-highlight"
@@ -17,6 +17,8 @@ import { Mermaid } from "./mermaid"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { ConversationFindText } from "@/components/conversation-find-text"
+import { toast } from "sonner"
+import { localFileLink, markdownLinkUrl } from "../../../shared/file-link"
 
 // Extract the plain-text content of a node's children — used to pull the raw
 // source out of a fenced code block (for mermaid and copy-friendly blocks).
@@ -88,10 +90,12 @@ function createComponents({
   highlightCode,
   renderMermaid,
   findQuery,
+  conversationId,
 }: {
   highlightCode: boolean
   renderMermaid: boolean
   findQuery: string
+  conversationId: string
 }): Components {
   const find = (children: React.ReactNode): React.ReactNode =>
     Children.map(children, (child) => {
@@ -166,14 +170,40 @@ function createComponents({
       }
       return <CodeBlock {...props}>{children}</CodeBlock>
     },
-    a({ children, ...props }) {
-      // External links open in the OS browser via the main process handler.
+    a({ children, href, ...props }) {
+      const local = href ? localFileLink(href) !== null : false
       return (
         <a
           className="text-primary underline underline-offset-2"
-          target="_blank"
+          target={local ? undefined : "_blank"}
           rel="noreferrer"
           {...props}
+          href={href}
+          onClick={
+            local
+              ? (event) => {
+                  event.preventDefault()
+                  if (!conversationId) {
+                    toast.error(
+                      "This file link needs a conversation to download from."
+                    )
+                    return
+                  }
+                  void window.cowork
+                    .saveFileLink(conversationId, href!)
+                    .then((path) =>
+                      toast.success(`Saved to Downloads: ${path}`)
+                    )
+                    .catch((error: unknown) => {
+                      toast.error(
+                        error instanceof Error
+                          ? error.message
+                          : "Could not save this file."
+                      )
+                    })
+                }
+              : undefined
+          }
         >
           {find(children)}
         </a>
@@ -199,6 +229,7 @@ type MarkdownProps = {
   mode?: "settled" | "streaming"
   findQuery?: string
   preserveSoftBreaks?: boolean
+  conversationId?: string
 }
 
 // Renders assistant Markdown with GFM in both modes. Settled content adds syntax
@@ -208,6 +239,7 @@ export const Markdown = memo(function Markdown({
   mode = "settled",
   findQuery = "",
   preserveSoftBreaks = false,
+  conversationId = "",
 }: MarkdownProps) {
   const components = useMemo(
     () =>
@@ -215,8 +247,9 @@ export const Markdown = memo(function Markdown({
         highlightCode: mode === "settled",
         renderMermaid: mode === "settled",
         findQuery,
+        conversationId,
       }),
-    [findQuery, mode]
+    [findQuery, mode, conversationId]
   )
 
   return (
@@ -224,7 +257,8 @@ export const Markdown = memo(function Markdown({
       className={cn(
         "prose prose-sm max-w-none dark:prose-invert",
         "max-w-full min-w-0 [overflow-wrap:anywhere]",
-        preserveSoftBreaks && "[&_li]:whitespace-pre-line [&_p]:whitespace-pre-line",
+        preserveSoftBreaks &&
+          "[&_li]:whitespace-pre-line [&_p]:whitespace-pre-line",
         "prose-pre:bg-transparent prose-pre:p-0", // <pre> styling handled above
         "prose-headings:font-semibold prose-p:leading-relaxed"
       )}
@@ -233,6 +267,11 @@ export const Markdown = memo(function Markdown({
         remarkPlugins={remarkPlugins}
         rehypePlugins={mode === "settled" ? settledRehypePlugins : undefined}
         components={components}
+        urlTransform={(url, key, node) =>
+          node.tagName === "a" && key === "href"
+            ? markdownLinkUrl(url)
+            : defaultUrlTransform(url)
+        }
       >
         {content}
       </ReactMarkdown>

@@ -106,6 +106,31 @@ vi.mock("../agent", () => ({
     return { content }
   },
 }))
+// Command phases (plan 104) run through the executor; stub it to a clean exit
+// so no real shell runs in the story's worktree.
+vi.mock("../tasks/process/command-executor", () => ({
+  executeProcessCommand: async (input: {
+    config: { command: string; cwd: string | null }
+  }) => ({
+    receipt: {
+      version: 1,
+      command: input.config.command,
+      cwd: input.config.cwd,
+      environment: "local",
+      status: "completed",
+      exitCode: 0,
+      signal: null,
+      startedAt: 1,
+      finishedAt: 2,
+      stdout: "2 passed\n",
+      stderr: "",
+      outputTruncated: false,
+      capturedOutputBytes: 9,
+      observedOutputBytes: 9,
+      error: null,
+    },
+  }),
+}))
 // The dispatch router's classifier reply.
 let routerReply = ""
 let hangLoops = false
@@ -139,7 +164,10 @@ import { listApprovals } from "../db/repositories/approvals"
 import * as rigs from "../db/repositories/rigs"
 import * as features from "../db/repositories/features"
 import * as playbooks from "../db/repositories/playbooks"
-import { upsertWorkspace } from "../db/repositories/workspaces"
+import {
+  setWorkspaceCheck,
+  upsertWorkspace,
+} from "../db/repositories/workspaces"
 import { ProcessService } from "../tasks/process/service"
 import { createDefaultPlaybook } from "./playbook-defaults"
 import {
@@ -450,6 +478,112 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
       status: "failed",
       outcomeReason: "The playbook finished without recording a proof.",
     })
+  })
+
+  it("lets a builder verify its own user story when every met criterion cites a completed command phase", async () => {
+    const rig = orchestratedRig()
+    const { userStory } = billingFeature(rig.id)
+    const playbook = createDefaultPlaybook("user_story")
+    const processId = playbook.hooks.find((h) => h.hook === "run")!.processId
+    const graph = processes.getProcessGraph(processId)!
+    const build = graph.phases.find((p) => p.key === "build")!
+    const test = graph.phases.find((p) => p.key === "test")!
+    const unitTests = processes.createPhase({
+      processId,
+      key: "unit-tests",
+      name: "Unit tests",
+      position: 99,
+      kind: "command",
+      commandConfig: {
+        source: "check",
+        check: "test",
+        timeoutMs: 60_000,
+        maxOutputBytes: 4096,
+      },
+    })
+    // The feature's workspace says what its `test` check runs.
+    setWorkspaceCheck(upsertWorkspace(tmpdir()).id, "test", {
+      command: "pnpm test",
+      cwd: null,
+    })
+    processes.createEdge({
+      processId,
+      fromPhaseId: build.id,
+      toPhaseId: unitTests.id,
+    })
+    processes.createEdge({
+      processId,
+      fromPhaseId: unitTests.id,
+      toPhaseId: test.id,
+    })
+    for (const agent of processes.listPhaseAgents(test.id))
+      processes.deletePhaseAgent(agent.id)
+    processes.createPhaseAgent({
+      phaseId: test.id,
+      seatRole: "builder",
+      position: 0,
+    })
+    proofSubmissions.push({
+      verdict: "accepted",
+      criteria: acceptedProof.criteria.map((c) => ({
+        ...c,
+        commandPhaseKey: "unit-tests",
+      })),
+    })
+
+    const playbookRun = await runner.startUserStory(userStory.id)
+    await drive(playbookRun.processRunId!)
+
+    const proofCall = loopCalls.find((c) => c.proofStep)!
+    expect(proofCall.proofResult).toMatchObject({
+      ok: true,
+      status: "accepted",
+    })
+    expect(playbooks.getPlaybookRun(playbookRun.id)?.proof?.verifiedBy).toEqual(
+      {
+        kind: "command",
+        phaseKey: "unit-tests",
+      }
+    )
+    // The command phase ran no worker of its own.
+    const unitRun = processes
+      .listPhaseRuns({ runId: playbookRun.processRunId! })
+      .find((pr) => pr.phaseId === unitTests.id)!
+    expect(unitRun).toMatchObject({
+      status: "completed",
+      taskId: null,
+      seatAddress: null,
+    })
+  })
+
+  it("won't start a user story whose playbook runs a check the workspace doesn't define", async () => {
+    const rig = orchestratedRig()
+    const { userStory } = billingFeature(rig.id)
+    const playbook = createDefaultPlaybook("user_story")
+    const processId = playbook.hooks.find((h) => h.hook === "run")!.processId
+    processes.createPhase({
+      processId,
+      key: "e2e",
+      name: "End-to-end tests",
+      position: 99,
+      kind: "command",
+      commandConfig: {
+        source: "check",
+        check: "e2e",
+        timeoutMs: 60_000,
+        maxOutputBytes: 4096,
+      },
+    })
+
+    await expect(runner.startUserStory(userStory.id)).rejects.toThrow(
+      /doesn't define the check “e2e”/
+    )
+    // Refused before anything started: no attempt spent, the story untouched.
+    expect(loopCalls).toHaveLength(0)
+    expect(playbooks.listPlaybookRuns({ userStoryId: userStory.id })).toEqual(
+      []
+    )
+    expect(features.getUserStory(userStory.id)!.status).toBe(userStory.status)
   })
 
   // A runner whose service never notifies it: the playbook run stays open

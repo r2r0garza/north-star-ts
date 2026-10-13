@@ -1,4 +1,8 @@
 import { parseCompletionContract } from "./completion-contract"
+import {
+  PROCESS_PHASE_KINDS,
+  parseCommandConfig,
+} from "../../shared/process-command"
 import { getDb } from "../db/connection"
 import {
   createEdge,
@@ -21,6 +25,8 @@ import type {
   PhaseGatePolicy,
   PhaseRouting,
   PhaseContextScope,
+  ProcessCommandConfig,
+  ProcessPhaseKind,
   Provider,
   ProcessRuntimeConfig,
   ProcessRuntimeSelection,
@@ -37,10 +43,12 @@ import type {
 } from "../agent/agents/types"
 import { sanitizeFailureContext } from "../tasks/process/failure-sanitizer"
 
-// v2 (plan 106.3) adds seat-role phase agents and proof steps; v1 files remain
-// importable and export unchanged in meaning.
-const FORMAT_VERSION = 2
-const SUPPORTED_FORMAT_VERSIONS = [1, 2]
+// v2 (plan 106.3) adds seat-role phase agents and proof steps; v3 (plan 104)
+// adds the explicit phase kind and command phases. Older files remain
+// importable: a phase without a kind is a sub-process phase when it names one,
+// else an agent phase.
+const FORMAT_VERSION = 3
+const SUPPORTED_FORMAT_VERSIONS = [1, 2, 3]
 const INCIDENT_FORMAT_VERSION = 1
 const AGENT_REF_PREFIX = "agentref:v1:"
 
@@ -91,6 +99,10 @@ export interface ProcessExportPhaseAgent {
 
 export interface ProcessExportPhase {
   completionContract?: ProcessPhase["completionContract"]
+  kind?: ProcessPhaseKind
+  // A command phase's portable config (the exact command, never generated on
+  // import). Absent for other kinds.
+  command?: ProcessCommandConfig | null
   key: string
   name: string
   routing: PhaseRouting
@@ -116,7 +128,7 @@ export interface ProcessExportEdge {
 }
 
 export interface ProcessExport {
-  formatVersion: 1 | 2
+  formatVersion: 1 | 2 | 3
   exportedAt: string
   definition: {
     name: string
@@ -300,7 +312,10 @@ export function buildProcessExport(graph: ProcessGraph): ProcessExport {
         const subprocess = phase.subprocessId
           ? getProcessDefinition(phase.subprocessId)
           : undefined
+        const kind = phase.kind ?? (phase.subprocessId ? "subprocess" : "agent")
         return {
+          kind,
+          command: kind === "command" ? (phase.commandConfig ?? null) : null,
           key: phase.key,
           name: phase.name,
           routing: phase.routing,
@@ -395,14 +410,27 @@ export function importProcessExport(input: unknown): ProcessImportResult {
 
     const phaseIdByKey = new Map<string, string>()
     for (const phase of parsed.phases) {
-      const subprocessId = resolveSubprocess(
-        phase.subprocess,
-        warnings,
-        phase.key,
-        definition.id
-      )
+      const subprocessId =
+        phase.kind === "command"
+          ? null
+          : resolveSubprocess(
+              phase.subprocess,
+              warnings,
+              phase.key,
+              definition.id
+            )
+      // An unresolved sub-process reference keeps the pre-104 behavior: the
+      // phase imports as an agent phase, with a warning already recorded.
+      const kind: ProcessPhaseKind =
+        phase.kind === "command"
+          ? "command"
+          : subprocessId
+            ? "subprocess"
+            : "agent"
       const created = createPhase({
         processId: definition.id,
+        kind,
+        commandConfig: kind === "command" ? phase.command : null,
         key: phase.key,
         name: phase.name,
         routing: phase.routing,
@@ -428,7 +456,11 @@ export function importProcessExport(input: unknown): ProcessImportResult {
       })
       phaseIdByKey.set(phase.key, created.id)
 
-      for (const agent of phase.agents) {
+      if (kind === "command" && phase.agents.length > 0)
+        warnings.push(
+          `phase '${phase.key}' is a command phase; its agent pool was not imported.`
+        )
+      for (const agent of kind === "command" ? [] : phase.agents) {
         createPhaseAgent({
           phaseId: created.id,
           ...("seatRole" in agent.agent
@@ -634,7 +666,24 @@ function validateProcessExport(input: unknown): ProcessExport {
     const key = nonEmptyString(phase.key, `phases[${index}].key`)
     if (phaseKeys.has(key)) throw new Error(`Duplicate phase key '${key}'`)
     phaseKeys.add(key)
+    const kind =
+      phase.kind === undefined
+        ? undefined
+        : enumValue(phase.kind, PROCESS_PHASE_KINDS, `phases[${index}].kind`)
+    // Validation only: an import never runs the command, it stores the text.
+    const command =
+      kind === "command"
+        ? parseCommandConfig(phase.command, `phases[${index}].command`)
+        : null
+    if (kind !== "command" && phase.command != null)
+      throw new Error(
+        `phases[${index}].command is only allowed on a command phase`
+      )
+    if (kind === "command" && phase.subprocess != null)
+      throw new Error(`phases[${index}] is a command phase with a sub-process`)
     result.phases.push({
+      kind,
+      command,
       key,
       name: nonEmptyString(phase.name, `phases[${index}].name`),
       routing: enumValue(phase.routing, ROUTINGS, `phases[${index}].routing`),

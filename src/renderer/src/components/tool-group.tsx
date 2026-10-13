@@ -440,51 +440,62 @@ export function ApprovalCard({
   const shellDetails = shellApprovalDetails(approval.detail)
   const browserDetails = browserApprovalDetails(approval.detail)
   return (
-    <div className="flex flex-col gap-2 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-xs">
-      <div className="flex items-center gap-2 font-medium text-destructive">
-        <ShieldAlert className="size-3.5 shrink-0" />
-        <span>
-          {approval.explicit
-            ? "Explicit approval required"
-            : "Approval required"}{" "}
-          — {approval.reason}
-        </span>
-      </div>
-      <pre className="max-w-full overflow-hidden rounded-md bg-muted px-2 py-1.5 break-words whitespace-pre-wrap text-muted-foreground">
-        {approval.summary}
-      </pre>
-      {shellDetails.length > 0 && (
-        <div className="rounded-md border bg-background px-2 py-1.5 text-muted-foreground">
-          {shellDetails.map((line) => (
-            <div key={line} className="break-words">
-              {line}
-            </div>
-          ))}
+    <div className="flex max-h-[50dvh] min-h-0 min-w-0 flex-col gap-2 overflow-hidden rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-xs">
+      <div
+        data-slot="approval-details"
+        tabIndex={0}
+        role="region"
+        aria-label="Approval details"
+        className="min-h-0 space-y-2 overflow-auto [overflow-wrap:anywhere]"
+      >
+        <div className="flex items-center gap-2 font-medium text-destructive">
+          <ShieldAlert className="size-3.5 shrink-0" />
+          <span>
+            {approval.explicit
+              ? "Explicit approval required"
+              : "Approval required"}{" "}
+            — {approval.reason}
+          </span>
         </div>
-      )}
-      {browserDetails.length > 0 && (
-        <div className="rounded-md border bg-background px-2 py-1.5 text-muted-foreground">
-          {browserDetails.map((line) => (
-            <div key={line} className="break-words">
-              {line}
-            </div>
-          ))}
-        </div>
-      )}
-      {diff && (
-        <div className="max-w-full min-w-0 rounded-md border bg-background">
-          <div className="flex items-center justify-between gap-2 border-b px-2 py-1 text-[0.7rem] text-muted-foreground">
-            <span>
-              {diff.additions ?? 0} additions, {diff.deletions ?? 0} deletions
-            </span>
-            {diff.truncated && <span>Preview truncated</span>}
+        <pre className="max-w-full overflow-hidden rounded-md bg-muted px-2 py-1.5 break-words whitespace-pre-wrap text-muted-foreground">
+          {approval.summary}
+        </pre>
+        {shellDetails.length > 0 && (
+          <div className="rounded-md border bg-background px-2 py-1.5 text-muted-foreground">
+            {shellDetails.map((line) => (
+              <div key={line} className="break-words">
+                {line}
+              </div>
+            ))}
           </div>
-          <pre className="max-h-56 max-w-full overflow-auto px-2 py-1.5 font-mono text-[0.7rem] leading-4 whitespace-pre">
-            {diff.diff}
-          </pre>
-        </div>
-      )}
-      <div className="flex flex-wrap items-center gap-2">
+        )}
+        {browserDetails.length > 0 && (
+          <div className="rounded-md border bg-background px-2 py-1.5 text-muted-foreground">
+            {browserDetails.map((line) => (
+              <div key={line} className="break-words">
+                {line}
+              </div>
+            ))}
+          </div>
+        )}
+        {diff && (
+          <div className="max-w-full min-w-0 rounded-md border bg-background">
+            <div className="flex items-center justify-between gap-2 border-b px-2 py-1 text-[0.7rem] text-muted-foreground">
+              <span>
+                {diff.additions ?? 0} additions, {diff.deletions ?? 0} deletions
+              </span>
+              {diff.truncated && <span>Preview truncated</span>}
+            </div>
+            <pre className="max-h-56 max-w-full overflow-auto px-2 py-1.5 font-mono text-[0.7rem] leading-4 whitespace-pre">
+              {diff.diff}
+            </pre>
+          </div>
+        )}
+      </div>
+      <div
+        data-slot="approval-actions"
+        className="flex shrink-0 flex-wrap items-center gap-2"
+      >
         <Button size="xs" onClick={() => onApproval(requestId, "approved")}>
           Approve once
           <Kbd className="ml-1.5">⏎</Kbd>
