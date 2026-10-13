@@ -12,10 +12,24 @@ export interface ChromeTab {
   title: string
   url: string
   loading: boolean
+  canGoBack: boolean
+  canGoForward: boolean
   active: boolean
 }
 
 const api = {
+  platform: process.platform,
+  back: (): void => {
+    void ipcRenderer.invoke("browser:back")
+  },
+  forward: (): void => {
+    void ipcRenderer.invoke("browser:forward")
+  },
+  onFocusUrl: (cb: () => void): (() => void) => {
+    const listener = () => cb()
+    ipcRenderer.on("browser:focus-url", listener)
+    return () => ipcRenderer.off("browser:focus-url", listener)
+  },
   navigate: (url: string): void => {
     void ipcRenderer.invoke("browser:navigate", url)
   },

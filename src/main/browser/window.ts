@@ -26,6 +26,8 @@ export interface TabInfo {
   title: string
   url: string
   loading: boolean
+  canGoBack: boolean
+  canGoForward: boolean
   active: boolean
 }
 
@@ -131,6 +133,14 @@ export class BrowserWindowHost {
   reveal(): void {
     const win = this.ensureWindow()
     if (!win.isVisible()) win.showInactive()
+  }
+
+  focusUrl(): boolean {
+    const win = this.window
+    if (!win || win.isDestroyed() || !win.isVisible()) return false
+    win.webContents.focus()
+    this.sendToChrome("browser:focus-url")
+    return true
   }
 
   // Hide the window (kept for reuse, not destroyed) — used when the last tab

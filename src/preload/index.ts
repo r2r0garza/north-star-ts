@@ -392,7 +392,11 @@ function releaseTaskSubscription(): void {
 // This is the ONLY surface the UI can use to reach the main process.
 const api = {
   saveFileLink: (conversationId: string, href: string) =>
-    ipcRenderer.invoke("files:save-link", conversationId, href) as Promise<string>,
+    ipcRenderer.invoke(
+      "files:save-link",
+      conversationId,
+      href
+    ) as Promise<string>,
   subagents: {
     artifacts: (workspace?: string) =>
       ipcRenderer.invoke("subagents:artifacts", workspace) as Promise<
@@ -1878,6 +1882,17 @@ const api = {
   browserNavigate: (url: string) => {
     void ipcRenderer.invoke("browser:navigate", url)
   },
+  browserBack: () => {
+    void ipcRenderer.invoke("browser:back")
+  },
+  browserForward: () => {
+    void ipcRenderer.invoke("browser:forward")
+  },
+  onBrowserFocusUrl: (cb: () => void) => {
+    const listener = () => cb()
+    ipcRenderer.on("browser:focus-url", listener)
+    return () => ipcRenderer.off("browser:focus-url", listener)
+  },
   browserReload: () => {
     void ipcRenderer.invoke("browser:reload")
   },
@@ -1921,6 +1936,8 @@ const api = {
         title: string
         url: string
         loading: boolean
+        canGoBack: boolean
+        canGoForward: boolean
         active: boolean
       }>
     ) => void
@@ -1932,6 +1949,8 @@ const api = {
         title: string
         url: string
         loading: boolean
+        canGoBack: boolean
+        canGoForward: boolean
         active: boolean
       }>
     ) => cb(tabs)
