@@ -739,6 +739,8 @@ ipcMain.handle("browser:navigate", (_event, url: string) => {
     browserManager.userNavigate(url.trim())
 })
 ipcMain.handle("browser:reload", () => browserManager.userReload())
+ipcMain.handle("browser:back", () => browserManager.userBack())
+ipcMain.handle("browser:forward", () => browserManager.userForward())
 // Chrome/panel "×" → main: user closes the active conversation's browser tab
 // when they no longer need it. Frees the view; a later navigate reopens a fresh
 // one. Fire-and-forget (the tab strip pushes the resulting empty state).

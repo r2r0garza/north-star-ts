@@ -78,6 +78,14 @@ export class SidebarBrowserHost {
     this.apply()
   }
 
+  focusUrl(): boolean {
+    if (!this.hasWindow() || !this.visible || !this.bounds || !this.view)
+      return false
+    this.window!.webContents.focus()
+    this.window!.webContents.send("browser:focus-url")
+    return true
+  }
+
   // Push the current visibility + bounds to the embedded view. Rounds to integer
   // pixels (setBounds wants ints; fractional rects can blur the page).
   private apply(): void {

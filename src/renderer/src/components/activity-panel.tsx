@@ -1,8 +1,11 @@
 import * as React from "react"
+import { isBrowserAddressShortcut } from "../../../shared/browser-shortcut"
 import {
   PanelRight,
   ChevronRight,
   RotateCw,
+  ArrowLeft,
+  ArrowRight,
   ExternalLink,
   SquareDashedMousePointer,
   Sun,
@@ -296,6 +299,9 @@ function BrowserPanel({
   // browser detaches into its own window (and re-open when it docks back).
   onPoppedOutChange: (poppedOut: boolean) => void
 }) {
+  const urlRef = React.useRef<HTMLInputElement>(null)
+  const [canGoBack, setCanGoBack] = React.useState(false)
+  const [canGoForward, setCanGoForward] = React.useState(false)
   const [url, setUrl] = React.useState("")
   const [loading, setLoading] = React.useState(false)
   const [picking, setPicking] = React.useState(false)
@@ -305,12 +311,45 @@ function BrowserPanel({
   // The URL currently being edited (null = mirror the live tab's URL).
   const [draft, setDraft] = React.useState<string | null>(null)
 
+  React.useEffect(() => {
+    if (!embedded || poppedOut) return
+    const focusUrl = () => {
+      urlRef.current?.focus()
+      urlRef.current?.select()
+    }
+    const unsubscribe = window.cowork.onBrowserFocusUrl(focusUrl)
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        isBrowserAddressShortcut(
+          {
+            key: event.key,
+            meta: event.metaKey,
+            control: event.ctrlKey,
+            alt: event.altKey,
+            shift: event.shiftKey,
+          },
+          window.cowork.platform
+        )
+      ) {
+        event.preventDefault()
+        focusUrl()
+      }
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => {
+      unsubscribe()
+      window.removeEventListener("keydown", onKeyDown)
+    }
+  }, [embedded, poppedOut])
+
   // Track the active tab's URL/loading from the pushed tab list.
   React.useEffect(() => {
     return window.cowork.onBrowserTabs((tabs) => {
       const tab = tabs.find((t) => t.active)
       setUrl(tab?.url ?? "")
       setLoading(tab?.loading ?? false)
+      setCanGoBack(tab?.canGoBack ?? false)
+      setCanGoForward(tab?.canGoForward ?? false)
     })
   }, [])
 
@@ -339,6 +378,26 @@ function BrowserPanel({
       {/* Chrome: URL bar + reload + pick + pop-out. */}
       <div className="flex items-center gap-1 border-b px-2 py-1.5">
         <TooltipButton
+          tooltip="Back"
+          type="button"
+          aria-label="Back"
+          disabled={!canGoBack}
+          onClick={() => window.cowork.browserBack()}
+          className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+        >
+          <ArrowLeft className="size-4" />
+        </TooltipButton>
+        <TooltipButton
+          tooltip="Forward"
+          type="button"
+          aria-label="Forward"
+          disabled={!canGoForward}
+          onClick={() => window.cowork.browserForward()}
+          className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+        >
+          <ArrowRight className="size-4" />
+        </TooltipButton>
+        <TooltipButton
           tooltip="Reload"
           type="button"
           onClick={() => window.cowork.browserReload()}
@@ -350,7 +409,10 @@ function BrowserPanel({
         <form onSubmit={submitUrl} className="min-w-0 flex-1">
           <input
             type="text"
+            ref={urlRef}
+            aria-label="Browser URL"
             value={draft ?? url}
+            onFocus={(e) => e.target.select()}
             onChange={(e) => setDraft(e.target.value)}
             onBlur={() => setDraft(null)}
             placeholder="Enter a URL"

@@ -1,4 +1,5 @@
 import type { BrowserWindow } from "electron"
+import { isBrowserAddressShortcut } from "../../shared/browser-shortcut"
 import { BrowserSession } from "./session"
 import { BrowserWindowHost, type TabInfo } from "./window"
 import { SidebarBrowserHost, type SidebarBounds } from "./sidebar-host"
@@ -186,6 +187,19 @@ export class BrowserManager {
     // Any state change (url/title/loading) refreshes the chrome's tab strip and
     // the app renderer's browser chrome.
     const push = () => this.pushTabs()
+    wc.on("before-input-event", (event, input) => {
+      if (
+        input.type !== "keyDown" ||
+        !isBrowserAddressShortcut(input, process.platform) ||
+        this.activeConversationId !== conversationId
+      )
+        return
+      const focused =
+        this.surface === "window"
+          ? this.windowHost.focusUrl()
+          : this.sidebarHost.focusUrl()
+      if (focused) event.preventDefault()
+    })
     wc.on("did-navigate", push)
     wc.on("did-navigate-in-page", push)
     wc.on("did-start-loading", push)
@@ -319,6 +333,8 @@ export class BrowserManager {
         title: wc.getTitle() || url || "New tab",
         url,
         loading: wc.isLoadingMainFrame(),
+        canGoBack: wc.navigationHistory.canGoBack(),
+        canGoForward: wc.navigationHistory.canGoForward(),
         active: id === this.activeConversationId,
       })
     }
@@ -390,6 +406,22 @@ export class BrowserManager {
   userClose(): boolean {
     if (this.disposed || !this.activeConversationId) return false
     return this.closeTab(this.activeConversationId)
+  }
+
+  userBack(): void {
+    if (this.disposed || !this.activeConversationId) return
+    const wc = this.tabs.get(this.activeConversationId)?.webContents
+    if (wc && !wc.isDestroyed() && wc.navigationHistory.canGoBack()) {
+      wc.navigationHistory.goBack()
+    }
+  }
+
+  userForward(): void {
+    if (this.disposed || !this.activeConversationId) return
+    const wc = this.tabs.get(this.activeConversationId)?.webContents
+    if (wc && !wc.isDestroyed() && wc.navigationHistory.canGoForward()) {
+      wc.navigationHistory.goForward()
+    }
   }
 
   // User-driven reload from a chrome/panel — applies to the active tab.
