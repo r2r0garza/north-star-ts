@@ -1,11 +1,5 @@
 import * as React from "react"
-import {
-  Check,
-  ChevronDown,
-  GitBranch,
-  LoaderCircle,
-  ShieldAlert,
-} from "lucide-react"
+import { Check, ChevronDown, GitBranch, ShieldAlert } from "lucide-react"
 import { toast } from "sonner"
 import { GitBranchSwitcher } from "@/components/git-branch-switcher"
 import { Button } from "@/components/ui/button"
@@ -33,6 +27,7 @@ import {
 import type { GitStatusEntry, SubagentArtifact } from "@/types"
 import { useGitStatus } from "@/lib/git-status"
 import { runGitMutation, useGitMutationBusy } from "@/lib/git-operation"
+import { Spinner } from "@/components/ui/spinner"
 
 function committable(entry: GitStatusEntry) {
   return entry.kind !== "ignored" && entry.kind !== "unmerged"
@@ -266,11 +261,7 @@ export function GitActions({
                         }
                         className="relative flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
                       >
-                        {busy ? (
-                          <LoaderCircle className="size-4 animate-spin" />
-                        ) : (
-                          <GitBranch className="size-4" />
-                        )}
+                        {busy ? <Spinner /> : <GitBranch className="size-4" />}
                         <span
                           aria-hidden="true"
                           className={`absolute top-0.5 right-0.5 size-1.5 rounded-full ring-2 ring-background ${statusLight.className}`}
@@ -610,15 +601,14 @@ function CommitDialog({
             onClick={() => void askAi()}
             disabled={asking || selected.size === 0}
           >
-            {asking && <LoaderCircle className="animate-spin" />}AI - Create
-            Commit Message
+            {asking && <Spinner />}AI - Create Commit Message
           </Button>
           <Button
             type="button"
             onClick={() => void commit()}
             disabled={committing || selected.size === 0 || !message.trim()}
           >
-            {committing && <LoaderCircle className="animate-spin" />}Commit
+            {committing && <Spinner />}Commit
           </Button>
         </DialogFooter>
       </DialogContent>

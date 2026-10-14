@@ -10,7 +10,6 @@ import {
   FolderOpen,
   GitBranch,
   List,
-  Loader2,
   Plus,
   Trash2,
   XIcon,
@@ -95,6 +94,7 @@ import type {
   Workspace,
   WorkspaceAnalysis,
 } from "@/types"
+import { Spinner } from "@/components/ui/spinner"
 
 function slug(value: string) {
   return value
@@ -176,7 +176,7 @@ function PreparingNotice({
   const minutes = Math.floor((Date.now() - preparing.since) / 60_000)
   return (
     <div className="flex items-center gap-2 rounded-md border border-sky-500/40 bg-sky-500/5 p-3 text-sm">
-      <Loader2 className="size-4 shrink-0 animate-spin text-sky-500" />
+      <Spinner className="text-sky-500" />
       <div>
         <div className="font-medium">Preparing its worktree…</div>
         <div className="text-xs text-muted-foreground">
@@ -798,7 +798,7 @@ function MilestoneView({
                                   ?.step ?? undefined
                               }
                             >
-                              <Loader2 className="size-3 animate-spin" />
+                              <Spinner className="size-3" />
                               Preparing worktree
                             </Badge>
                           ) : (

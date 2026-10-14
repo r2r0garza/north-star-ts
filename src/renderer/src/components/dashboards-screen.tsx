@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   ArrowLeft,
-  Loader2,
   Pencil,
   Pin,
   PinOff,
@@ -71,6 +70,7 @@ import type {
   DashboardWidgetData,
   DashboardWidgetType,
 } from "@/types"
+import { Spinner } from "@/components/ui/spinner"
 
 const ResponsiveGrid = WidthProvider(GridLayout)
 const GRID_COLS = 12
@@ -713,9 +713,15 @@ export function DashboardsScreen({ onClose }: { onClose: () => void }) {
                       onClick={refresh}
                       disabled={refreshing}
                     >
-                      <RefreshCw
-                        className={cn("size-4", refreshing && "animate-spin")}
-                      />
+                      {/* Spin the wrapper, not the <svg>: see Spinner. */}
+                      <span
+                        className={cn(
+                          "inline-flex",
+                          refreshing && "animate-spin"
+                        )}
+                      >
+                        <RefreshCw className="size-4" />
+                      </span>
                       Refresh
                     </Button>
                     <Button size="sm" onClick={() => setAddOpen(true)}>
@@ -782,7 +788,7 @@ export function DashboardsScreen({ onClose }: { onClose: () => void }) {
             </>
           ) : loading ? (
             <div className="flex flex-1 items-center justify-center">
-              <Loader2 className="size-5 animate-spin text-muted-foreground" />
+              <Spinner className="size-5 text-muted-foreground" />
             </div>
           ) : (
             <div className="flex flex-1 items-center justify-center p-8 text-center text-sm text-muted-foreground">

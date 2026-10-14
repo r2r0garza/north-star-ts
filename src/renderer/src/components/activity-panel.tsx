@@ -404,7 +404,10 @@ function BrowserPanel({
           aria-label="Reload"
           className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         >
-          <RotateCw className={cn("size-4", loading && "animate-spin")} />
+          {/* Spin the wrapper, not the <svg>: see Spinner. */}
+          <span className={cn("inline-flex", loading && "animate-spin")}>
+            <RotateCw className="size-4" />
+          </span>
         </TooltipButton>
         <form onSubmit={submitUrl} className="min-w-0 flex-1">
           <input

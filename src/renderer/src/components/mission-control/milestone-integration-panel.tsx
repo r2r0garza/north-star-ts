@@ -5,7 +5,6 @@ import {
   ExternalLink,
   GitBranch,
   GitMerge,
-  Loader2,
   RotateCcw,
   Wrench,
   XIcon,
@@ -13,6 +12,7 @@ import {
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Spinner } from "@/components/ui/spinner"
 import {
   Dialog,
   DialogContent,
@@ -96,7 +96,7 @@ function QueueRow({
     <div className="space-y-1.5 rounded-md border p-3 text-sm">
       <div className="flex flex-wrap items-center gap-2">
         {entry.status === "merging" || entry.status === "resolving" ? (
-          <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
+          <Spinner className="size-3.5 text-muted-foreground" />
         ) : entry.status === "merged" ? (
           <CheckCircle2 className="size-3.5 text-emerald-600" />
         ) : entry.status === "conflict" ? (
@@ -285,7 +285,7 @@ function LandDialog({
             Cancel
           </Button>
           <Button disabled={pending || !summary?.headOid} onClick={() => void approve()}>
-            {pending && <Loader2 className="size-3.5 animate-spin" />}
+            {pending && <Spinner className="size-3.5" />}
             {pr ? "Approve and open PR" : "Approve and merge"}
           </Button>
         </DialogFooter>

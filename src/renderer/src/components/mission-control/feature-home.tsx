@@ -4,7 +4,6 @@ import {
   Bell,
   CheckCircle2,
   CircleDashed,
-  Loader2,
   OctagonAlert,
   Pause,
   Play,
@@ -25,6 +24,7 @@ import {
   WorkspaceChecklist,
   type WorkspaceAnalysisState,
 } from "./workspace-checklist"
+import { Spinner } from "@/components/ui/spinner"
 
 // The Feature home (plan 106.11): what we're building, what's happening now,
 // and what, if anything, the user needs to do next. A draft's one primary
@@ -50,7 +50,7 @@ function ReadinessIcon({
 }) {
   switch (readiness) {
     case "checking":
-      return <Loader2 className="size-5 animate-spin text-muted-foreground" />
+      return <Spinner className="size-5 text-muted-foreground" />
     case "ready":
       return <CheckCircle2 className="size-5 text-emerald-500" />
     case "recommendations":
@@ -286,7 +286,7 @@ export function FeatureHome({
                 onClick={() => void start()}
               >
                 {pending || startAfterRun ? (
-                  <Loader2 className="size-4 animate-spin" />
+                  <Spinner />
                 ) : (
                   <Rocket className="size-4" />
                 )}
@@ -371,7 +371,7 @@ export function FeatureHome({
       {feature.status === "active" && (
         <div className="space-y-3">
           <div className="flex items-start gap-3">
-            <Loader2 className="mt-0.5 size-5 animate-spin text-primary" />
+            <Spinner className="mt-0.5 size-5 text-primary" />
             <div className="min-w-0 flex-1">
               <div className="font-medium">
                 {position?.maneuver.text ?? "Working…"}
@@ -384,7 +384,7 @@ export function FeatureHome({
               </p>
               {!!position?.preparing?.length && (
                 <p className="flex items-center gap-1 text-xs text-muted-foreground">
-                  <Loader2 className="size-3 animate-spin" />
+                  <Spinner className="size-3" />
                   {`Preparing ${position.preparing.length === 1 ? "the worktree for" : "worktrees for"} ${position.preparing
                     .map((p) => {
                       const key =

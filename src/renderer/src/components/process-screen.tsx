@@ -20,7 +20,6 @@ import {
   XCircle,
   FolderOpen,
   GripVertical,
-  Loader2,
   Pause,
   Play,
   Plus,
@@ -177,6 +176,7 @@ import type {
   GitDiffResult,
   PlaybookWithHooks,
 } from "@/types"
+import { Spinner } from "@/components/ui/spinner"
 
 // The durable approval row's `request` blob for a process gate (mirrors
 // GateRequest in the scheduler). Carries the gated phase's own phaseRunId, which
@@ -1327,7 +1327,7 @@ export function ProcessBuilder({
   if (graph === null) {
     return (
       <div className="flex flex-1 items-center justify-center text-muted-foreground">
-        <Loader2 className="size-4 animate-spin" />
+        <Spinner />
       </div>
     )
   }
@@ -3209,7 +3209,7 @@ export function RunMonitor({
   if (runs === null) {
     return (
       <div className="flex flex-1 items-center justify-center text-muted-foreground">
-        <Loader2 className="size-4 animate-spin" />
+        <Spinner />
       </div>
     )
   }
@@ -5364,7 +5364,7 @@ function runLabel(run: ProcessRun): string {
 function StatusIcon({ status }: { status: PhaseRunStatus }) {
   switch (status) {
     case "running":
-      return <Loader2 className="size-4 shrink-0 animate-spin text-blue-500" />
+      return <Spinner className="text-blue-500" />
     case "completed":
       return <CheckCircle2 className="size-4 shrink-0 text-emerald-500" />
     case "failed":

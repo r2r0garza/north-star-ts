@@ -1,5 +1,5 @@
 import * as React from "react"
-import { Check, GitBranch, LoaderCircle, Plus, Search, X } from "lucide-react"
+import { Check, GitBranch, Plus, Search, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -26,6 +26,7 @@ import { useGitStatus } from "@/lib/git-status"
 import { runGitMutation, useGitMutationBusy } from "@/lib/git-operation"
 import type { GitBranchEntry, GitBranchesResult } from "@/types"
 import { cn } from "@/lib/utils"
+import { Spinner } from "@/components/ui/spinner"
 
 export const BRANCH_NAME_MAX_LENGTH = 255
 
@@ -246,7 +247,7 @@ export function GitBranchSwitcher({ workspace }: { workspace: string }) {
                     aria-label={`Current Git branch: ${branch}. Choose branch`}
                     className="flex h-7 max-w-48 items-center gap-1 rounded-md bg-accent px-2 font-mono text-[10px] text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    <LoaderCircle className="size-3 shrink-0 animate-spin" />
+                    <Spinner className="size-3" />
                     <span className="truncate">{branch}</span>
                   </button>
                 </DropdownMenuTrigger>
@@ -349,7 +350,7 @@ export function GitBranchSwitcher({ workspace }: { workspace: string }) {
           <DropdownMenuSeparator />
           {loading && (
             <div className="flex items-center gap-2 px-2 py-2 text-xs text-muted-foreground">
-              <LoaderCircle className="size-3 animate-spin" />
+              <Spinner className="size-3" />
               Loading branches…
             </div>
           )}
