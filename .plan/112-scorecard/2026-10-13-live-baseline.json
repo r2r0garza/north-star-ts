@@ -1,0 +1,1174 @@
+{
+  "version": 1,
+  "label": "live-baseline",
+  "date": "2026-10-13",
+  "tier": "live",
+  "commit": "767ff9d",
+  "model": "gpt-6-luna",
+  "provider": "codex_subscription",
+  "configuredModel": "gpt-6-luna",
+  "notes": "Live tier: each scenario run as a feature on Autopilot with a real model, from a fresh fixture copy with its pre-authored plan. Rates per outcome across runs; cost is seat model usage from the context usage log.",
+  "scenarios": [
+    {
+      "scenario": "01-greenfield",
+      "runs": 3,
+      "rates": {
+        "gate_not_run": 1
+      },
+      "matchedRate": 0,
+      "runsWithOrphans": 0,
+      "checkRates": {
+        "stories": 1,
+        "failureClass": 1,
+        "waveGate": 0,
+        "attempts": 1,
+        "escalations": 1,
+        "orphans": 1
+      },
+      "runsWithPlanChanges": 0,
+      "cost": {
+        "meanWallMs": 262380,
+        "meanInputTokens": 2586633,
+        "meanOutputTokens": 9778
+      }
+    },
+    {
+      "scenario": "02-two-stories-one-ui",
+      "runs": 3,
+      "rates": {
+        "gate_not_run": 1
+      },
+      "matchedRate": 0,
+      "runsWithOrphans": 0,
+      "checkRates": {
+        "stories": 1,
+        "failureClass": 1,
+        "waveGate": 0,
+        "attempts": 1,
+        "escalations": 1,
+        "orphans": 1
+      },
+      "runsWithPlanChanges": 0,
+      "cost": {
+        "meanWallMs": 474168,
+        "meanInputTokens": 5538867,
+        "meanOutputTokens": 16495
+      }
+    },
+    {
+      "scenario": "03-app-needing-setup",
+      "runs": 3,
+      "rates": {
+        "class_none": 1
+      },
+      "matchedRate": 0,
+      "runsWithOrphans": 0,
+      "checkRates": {
+        "stories": 1,
+        "failureClass": 0,
+        "waveGate": 0,
+        "attempts": 0.667,
+        "escalations": 1,
+        "orphans": 1
+      },
+      "runsWithPlanChanges": 0,
+      "cost": {
+        "meanWallMs": 344120,
+        "meanInputTokens": 4065367,
+        "meanOutputTokens": 10512
+      }
+    },
+    {
+      "scenario": "04-two-services",
+      "runs": 3,
+      "rates": {
+        "story_unverified": 0.333,
+        "gate_not_run": 0.667
+      },
+      "matchedRate": 0,
+      "runsWithOrphans": 0,
+      "checkRates": {
+        "stories": 0.667,
+        "failureClass": 1,
+        "waveGate": 0,
+        "attempts": 0.667,
+        "escalations": 0.667,
+        "orphans": 1
+      },
+      "runsWithPlanChanges": 0,
+      "cost": {
+        "meanWallMs": 389122,
+        "meanInputTokens": 3461172,
+        "meanOutputTokens": 8711
+      }
+    },
+    {
+      "scenario": "05-non-ui",
+      "runs": 3,
+      "rates": {
+        "gate_not_run": 1
+      },
+      "matchedRate": 0,
+      "runsWithOrphans": 0,
+      "checkRates": {
+        "stories": 1,
+        "failureClass": 1,
+        "waveGate": 0,
+        "attempts": 1,
+        "escalations": 1,
+        "orphans": 1
+      },
+      "runsWithPlanChanges": 0,
+      "cost": {
+        "meanWallMs": 66988,
+        "meanInputTokens": 761948,
+        "meanOutputTokens": 2048
+      }
+    },
+    {
+      "scenario": "06-misread-criterion",
+      "runs": 3,
+      "rates": {
+        "misread_accepted": 1
+      },
+      "matchedRate": 0,
+      "runsWithOrphans": 0,
+      "checkRates": {
+        "stories": 0,
+        "failureClass": 0,
+        "waveGate": 1,
+        "attempts": 1,
+        "escalations": 1,
+        "orphans": 1
+      },
+      "runsWithPlanChanges": 0,
+      "cost": {
+        "meanWallMs": 97062,
+        "meanInputTokens": 1094145,
+        "meanOutputTokens": 3388
+      }
+    }
+  ],
+  "runs": [
+    {
+      "scenario": "01-greenfield",
+      "variant": null,
+      "tier": "live",
+      "outcome": "gate_not_run",
+      "matched": false,
+      "stories": {
+        "app-skeleton": "done",
+        "item-crud": "done"
+      },
+      "waveGate": "not_run",
+      "failureClass": null,
+      "storyAttempts": 2,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 291150,
+      "orphans": [],
+      "scenarioVersion": 1,
+      "appCommit": "767ff9d",
+      "settle": "settled",
+      "firstVerdicts": {
+        "app-skeleton": "accepted",
+        "item-crud": "accepted"
+      },
+      "resolvedStories": {
+        "app-skeleton": "done",
+        "item-crud": "done"
+      },
+      "resolvedVerdicts": {
+        "app-skeleton": "accepted",
+        "item-crud": "accepted"
+      },
+      "planChanges": {
+        "addedStories": [],
+        "addedMilestones": [],
+        "splits": {},
+        "cancelled": []
+      },
+      "attemptsByStory": {
+        "app-skeleton": 1,
+        "item-crud": 1
+      },
+      "proofRevisions": 0,
+      "cost": {
+        "rounds": 84,
+        "inputTokens": 2828570,
+        "outputTokens": 10561,
+        "estimated": false
+      },
+      "model": "gpt-6-luna",
+      "provider": "codex_subscription",
+      "checks": {
+        "stories": true,
+        "failureClass": true,
+        "waveGate": false,
+        "attempts": true,
+        "escalations": true,
+        "orphans": true
+      }
+    },
+    {
+      "scenario": "01-greenfield",
+      "variant": null,
+      "tier": "live",
+      "outcome": "gate_not_run",
+      "matched": false,
+      "stories": {
+        "app-skeleton": "done",
+        "item-crud": "done"
+      },
+      "waveGate": "not_run",
+      "failureClass": null,
+      "storyAttempts": 2,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 250511,
+      "orphans": [],
+      "scenarioVersion": 1,
+      "appCommit": "767ff9d",
+      "settle": "settled",
+      "firstVerdicts": {
+        "app-skeleton": "accepted",
+        "item-crud": "accepted"
+      },
+      "resolvedStories": {
+        "app-skeleton": "done",
+        "item-crud": "done"
+      },
+      "resolvedVerdicts": {
+        "app-skeleton": "accepted",
+        "item-crud": "accepted"
+      },
+      "planChanges": {
+        "addedStories": [],
+        "addedMilestones": [],
+        "splits": {},
+        "cancelled": []
+      },
+      "attemptsByStory": {
+        "app-skeleton": 1,
+        "item-crud": 1
+      },
+      "proofRevisions": 0,
+      "cost": {
+        "rounds": 74,
+        "inputTokens": 2468771,
+        "outputTokens": 9264,
+        "estimated": false
+      },
+      "model": "gpt-6-luna",
+      "provider": "codex_subscription",
+      "checks": {
+        "stories": true,
+        "failureClass": true,
+        "waveGate": false,
+        "attempts": true,
+        "escalations": true,
+        "orphans": true
+      }
+    },
+    {
+      "scenario": "01-greenfield",
+      "variant": null,
+      "tier": "live",
+      "outcome": "gate_not_run",
+      "matched": false,
+      "stories": {
+        "app-skeleton": "done",
+        "item-crud": "done"
+      },
+      "waveGate": "not_run",
+      "failureClass": null,
+      "storyAttempts": 2,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 245478,
+      "orphans": [],
+      "scenarioVersion": 1,
+      "appCommit": "767ff9d",
+      "settle": "settled",
+      "firstVerdicts": {
+        "app-skeleton": "accepted",
+        "item-crud": "accepted"
+      },
+      "resolvedStories": {
+        "app-skeleton": "done",
+        "item-crud": "done"
+      },
+      "resolvedVerdicts": {
+        "app-skeleton": "accepted",
+        "item-crud": "accepted"
+      },
+      "planChanges": {
+        "addedStories": [],
+        "addedMilestones": [],
+        "splits": {},
+        "cancelled": []
+      },
+      "attemptsByStory": {
+        "app-skeleton": 1,
+        "item-crud": 1
+      },
+      "proofRevisions": 0,
+      "cost": {
+        "rounds": 75,
+        "inputTokens": 2462558,
+        "outputTokens": 9508,
+        "estimated": false
+      },
+      "model": "gpt-6-luna",
+      "provider": "codex_subscription",
+      "checks": {
+        "stories": true,
+        "failureClass": true,
+        "waveGate": false,
+        "attempts": true,
+        "escalations": true,
+        "orphans": true
+      }
+    },
+    {
+      "scenario": "02-two-stories-one-ui",
+      "variant": "base",
+      "tier": "live",
+      "outcome": "gate_not_run",
+      "matched": false,
+      "stories": {
+        "item-management": "done",
+        "responsive-interface": "done"
+      },
+      "waveGate": "not_run",
+      "failureClass": null,
+      "storyAttempts": 2,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 375606,
+      "orphans": [],
+      "scenarioVersion": 1,
+      "appCommit": "767ff9d",
+      "settle": "settled",
+      "firstVerdicts": {
+        "item-management": "accepted",
+        "responsive-interface": "accepted"
+      },
+      "resolvedStories": {
+        "item-management": "done",
+        "responsive-interface": "done"
+      },
+      "resolvedVerdicts": {
+        "item-management": "accepted",
+        "responsive-interface": "accepted"
+      },
+      "planChanges": {
+        "addedStories": [],
+        "addedMilestones": [],
+        "splits": {},
+        "cancelled": []
+      },
+      "attemptsByStory": {
+        "item-management": 1,
+        "responsive-interface": 1
+      },
+      "proofRevisions": 0,
+      "cost": {
+        "rounds": 108,
+        "inputTokens": 3806546,
+        "outputTokens": 12349,
+        "estimated": false
+      },
+      "model": "gpt-6-luna",
+      "provider": "codex_subscription",
+      "checks": {
+        "stories": true,
+        "failureClass": true,
+        "waveGate": false,
+        "attempts": true,
+        "escalations": true,
+        "orphans": true
+      }
+    },
+    {
+      "scenario": "02-two-stories-one-ui",
+      "variant": "base",
+      "tier": "live",
+      "outcome": "gate_not_run",
+      "matched": false,
+      "stories": {
+        "item-management": "done",
+        "responsive-interface": "done"
+      },
+      "waveGate": "not_run",
+      "failureClass": null,
+      "storyAttempts": 2,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 565999,
+      "orphans": [],
+      "scenarioVersion": 1,
+      "appCommit": "767ff9d",
+      "settle": "settled",
+      "firstVerdicts": {
+        "item-management": "accepted",
+        "responsive-interface": "accepted"
+      },
+      "resolvedStories": {
+        "item-management": "done",
+        "responsive-interface": "done"
+      },
+      "resolvedVerdicts": {
+        "item-management": "accepted",
+        "responsive-interface": "accepted"
+      },
+      "planChanges": {
+        "addedStories": [],
+        "addedMilestones": [],
+        "splits": {},
+        "cancelled": []
+      },
+      "attemptsByStory": {
+        "item-management": 1,
+        "responsive-interface": 1
+      },
+      "proofRevisions": 0,
+      "cost": {
+        "rounds": 169,
+        "inputTokens": 6759488,
+        "outputTokens": 19342,
+        "estimated": false
+      },
+      "model": "gpt-6-luna",
+      "provider": "codex_subscription",
+      "checks": {
+        "stories": true,
+        "failureClass": true,
+        "waveGate": false,
+        "attempts": true,
+        "escalations": true,
+        "orphans": true
+      }
+    },
+    {
+      "scenario": "02-two-stories-one-ui",
+      "variant": "base",
+      "tier": "live",
+      "outcome": "gate_not_run",
+      "matched": false,
+      "stories": {
+        "item-management": "done",
+        "responsive-interface": "done"
+      },
+      "waveGate": "not_run",
+      "failureClass": null,
+      "storyAttempts": 2,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 480900,
+      "orphans": [],
+      "scenarioVersion": 1,
+      "appCommit": "767ff9d",
+      "settle": "settled",
+      "firstVerdicts": {
+        "item-management": "accepted",
+        "responsive-interface": "accepted"
+      },
+      "resolvedStories": {
+        "item-management": "done",
+        "responsive-interface": "done"
+      },
+      "resolvedVerdicts": {
+        "item-management": "accepted",
+        "responsive-interface": "accepted"
+      },
+      "planChanges": {
+        "addedStories": [],
+        "addedMilestones": [],
+        "splits": {},
+        "cancelled": []
+      },
+      "attemptsByStory": {
+        "item-management": 1,
+        "responsive-interface": 1
+      },
+      "proofRevisions": 0,
+      "cost": {
+        "rounds": 158,
+        "inputTokens": 6050566,
+        "outputTokens": 17795,
+        "estimated": false
+      },
+      "model": "gpt-6-luna",
+      "provider": "codex_subscription",
+      "checks": {
+        "stories": true,
+        "failureClass": true,
+        "waveGate": false,
+        "attempts": true,
+        "escalations": true,
+        "orphans": true
+      }
+    },
+    {
+      "scenario": "03-app-needing-setup",
+      "variant": "missing-migration",
+      "tier": "live",
+      "outcome": "class_none",
+      "matched": false,
+      "stories": {
+        "item-count": "done"
+      },
+      "waveGate": "not_run",
+      "failureClass": null,
+      "storyAttempts": 1,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 305791,
+      "orphans": [],
+      "scenarioVersion": 1,
+      "appCommit": "767ff9d",
+      "settle": "settled",
+      "firstVerdicts": {
+        "item-count": "rejected"
+      },
+      "resolvedStories": {
+        "item-count": "done"
+      },
+      "resolvedVerdicts": {
+        "item-count": "rejected"
+      },
+      "planChanges": {
+        "addedStories": [],
+        "addedMilestones": [],
+        "splits": {},
+        "cancelled": []
+      },
+      "attemptsByStory": {
+        "item-count": 1
+      },
+      "proofRevisions": 1,
+      "cost": {
+        "rounds": 100,
+        "inputTokens": 3988365,
+        "outputTokens": 9586,
+        "estimated": false
+      },
+      "model": "gpt-6-luna",
+      "provider": "codex_subscription",
+      "checks": {
+        "stories": true,
+        "failureClass": false,
+        "waveGate": false,
+        "attempts": true,
+        "escalations": true,
+        "orphans": true
+      }
+    },
+    {
+      "scenario": "03-app-needing-setup",
+      "variant": "missing-migration",
+      "tier": "live",
+      "outcome": "class_none",
+      "matched": false,
+      "stories": {
+        "item-count": "done"
+      },
+      "waveGate": "not_run",
+      "failureClass": null,
+      "storyAttempts": 2,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 340790,
+      "orphans": [],
+      "scenarioVersion": 1,
+      "appCommit": "767ff9d",
+      "settle": "settled",
+      "firstVerdicts": {
+        "item-count": "rejected"
+      },
+      "resolvedStories": {
+        "item-count": "done"
+      },
+      "resolvedVerdicts": {
+        "item-count": "rejected"
+      },
+      "planChanges": {
+        "addedStories": [],
+        "addedMilestones": [],
+        "splits": {},
+        "cancelled": []
+      },
+      "attemptsByStory": {
+        "item-count": 2
+      },
+      "proofRevisions": 0,
+      "cost": {
+        "rounds": 109,
+        "inputTokens": 3631151,
+        "outputTokens": 12620,
+        "estimated": false
+      },
+      "model": "gpt-6-luna",
+      "provider": "codex_subscription",
+      "checks": {
+        "stories": true,
+        "failureClass": false,
+        "waveGate": false,
+        "attempts": false,
+        "escalations": true,
+        "orphans": true
+      }
+    },
+    {
+      "scenario": "03-app-needing-setup",
+      "variant": "missing-migration",
+      "tier": "live",
+      "outcome": "class_none",
+      "matched": false,
+      "stories": {
+        "item-count": "done"
+      },
+      "waveGate": "not_run",
+      "failureClass": null,
+      "storyAttempts": 1,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 385779,
+      "orphans": [],
+      "scenarioVersion": 1,
+      "appCommit": "767ff9d",
+      "settle": "settled",
+      "firstVerdicts": {
+        "item-count": "rejected"
+      },
+      "resolvedStories": {
+        "item-count": "done"
+      },
+      "resolvedVerdicts": {
+        "item-count": "rejected"
+      },
+      "planChanges": {
+        "addedStories": [],
+        "addedMilestones": [],
+        "splits": {},
+        "cancelled": []
+      },
+      "attemptsByStory": {
+        "item-count": 1
+      },
+      "proofRevisions": 1,
+      "cost": {
+        "rounds": 115,
+        "inputTokens": 4576585,
+        "outputTokens": 9329,
+        "estimated": false
+      },
+      "model": "gpt-6-luna",
+      "provider": "codex_subscription",
+      "checks": {
+        "stories": true,
+        "failureClass": false,
+        "waveGate": false,
+        "attempts": true,
+        "escalations": true,
+        "orphans": true
+      }
+    },
+    {
+      "scenario": "04-two-services",
+      "variant": "correct",
+      "tier": "live",
+      "outcome": "story_unverified",
+      "matched": false,
+      "stories": {
+        "greeting": "unverified"
+      },
+      "waveGate": "not_run",
+      "failureClass": null,
+      "storyAttempts": 1,
+      "recipeRepairs": 0,
+      "escalations": 1,
+      "wallMs": 816397,
+      "orphans": [],
+      "scenarioVersion": 1,
+      "appCommit": "767ff9d",
+      "settle": "settled",
+      "firstVerdicts": {
+        "greeting": "rejected"
+      },
+      "resolvedStories": {
+        "greeting": "unverified"
+      },
+      "resolvedVerdicts": {
+        "greeting": "rejected"
+      },
+      "planChanges": {
+        "addedStories": [],
+        "addedMilestones": [],
+        "splits": {},
+        "cancelled": []
+      },
+      "attemptsByStory": {
+        "greeting": 1
+      },
+      "proofRevisions": 2,
+      "cost": {
+        "rounds": 147,
+        "inputTokens": 6888388,
+        "outputTokens": 14948,
+        "estimated": false
+      },
+      "model": "gpt-6-luna",
+      "provider": "codex_subscription",
+      "checks": {
+        "stories": false,
+        "failureClass": true,
+        "waveGate": false,
+        "attempts": true,
+        "escalations": false,
+        "orphans": true
+      }
+    },
+    {
+      "scenario": "04-two-services",
+      "variant": "correct",
+      "tier": "live",
+      "outcome": "gate_not_run",
+      "matched": false,
+      "stories": {
+        "greeting": "done"
+      },
+      "waveGate": "not_run",
+      "failureClass": null,
+      "storyAttempts": 2,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 190492,
+      "orphans": [],
+      "scenarioVersion": 1,
+      "appCommit": "767ff9d",
+      "settle": "settled",
+      "firstVerdicts": {
+        "greeting": "accepted"
+      },
+      "resolvedStories": {
+        "greeting": "done"
+      },
+      "resolvedVerdicts": {
+        "greeting": "accepted"
+      },
+      "planChanges": {
+        "addedStories": [],
+        "addedMilestones": [],
+        "splits": {},
+        "cancelled": []
+      },
+      "attemptsByStory": {
+        "greeting": 2
+      },
+      "proofRevisions": 0,
+      "cost": {
+        "rounds": 56,
+        "inputTokens": 1809824,
+        "outputTokens": 5728,
+        "estimated": false
+      },
+      "model": "gpt-6-luna",
+      "provider": "codex_subscription",
+      "checks": {
+        "stories": true,
+        "failureClass": true,
+        "waveGate": false,
+        "attempts": false,
+        "escalations": true,
+        "orphans": true
+      }
+    },
+    {
+      "scenario": "04-two-services",
+      "variant": "correct",
+      "tier": "live",
+      "outcome": "gate_not_run",
+      "matched": false,
+      "stories": {
+        "greeting": "done"
+      },
+      "waveGate": "not_run",
+      "failureClass": null,
+      "storyAttempts": 1,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 160478,
+      "orphans": [],
+      "scenarioVersion": 1,
+      "appCommit": "767ff9d",
+      "settle": "settled",
+      "firstVerdicts": {
+        "greeting": "accepted"
+      },
+      "resolvedStories": {
+        "greeting": "done"
+      },
+      "resolvedVerdicts": {
+        "greeting": "accepted"
+      },
+      "planChanges": {
+        "addedStories": [],
+        "addedMilestones": [],
+        "splits": {},
+        "cancelled": []
+      },
+      "attemptsByStory": {
+        "greeting": 1
+      },
+      "proofRevisions": 0,
+      "cost": {
+        "rounds": 49,
+        "inputTokens": 1685303,
+        "outputTokens": 5458,
+        "estimated": false
+      },
+      "model": "gpt-6-luna",
+      "provider": "codex_subscription",
+      "checks": {
+        "stories": true,
+        "failureClass": true,
+        "waveGate": false,
+        "attempts": true,
+        "escalations": true,
+        "orphans": true
+      }
+    },
+    {
+      "scenario": "05-non-ui",
+      "variant": "library",
+      "tier": "live",
+      "outcome": "gate_not_run",
+      "matched": false,
+      "stories": {
+        "accents": "done"
+      },
+      "waveGate": "not_run",
+      "failureClass": null,
+      "storyAttempts": 1,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 65327,
+      "orphans": [],
+      "scenarioVersion": 1,
+      "appCommit": "767ff9d",
+      "settle": "settled",
+      "firstVerdicts": {
+        "accents": "accepted"
+      },
+      "resolvedStories": {
+        "accents": "done"
+      },
+      "resolvedVerdicts": {
+        "accents": "accepted"
+      },
+      "planChanges": {
+        "addedStories": [],
+        "addedMilestones": [],
+        "splits": {},
+        "cancelled": []
+      },
+      "attemptsByStory": {
+        "accents": 1
+      },
+      "proofRevisions": 0,
+      "cost": {
+        "rounds": 25,
+        "inputTokens": 685741,
+        "outputTokens": 1708,
+        "estimated": false
+      },
+      "model": "gpt-6-luna",
+      "provider": "codex_subscription",
+      "checks": {
+        "stories": true,
+        "failureClass": true,
+        "waveGate": false,
+        "attempts": true,
+        "escalations": true,
+        "orphans": true
+      }
+    },
+    {
+      "scenario": "05-non-ui",
+      "variant": "library",
+      "tier": "live",
+      "outcome": "gate_not_run",
+      "matched": false,
+      "stories": {
+        "accents": "done"
+      },
+      "waveGate": "not_run",
+      "failureClass": null,
+      "storyAttempts": 1,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 70318,
+      "orphans": [],
+      "scenarioVersion": 1,
+      "appCommit": "767ff9d",
+      "settle": "settled",
+      "firstVerdicts": {
+        "accents": "accepted"
+      },
+      "resolvedStories": {
+        "accents": "done"
+      },
+      "resolvedVerdicts": {
+        "accents": "accepted"
+      },
+      "planChanges": {
+        "addedStories": [],
+        "addedMilestones": [],
+        "splits": {},
+        "cancelled": []
+      },
+      "attemptsByStory": {
+        "accents": 1
+      },
+      "proofRevisions": 0,
+      "cost": {
+        "rounds": 26,
+        "inputTokens": 764179,
+        "outputTokens": 2248,
+        "estimated": false
+      },
+      "model": "gpt-6-luna",
+      "provider": "codex_subscription",
+      "checks": {
+        "stories": true,
+        "failureClass": true,
+        "waveGate": false,
+        "attempts": true,
+        "escalations": true,
+        "orphans": true
+      }
+    },
+    {
+      "scenario": "05-non-ui",
+      "variant": "library",
+      "tier": "live",
+      "outcome": "gate_not_run",
+      "matched": false,
+      "stories": {
+        "accents": "done"
+      },
+      "waveGate": "not_run",
+      "failureClass": null,
+      "storyAttempts": 1,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 65318,
+      "orphans": [],
+      "scenarioVersion": 1,
+      "appCommit": "767ff9d",
+      "settle": "settled",
+      "firstVerdicts": {
+        "accents": "accepted"
+      },
+      "resolvedStories": {
+        "accents": "done"
+      },
+      "resolvedVerdicts": {
+        "accents": "accepted"
+      },
+      "planChanges": {
+        "addedStories": [],
+        "addedMilestones": [],
+        "splits": {},
+        "cancelled": []
+      },
+      "attemptsByStory": {
+        "accents": 1
+      },
+      "proofRevisions": 0,
+      "cost": {
+        "rounds": 29,
+        "inputTokens": 835923,
+        "outputTokens": 2189,
+        "estimated": false
+      },
+      "model": "gpt-6-luna",
+      "provider": "codex_subscription",
+      "checks": {
+        "stories": true,
+        "failureClass": true,
+        "waveGate": false,
+        "attempts": true,
+        "escalations": true,
+        "orphans": true
+      }
+    },
+    {
+      "scenario": "06-misread-criterion",
+      "variant": "misread",
+      "tier": "live",
+      "outcome": "misread_accepted",
+      "matched": false,
+      "stories": {
+        "bill": "done"
+      },
+      "waveGate": "not_run",
+      "failureClass": null,
+      "storyAttempts": 1,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 80323,
+      "orphans": [],
+      "scenarioVersion": 1,
+      "appCommit": "767ff9d",
+      "settle": "settled",
+      "firstVerdicts": {
+        "bill": "accepted"
+      },
+      "resolvedStories": {
+        "bill": "done"
+      },
+      "resolvedVerdicts": {
+        "bill": "accepted"
+      },
+      "planChanges": {
+        "addedStories": [],
+        "addedMilestones": [],
+        "splits": {},
+        "cancelled": []
+      },
+      "attemptsByStory": {
+        "bill": 1
+      },
+      "proofRevisions": 0,
+      "cost": {
+        "rounds": 32,
+        "inputTokens": 951146,
+        "outputTokens": 2920,
+        "estimated": true
+      },
+      "model": "gpt-6-luna",
+      "provider": "codex_subscription",
+      "checks": {
+        "stories": false,
+        "failureClass": false,
+        "waveGate": true,
+        "attempts": true,
+        "escalations": true,
+        "orphans": true
+      }
+    },
+    {
+      "scenario": "06-misread-criterion",
+      "variant": "misread",
+      "tier": "live",
+      "outcome": "misread_accepted",
+      "matched": false,
+      "stories": {
+        "bill": "done"
+      },
+      "waveGate": "not_run",
+      "failureClass": null,
+      "storyAttempts": 1,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 125512,
+      "orphans": [],
+      "scenarioVersion": 1,
+      "appCommit": "767ff9d",
+      "settle": "settled",
+      "firstVerdicts": {
+        "bill": "accepted"
+      },
+      "resolvedStories": {
+        "bill": "done"
+      },
+      "resolvedVerdicts": {
+        "bill": "accepted"
+      },
+      "planChanges": {
+        "addedStories": [],
+        "addedMilestones": [],
+        "splits": {},
+        "cancelled": []
+      },
+      "attemptsByStory": {
+        "bill": 1
+      },
+      "proofRevisions": 0,
+      "cost": {
+        "rounds": 42,
+        "inputTokens": 1382705,
+        "outputTokens": 4042,
+        "estimated": false
+      },
+      "model": "gpt-6-luna",
+      "provider": "codex_subscription",
+      "checks": {
+        "stories": false,
+        "failureClass": false,
+        "waveGate": true,
+        "attempts": true,
+        "escalations": true,
+        "orphans": true
+      }
+    },
+    {
+      "scenario": "06-misread-criterion",
+      "variant": "misread",
+      "tier": "live",
+      "outcome": "misread_accepted",
+      "matched": false,
+      "stories": {
+        "bill": "done"
+      },
+      "waveGate": "not_run",
+      "failureClass": null,
+      "storyAttempts": 1,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 85352,
+      "orphans": [],
+      "scenarioVersion": 1,
+      "appCommit": "767ff9d",
+      "settle": "settled",
+      "firstVerdicts": {
+        "bill": "accepted"
+      },
+      "resolvedStories": {
+        "bill": "done"
+      },
+      "resolvedVerdicts": {
+        "bill": "accepted"
+      },
+      "planChanges": {
+        "addedStories": [],
+        "addedMilestones": [],
+        "splits": {},
+        "cancelled": []
+      },
+      "attemptsByStory": {
+        "bill": 1
+      },
+      "proofRevisions": 0,
+      "cost": {
+        "rounds": 30,
+        "inputTokens": 948584,
+        "outputTokens": 3202,
+        "estimated": false
+      },
+      "model": "gpt-6-luna",
+      "provider": "codex_subscription",
+      "checks": {
+        "stories": false,
+        "failureClass": false,
+        "waveGate": true,
+        "attempts": true,
+        "escalations": true,
+        "orphans": true
+      }
+    }
+  ]
+}
