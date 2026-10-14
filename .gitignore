@@ -31,6 +31,8 @@ pnpm-debug.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# Scenario fixtures' env files hold no secrets (plan 112.1).
+!src/main/mission-control/scenarios/**/.env.local
 
 # typescript
 *.tsbuildinfo

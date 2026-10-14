@@ -27,6 +27,7 @@ interface LoopCall {
   proofStep: boolean
   proofResult?: RecordProofResult
   seat?: { address: string; profile: string; anchor: unknown }
+  appLaunch: boolean
 }
 const loopCalls: LoopCall[] = []
 // What a proof-step worker submits through record_proof, per call (FIFO).
@@ -44,8 +45,27 @@ vi.mock("../agent", () => ({
     processRunId?: string
     processPhaseRunId?: string
     missionControlSeat?: { address: string; profile: string; anchor: unknown }
+    processAppLaunch?: boolean
+    workspace?: string
     abort?: AbortController
   }) => {
+    // A builder or QA step that starts the app (plan 112.1).
+    if (startApp && input.processAppLaunch) {
+      const out = await appStartTool.execute({}, {
+        workspace: input.workspace,
+        processRunId: input.processRunId,
+        processPhaseRunId: input.processPhaseRunId,
+        signal: input.abort?.signal,
+      } as never)
+      appStarts.push({
+        phaseRunId: input.processPhaseRunId!,
+        ready: /"status": "ready"/.test(out),
+        pids: testAppServices.pids(),
+        briefed: (input.extraContextSections ?? []).some((section) =>
+          section.content.includes("## Running the app")
+        ),
+      })
+    }
     // A worker that never finishes on its own, like nav-test-8's refine.
     if (hangLoops && input.abort) {
       const signal = input.abort.signal
@@ -67,6 +87,7 @@ vi.mock("../agent", () => ({
         .join("\n"),
       proofStep: !!input.processProofStep,
       seat: input.missionControlSeat,
+      appLaunch: !!input.processAppLaunch,
     }
     loopCalls.push(call)
     const msg = input.userMessage ?? ""
@@ -135,6 +156,13 @@ vi.mock("../tasks/process/command-executor", () => ({
 let routerReply = ""
 let hangLoops = false
 let flagBackOnce = false
+let startApp = false
+const appStarts: Array<{
+  phaseRunId: string
+  ready: boolean
+  pids: number[]
+  briefed: boolean
+}> = []
 vi.mock("../agent/providers", () => {
   class NoActiveProviderError extends Error {}
   return {
@@ -166,8 +194,11 @@ import * as features from "../db/repositories/features"
 import * as playbooks from "../db/repositories/playbooks"
 import {
   setWorkspaceCheck,
+  updateWorkspace,
   upsertWorkspace,
 } from "../db/repositories/workspaces"
+import { appStartTool } from "../agent/tools/app_launch_tools"
+import { testAppServices } from "./app-launch"
 import { ProcessService } from "../tasks/process/service"
 import { createDefaultPlaybook } from "./playbook-defaults"
 import {
@@ -322,6 +353,8 @@ beforeEach(() => {
   enqueued.length = 0
   cancelledTasks.length = 0
   routerReply = ""
+  startApp = false
+  appStarts.length = 0
   setup()
 })
 
@@ -821,6 +854,107 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
       vi.useRealTimers()
     }
   })
+
+  describe.skipIf(process.platform === "win32")(
+    "app launch (plan 112.1)",
+    () => {
+      const alive = (pid: number) => {
+        try {
+          process.kill(pid, 0)
+          return true
+        } catch {
+          return false
+        }
+      }
+      const allDead = async (pids: number[]) => {
+        for (let i = 0; i < 60 && pids.some(alive); i++)
+          await new Promise((r) => setTimeout(r, 50))
+        return !pids.some(alive)
+      }
+      function withRecipe(workspaceId: string) {
+        updateWorkspace(workspaceId, {
+          appLaunch: {
+            services: [
+              {
+                key: "web",
+                label: "Web",
+                command: `${JSON.stringify(process.execPath)} -e "require('http').createServer((q,s)=>s.end('ok')).listen(Number(process.env.PORT),'127.0.0.1')"`,
+                cwd: "",
+                port: "auto",
+                ready: { http: "/" },
+                readyTimeoutMs: 15_000,
+                source: "user",
+              },
+            ],
+          },
+        })
+      }
+
+      it("offers app tools to builder and QA steps and stops what they started when each step ends", async () => {
+        const rig = orchestratedRig()
+        const { feature, userStory } = billingFeature(rig.id)
+        withRecipe(feature.workspaceId!)
+        startApp = true
+        proofSubmissions.push(acceptedProof)
+        const playbookRun = await runner.startUserStory(userStory.id)
+        await drive(playbookRun.processRunId!)
+        expect(features.getUserStory(userStory.id)!.status).toBe("done")
+        // spec, build (builder) and test (QA): every step started it.
+        expect(appStarts).toHaveLength(3)
+        expect(appStarts.every((s) => s.ready && s.briefed)).toBe(true)
+        expect(new Set(appStarts.map((s) => s.phaseRunId)).size).toBe(3)
+        // Validator reviews aren't seat work steps.
+        const reviews = loopCalls.filter((c) =>
+          c.userMessage?.startsWith("# Review the")
+        )
+        expect(reviews.every((c) => !c.appLaunch)).toBe(true)
+        expect(testAppServices.size).toBe(0)
+        expect(await allDead(appStarts.flatMap((s) => s.pids))).toBe(true)
+      })
+
+      it("doesn't offer app tools when the workspace has no services", async () => {
+        const rig = orchestratedRig()
+        const { userStory } = billingFeature(rig.id)
+        startApp = true
+        proofSubmissions.push(acceptedProof)
+        const playbookRun = await runner.startUserStory(userStory.id)
+        await drive(playbookRun.processRunId!)
+        expect(loopCalls.length).toBeGreaterThan(0)
+        expect(loopCalls.every((c) => !c.appLaunch)).toBe(true)
+        expect(appStarts).toHaveLength(0)
+        expect(loopCalls.map((c) => c.sectionContent).join("\n")).not.toContain(
+          "## Running the app"
+        )
+      })
+
+      it("stops the app when the run is cancelled mid-step", async () => {
+        const rig = orchestratedRig()
+        const { feature, userStory } = billingFeature(rig.id)
+        withRecipe(feature.workspaceId!)
+        startApp = true
+        hangLoops = true
+        try {
+          const playbookRun = await runner.startUserStory(userStory.id)
+          const abort = new AbortController()
+          const driving = drive(playbookRun.processRunId!, abort.signal)
+          for (let i = 0; i < 200 && !appStarts.length; i++)
+            await new Promise((r) => setTimeout(r, 25))
+          expect(appStarts).toHaveLength(1)
+          expect(testAppServices.size).toBe(1)
+          abort.abort()
+          await driving
+          // The scheduler returns on abort; the step's teardown follows as its
+          // worker unwinds.
+          for (let i = 0; i < 100 && testAppServices.size; i++)
+            await new Promise((r) => setTimeout(r, 25))
+          expect(testAppServices.size).toBe(0)
+          expect(await allDead(appStarts[0].pids)).toBe(true)
+        } finally {
+          hangLoops = false
+        }
+      })
+    }
+  )
 
   it("applies a QA send-back on Autopilot, and asks the user otherwise", async () => {
     for (const mode of ["autopilot", "manual"] as const) {

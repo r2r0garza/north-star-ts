@@ -44,6 +44,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
+import { TestBrowserSetting } from "@/components/mission-control/test-browser"
 import {
   Table,
   TableBody,
@@ -1838,6 +1839,7 @@ export function SettingsScreen({
                             }
                           />
                         </Field>
+                        <TestBrowserSetting />
                       </TabsContent>
 
                       {/* Appearance — the brand accent + neutral colors. Editing

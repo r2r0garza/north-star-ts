@@ -5,7 +5,12 @@ import {
   parseCheckName,
   parseWorkspaceCheck,
 } from "../../../shared/process-command"
+import {
+  normalizeAppLaunch,
+  validateAppLaunch,
+} from "../../../shared/mission-control/app-launch"
 import type {
+  AppLaunch,
   WorkspaceCheck,
   WorkspaceChecks,
   GeneratedFilesRule,
@@ -21,6 +26,7 @@ interface WorkspaceRow {
   generated_files: string | null
   worktree_setup: string | null
   command_checks: string | null
+  app_launch: string | null
   created_at: number
   updated_at: number
 }
@@ -33,6 +39,7 @@ function toWorkspace(row: WorkspaceRow): Workspace {
     generatedFiles: parseGeneratedFiles(row.generated_files),
     worktreeSetup: parseWorktreeSetup(row.worktree_setup),
     commandChecks: parseCommandChecks(row.command_checks),
+    appLaunch: parseAppLaunch(row.app_launch),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
@@ -43,6 +50,14 @@ function parseCommandChecks(value: string | null): WorkspaceChecks {
     return normalizeWorkspaceChecks(JSON.parse(value ?? "{}"))
   } catch {
     return {}
+  }
+}
+
+function parseAppLaunch(value: string | null): AppLaunch {
+  try {
+    return normalizeAppLaunch(JSON.parse(value ?? "{}"))
+  } catch {
+    return { services: [] }
   }
 }
 
@@ -246,6 +261,7 @@ export function updateWorkspace(
     generatedFiles?: GeneratedFilesRule[]
     worktreeSetup?: WorktreeSetup
     commandChecks?: WorkspaceChecks
+    appLaunch?: AppLaunch
   }
 ): Workspace {
   const now = Date.now()
@@ -282,6 +298,20 @@ export function updateWorkspace(
         "UPDATE workspaces SET worktree_setup = ?, updated_at = ? WHERE id = ?"
       )
       .run(JSON.stringify(normalizeWorktreeSetup(patch.worktreeSetup)), now, id)
+  }
+  if (patch.appLaunch !== undefined) {
+    // Saved only when valid: a cycle or a dangling reference would fail at
+    // start time instead, in a headless phase nobody is watching.
+    const validation = validateAppLaunch(patch.appLaunch)
+    if (!validation.ok)
+      throw new Error(
+        `The app launch recipe isn't valid: ${validation.errors.join(" ")}`
+      )
+    getDb()
+      .prepare(
+        "UPDATE workspaces SET app_launch = ?, updated_at = ? WHERE id = ?"
+      )
+      .run(JSON.stringify(validation.recipe), now, id)
   }
   return getWorkspace(id)!
 }

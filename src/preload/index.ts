@@ -154,6 +154,7 @@ import type { AgentSourceRow, AgentTree } from "../main/agent/agents/types"
 import type { AgentFields } from "../main/agent/agents/loader"
 import type { RuntimeStatus } from "../main/agent/env/runtime-check"
 import type { LocalProfileCapabilities } from "../main/agent/env/types"
+import type { TestBrowserState } from "../main/mission-control/playwright-install"
 import type { CreateAccountInput } from "../main/db/repositories/provider-accounts"
 import type { AddModelInput } from "../main/db/repositories/models"
 import type {
@@ -1342,6 +1343,31 @@ const api = {
         ipcRenderer.on("missionControl:comms:changed", listener)
         return () =>
           ipcRenderer.removeListener("missionControl:comms:changed", listener)
+      },
+    },
+    // The test browser Mission Control's Playwright runs use when there's no
+    // workspace browser or Chrome (plan 112.1): its state, the consented
+    // one-time download, and pushes as it changes (requested by a run,
+    // download progress, installed).
+    testBrowser: {
+      get: () =>
+        ipcRenderer.invoke(
+          "missionControl:testBrowser:get"
+        ) as Promise<TestBrowserState>,
+      install: () =>
+        ipcRenderer.invoke(
+          "missionControl:testBrowser:install"
+        ) as Promise<boolean>,
+      onChanged: (cb: (state: TestBrowserState) => void) => {
+        const listener = (_event: IpcRendererEvent, state: TestBrowserState) =>
+          cb(state)
+        ipcRenderer.on("missionControl:testBrowser:changed", listener)
+        return () => {
+          ipcRenderer.removeListener(
+            "missionControl:testBrowser:changed",
+            listener
+          )
+        }
       },
     },
     // Workspace setup findings (plan 106.11). Findings are named by key; the
@@ -3109,6 +3135,7 @@ export type {
   ApprovalCategory,
 } from "../main/settings/service"
 export type { LocalProfileCapabilities } from "../main/agent/env/types"
+export type { TestBrowserState } from "../main/mission-control/playwright-install"
 export type {
   SkillSourceRow,
   SkillSourceKind,

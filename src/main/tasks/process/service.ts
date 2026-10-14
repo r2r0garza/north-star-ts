@@ -49,6 +49,12 @@ import {
 import { commsContextSection } from "../../mission-control/comms"
 import { getSeatSessions } from "../../mission-control/sessions"
 import {
+  APP_LAUNCH_ROLES,
+  appLaunchContextSection,
+  recipeForLink,
+  stopServices,
+} from "../../mission-control/app-launch"
+import {
   seatTurns,
   type SeatTurnIdentity,
 } from "../../mission-control/seat-turns"
@@ -98,6 +104,7 @@ import {
   resetSubProcessChild,
 } from "./flagback"
 import { unknownSideEffectingToolCalls } from "../../agent/repair"
+import { armPhaseDeadline, clearPhaseClock } from "./phase-clock"
 import { makePolicyEngine } from "../../agent/approval/engine"
 import { productionCommandDeps } from "./command-executor-deps"
 import { executeProcessCommand } from "./command-executor"
@@ -1385,32 +1392,25 @@ export class ProcessService {
       // Mission Control's per-phase time limit: past it, the worker is told to
       // wrap up; at twice it, the phase stops with a failure so the user
       // story retries with a fresh context (nav-test-8's refine ran an hour).
+      // Time spent waiting on the user (phase-clock.ts) moves the deadlines.
       const limitMinutes = this.phaseMinuteLimit(run)
       let overTime = false
       const timers: Array<ReturnType<typeof setTimeout>> = []
       if (limitMinutes) {
         const limitMs = limitMinutes * 60_000
-        const elapsed =
-          Date.now() -
-          (processes.getPhaseRun(phaseRun.id)?.startedAt ?? Date.now())
-        timers.push(
-          setTimeout(
-            () =>
-              addConversationNote(
-                worker.id,
-                wrapUpNote(limitMinutes),
-                "mission-control"
-              ),
-            Math.max(0, limitMs - elapsed)
-          ),
-          setTimeout(
-            () => {
-              overTime = true
-              childAbort.abort(PHASE_TIME_LIMIT)
-            },
-            Math.max(0, 2 * limitMs - elapsed)
+        const startedAt =
+          processes.getPhaseRun(phaseRun.id)?.startedAt ?? Date.now()
+        armPhaseDeadline(phaseRun.id, startedAt, limitMs, timers, () =>
+          addConversationNote(
+            worker.id,
+            wrapUpNote(limitMinutes),
+            "mission-control"
           )
         )
+        armPhaseDeadline(phaseRun.id, startedAt, 2 * limitMs, timers, () => {
+          overTime = true
+          childAbort.abort(PHASE_TIME_LIMIT)
+        })
       }
       const overTimeFailure = () => ({
         error: `The phase ran past its time limit: told to wrap up at ${limitMinutes} min, stopped at ${2 * limitMinutes!} min.`,
@@ -1433,6 +1433,14 @@ export class ProcessService {
         },
       })
 
+      // App launch (plan 112.1): a builder or QA step can start the app from
+      // the workspace's recipe. What it starts belongs to this phase run and
+      // is stopped when the phase ends, however it ends.
+      const appRecipe =
+        seat && missionControl && workspace && APP_LAUNCH_ROLES.has(seat.role)
+          ? recipeForLink(missionControl)
+          : null
+      const appLaunch = !!appRecipe?.services.length
       let releaseSeat: (() => void) | null = null
       try {
         // One turn at a time per transcript: a seat-session step waits for a
@@ -1471,10 +1479,14 @@ export class ProcessService {
             ...(seatTurn && feature
               ? [commsContextSection(feature, seatTurn)]
               : []),
+            ...(appLaunch
+              ? [appLaunchContextSection(appRecipe!, seat?.role)]
+              : []),
           ],
           missionControlSeat: seatTurn ?? undefined,
           processProofStep:
             !!phase.proofStep && !!this.missionControlRoot(run)?.missionControl,
+          processAppLaunch: appLaunch,
           // Headless worker: no user to answer a clarifying question (it would only
           // stall until interrupted). The kickoff frames the work as self-contained.
           suppressUserQuestions: true,
@@ -1523,8 +1535,13 @@ export class ProcessService {
         }
       } finally {
         for (const timer of timers) clearTimeout(timer)
+        clearPhaseClock(phaseRun.id)
         if (inSession) seatSessions!.markSessionActivity(worker.id, false)
         releaseSeat?.()
+        // Whatever this step started with app_start stops with it.
+        await stopServices({ owner: phaseRun.id }).catch((err) =>
+          console.warn("[process] could not stop the app's services:", err)
+        )
       }
     }
   }

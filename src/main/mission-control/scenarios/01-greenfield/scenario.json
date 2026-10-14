@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "key": "01-greenfield",
+  "number": 1,
+  "title": "Greenfield web app",
+  "hard": "No app and no recipe: the first story must make the app runnable (the runnable-skeleton rule, 112.5) before anything that needs it runs.",
+  "intent": "A small CRUD list app: people can add, rename, complete, and delete items in a list in their browser.",
+  "milestone": {
+    "key": "list-app",
+    "title": "A working list app"
+  },
+  "stories": [
+    {
+      "key": "app-skeleton",
+      "title": "Runnable skeleton",
+      "goal": "A web app that starts on a port Mission Control chooses and shows an empty list page.",
+      "acceptance": [
+        "Starting the app serves a page titled \"List\" at /.",
+        "The app takes its port from the PORT environment variable."
+      ]
+    },
+    {
+      "key": "item-crud",
+      "title": "Manage items",
+      "goal": "People can add, rename, complete, and delete items.",
+      "dependsOn": [
+        "app-skeleton"
+      ],
+      "acceptance": [
+        "Typing a name and pressing Add shows the new item in the list.",
+        "Renaming an item updates its name in the list.",
+        "Clicking Complete strikes the item through.",
+        "Clicking Delete removes the item."
+      ]
+    }
+  ],
+  "variants": {
+    "empty": {
+      "description": "The empty folder: no recipe, nothing to start.",
+      "recipe": {
+        "services": []
+      },
+      "expect": {
+        "outcome": "no_services"
+      }
+    }
+  },
+  "expected": {
+    "live": {
+      "stories": {
+        "app-skeleton": "done",
+        "item-crud": "done"
+      },
+      "waveGate": "passed",
+      "failureClass": null,
+      "maxStoryAttempts": 2,
+      "maxRecipeRepairs": 1,
+      "maxEscalations": 0,
+      "notes": "app-skeleton runs alone first and ends with a verified recipe; item-crud starts only after it. No user-supplied commands."
+    }
+  }
+}

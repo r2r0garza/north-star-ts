@@ -1,0 +1,190 @@
+{
+  "version": 1,
+  "key": "03-app-needing-setup",
+  "number": 3,
+  "title": "App needing setup",
+  "hard": "The app needs a migrated data file, a DATA_FILE key from .env.local, and a running database. Recipe variants each miss one; repair or a plain-language question must recover without user-supplied commands.",
+  "intent": "Show how many items are stored on the home page.",
+  "milestone": {
+    "key": "item-count",
+    "title": "Item count"
+  },
+  "stories": [
+    {
+      "key": "item-count",
+      "title": "Item count on the home page",
+      "goal": "The home page says how many items are stored.",
+      "acceptance": [
+        "The home page shows \"0 items\" for a fresh data file.",
+        "After an item is added to the data file, the home page shows \"1 items\"."
+      ]
+    }
+  ],
+  "variants": {
+    "correct": {
+      "description": "Database first, migration as the web service's prepare step, DATA_FILE and DB_PORT set.",
+      "recipe": {
+        "services": [
+          {
+            "key": "db",
+            "label": "Database",
+            "command": "node db.js",
+            "cwd": "",
+            "port": "auto",
+            "ready": {
+              "log": "db ready"
+            },
+            "source": "user"
+          },
+          {
+            "key": "web",
+            "label": "Web",
+            "command": "node server.js",
+            "cwd": "",
+            "port": "auto",
+            "ready": {
+              "http": "/"
+            },
+            "source": "user",
+            "prepare": "node migrate.js",
+            "env": {
+              "DATA_FILE": "data/app.json",
+              "DB_PORT": "{port:db}"
+            }
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "ready",
+        "smoke": {
+          "service": "web",
+          "contains": [
+            "0 items"
+          ]
+        }
+      }
+    },
+    "missing-migration": {
+      "description": "No prepare step: the data file is never migrated.",
+      "recipe": {
+        "services": [
+          {
+            "key": "db",
+            "label": "Database",
+            "command": "node db.js",
+            "cwd": "",
+            "port": "auto",
+            "ready": {
+              "log": "db ready"
+            },
+            "source": "user"
+          },
+          {
+            "key": "web",
+            "label": "Web",
+            "command": "node server.js",
+            "cwd": "",
+            "port": "auto",
+            "ready": {
+              "http": "/"
+            },
+            "source": "user",
+            "env": {
+              "DATA_FILE": "data/app.json",
+              "DB_PORT": "{port:db}"
+            },
+            "readyTimeoutMs": 3000
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "failed",
+        "service": "web",
+        "error": "exited with 1 before it was ready",
+        "tail": "not migrated"
+      }
+    },
+    "missing-env-key": {
+      "description": "DATA_FILE (the .env.local key) isn't passed.",
+      "recipe": {
+        "services": [
+          {
+            "key": "db",
+            "label": "Database",
+            "command": "node db.js",
+            "cwd": "",
+            "port": "auto",
+            "ready": {
+              "log": "db ready"
+            },
+            "source": "user"
+          },
+          {
+            "key": "web",
+            "label": "Web",
+            "command": "node server.js",
+            "cwd": "",
+            "port": "auto",
+            "ready": {
+              "http": "/"
+            },
+            "source": "user",
+            "prepare": "node migrate.js",
+            "env": {
+              "DB_PORT": "{port:db}"
+            },
+            "readyTimeoutMs": 3000
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "failed",
+        "service": "web",
+        "error": "prepare command",
+        "tail": "DATA_FILE is not set"
+      }
+    },
+    "missing-prerequisite": {
+      "description": "No database service.",
+      "recipe": {
+        "services": [
+          {
+            "key": "web",
+            "label": "Web",
+            "command": "node server.js",
+            "cwd": "",
+            "port": "auto",
+            "ready": {
+              "http": "/"
+            },
+            "source": "user",
+            "prepare": "node migrate.js",
+            "env": {
+              "DATA_FILE": "data/app.json"
+            },
+            "readyTimeoutMs": 3000
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "failed",
+        "service": "web",
+        "error": "exited with 1 before it was ready",
+        "tail": "the database must be running"
+      }
+    }
+  },
+  "expected": {
+    "live": {
+      "stories": {
+        "item-count": "done"
+      },
+      "waveGate": "passed",
+      "failureClass": "environment",
+      "maxStoryAttempts": 1,
+      "maxRecipeRepairs": 3,
+      "maxEscalations": 1,
+      "notes": "Starting from a broken variant, the failure is classified environment, never counts against the story, and recipe repair (or one plain-language question) recovers. Unrecoverable ends unverified, not rejected."
+    }
+  }
+}

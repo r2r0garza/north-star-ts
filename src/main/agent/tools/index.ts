@@ -74,6 +74,7 @@ import { spawnSubagentTool } from "./spawn_subagent"
 import { spawnSubagentsTool } from "./spawn_subagents"
 import { flagForReworkTool } from "./flag_for_rework"
 import { recordProofTool } from "./record_proof"
+import { appLaunchTools } from "./app_launch_tools"
 import { seatCommsTools } from "./seat_comms_tools"
 import { mapTools } from "./map_tools"
 import { dashboardWriteTool } from "./dashboard_write"
@@ -149,6 +150,10 @@ const otherTools: Tool[] = [
   // record_proof: offered by runChat only to a Mission Control playbook's proof
   // step (plan 106.3 — opts.processProofStep). Not in toolDefinitions.
   recordProofTool,
+  // app_start / app_status / app_stop: offered by runChat only to a Mission
+  // Control builder or QA seat's work step (plan 112.1 —
+  // opts.processAppLaunch). Not in toolDefinitions.
+  ...appLaunchTools,
   // Mission Control Comms (plan 106.4): send_message / reply / list_inbox /
   // escalate, offered by runChat only to seat turns (opts.missionControlSeat)
   // and never to an answer-only wake. Not in toolDefinitions.
@@ -264,6 +269,7 @@ export { presentPlanTool } from "./present_plan_tool"
 export { spawnSubagentsTool } from "./spawn_subagents"
 export { flagForReworkTool } from "./flag_for_rework"
 export { recordProofTool } from "./record_proof"
+export { appLaunchTools } from "./app_launch_tools"
 export { seatCommsTools } from "./seat_comms_tools"
 export { mapTools } from "./map_tools"
 export { dashboardWriteTool } from "./dashboard_write"

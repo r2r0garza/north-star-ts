@@ -1,0 +1,290 @@
+{
+  "version": 1,
+  "label": "after-port",
+  "date": "2026-10-13",
+  "tier": "harness",
+  "commit": "1c73997",
+  "notes": "Harness tier: each fixture and recipe variant through start → readiness → GET / → stop, on the app launch harness.",
+  "scenarios": [
+    {
+      "scenario": "01-greenfield",
+      "runs": 1,
+      "rates": {
+        "no_services": 1
+      },
+      "matchedRate": 1,
+      "runsWithOrphans": 0
+    },
+    {
+      "scenario": "02-two-stories-one-ui",
+      "runs": 4,
+      "rates": {
+        "ready": 1
+      },
+      "matchedRate": 1,
+      "runsWithOrphans": 0
+    },
+    {
+      "scenario": "03-app-needing-setup",
+      "runs": 4,
+      "rates": {
+        "ready": 0.25,
+        "failed": 0.75
+      },
+      "matchedRate": 1,
+      "runsWithOrphans": 0
+    },
+    {
+      "scenario": "04-two-services",
+      "runs": 3,
+      "rates": {
+        "ready": 0.333,
+        "failed": 0.667
+      },
+      "matchedRate": 1,
+      "runsWithOrphans": 0
+    },
+    {
+      "scenario": "05-non-ui",
+      "runs": 1,
+      "rates": {
+        "no_services": 1
+      },
+      "matchedRate": 1,
+      "runsWithOrphans": 0
+    },
+    {
+      "scenario": "06-misread-criterion",
+      "runs": 1,
+      "rates": {
+        "ready": 1
+      },
+      "matchedRate": 1,
+      "runsWithOrphans": 0
+    }
+  ],
+  "runs": [
+    {
+      "scenario": "01-greenfield",
+      "variant": "empty",
+      "tier": "harness",
+      "outcome": "no_services",
+      "matched": true,
+      "stories": {},
+      "waveGate": null,
+      "failureClass": null,
+      "storyAttempts": 0,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 1,
+      "orphans": []
+    },
+    {
+      "scenario": "02-two-stories-one-ui",
+      "variant": "base",
+      "tier": "harness",
+      "outcome": "ready",
+      "matched": true,
+      "stories": {},
+      "waveGate": null,
+      "failureClass": null,
+      "storyAttempts": 0,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 288,
+      "orphans": [],
+      "detail": "GET / → 200"
+    },
+    {
+      "scenario": "02-two-stories-one-ui",
+      "variant": "item-management",
+      "tier": "harness",
+      "outcome": "ready",
+      "matched": true,
+      "stories": {},
+      "waveGate": null,
+      "failureClass": null,
+      "storyAttempts": 0,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 289,
+      "orphans": [],
+      "detail": "GET / → 200"
+    },
+    {
+      "scenario": "02-two-stories-one-ui",
+      "variant": "responsive-interface",
+      "tier": "harness",
+      "outcome": "ready",
+      "matched": true,
+      "stories": {},
+      "waveGate": null,
+      "failureClass": null,
+      "storyAttempts": 0,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 295,
+      "orphans": [],
+      "detail": "GET / → 200"
+    },
+    {
+      "scenario": "02-two-stories-one-ui",
+      "variant": "merged",
+      "tier": "harness",
+      "outcome": "ready",
+      "matched": true,
+      "stories": {},
+      "waveGate": null,
+      "failureClass": null,
+      "storyAttempts": 0,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 309,
+      "orphans": [],
+      "detail": "GET / → 200"
+    },
+    {
+      "scenario": "03-app-needing-setup",
+      "variant": "correct",
+      "tier": "harness",
+      "outcome": "ready",
+      "matched": true,
+      "stories": {},
+      "waveGate": null,
+      "failureClass": null,
+      "storyAttempts": 0,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 575,
+      "orphans": [],
+      "detail": "GET / → 200"
+    },
+    {
+      "scenario": "03-app-needing-setup",
+      "variant": "missing-migration",
+      "tier": "harness",
+      "outcome": "failed",
+      "matched": true,
+      "stories": {},
+      "waveGate": null,
+      "failureClass": "environment",
+      "storyAttempts": 0,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 522,
+      "orphans": [],
+      "detail": "Web (web) didn't start: exited with 1 before it was ready.\nserver: the data file data/app.json is not migrated; run node migrate.js"
+    },
+    {
+      "scenario": "03-app-needing-setup",
+      "variant": "missing-env-key",
+      "tier": "harness",
+      "outcome": "failed",
+      "matched": true,
+      "stories": {},
+      "waveGate": null,
+      "failureClass": "environment",
+      "storyAttempts": 0,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 309,
+      "orphans": [],
+      "detail": "Web (web) didn't start: its prepare command (`\"/Users/r2r0garza/.nvm/versions/node/v24.21.0/bin/node\" migrate.js`) exited with 1.\nmigrate: DATA_FILE is not set (see .env.local)"
+    },
+    {
+      "scenario": "03-app-needing-setup",
+      "variant": "missing-prerequisite",
+      "tier": "harness",
+      "outcome": "failed",
+      "matched": true,
+      "stories": {},
+      "waveGate": null,
+      "failureClass": "environment",
+      "storyAttempts": 0,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 284,
+      "orphans": [],
+      "detail": "Web (web) didn't start: exited with 1 before it was ready.\nmigrated data/app.json\nserver: DB_PORT is not set; the database must be running"
+    },
+    {
+      "scenario": "04-two-services",
+      "variant": "correct",
+      "tier": "harness",
+      "outcome": "ready",
+      "matched": true,
+      "stories": {},
+      "waveGate": null,
+      "failureClass": null,
+      "storyAttempts": 0,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 577,
+      "orphans": [],
+      "detail": "GET / → 200"
+    },
+    {
+      "scenario": "04-two-services",
+      "variant": "missing-api-url",
+      "tier": "harness",
+      "outcome": "failed",
+      "matched": true,
+      "stories": {},
+      "waveGate": null,
+      "failureClass": "environment",
+      "storyAttempts": 0,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 526,
+      "orphans": [],
+      "detail": "Web (web) didn't start: exited with 1 before it was ready.\nweb: API_URL is not set"
+    },
+    {
+      "scenario": "04-two-services",
+      "variant": "no-api-service",
+      "tier": "harness",
+      "outcome": "failed",
+      "matched": true,
+      "stories": {},
+      "waveGate": null,
+      "failureClass": "environment",
+      "storyAttempts": 0,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 3122,
+      "orphans": [],
+      "detail": "Web (web) didn't start: not ready after 3 seconds (GET / on port 49946 didn't answer).\nweb on port 49946"
+    },
+    {
+      "scenario": "05-non-ui",
+      "variant": "library",
+      "tier": "harness",
+      "outcome": "no_services",
+      "matched": true,
+      "stories": {},
+      "waveGate": null,
+      "failureClass": null,
+      "storyAttempts": 0,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 1,
+      "orphans": []
+    },
+    {
+      "scenario": "06-misread-criterion",
+      "variant": "misread",
+      "tier": "harness",
+      "outcome": "ready",
+      "matched": true,
+      "stories": {},
+      "waveGate": null,
+      "failureClass": null,
+      "storyAttempts": 0,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 269,
+      "orphans": [],
+      "detail": "GET / → 200"
+    }
+  ]
+}

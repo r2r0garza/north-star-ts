@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "key": "06-misread-criterion",
+  "number": 6,
+  "title": "Builder misread a criterion",
+  "hard": "The implementation computes the tip on subtotal + tax (AC-2 says pre-tax subtotal), and the builder's tests pass against that misreading.",
+  "intent": "A bill splitter page.",
+  "milestone": {
+    "key": "bill-splitter",
+    "title": "Bill splitter"
+  },
+  "stories": [
+    {
+      "key": "bill",
+      "title": "Bill splitter page",
+      "goal": "A diner enters subtotal, tax, and tip percentage and sees what to pay. See SPEC.md.",
+      "acceptance": [
+        "Entering a subtotal and tax shows the total (subtotal + tax).",
+        "The tip is calculated on the pre-tax subtotal: for 100.00 subtotal, 10.00 tax, and a 20% tip, the tip is 20.00 and the amount to pay is 130.00."
+      ]
+    }
+  ],
+  "variants": {
+    "misread": {
+      "description": "The builder's implementation, as delivered.",
+      "recipe": {
+        "services": [
+          {
+            "key": "web",
+            "label": "Bill splitter",
+            "command": "node server.js",
+            "cwd": "",
+            "port": "auto",
+            "ready": {
+              "http": "/"
+            },
+            "source": "user"
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "ready",
+        "smoke": {
+          "service": "web",
+          "contains": [
+            "<output id=\"tip\">"
+          ]
+        }
+      }
+    }
+  },
+  "checks": [
+    {
+      "label": "Builder tests (pass against the misreading)",
+      "command": "node builder.test.js",
+      "exitCode": 0
+    }
+  ],
+  "expected": {
+    "live": {
+      "stories": {
+        "bill": "rejected"
+      },
+      "waveGate": "not_run",
+      "failureClass": "feature",
+      "maxStoryAttempts": 1,
+      "maxRecipeRepairs": 0,
+      "maxEscalations": 0,
+      "notes": "QA rejects AC-2 on exploratory evidence (the page shows tip 22.00 for the example), not on the builder's passing tests. The first proof is the measurement: a later fixed attempt may make the story done."
+    }
+  }
+}

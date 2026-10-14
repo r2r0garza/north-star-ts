@@ -12,6 +12,7 @@ import type {
 } from "../../shared/mission-control/plan-changes"
 import type { UserStoryNarrative } from "../../shared/mission-control/story"
 import type { OverlapPolicy } from "../../shared/mission-control/waves"
+import type { AppLaunch } from "../../shared/mission-control/app-launch"
 import type {
   ProcessCommandConfig,
   ProcessCommandReceipt,
@@ -112,6 +113,9 @@ export interface Workspace {
   // What each named check runs here (plan 104): command phases name a check,
   // so one process works across workspaces. No defaults.
   commandChecks: WorkspaceChecks
+  // How the app is started for Mission Control seats (plan 112.1). Empty
+  // services when there's no recipe.
+  appLaunch: AppLaunch
   createdAt: number
   updatedAt: number
 }
@@ -1101,6 +1105,11 @@ export interface ProcessRuntimeSnapshotSelection {
 export type ProcessRuntimeSnapshot = Partial<
   Record<ProcessRuntimeSlot, ProcessRuntimeSnapshotSelection>
 >
+
+export type {
+  AppLaunch,
+  AppService,
+} from "../../shared/mission-control/app-launch"
 
 export type {
   ProcessPhaseKind,

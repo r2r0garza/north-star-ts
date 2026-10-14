@@ -401,6 +401,16 @@ describe("settings service — browser (tabbed browser, plan: Phase 4)", () => {
     expect(service.getBrowser()).toEqual({ revealOnAgentUse: "always" })
   })
 
+  it("remembers consent to download the test browser (plan 112.1)", () => {
+    expect(service.getTestBrowserConsent()).toBe(false)
+    service.setTestBrowserConsent()
+    service._resetCacheForTests()
+    expect(service.getTestBrowserConsent()).toBe(true)
+    // Saving the browser switches leaves it alone.
+    service.setBrowser({ revealOnAgentUse: "never" })
+    expect(service.getTestBrowserConsent()).toBe(true)
+  })
+
   it("round-trips a persisted change to never", () => {
     service.setBrowser({ revealOnAgentUse: "never" })
     service._resetCacheForTests()

@@ -26,6 +26,8 @@ export type FindingCategory =
   | "build-cost"
   // Dirty tree, unborn HEAD, unsupported layout.
   | "project-state"
+  // How seats run and check the app: the test browser (plan 112.1).
+  | "app-launch"
 
 export const CATEGORY_LABELS: Record<FindingCategory, string> = {
   "git-isolation": "Isolated work",
@@ -37,6 +39,7 @@ export const CATEGORY_LABELS: Record<FindingCategory, string> = {
   database: "Databases",
   "build-cost": "Build cost",
   "project-state": "Project state",
+  "app-launch": "Running the app",
 }
 
 export type FindingSeverity = "blocker" | "warning" | "info"
@@ -119,6 +122,9 @@ export type Fix =
       probes: ProbeSpec[]
     }
   | { kind: "manual"; summary: string; steps: string[]; link?: string }
+  // Download Playwright's test browser into app data (plan 112.1). Applying
+  // it is the user's consent, remembered for every later feature.
+  | { kind: "download-test-browser"; summary: string; sizeMb: number | null }
 
 export interface Finding {
   // Stable across re-analysis, e.g. "worktree-env:.venv".
@@ -216,7 +222,7 @@ export interface ApplyAllItem {
   id: string
   findingKey: string
   title: string
-  kind: "settings" | "command" | "check"
+  kind: "settings" | "command" | "check" | "download"
   summary: string
   commands: CommandSpec[]
   // Guesses and replacements of user-authored settings start unchecked.
@@ -262,6 +268,7 @@ export const CATEGORY_ORDER: FindingCategory[] = [
   "generated-files",
   "database",
   "build-cost",
+  "app-launch",
 ]
 
 export function sortFindings(findings: Finding[]): Finding[] {

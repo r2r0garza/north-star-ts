@@ -1,0 +1,290 @@
+{
+  "version": 1,
+  "label": "baseline-main",
+  "date": "2026-10-13",
+  "tier": "harness",
+  "commit": "1c73997",
+  "notes": "Harness tier recorded against main before the 112.1 port (1c73997): no recipe storage (workspaces.app_launch), no launch harness, no app_start/app_status/app_stop. Every scenario and variant is not runnable by Mission Control.",
+  "scenarios": [
+    {
+      "scenario": "01-greenfield",
+      "runs": 1,
+      "rates": {
+        "not_runnable": 1.0
+      },
+      "matchedRate": 0,
+      "runsWithOrphans": 0
+    },
+    {
+      "scenario": "02-two-stories-one-ui",
+      "runs": 4,
+      "rates": {
+        "not_runnable": 1.0
+      },
+      "matchedRate": 0,
+      "runsWithOrphans": 0
+    },
+    {
+      "scenario": "03-app-needing-setup",
+      "runs": 4,
+      "rates": {
+        "not_runnable": 1.0
+      },
+      "matchedRate": 0,
+      "runsWithOrphans": 0
+    },
+    {
+      "scenario": "04-two-services",
+      "runs": 3,
+      "rates": {
+        "not_runnable": 1.0
+      },
+      "matchedRate": 0,
+      "runsWithOrphans": 0
+    },
+    {
+      "scenario": "05-non-ui",
+      "runs": 1,
+      "rates": {
+        "not_runnable": 1.0
+      },
+      "matchedRate": 0,
+      "runsWithOrphans": 0
+    },
+    {
+      "scenario": "06-misread-criterion",
+      "runs": 1,
+      "rates": {
+        "not_runnable": 1.0
+      },
+      "matchedRate": 0,
+      "runsWithOrphans": 0
+    }
+  ],
+  "runs": [
+    {
+      "scenario": "01-greenfield",
+      "variant": "empty",
+      "tier": "harness",
+      "outcome": "not_runnable",
+      "matched": false,
+      "stories": {},
+      "waveGate": null,
+      "failureClass": null,
+      "storyAttempts": 0,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 0,
+      "orphans": [],
+      "detail": "main has no app launch recipe storage and no app_* tools, so Mission Control cannot start this app."
+    },
+    {
+      "scenario": "02-two-stories-one-ui",
+      "variant": "base",
+      "tier": "harness",
+      "outcome": "not_runnable",
+      "matched": false,
+      "stories": {},
+      "waveGate": null,
+      "failureClass": null,
+      "storyAttempts": 0,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 0,
+      "orphans": [],
+      "detail": "main has no app launch recipe storage and no app_* tools, so Mission Control cannot start this app."
+    },
+    {
+      "scenario": "02-two-stories-one-ui",
+      "variant": "item-management",
+      "tier": "harness",
+      "outcome": "not_runnable",
+      "matched": false,
+      "stories": {},
+      "waveGate": null,
+      "failureClass": null,
+      "storyAttempts": 0,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 0,
+      "orphans": [],
+      "detail": "main has no app launch recipe storage and no app_* tools, so Mission Control cannot start this app."
+    },
+    {
+      "scenario": "02-two-stories-one-ui",
+      "variant": "responsive-interface",
+      "tier": "harness",
+      "outcome": "not_runnable",
+      "matched": false,
+      "stories": {},
+      "waveGate": null,
+      "failureClass": null,
+      "storyAttempts": 0,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 0,
+      "orphans": [],
+      "detail": "main has no app launch recipe storage and no app_* tools, so Mission Control cannot start this app."
+    },
+    {
+      "scenario": "02-two-stories-one-ui",
+      "variant": "merged",
+      "tier": "harness",
+      "outcome": "not_runnable",
+      "matched": false,
+      "stories": {},
+      "waveGate": null,
+      "failureClass": null,
+      "storyAttempts": 0,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 0,
+      "orphans": [],
+      "detail": "main has no app launch recipe storage and no app_* tools, so Mission Control cannot start this app."
+    },
+    {
+      "scenario": "03-app-needing-setup",
+      "variant": "correct",
+      "tier": "harness",
+      "outcome": "not_runnable",
+      "matched": false,
+      "stories": {},
+      "waveGate": null,
+      "failureClass": null,
+      "storyAttempts": 0,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 0,
+      "orphans": [],
+      "detail": "main has no app launch recipe storage and no app_* tools, so Mission Control cannot start this app."
+    },
+    {
+      "scenario": "03-app-needing-setup",
+      "variant": "missing-migration",
+      "tier": "harness",
+      "outcome": "not_runnable",
+      "matched": false,
+      "stories": {},
+      "waveGate": null,
+      "failureClass": null,
+      "storyAttempts": 0,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 0,
+      "orphans": [],
+      "detail": "main has no app launch recipe storage and no app_* tools, so Mission Control cannot start this app."
+    },
+    {
+      "scenario": "03-app-needing-setup",
+      "variant": "missing-env-key",
+      "tier": "harness",
+      "outcome": "not_runnable",
+      "matched": false,
+      "stories": {},
+      "waveGate": null,
+      "failureClass": null,
+      "storyAttempts": 0,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 0,
+      "orphans": [],
+      "detail": "main has no app launch recipe storage and no app_* tools, so Mission Control cannot start this app."
+    },
+    {
+      "scenario": "03-app-needing-setup",
+      "variant": "missing-prerequisite",
+      "tier": "harness",
+      "outcome": "not_runnable",
+      "matched": false,
+      "stories": {},
+      "waveGate": null,
+      "failureClass": null,
+      "storyAttempts": 0,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 0,
+      "orphans": [],
+      "detail": "main has no app launch recipe storage and no app_* tools, so Mission Control cannot start this app."
+    },
+    {
+      "scenario": "04-two-services",
+      "variant": "correct",
+      "tier": "harness",
+      "outcome": "not_runnable",
+      "matched": false,
+      "stories": {},
+      "waveGate": null,
+      "failureClass": null,
+      "storyAttempts": 0,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 0,
+      "orphans": [],
+      "detail": "main has no app launch recipe storage and no app_* tools, so Mission Control cannot start this app."
+    },
+    {
+      "scenario": "04-two-services",
+      "variant": "missing-api-url",
+      "tier": "harness",
+      "outcome": "not_runnable",
+      "matched": false,
+      "stories": {},
+      "waveGate": null,
+      "failureClass": null,
+      "storyAttempts": 0,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 0,
+      "orphans": [],
+      "detail": "main has no app launch recipe storage and no app_* tools, so Mission Control cannot start this app."
+    },
+    {
+      "scenario": "04-two-services",
+      "variant": "no-api-service",
+      "tier": "harness",
+      "outcome": "not_runnable",
+      "matched": false,
+      "stories": {},
+      "waveGate": null,
+      "failureClass": null,
+      "storyAttempts": 0,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 0,
+      "orphans": [],
+      "detail": "main has no app launch recipe storage and no app_* tools, so Mission Control cannot start this app."
+    },
+    {
+      "scenario": "05-non-ui",
+      "variant": "library",
+      "tier": "harness",
+      "outcome": "not_runnable",
+      "matched": false,
+      "stories": {},
+      "waveGate": null,
+      "failureClass": null,
+      "storyAttempts": 0,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 0,
+      "orphans": [],
+      "detail": "main has no app launch recipe storage and no app_* tools, so Mission Control cannot start this app."
+    },
+    {
+      "scenario": "06-misread-criterion",
+      "variant": "misread",
+      "tier": "harness",
+      "outcome": "not_runnable",
+      "matched": false,
+      "stories": {},
+      "waveGate": null,
+      "failureClass": null,
+      "storyAttempts": 0,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 0,
+      "orphans": [],
+      "detail": "main has no app launch recipe storage and no app_* tools, so Mission Control cannot start this app."
+    }
+  ]
+}

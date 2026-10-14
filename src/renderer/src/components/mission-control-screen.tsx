@@ -38,6 +38,7 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 import { Markdown } from "@/components/markdown"
 import { FeaturesTab } from "@/components/mission-control/features-tab"
+import { TestBrowserNotice } from "@/components/mission-control/test-browser"
 import {
   ALL_FEATURES,
   type FeatureProjectFilter,
@@ -1090,6 +1091,7 @@ export function MissionControlScreen({ onClose }: { onClose: () => void }) {
           </p>
         </div>
       </header>
+      <TestBrowserNotice />
       {!inDetail && (
         <div className="flex gap-5 border-b px-6">
           <button

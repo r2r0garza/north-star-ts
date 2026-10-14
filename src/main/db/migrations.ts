@@ -191,6 +191,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureToolMedia,
   ensureProviderImageInputColumn,
   ensureProcessCommandPhases,
+  ensureWorkspaceAppLaunchColumn,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -389,6 +390,12 @@ CREATE INDEX IF NOT EXISTS idx_health_signals_anchor ON health_signals(feature_i
 // WorktreeSetup: paths linked from the main checkout and a setup command).
 function ensureWorktreeSetupColumn(db: Database.Database): void {
   addColumnIfMissing(db, "workspaces", "worktree_setup", "TEXT")
+}
+
+// v70 (plan 112.1): how a workspace's app is started for Mission Control
+// seats (JSON AppLaunch: services, ports, readiness, dependencies).
+function ensureWorkspaceAppLaunchColumn(db: Database.Database): void {
+  addColumnIfMissing(db, "workspaces", "app_launch", "TEXT")
 }
 
 // v58: a workspace's generated files and the command that rebuilds them
@@ -662,6 +669,7 @@ export function runMigrations(
       ensureNativeAssistantColumn(db)
       ensureToolMedia(db)
       ensureProcessCommandPhases(db)
+      ensureWorkspaceAppLaunchColumn(db)
       // After ensureSubscriptionProviderConstraints: its V65 table rebuild
       // predates this column and would drop it.
       ensureProviderImageInputColumn(db)

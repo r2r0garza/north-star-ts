@@ -135,6 +135,17 @@ import { CommandTrialService } from "./process/try-command"
 import { productionCommandDeps } from "./tasks/process/command-executor-deps"
 import { UserStoryRunner } from "./mission-control/user-story-runner"
 import { MilestoneIntegration } from "./mission-control/integration"
+import { stopAllServicesSync } from "./mission-control/app-launch"
+import { getRigGraph } from "./db/repositories/rigs"
+import {
+  configurePlaywright,
+  getTestBrowserState,
+  installTestBrowser,
+  onTestBrowserChanged,
+  refreshTestBrowserState,
+  workspaceBrowserInstalled,
+  workspacePlaywright,
+} from "./mission-control/playwright-install"
 import {
   startConflictResolution,
   startHookRun,
@@ -427,6 +438,7 @@ const terminalService = new TerminalService()
 const workspaceAnalysis = new WorkspaceAnalysisService({
   terminals: terminalService,
   getFeature: (id) => getFeatureRow(id) ?? undefined,
+  getRig: getRigGraph,
   getWorkspace: getWorkspaceRow,
   updateWorkspace: (id, patch) => updateWorkspaceRow(id, patch),
   setOverlapPolicy: (featureId, value) =>
@@ -478,6 +490,21 @@ const workspaceAnalysis = new WorkspaceAnalysisService({
     const wc = mainWindow?.webContents
     if (wc && !wc.isDestroyed())
       wc.send("missionControl:analysis:runChanged", run)
+  },
+  // QA's test browser (plan 112.1), checked with the workspace setup.
+  testBrowser: {
+    state: getTestBrowserState,
+    refresh: refreshTestBrowserState,
+    install: () => installTestBrowser(),
+    onChanged: onTestBrowserChanged,
+    workspace: async (workspacePath) => {
+      const install = workspacePlaywright(workspacePath)
+      if (!install) return null
+      return {
+        version: install.version,
+        ...(await workspaceBrowserInstalled(install)),
+      }
+    },
   },
 })
 // The agent's browser (secondary window + WebContentsView driven over CDP).
@@ -535,6 +562,13 @@ browserManager.setOpenRequester(() => {
 // Mirror the active tab's pick-mode + tab state to the app renderer, so the
 // sidebar browser chrome (URL/loading + "Pick" toggle) tracks the true state —
 // the counterpart of the pushes that already feed the separate window's chrome.
+// The test browser's state (plan 112.1) for the Mission Control notice and
+// Settings → General → Browser: download requested, progress, done.
+onTestBrowserChanged((state) => {
+  const wc = mainWindow?.webContents
+  if (wc && !wc.isDestroyed())
+    wc.send("missionControl:testBrowser:changed", state)
+})
 browserManager.setAppPickModeEmitter((active) => {
   const wc = mainWindow?.webContents
   if (wc && !wc.isDestroyed()) wc.send("browser:pick-mode", active)
@@ -1648,6 +1682,14 @@ ipcMain.on("app:is-packaged", (event) => {
 })
 
 app.whenReady().then(async () => {
+  // Mission Control's Playwright runs (plan 112.1) run on this Electron as
+  // Node; the headless shell, when downloaded with consent, lives in app data.
+  configurePlaywright({
+    executable: process.execPath,
+    browsersPath: join(app.getPath("userData"), "playwright-browsers"),
+    consent: () => settingsService.getTestBrowserConsent(),
+    giveConsent: () => settingsService.setTestBrowserConsent(),
+  })
   // In-memory leases disappear on restart. Persisted active writer artifacts
   // therefore become conservative repository quarantine gates.
   for (const artifact of listSubagentArtifacts({ unresolved: true })) {
@@ -1859,6 +1901,9 @@ app.on("will-quit", () => {
   healthMonitor.stop()
   browserManager.dispose()
   terminalService.dispose()
+  // App services Mission Control seats started (plan 112.1): signal each
+  // process group so no dev server outlives the app.
+  stopAllServicesSync()
   // Disconnect every pooled MCP client (stops spawned stdio processes / closes
   // HTTP sessions). Fire-and-forget; the process is exiting.
   void getMcpManager().disposeAll()

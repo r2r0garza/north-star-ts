@@ -1,0 +1,142 @@
+{
+  "version": 1,
+  "key": "04-two-services",
+  "number": 4,
+  "title": "Two services",
+  "hard": "The web service reads API_URL=http://localhost:{port:api}: dependency order and port wiring.",
+  "intent": "Show the API's greeting on the web page.",
+  "milestone": {
+    "key": "greeting",
+    "title": "Greeting"
+  },
+  "stories": [
+    {
+      "key": "greeting",
+      "title": "Greeting from the API",
+      "goal": "The web page shows the greeting the API returns.",
+      "acceptance": [
+        "The web page shows the API's greeting.",
+        "When the API is down, the web page says it can't reach it instead of crashing."
+      ]
+    }
+  ],
+  "variants": {
+    "correct": {
+      "description": "API first, its port wired into the web service.",
+      "recipe": {
+        "services": [
+          {
+            "key": "api",
+            "label": "API",
+            "command": "node api.js",
+            "cwd": "",
+            "port": "auto",
+            "ready": {
+              "http": "/"
+            },
+            "source": "user"
+          },
+          {
+            "key": "web",
+            "label": "Web",
+            "command": "node web.js",
+            "cwd": "",
+            "port": "auto",
+            "ready": {
+              "http": "/"
+            },
+            "source": "user",
+            "env": {
+              "API_URL": "http://localhost:{port:api}"
+            }
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "ready",
+        "smoke": {
+          "service": "web",
+          "contains": [
+            "hello from the api"
+          ]
+        }
+      }
+    },
+    "missing-api-url": {
+      "description": "The web service isn't told where the API is.",
+      "recipe": {
+        "services": [
+          {
+            "key": "api",
+            "label": "API",
+            "command": "node api.js",
+            "cwd": "",
+            "port": "auto",
+            "ready": {
+              "http": "/"
+            },
+            "source": "user"
+          },
+          {
+            "key": "web",
+            "label": "Web",
+            "command": "node web.js",
+            "cwd": "",
+            "port": "auto",
+            "ready": {
+              "http": "/"
+            },
+            "source": "user",
+            "readyTimeoutMs": 3000
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "failed",
+        "service": "web",
+        "error": "exited with 1 before it was ready",
+        "tail": "API_URL is not set"
+      }
+    },
+    "no-api-service": {
+      "description": "No API service; API_URL points at a closed port.",
+      "recipe": {
+        "services": [
+          {
+            "key": "web",
+            "label": "Web",
+            "command": "node web.js",
+            "cwd": "",
+            "port": "auto",
+            "ready": {
+              "http": "/"
+            },
+            "source": "user",
+            "env": {
+              "API_URL": "http://localhost:9"
+            },
+            "readyTimeoutMs": 3000
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "failed",
+        "service": "web",
+        "error": "not ready after 3 seconds"
+      }
+    }
+  },
+  "expected": {
+    "live": {
+      "stories": {
+        "greeting": "done"
+      },
+      "waveGate": "passed",
+      "failureClass": null,
+      "maxStoryAttempts": 1,
+      "maxRecipeRepairs": 1,
+      "maxEscalations": 0,
+      "notes": "Both services start in dependency order on their own ports, in parallel worktrees too."
+    }
+  }
+}

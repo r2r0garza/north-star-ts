@@ -97,6 +97,7 @@ import {
 import { containerNameForConversation } from "./env/container"
 import { flagForReworkTool } from "./tools/flag_for_rework"
 import { recordProofTool } from "./tools/record_proof"
+import { appLaunchTools } from "./tools/app_launch_tools"
 import { seatCommsTools } from "./tools/seat_comms_tools"
 import { mapTools } from "./tools/map_tools"
 import { isLeadSeat } from "../mission-control/map-tools"
@@ -944,6 +945,11 @@ export interface RunAgentLoopOptions {
   // it is offered record_proof. The tool re-derives the user story, criteria, and
   // seats from the run itself; this flag only controls the offer.
   processProofStep?: boolean
+  // Mission Control (plan 112.1): this worker is a builder or QA seat's work
+  // step and the workspace has an app launch recipe. Offers app_start /
+  // app_status / app_stop; the tools re-derive the recipe and the owning
+  // phase run, and the phase stops what they started when it ends.
+  processAppLaunch?: boolean
   // Mission Control seat turn (plan 106.4): who is speaking on the rig and
   // what the turn may do. Offers the Comms tools (except answer-only), delivers
   // the seat's queued mail at each tool-round boundary, and — for a turn woken
@@ -1499,6 +1505,14 @@ export async function runAgentLoop(
         // narrowing may remove it.
         opts.processProofStep && opts.processRunId && !planMode
           ? [recordProofTool.definition]
+          : [],
+        // app_start / app_status / app_stop (plan 112.1): process-structural
+        // like record_proof, offered only to a builder or QA seat's work step.
+        opts.processAppLaunch &&
+          opts.processRunId &&
+          opts.processPhaseRunId &&
+          !planMode
+          ? appLaunchTools.map((t) => t.definition)
           : []
       )
   // The non-droppable base prompt (mode prompt). Everything else is a droppable

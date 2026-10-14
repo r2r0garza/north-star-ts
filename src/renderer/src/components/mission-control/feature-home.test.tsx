@@ -97,6 +97,7 @@ const workspace = {
   name: "repo",
   generatedFiles: [],
   commandChecks: {},
+  appLaunch: { services: [] },
   worktreeSetup: { linkPaths: [], steps: [] },
   createdAt: 0,
   updatedAt: 0,

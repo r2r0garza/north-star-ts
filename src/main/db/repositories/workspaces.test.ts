@@ -118,3 +118,83 @@ describe.skipIf(!sqliteLoads)("workspace worktree setup", () => {
     })
   })
 })
+
+describe.skipIf(!sqliteLoads)(
+  "workspace app launch recipe (plan 112.1)",
+  () => {
+    beforeEach(() => {
+      db = new Database(":memory:")
+      runMigrations(db)
+    })
+
+    it("defaults to no services and round-trips a valid recipe", () => {
+      const ws = upsertWorkspace("/repo")
+      expect(ws.appLaunch).toEqual({ services: [] })
+      updateWorkspace(ws.id, {
+        appLaunch: {
+          services: [
+            {
+              key: "api",
+              label: "API",
+              command: "node api.js",
+              cwd: "./api/",
+              port: "auto",
+              ready: { http: "/health" },
+              source: "user",
+            },
+            {
+              key: "web",
+              label: "Web",
+              command: "node web.js",
+              cwd: "",
+              port: "auto",
+              env: { API_URL: "http://localhost:{port:api}" },
+              ready: { http: "/" },
+              source: "user",
+            },
+          ],
+        },
+      })
+      const saved = getWorkspace(ws.id)!.appLaunch
+      expect(saved.services.map((s) => [s.key, s.cwd])).toEqual([
+        ["api", "api"],
+        ["web", ""],
+      ])
+      expect(saved.services[1].env).toEqual({
+        API_URL: "http://localhost:{port:api}",
+      })
+    })
+
+    it("refuses an invalid recipe with the validator's messages", () => {
+      const ws = upsertWorkspace("/repo")
+      expect(() =>
+        updateWorkspace(ws.id, {
+          appLaunch: {
+            services: [
+              {
+                key: "web",
+                label: "Web",
+                command: "node web.js",
+                cwd: "",
+                port: "auto",
+                env: { API_URL: "http://localhost:{port:api}" },
+                ready: { http: "/" },
+                source: "user",
+              },
+            ],
+          },
+        })
+      ).toThrow(/isn't valid: .*no service "api"/)
+      expect(getWorkspace(ws.id)!.appLaunch).toEqual({ services: [] })
+    })
+
+    it("reads a malformed stored value leniently", () => {
+      const ws = upsertWorkspace("/repo")
+      db.prepare("UPDATE workspaces SET app_launch = ? WHERE id = ?").run(
+        "{not json",
+        ws.id
+      )
+      expect(getWorkspace(ws.id)!.appLaunch).toEqual({ services: [] })
+    })
+  }
+)

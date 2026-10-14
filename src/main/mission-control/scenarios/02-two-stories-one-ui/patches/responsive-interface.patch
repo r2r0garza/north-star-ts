@@ -1,0 +1,32 @@
+diff --git a/public/app.js b/public/app.js
+index dfb346a..d991462 100644
+--- a/public/app.js
++++ b/public/app.js
+@@ -7,9 +7,9 @@ async function load() {
+   render()
+ }
+ 
+-// The label on an item's button.
++// The label on an item's button: immediate feedback once it's done.
+ function buttonLabel(item) {
+-  return "Complete"
++  return item.done ? "Done ✓" : "Complete"
+ }
+ 
+ // Rendering: one row per item, its name and its button.
+diff --git a/public/index.html b/public/index.html
+index 669721d..843290c 100644
+--- a/public/index.html
++++ b/public/index.html
+@@ -8,6 +8,11 @@
+       body { font-family: sans-serif; margin: 2rem; }
+       li { display: flex; gap: 1rem; align-items: center; margin: 0.5rem 0; }
+       .done { text-decoration: line-through; color: #777; }
++      @media (max-width: 480px) {
++        body { margin: 0.75rem; }
++        li { flex-direction: column; align-items: flex-start; }
++        button { width: 100%; min-height: 44px; }
++      }
+     </style>
+   </head>
+   <body>

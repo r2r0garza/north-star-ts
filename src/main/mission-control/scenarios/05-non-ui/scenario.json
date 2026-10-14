@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "key": "05-non-ui",
+  "number": 5,
+  "title": "Non-UI project",
+  "hard": "Nothing to start: no browser, no recipe services, and proofs must still be independent of the builder's tests.",
+  "intent": "Make slugify handle accented letters.",
+  "milestone": {
+    "key": "slugify-accents",
+    "title": "Accented slugs"
+  },
+  "stories": [
+    {
+      "key": "accents",
+      "title": "Slugify accented letters",
+      "goal": "slugify keeps accented letters' base letter instead of dropping them.",
+      "acceptance": [
+        "slugify(\"Crème Brûlée\") returns \"creme-brulee\".",
+        "Existing behavior is unchanged: slugify(\"Hello World\") returns \"hello-world\"."
+      ]
+    }
+  ],
+  "variants": {
+    "library": {
+      "description": "A library: nothing to start.",
+      "recipe": {
+        "services": []
+      },
+      "expect": {
+        "outcome": "no_services"
+      }
+    }
+  },
+  "checks": [
+    {
+      "label": "Library tests",
+      "command": "node test.js",
+      "exitCode": 0
+    }
+  ],
+  "expected": {
+    "live": {
+      "stories": {
+        "accents": "done"
+      },
+      "waveGate": "passed",
+      "failureClass": null,
+      "maxStoryAttempts": 1,
+      "maxRecipeRepairs": 0,
+      "maxEscalations": 0,
+      "notes": "No app is started; QA proves the criteria by calling the library itself, not by re-running the builder's tests."
+    }
+  }
+}

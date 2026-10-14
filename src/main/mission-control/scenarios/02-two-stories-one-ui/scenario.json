@@ -1,0 +1,169 @@
+{
+  "version": 1,
+  "key": "02-two-stories-one-ui",
+  "number": 2,
+  "title": "Two stories, one UI",
+  "hard": "The backup's third run: each story passes alone, but responsive-interface relabels the Complete button after the first click, so the merged result breaks item-management AC-2.",
+  "intent": "Improve the list app: people can add items and toggle them done, and it works well on a phone.",
+  "milestone": {
+    "key": "list-improvements",
+    "title": "List improvements"
+  },
+  "stories": [
+    {
+      "key": "item-management",
+      "title": "Item management",
+      "goal": "People can add items and toggle an item between done and not done.",
+      "patch": "item-management.patch",
+      "acceptance": [
+        "Typing a name and pressing Add shows the new item in the list.",
+        "Each item has a button labelled \"Complete\"; clicking it toggles the item between done and not done, and the button stays labelled \"Complete\"."
+      ]
+    },
+    {
+      "key": "responsive-interface",
+      "title": "Responsive interface",
+      "goal": "The list works on narrow screens and buttons give immediate feedback.",
+      "patch": "responsive-interface.patch",
+      "acceptance": [
+        "Below 480px wide, each item's button spans the full width and is at least 44px tall.",
+        "After an item is completed, its button reads \"Done ✓\"."
+      ]
+    }
+  ],
+  "variants": {
+    "base": {
+      "description": "The app before either story.",
+      "recipe": {
+        "services": [
+          {
+            "key": "web",
+            "label": "List app",
+            "command": "node server.js",
+            "cwd": "",
+            "port": "auto",
+            "ready": {
+              "http": "/"
+            },
+            "source": "user"
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "ready",
+        "smoke": {
+          "service": "web",
+          "contains": [
+            "<ul id=\"items\">"
+          ]
+        }
+      }
+    },
+    "item-management": {
+      "description": "The item-management branch alone.",
+      "patches": [
+        "item-management.patch"
+      ],
+      "recipe": {
+        "services": [
+          {
+            "key": "web",
+            "label": "List app",
+            "command": "node server.js",
+            "cwd": "",
+            "port": "auto",
+            "ready": {
+              "http": "/"
+            },
+            "source": "user"
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "ready",
+        "smoke": {
+          "service": "web",
+          "contains": [
+            "<form id=\"add\">"
+          ]
+        }
+      }
+    },
+    "responsive-interface": {
+      "description": "The responsive-interface branch alone.",
+      "patches": [
+        "responsive-interface.patch"
+      ],
+      "recipe": {
+        "services": [
+          {
+            "key": "web",
+            "label": "List app",
+            "command": "node server.js",
+            "cwd": "",
+            "port": "auto",
+            "ready": {
+              "http": "/"
+            },
+            "source": "user"
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "ready",
+        "smoke": {
+          "service": "web",
+          "contains": [
+            "max-width: 480px"
+          ]
+        }
+      }
+    },
+    "merged": {
+      "description": "Both branches merged: starts fine; the conflict is behavioral (AC-2).",
+      "patches": [
+        "item-management.patch",
+        "responsive-interface.patch"
+      ],
+      "recipe": {
+        "services": [
+          {
+            "key": "web",
+            "label": "List app",
+            "command": "node server.js",
+            "cwd": "",
+            "port": "auto",
+            "ready": {
+              "http": "/"
+            },
+            "source": "user"
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "ready",
+        "smoke": {
+          "service": "web",
+          "contains": [
+            "<form id=\"add\">",
+            "max-width: 480px"
+          ]
+        }
+      }
+    }
+  },
+  "expected": {
+    "live": {
+      "stories": {
+        "item-management": "done",
+        "responsive-interface": "done"
+      },
+      "waveGate": "passed",
+      "failureClass": null,
+      "maxStoryAttempts": 2,
+      "maxRecipeRepairs": 0,
+      "maxEscalations": 1,
+      "notes": "The stories are serialized at planning time (overlapping UI), or the wave gate catches the AC-2 break and resolves it as a spec question or a capped fix story, without an integrator rework loop."
+    }
+  }
+}

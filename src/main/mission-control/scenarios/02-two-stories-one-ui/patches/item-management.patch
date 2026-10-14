@@ -1,0 +1,43 @@
+diff --git a/public/app.js b/public/app.js
+index dfb346a..e72be93 100644
+--- a/public/app.js
++++ b/public/app.js
+@@ -29,9 +29,21 @@ function render() {
+   )
+ }
+ 
+-// What clicking an item's button does.
++// What clicking an item's button does: complete it, or reopen it.
+ async function onButton(item) {
+-  await fetch(`/api/items/${item.id}/complete`, { method: "POST" })
++  await fetch(`/api/items/${item.id}/toggle`, { method: "POST" })
++  await load()
++}
++
++document.getElementById("add").onsubmit = async (event) => {
++  event.preventDefault()
++  const input = event.target.elements.name
++  await fetch("/api/items", {
++    method: "POST",
++    headers: { "content-type": "application/json" },
++    body: JSON.stringify({ name: input.value }),
++  })
++  input.value = ""
+   await load()
+ }
+ 
+diff --git a/public/index.html b/public/index.html
+index 669721d..ad10fff 100644
+--- a/public/index.html
++++ b/public/index.html
+@@ -12,6 +12,10 @@
+   </head>
+   <body>
+     <h1>List</h1>
++    <form id="add">
++      <label>New item <input name="name" required /></label>
++      <button type="submit">Add</button>
++    </form>
+ 
+     <ul id="items"></ul>
+ 

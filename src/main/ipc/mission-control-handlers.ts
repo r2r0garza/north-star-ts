@@ -34,6 +34,10 @@ import type { Navigator } from "../mission-control/navigator"
 import type { HealthMonitor } from "../mission-control/health/monitor"
 import type { WorkspaceAnalysisService } from "../mission-control/workspace-analysis"
 import {
+  installTestBrowser,
+  refreshTestBrowserState,
+} from "../mission-control/playwright-install"
+import {
   applyProposal,
   checkProposal,
   judgeMilestoneDone,
@@ -186,6 +190,16 @@ export function registerMissionControlHandlers(
     "missionControl:navigator:ticks",
     (_event, id: string, limit?: number) =>
       navigatorTicks.listTicks(id, limit ?? 50)
+  )
+  // The test browser Mission Control's Playwright runs use when there's no
+  // workspace browser or Chrome (plan 112.1): its state, and the user's
+  // consented one-time download. Changes are pushed as
+  // "missionControl:testBrowser:changed" from main/index.ts.
+  ipcMain.handle("missionControl:testBrowser:get", () =>
+    refreshTestBrowserState()
+  )
+  ipcMain.handle("missionControl:testBrowser:install", () =>
+    installTestBrowser()
   )
   // Health (plan 106.8). Thresholds are feature budgets (budgets:set); the
   // signal lifecycle and detector mutes are the user's alone.
