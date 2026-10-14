@@ -6,6 +6,7 @@
 @import "highlight.js/styles/github-dark.css";
 
 @plugin "@tailwindcss/typography";
+@config "./typography.config.mjs";
 
 @custom-variant dark (&:is(.dark *));
 

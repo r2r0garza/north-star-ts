@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react"
-import { ChevronDown, ChevronRight, Loader2, Play, Square } from "lucide-react"
+import { ChevronDown, ChevronRight, Play, Square } from "lucide-react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -14,6 +14,7 @@ import type {
   PlaybookRun,
   ProcessDefinition,
 } from "@/types"
+import { Spinner } from "@/components/ui/spinner"
 
 // Milestone / feature hooks (plan 106.3). Each button runs one hook's small
 // Process run; its last status and live monitor sit beside it. In Autopilot
@@ -139,7 +140,7 @@ function HookRow({
               onClick={() => void run()}
             >
               {pending ? (
-                <Loader2 className="size-3.5 animate-spin" />
+                <Spinner className="size-3.5" />
               ) : (
                 <Play className="size-3.5" />
               )}

@@ -214,6 +214,17 @@ describe("Markdown modes", () => {
     expect(container.innerHTML).toBe(streamingHtml)
   })
 
+  it("renders split streaming blocks the same as one settled parse", () => {
+    const content =
+      "# Audit\n\nIntro with `code`.\n\n## Findings\n\n- one\n- two\n\n| A | B |\n| - | - |\n| 1 | 2 |\n\nClosing para.\n\nTail still stre"
+
+    mount(content, "streaming")
+    const streamingHtml = container.innerHTML
+
+    mount(content, "settled")
+    expect(container.innerHTML).toBe(streamingHtml)
+  })
+
   it("treats an omitted mode as settled", () => {
     const content = "```mermaid\ngraph TD; A-->B\n```"
 
@@ -222,6 +233,10 @@ describe("Markdown modes", () => {
     expect(mermaidRender).toHaveBeenCalledTimes(1)
 
     mermaidRender.mockClear()
+    // A fresh root: re-rendering identical content into the same root is
+    // memoized and would (correctly) not render the diagram again.
+    act(() => root.unmount())
+    root = createRoot(container)
     mount(content, "settled")
 
     expect(container.innerHTML).toBe(defaultHtml)

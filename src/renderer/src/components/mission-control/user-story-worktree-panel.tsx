@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react"
-import { Copy, FileDiff, FolderOpen, GitBranch, Loader2 } from "lucide-react"
+import { Copy, FileDiff, FolderOpen, GitBranch } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
+import { Spinner } from "@/components/ui/spinner"
 import { DiffView } from "@/components/diff-view"
 import type { UserStoryWorkspaceInfo, UserStory } from "@/types"
 
@@ -105,7 +106,7 @@ export function UserStoryWorktreePanel({ userStory }: { userStory: UserStory }) 
       )}
       {diffOpen &&
         (loadingDiff && !diff ? (
-          <Loader2 className="size-4 animate-spin text-muted-foreground" />
+          <Spinner className="text-muted-foreground" />
         ) : diff && !diff.diff.trim() ? (
           <p className="text-xs text-muted-foreground">
             No changes against the integration base yet.

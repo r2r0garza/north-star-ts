@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from "react"
 import {
   CheckCircle2,
   CircleAlert,
-  Loader2,
   Pencil,
   Play,
   Plus,
@@ -72,6 +71,7 @@ import type {
   WorkspaceCheck,
   WorkspaceChecks,
 } from "@/types"
+import { Spinner } from "@/components/ui/spinner"
 
 // Deterministic command phases (plan 104): the builder's execution-type control
 // and command editor, the workspace-check editors used when a run starts and
@@ -612,7 +612,7 @@ function AskAi({
           disabled={asking}
         >
           {asking ? (
-            <Loader2 className="size-3 animate-spin" />
+            <Spinner className="size-3" />
           ) : (
             <Sparkles className="size-3" />
           )}
@@ -779,7 +779,7 @@ export function WorkspaceCheckForm({
           disabled={!("check" in parsed) || trial.running}
         >
           {trial.running ? (
-            <Loader2 className="size-3 animate-spin" />
+            <Spinner className="size-3" />
           ) : (
             <Play className="size-3" />
           )}
@@ -860,7 +860,7 @@ function TrialResult({ trial }: { trial: TrialState }) {
         ) : current.status === "failed" ? (
           <CircleAlert className="size-3.5 text-destructive" />
         ) : current.status === "running" ? (
-          <Loader2 className="size-3.5 animate-spin" />
+          <Spinner className="size-3.5" />
         ) : null}
         <span className="flex-1 font-medium">{headline}</span>
         {current.status === "running" ? (
@@ -1072,7 +1072,7 @@ export function WorkspaceEnvironmentPanel({
               onClick={() => void setUp()}
               disabled={starting}
             >
-              {starting && <Loader2 className="size-3 animate-spin" />}
+              {starting && <Spinner className="size-3" />}
               Set up environment
             </Button>
             {run && run.status !== "completed" && (
@@ -1090,7 +1090,7 @@ export function WorkspaceEnvironmentPanel({
             {run.steps.map((step, i) => (
               <li key={i} className="flex items-center gap-1.5">
                 {step.status === "running" ? (
-                  <Loader2 className="size-3 animate-spin" />
+                  <Spinner className="size-3" />
                 ) : step.status === "ok" ? (
                   <CheckCircle2 className="size-3 text-emerald-600" />
                 ) : step.status === "failed" ? (

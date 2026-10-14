@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react"
-import { Loader2, Play, RotateCcw, Square } from "lucide-react"
+import { Play, RotateCcw, Square } from "lucide-react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -18,6 +18,7 @@ import type {
 } from "@/types"
 import { isUserStoryProof, ProofPanel } from "./proof-panel"
 import { UserStoryWorktreePanel } from "./user-story-worktree-panel"
+import { Spinner } from "@/components/ui/spinner"
 
 // User story execution (plan 106.3): Run / Retry / Cancel, the live embedded Process
 // run monitor, and the recorded proof. In a git workspace each attempt builds
@@ -202,7 +203,7 @@ export function UserStoryRunPanel({
                 onClick={() => void run()}
               >
                 {pending ? (
-                  <Loader2 className="size-3.5 animate-spin" />
+                  <Spinner className="size-3.5" />
                 ) : userStory.status === "failed" ? (
                   <RotateCcw className="size-3.5" />
                 ) : (
