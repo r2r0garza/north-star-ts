@@ -1,6 +1,6 @@
 # PR104: Deterministic command phases in Processes
 
-> Status: **PLANNED**. Extends the shipped Process engine so a phase can execute a persisted command directly instead of always starting an LLM worker. AI may help the user author the command in the Process builder, but running the saved Process does not ask a model to reconstruct or choose that command.
+> Status: **COMPLETED**. Marked completed 2026-10-13 at the user's direction. Implemented in `25fda54` (`feat(process): add deterministic command phases and workspace checks`), merged into `main` through PR #35. Process phases can execute persisted commands directly without an LLM worker, with workspace-specific named checks, frozen run snapshots, bounded receipts, and crash-safe interruption handling. AI command authoring remains an inert proposal until reviewed and saved. This status update does not claim a fresh automated or manual acceptance run.
 
 ## Goal
 
