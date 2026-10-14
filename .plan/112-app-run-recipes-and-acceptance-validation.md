@@ -102,7 +102,8 @@ shows up only as confusing QA failures.
   workspace/branch: `absent`, `unverified`, `verified (commit)`, `broken (failure summary)`.
 - **Commands without user review:** recipe commands still pass command policy and run in the selected
   Environment. Instead of an explicit Apply per command, verification runs them under the same
-  policy/approval rules that apply to the builder's own shell commands in that run. (Open question 1.)
+  policy/approval rules that apply to the builder's own shell commands in that run. (Open question 1,
+  decided 2026-10-14.)
 - **Recipe additions the backup lacked:** an idempotent `setup` list (migrations, seed, build) and
   `prerequisites` (e.g. a database), and `env` values that reference `.env`/`.env.local` keys or service
   URLs, never secrets.
@@ -195,14 +196,22 @@ renumbered the later slices), recorded before the first behavior change it measu
 
 ## Open questions
 
-1. **Approval model for recipe commands** run during verification/repair: same policy as the builder's
-   shell commands in that run, or a dedicated, explained one-time consent per workspace.
+1. ~~**Approval model for recipe commands** run during verification/repair: same policy as the builder's
+   shell commands in that run, or a dedicated, explained one-time consent per workspace.~~
+   **Decided (2026-10-14):** the same policy as the builder's own shell commands in that run. Recipe
+   commands pass the command policy exactly as a builder's `exec_command` would, run in the selected
+   Environment under the run's auto mode, with no per-command Apply and no separate consent screen. A
+   one-time consent would add a user step without adding a reviewer who can judge the command.
 2. ~~What triggered the 2026-10-04 rethink?~~ **Answered (2026-10-11):** the recipe problem and
    per-story tests trampling each other, worked on by trial-and-error patching. Size was not the
    issue, so 112.1 ports the backup code largely as built. The process answer is the scenario
    fixtures and stop rule above.
 3. Container Environments: port publishing and reachability from the seat browser.
-4. Whether the repair seat is a dedicated role or the builder seat with a recipe-only objective.
+4. ~~Whether the repair seat is a dedicated role or the builder seat with a recipe-only objective.~~
+   **Decided (2026-10-14):** the builder seat with a recipe-only objective, through the existing seat
+   machinery (a `work` turn in a fresh conversation, write scope limited to recipe-adjacent files such as
+   `.env.example`). It already knows the stack and needs no new rig role. Revisit if the scorecard shows
+   builders "fixing" the app instead of the recipe.
 5. Fixed-port apps under parallel stories: serialize per workspace, or rewrite config per worktree.
 
 ## Out of scope
