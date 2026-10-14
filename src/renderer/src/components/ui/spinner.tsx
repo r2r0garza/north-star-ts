@@ -1,15 +1,21 @@
 import { cn } from "@/lib/utils"
 import { Loader2Icon } from "lucide-react"
 
-function Spinner({ className, ...props }: React.ComponentProps<"svg">) {
+// The spin runs on a wrapping <span>, not the <svg>: Chromium can hand an HTML
+// element's transform animation to the compositor, but an animated <svg> needs
+// a main-thread style + paint pass every frame (120/s on ProMotion displays)
+// for as long as it's on screen — e.g. for the whole length of an agent turn.
+function Spinner({ className, ...props }: React.ComponentProps<"span">) {
   return (
-    <Loader2Icon
+    <span
       data-slot="spinner"
       role="status"
       aria-label="Loading"
-      className={cn("size-4 animate-spin", className)}
+      className={cn("inline-flex size-4 shrink-0 animate-spin", className)}
       {...props}
-    />
+    >
+      <Loader2Icon aria-hidden="true" className="size-full" />
+    </span>
   )
 }
 
