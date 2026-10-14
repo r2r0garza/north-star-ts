@@ -1,6 +1,7 @@
 import {
   Children,
   cloneElement,
+  Fragment,
   isValidElement,
   memo,
   useEffect,
@@ -19,6 +20,7 @@ import { cn } from "@/lib/utils"
 import { ConversationFindText } from "@/components/conversation-find-text"
 import { toast } from "sonner"
 import { localFileLink, markdownLinkUrl } from "../../../shared/file-link"
+import { splitStreamingMarkdown } from "@/lib/streaming-markdown"
 
 // Extract the plain-text content of a node's children — used to pull the raw
 // source out of a fenced code block (for mermaid and copy-friendly blocks).
@@ -263,18 +265,71 @@ export const Markdown = memo(function Markdown({
         "prose-headings:font-semibold prose-p:leading-relaxed"
       )}
     >
-      <ReactMarkdown
-        remarkPlugins={remarkPlugins}
-        rehypePlugins={mode === "settled" ? settledRehypePlugins : undefined}
-        components={components}
-        urlTransform={(url, key, node) =>
-          node.tagName === "a" && key === "href"
-            ? markdownLinkUrl(url)
-            : defaultUrlTransform(url)
-        }
-      >
-        {content}
-      </ReactMarkdown>
+      {mode === "streaming" ? (
+        <StreamingMarkdownBody content={content} components={components} />
+      ) : (
+        <MarkdownBody
+          content={content}
+          rehypePlugins={settledRehypePlugins}
+          components={components}
+        />
+      )}
     </div>
+  )
+})
+
+// Finished blocks are memoized by position, so each streamed update re-parses
+// only the block still being written. The "\n" between blocks matches the text
+// node a single parse puts between top-level elements, keeping the DOM equal.
+function StreamingMarkdownBody({
+  content,
+  components,
+}: {
+  content: string
+  components: Components
+}) {
+  const { blocks, tail } = splitStreamingMarkdown(content)
+  return (
+    <>
+      {blocks.map((block, index) => (
+        <Fragment key={index}>
+          {index > 0 && "\n"}
+          <MarkdownBody content={block} components={components} />
+        </Fragment>
+      ))}
+      {blocks.length > 0 && tail && "\n"}
+      {tail && <MarkdownBody content={tail} components={components} />}
+    </>
+  )
+}
+
+function markdownUrlTransform(
+  url: string,
+  key: string,
+  node: { tagName: string }
+): string {
+  return node.tagName === "a" && key === "href"
+    ? markdownLinkUrl(url)
+    : defaultUrlTransform(url)
+}
+
+const MarkdownBody = memo(function MarkdownBody({
+  content,
+  rehypePlugins,
+  components,
+}: {
+  content: string
+  rehypePlugins?: typeof settledRehypePlugins
+  components: Components
+}) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={remarkPlugins}
+      rehypePlugins={rehypePlugins}
+      components={components}
+      urlTransform={markdownUrlTransform}
+    >
+      {content}
+    </ReactMarkdown>
   )
 })

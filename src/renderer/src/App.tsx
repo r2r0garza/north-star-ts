@@ -75,6 +75,7 @@ import {
 } from "@/components/transcript"
 import { QuestionPanel } from "@/components/question-panel"
 import { applyStreamAttempt } from "@/lib/live-stream"
+import { createTokenBatcher } from "@/lib/token-batcher"
 import {
   MentionMenu,
   rankSkills,
@@ -664,27 +665,52 @@ function App(
     }
     onWaitingConvosChange?.(waiting)
   }, [liveTurns, onWaitingConvosChange])
+  // Streamed tokens are buffered and applied a few times a second rather than
+  // once per token (each application re-renders and re-parses the live bubble).
+  const liveTokens = useMemo(
+    () =>
+      createTokenBatcher((batch) =>
+        setLiveTurns((prev) => {
+          const next = new Map(prev)
+          for (const [convoId, text] of batch) {
+            next.set(
+              convoId,
+              appendLiveText(prev.get(convoId) ?? EMPTY_LIVE, text)
+            )
+          }
+          return next
+        })
+      ),
+    []
+  )
+  useEffect(() => () => liveTokens.dispose(), [liveTokens])
   // Mutate one conversation's live turn immutably; seeds an empty turn if absent.
+  // Buffered tokens land first so every other update keeps its stream order.
   const updateLive = useCallback(
     (convoId: string, fn: (prev: LiveTurn) => LiveTurn) => {
+      liveTokens.flush()
       setLiveTurns((prev) => {
         const next = new Map(prev)
         next.set(convoId, fn(prev.get(convoId) ?? EMPTY_LIVE))
         return next
       })
     },
-    []
+    [liveTokens]
   )
   // Drop one conversation's live turn (its content has been reconciled into the
   // persisted transcript, or the turn is being restarted).
-  const clearLive = useCallback((convoId: string) => {
-    setLiveTurns((prev) => {
-      if (!prev.has(convoId)) return prev
-      const next = new Map(prev)
-      next.delete(convoId)
-      return next
-    })
-  }, [])
+  const clearLive = useCallback(
+    (convoId: string) => {
+      liveTokens.flush()
+      setLiveTurns((prev) => {
+        if (!prev.has(convoId)) return prev
+        const next = new Map(prev)
+        next.delete(convoId)
+        return next
+      })
+    },
+    [liveTokens]
+  )
 
   // All providers + their models (for the composer's grouped picker) and the
   // default selection (the starting point for a fresh conversation). Reloaded
@@ -773,10 +799,29 @@ function App(
     conversationId !== null &&
     (runningConvos.has(conversationId) || reportTurns.has(conversationId))
   const reportGenerationRef = useRef(new Map<string, number>())
+  const reportTokens = useMemo(
+    () =>
+      createTokenBatcher((batch) =>
+        setReportTurns((prev) => {
+          const next = new Map(prev)
+          for (const [id, text] of batch) {
+            next.set(id, appendLiveText(prev.get(id) ?? EMPTY_LIVE, text))
+          }
+          return next
+        })
+      ),
+    []
+  )
+  useEffect(() => () => reportTokens.dispose(), [reportTokens])
   useEffect(
     () =>
       window.cowork.onCompletionReportStream((payload) => {
         const id = payload.conversationId
+        if (payload.type !== "started" && payload.event.type === "token") {
+          reportTokens.push(id, payload.event.delta)
+          return
+        }
+        reportTokens.flush()
         if (payload.type === "started") {
           reportGenerationRef.current.set(
             id,
@@ -787,19 +832,18 @@ function App(
           const next = new Map(prev)
           const turn = prev.get(id) ?? EMPTY_LIVE
           if (payload.type === "started") next.set(id, EMPTY_LIVE)
-          else if (payload.event.type === "token") {
-            next.set(id, appendLiveText(turn, payload.event.delta))
-          } else if (payload.event.type === "stream_attempt") {
+          else if (payload.event.type === "stream_attempt") {
             next.set(id, applyStreamAttempt(turn, payload.event))
           }
           return next
         })
       }),
-    []
+    [reportTokens]
   )
   useEffect(
     () =>
       window.cowork.onCompletionReport((id) => {
+        reportTokens.flush()
         const generation = reportGenerationRef.current.get(id)
         void window.cowork.db.messages
           .list(id)
@@ -824,7 +868,7 @@ function App(
           })
         onConversationChanged()
       }),
-    [onConversationChanged]
+    [onConversationChanged, reportTokens]
   )
   // A usable provider + model must be selected before any turn. Mirrors the
   // main-process resolveLlm gate (the backstop there returns the same error if a
@@ -1515,6 +1559,7 @@ function App(
     setTranscriptScroll((prev) => resetTranscriptScroll(prev, turnConvoId))
     // Start this conversation's live turn from a clean slate (its buffers are
     // keyed by conversation, so this never touches another conversation's turn).
+    liveTokens.flush()
     setLiveTurns((prev) => {
       const next = new Map(prev)
       next.set(turnConvoId, EMPTY_LIVE)
@@ -1559,7 +1604,7 @@ function App(
           if (event.type === "stream_attempt") {
             updateLive(turnConvoId, (turn) => applyStreamAttempt(turn, event))
           } else if (event.type === "token") {
-            updateLive(turnConvoId, (turn) => appendLiveText(turn, event.delta))
+            liveTokens.push(turnConvoId, event.delta)
           } else if (event.type === "tool" && event.phase === "start") {
             // A tool started — add a running row (label derived from its args) to
             // the current tools segment, or open a new one after streamed text.

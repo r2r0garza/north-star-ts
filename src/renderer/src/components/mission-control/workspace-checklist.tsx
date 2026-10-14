@@ -7,7 +7,6 @@ import {
   CircleSlash,
   Download,
   Info,
-  Loader2,
   OctagonAlert,
   Play,
   RefreshCw,
@@ -42,6 +41,7 @@ import type {
 } from "@/types"
 import { SetupTerminal, watchSetupOutput } from "./setup-terminal"
 import { TestBrowserFixStatus } from "./test-browser"
+import { Spinner } from "@/components/ui/spinner"
 
 // The workspace setup checklist (plan 106.11): findings with concrete fixes,
 // Apply all's review sheet, and the live setup run. Every action names a
@@ -507,7 +507,7 @@ export function SetupRunPanel({ run }: { run: SetupRunView }) {
     <div className="space-y-2 rounded-md border p-3" aria-live="polite">
       <div className="flex items-center gap-2 text-sm font-medium">
         {run.status === "running" ? (
-          <Loader2 className="size-4 animate-spin" />
+          <Spinner />
         ) : run.status === "succeeded" ? (
           <CheckCircle2 className="size-4 text-emerald-500" />
         ) : (
@@ -543,7 +543,7 @@ export function SetupRunPanel({ run }: { run: SetupRunView }) {
               className={`flex w-full items-center gap-2 rounded px-1 py-0.5 text-left ${step === shown ? "bg-muted" : ""}`}
             >
               {step.status === "running" ? (
-                <Loader2 className="size-3 shrink-0 animate-spin" />
+                <Spinner className="size-3" />
               ) : step.status === "ok" ? (
                 <CheckCircle2 className="size-3 shrink-0 text-emerald-500" />
               ) : step.status === "failed" ? (
@@ -818,8 +818,7 @@ export function WorkspaceChecklist({
         {!compact && <h3 className="font-medium">Workspace setup</h3>}
         {running && (
           <span className="flex items-center gap-1 text-xs text-muted-foreground">
-            <Loader2 className="size-3 animate-spin" />{" "}
-            {analysis?.stage ?? "Checking…"}
+            <Spinner className="size-3" /> {analysis?.stage ?? "Checking…"}
           </span>
         )}
         {analysis?.stale && !running && (
@@ -856,8 +855,8 @@ export function WorkspaceChecklist({
       )}
       {analysis?.modelStatus === "running" && (
         <p className="flex items-center gap-1 text-xs text-muted-foreground">
-          <Loader2 className="size-3 animate-spin" /> Reading the project's docs
-          for anything the checks missed…
+          <Spinner className="size-3" /> Reading the project's docs for anything
+          the checks missed…
         </p>
       )}
       {run &&
