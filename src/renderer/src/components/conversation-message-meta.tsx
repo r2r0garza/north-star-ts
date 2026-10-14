@@ -56,7 +56,7 @@ export function ConversationMessageMeta({
   return (
     <MessageFooter
       className={cn(
-        "h-6 gap-1 px-1 font-normal",
+        "h-6 gap-1 px-0 font-normal",
         align === "end" ? "justify-end" : "justify-start"
       )}
     >
