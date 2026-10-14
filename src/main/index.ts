@@ -88,7 +88,11 @@ import {
 import { getFeature as getFeatureRow } from "./db/repositories/features"
 import { WorkspaceAnalysisService } from "./mission-control/workspace-analysis"
 import { registerWorkspaceAnalysisHandlers } from "./ipc/workspace-analysis-handlers"
-import { resolveLlm, createCompletion } from "./agent/providers"
+import {
+  resolveLlm,
+  resolveLlmTarget,
+  createCompletion,
+} from "./agent/providers"
 import * as settingsService from "./settings/service"
 import { listWorkspaceFiles } from "./files/list"
 import { listWorkspaceDirectory } from "./files/tree"
@@ -173,7 +177,11 @@ import {
 import { getAccount as getProviderAccount } from "./db/repositories/provider-accounts"
 import { DashboardService, DASHBOARD_REFRESH_KIND } from "./dashboards/service"
 import { registerDashboardHandlers } from "./ipc/dashboard-handlers"
-import { registerMissionControlHandlers } from "./ipc/mission-control-handlers"
+import {
+  registerMissionControlHandlers,
+  removeFeature,
+} from "./ipc/mission-control-handlers"
+import { registerScenarioDriver } from "./ipc/scenario-driver-handlers"
 import { BrowserManager } from "./browser/manager"
 import { registerTerminalHandlers } from "./ipc/terminal-handlers"
 import { registerFileWatchHandlers } from "./ipc/file-handlers"
@@ -1796,6 +1804,47 @@ app.whenReady().then(async () => {
     workspaceAnalysis
   )
   registerWorkspaceAnalysisHandlers(workspaceAnalysis)
+  // The live scenario driver (plan 112.2): dev builds with Mission Control
+  // on only. It runs the 112 scenario fixtures on Autopilot with the
+  // configured model and writes .plan/112-scorecard/<date>-<label>.json.
+  if (missionControlEnabled() && !app.isPackaged)
+    registerScenarioDriver(
+      {
+        startDrive: (id) =>
+          milestoneNavigator.startDrive(id, {
+            mode: "autopilot",
+            autoApplyPlan: true,
+          }),
+        cancel: (id, reason) => void milestoneNavigator.cancel(id, reason),
+        position: (id) => milestoneNavigator.position(id),
+        preflight: (id) => workspaceAnalysis.preflight(id),
+        removeFeature: async (id) => {
+          await removeFeature(id, {
+            integration: milestoneIntegration,
+            seatSessions,
+          })
+        },
+        model: () => {
+          try {
+            const { account, model } = resolveLlmTarget()
+            return { provider: account.provider, model }
+          } catch {
+            return { provider: null, model: null }
+          }
+        },
+      },
+      {
+        repoRoot: app.getAppPath(),
+        scenariosDir: join(
+          app.getAppPath(),
+          "src",
+          "main",
+          "mission-control",
+          "scenarios"
+        ),
+        quit: () => app.quit(),
+      }
+    )
   // Sweep orphaned Mission Control worktrees and resume merge queues. Queue
   // work (including merges the reconcile below enqueues) waits for the sweep.
   void milestoneIntegration

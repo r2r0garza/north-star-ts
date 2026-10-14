@@ -38,6 +38,9 @@
       "exitCode": 0
     }
   ],
+  "live": {
+    "variant": "library"
+  },
   "expected": {
     "live": {
       "stories": {

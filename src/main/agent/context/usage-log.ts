@@ -86,6 +86,16 @@ export function formatContextUsageLine(entry: ContextUsageEntry): string {
   return `[ctx] round ${entry.round} · ${inbound}${outbound}${outcome}`
 }
 
+// In-process listeners on every logged round (the live scenario driver's
+// cost record, plan 112.2). Never throw into the logging path.
+type UsageListener = (entry: ContextUsageEntry) => void
+const usageListeners = new Set<UsageListener>()
+
+export function onContextUsage(listener: UsageListener): () => void {
+  usageListeners.add(listener)
+  return () => usageListeners.delete(listener)
+}
+
 export function createContextUsageLog(options: {
   dir: () => string
   maxBytes?: number
@@ -121,6 +131,12 @@ export function createContextUsageLog(options: {
       } catch {
         // Console output is a convenience only.
       }
+      for (const listener of usageListeners)
+        try {
+          listener(entry)
+        } catch {
+          // Measurement only.
+        }
       queue = queue.then(
         () =>
           write(entry).catch((error) => {

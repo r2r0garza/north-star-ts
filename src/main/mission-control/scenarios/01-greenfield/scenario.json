@@ -45,6 +45,9 @@
       }
     }
   },
+  "live": {
+    "variant": null
+  },
   "expected": {
     "live": {
       "stories": {

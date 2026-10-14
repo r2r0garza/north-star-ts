@@ -132,12 +132,10 @@ function assertPod(scope: Scope, pod: string | null | undefined): void {
 }
 
 function edgesOf(milestoneId: string) {
-  return features
-    .listEdges(milestoneId)
-    .map((e) => ({
-      fromUserStoryId: e.fromUserStoryId,
-      toUserStoryId: e.toUserStoryId,
-    }))
+  return features.listEdges(milestoneId).map((e) => ({
+    fromUserStoryId: e.fromUserStoryId,
+    toUserStoryId: e.toUserStoryId,
+  }))
 }
 
 function setEdges(
@@ -370,6 +368,17 @@ function applyOne(
         { status: "cancelled", finishedAt: Date.now() },
         `Split into ${created.map((s) => s.key).join(", ")}: ${input.reason}`,
         input.actor
+      )
+      // Which stories carry the original's work on (the live scenario
+      // driver scores a split story by its parts, plan 112.2).
+      features.recordRevision(
+        scope.feature.id,
+        "user_story",
+        original.id,
+        "split",
+        { into: created.map((s) => s.id) },
+        input.actor,
+        input.reason
       )
       result.createdUserStoryIds.push(...created.map((s) => s.id))
       break

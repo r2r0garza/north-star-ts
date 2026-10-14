@@ -65,6 +65,27 @@ import type {
   PlaybookRunStatus,
 } from "../db/types"
 
+// Delete a feature with its worktrees, mc/ branches, and seat conversations.
+// Also used by the live scenario driver (plan 112.2) to clean up after a run.
+export async function removeFeature(
+  id: string,
+  deps: { integration: MilestoneIntegration; seatSessions: SeatSessionService }
+): Promise<{ keptBranches: string[] }> {
+  // Seat sessions are hidden conversations the cascade does not reach.
+  const conversations = seatSessionsRepo
+    .listSeatSessions({ featureId: id })
+    .map((session) => session.conversationId)
+    .filter((cid): cid is string => !!cid)
+  if (playbooks.listPlaybookRuns({ featureId: id, status: "running" }).length)
+    throw new Error("A playbook run is in progress here. Cancel it first.")
+  // Worktrees and mc/ branches go first, while the rows naming them exist.
+  const { keptBranches } = await deps.integration.cleanupFeature(id)
+  features.deleteFeature(id)
+  deps.seatSessions.cancelFeature(id)
+  await deleteConversationsWithArtifacts(conversations)
+  return { keptBranches }
+}
+
 async function agents(workspace?: string) {
   return loadAgents(agentSources(workspace))
 }
@@ -555,25 +576,8 @@ export function registerMissionControlHandlers(
     (_event, id: string, patch, actor?: string, reason?: string) =>
       features.updateFeature(id, patch, actor, reason)
   )
-  ipcMain.handle(
-    "missionControl:features:delete",
-    async (_event, id: string) => {
-      // Seat sessions are hidden conversations the cascade does not reach.
-      const conversations = seatSessionsRepo
-        .listSeatSessions({ featureId: id })
-        .map((session) => session.conversationId)
-        .filter((cid): cid is string => !!cid)
-      if (
-        playbooks.listPlaybookRuns({ featureId: id, status: "running" }).length
-      )
-        throw new Error("A playbook run is in progress here. Cancel it first.")
-      // Worktrees and mc/ branches go first, while the rows naming them exist.
-      const { keptBranches } = await integration.cleanupFeature(id)
-      features.deleteFeature(id)
-      seatSessions.cancelFeature(id)
-      await deleteConversationsWithArtifacts(conversations)
-      return { keptBranches }
-    }
+  ipcMain.handle("missionControl:features:delete", (_event, id: string) =>
+    removeFeature(id, { integration, seatSessions })
   )
   // Starting through the Navigator in the feature's chosen drive mode.
   ipcMain.handle(

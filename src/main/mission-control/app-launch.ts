@@ -65,6 +65,22 @@ const STOP_GRACE_MS = 3000
 
 const running = new Map<string, RunningService>()
 
+// Every service process the harness spawns, for the live scenario driver's
+// orphan check (plan 112.2): it probes these PIDs and their process groups
+// after the app's own teardown.
+type SpawnListener = (spawned: {
+  owner: string
+  root: string
+  key: string
+  pid: number
+}) => void
+const spawnListeners = new Set<SpawnListener>()
+
+export function onServiceSpawned(listener: SpawnListener): () => void {
+  spawnListeners.add(listener)
+  return () => spawnListeners.delete(listener)
+}
+
 const id = (owner: string, root: string, key: string) =>
   `${owner}\0${root}\0${key}`
 
@@ -275,6 +291,14 @@ function spawnService(
     }
   )
   entry.child = child
+  if (child.pid)
+    for (const listener of spawnListeners)
+      listener({
+        owner: entry.owner,
+        root: entry.root,
+        key: entry.service.key,
+        pid: child.pid,
+      })
   const keep = (chunk: Buffer) => {
     const next = entry.output + chunk.toString("utf8")
     entry.output =

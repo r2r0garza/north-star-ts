@@ -1345,6 +1345,32 @@ const api = {
           ipcRenderer.removeListener("missionControl:comms:changed", listener)
       },
     },
+    // The live scenario driver (plan 112.2), registered only in dev builds
+    // with Mission Control on; called from DevTools, never from the UI.
+    dev: {
+      runScenarios: (request?: {
+        scenarios?: string[]
+        runs?: number
+        label?: string
+        date?: string
+        variant?: string | null
+        rigId?: string | null
+        capMs?: number
+        keep?: boolean
+        skipPreflight?: boolean
+      }) =>
+        ipcRenderer.invoke(
+          "missionControl:dev:runScenarios",
+          request
+        ) as Promise<{
+          file: string
+          scenarios: unknown[]
+        }>,
+      stopScenarios: () =>
+        ipcRenderer.invoke(
+          "missionControl:dev:stopScenarios"
+        ) as Promise<boolean>,
+    },
     // The test browser Mission Control's Playwright runs use when there's no
     // workspace browser or Chrome (plan 112.1): its state, the consented
     // one-time download, and pushes as it changes (requested by a run,

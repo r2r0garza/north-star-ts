@@ -14,6 +14,7 @@
     "test:sqlite": "node scripts/with-node-sqlite.mjs node scripts/test-sqlite.mjs",
     "test:watch": "vitest",
     "verify:roadmap": "node scripts/verify-roadmap.mjs",
+    "scenarios:compare": "node scripts/compare-scorecards.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "postinstall": "electron-rebuild -f -w better-sqlite3,node-pty"
   },

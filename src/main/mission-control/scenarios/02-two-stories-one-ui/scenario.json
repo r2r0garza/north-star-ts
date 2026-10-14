@@ -152,6 +152,9 @@
       }
     }
   },
+  "live": {
+    "variant": "base"
+  },
   "expected": {
     "live": {
       "stories": {
