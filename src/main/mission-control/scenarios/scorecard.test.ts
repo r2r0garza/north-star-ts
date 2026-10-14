@@ -227,8 +227,49 @@ describe("live scorecards", () => {
     expect(text).toContain("runs with orphans: 0 → 1")
     expect(text).toContain("cost per run: wall +30 s")
     expect(text).toContain("Regressed: b, c")
+    expect(text).toContain("Mixed: none")
+    expect(byKey.c).toMatchObject({ better: [], worse: ["orphans"] })
     expect(text).not.toContain("Warning")
     expect(text).not.toContain("— → 0")
+  })
+
+  it("counts a single check moving while the matched rate stays at 0", () => {
+    // Before 112.5 nothing fully matches (no wave gate), so 112.3 and 112.4
+    // show up as single checks moving.
+    const run = (checks: ScenarioRunRecord["checks"]) =>
+      live("s", "class_none", { matched: false, checks })
+    const before = card("baseline", [
+      run({ stories: true, failureClass: false, attempts: true }),
+      run({ stories: true, failureClass: false, attempts: true }),
+    ])
+    const fixed = card("recipes", [
+      run({ stories: true, failureClass: true, attempts: true }),
+      run({ stories: true, failureClass: false, attempts: true }),
+    ])
+    expect(compareScorecards(before, fixed).scenarios[0]).toMatchObject({
+      verdict: "improved",
+      better: ["failureClass"],
+      worse: [],
+      matchedRate: { before: 0, after: 0 },
+    })
+
+    // Better on one check, worse on another: not a keep.
+    const traded = card("recipes", [
+      run({ stories: true, failureClass: true, attempts: false }),
+      run({ stories: true, failureClass: false, attempts: true }),
+    ])
+    const comparison = compareScorecards(before, traded)
+    expect(comparison.scenarios[0]).toMatchObject({
+      verdict: "mixed",
+      better: ["failureClass"],
+      worse: ["attempts"],
+    })
+    expect(comparison.mixed).toEqual(["s"])
+    expect(comparison.improved).toEqual([])
+    const text = formatComparison(comparison)
+    expect(text).toContain("s: mixed (as expected 0% → 0%)")
+    expect(text).toContain("  better: failureClass; worse: attempts")
+    expect(text).toContain("Mixed: s")
   })
 
   it("warns when the two scorecards ran on different models", () => {

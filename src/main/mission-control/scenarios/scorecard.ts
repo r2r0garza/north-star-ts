@@ -474,7 +474,18 @@ function liveOutcome(
 
 export interface ScenarioComparison {
   scenario: string
-  verdict: "improved" | "regressed" | "unchanged" | "added" | "removed"
+  // improved: something got better and nothing worse; regressed: the
+  // reverse; mixed: both (a change fails "improve without regressing").
+  verdict:
+    | "improved"
+    | "regressed"
+    | "mixed"
+    | "unchanged"
+    | "added"
+    | "removed"
+  // Which signals moved each way: "as expected", a check name, "orphans".
+  better: string[]
+  worse: string[]
   matchedRate: { before: number | null; after: number | null }
   // Outcome rates that moved, after − before.
   rateChanges: Record<string, number>
@@ -495,15 +506,18 @@ export interface ScorecardComparison {
   scenarios: ScenarioComparison[]
   improved: string[]
   regressed: string[]
+  mixed: string[]
 }
 
 const delta = (a: number | undefined, b: number | undefined) =>
   a === undefined || b === undefined ? null : Math.round((b - a) * 1000) / 1000
 
-// Per scenario: did the share of runs that ended as expected go up or down,
-// and which outcomes and checks moved. A scenario that gained orphan runs
-// regresses whatever else it did. 112.3–112.5 use this as acceptance
-// evidence: keep a change only if something improved and nothing regressed.
+// Per scenario: which signals moved, and which outcomes. The signals are the
+// share of runs that matched every expectation, each check's rate, and the
+// share of runs with orphans. The matched rate alone isn't enough: it needs
+// the wave gate (112.5), so it stays at 0 while 112.3 and 112.4 move single
+// checks. 112.3–112.5 use this as acceptance evidence: keep a change only
+// if something improved and nothing regressed (no `regressed` or `mixed`).
 export function compareScorecards(
   before: Scorecard,
   after: Scorecard
@@ -530,21 +544,33 @@ export function compareScorecards(
       const change = delta(a?.checkRates?.[check], b?.checkRates?.[check])
       if (change) checkChanges[check] = change
     }
-    const matched = delta(a?.matchedRate, b?.matchedRate)
-    const orphansUp =
-      !!a && !!b && b.runsWithOrphans / b.runs > a.runsWithOrphans / a.runs
+    const better: string[] = []
+    const worse: string[] = []
+    const track = (name: string, change: number | null | undefined) => {
+      if (change && change > 0) better.push(name)
+      else if (change && change < 0) worse.push(name)
+    }
+    track("as expected", delta(a?.matchedRate, b?.matchedRate))
+    for (const check of LIVE_CHECKS) track(check, checkChanges[check])
+    // The harness tier has no checks: the orphan share stands in.
+    if (a && b && !worse.includes("orphans") && !better.includes("orphans"))
+      track("orphans", a.runsWithOrphans / a.runs - b.runsWithOrphans / b.runs)
     const verdict: ScenarioComparison["verdict"] = !a
       ? "added"
       : !b
         ? "removed"
-        : orphansUp || (matched ?? 0) < 0
-          ? "regressed"
-          : (matched ?? 0) > 0
-            ? "improved"
-            : "unchanged"
+        : better.length && worse.length
+          ? "mixed"
+          : worse.length
+            ? "regressed"
+            : better.length
+              ? "improved"
+              : "unchanged"
     return {
       scenario,
       verdict,
+      better: a && b ? better : [],
+      worse: a && b ? worse : [],
       matchedRate: {
         before: a?.matchedRate ?? null,
         after: b?.matchedRate ?? null,
@@ -580,6 +606,9 @@ export function compareScorecards(
     regressed: scenarios
       .filter((s) => s.verdict === "regressed")
       .map((s) => s.scenario),
+    mixed: scenarios
+      .filter((s) => s.verdict === "mixed")
+      .map((s) => s.scenario),
   }
 }
 
@@ -601,6 +630,10 @@ export function formatComparison(comparison: ScorecardComparison): string {
       "",
       `${s.scenario}: ${s.verdict} (as expected ${pct(s.matchedRate.before)} → ${pct(s.matchedRate.after)})`
     )
+    if (s.verdict === "mixed")
+      lines.push(
+        `  better: ${s.better.join(", ")}; worse: ${s.worse.join(", ")}`
+      )
     const rates = Object.entries(s.rateChanges)
     if (rates.length)
       lines.push(
@@ -630,7 +663,8 @@ export function formatComparison(comparison: ScorecardComparison): string {
   lines.push(
     "",
     `Improved: ${comparison.improved.join(", ") || "none"}`,
-    `Regressed: ${comparison.regressed.join(", ") || "none"}`
+    `Regressed: ${comparison.regressed.join(", ") || "none"}`,
+    `Mixed: ${comparison.mixed.join(", ") || "none"}`
   )
   return lines.join("\n")
 }
