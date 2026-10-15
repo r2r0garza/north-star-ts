@@ -37,11 +37,19 @@ const withNode = (command: string) => command.replace(/^node\b/, NODE)
 
 function onThisNode(recipe: AppLaunch): AppLaunch {
   return {
+    ...recipe,
     services: recipe.services.map((s) => ({
       ...s,
       command: withNode(s.command),
-      ...(s.prepare ? { prepare: withNode(s.prepare) } : {}),
     })),
+    ...(recipe.setup
+      ? {
+          setup: recipe.setup.map((step) => ({
+            ...step,
+            command: withNode(step.command),
+          })),
+        }
+      : {}),
   }
 }
 
@@ -76,7 +84,8 @@ async function runVariant(
   const validation = validateAppLaunch(variant.recipe)
   expect(validation.ok, JSON.stringify(validation)).toBe(true)
   const root = workingCopy(scenario, variant.patches)
-  const recipe = onThisNode(variant.recipe)
+  // Stored as written (a per-service prepare reads as a setup step).
+  const recipe = onThisNode(validation.recipe)
   const owner = `scenario:${scenario.spec.key}:${key}`
 
   const outcome = await startServices({ owner, root, recipe })

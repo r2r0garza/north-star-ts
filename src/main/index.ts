@@ -140,6 +140,12 @@ import { productionCommandDeps } from "./tasks/process/command-executor-deps"
 import { UserStoryRunner } from "./mission-control/user-story-runner"
 import { MilestoneIntegration } from "./mission-control/integration"
 import { stopAllServicesSync } from "./mission-control/app-launch"
+import {
+  AppRecipeService,
+  installAppRecipeService,
+} from "./mission-control/app-recipe"
+import { createRepairTurn } from "./mission-control/recipe-repair-turn"
+import { playwrightSmokeLoad } from "./mission-control/smoke-load"
 import { getRigGraph } from "./db/repositories/rigs"
 import {
   configurePlaywright,
@@ -328,7 +334,79 @@ const milestoneIntegration: MilestoneIntegration = new MilestoneIntegration({
       wc.send("missionControl:integration:changed", featureId)
     milestoneNavigator.poke(featureId)
   },
+  // Plan 112.3: the milestone's app is in the user's checkout now, so check
+  // it there (skipped by itself if the landing was a PR not merged yet).
+  onMilestoneLanded: (featureId) =>
+    void appRecipes
+      .checkFeature(featureId)
+      .catch((err) => console.warn("[app-recipe] check after landing:", err)),
 })
+// Self-verifying recipes and repair (plan 112.3): the harness verifies the
+// app launch recipe by running it, a builder seat repairs it with a
+// recipe-only objective, and what repair can't fix reaches the user as one
+// plain-language question with choices.
+const appRecipes: AppRecipeService = new AppRecipeService({
+  repairTurn: createRepairTurn({
+    loadAgents: (workspace) => loadAgents(agentSources(workspace)),
+    runTurn: (input) => {
+      const abort = new AbortController()
+      if (input.signal?.aborted) abort.abort(input.signal.reason)
+      else
+        input.signal?.addEventListener(
+          "abort",
+          () => abort.abort(input.signal?.reason),
+          { once: true }
+        )
+      return runAgentLoop({
+        conversationId: input.conversationId,
+        workspace: input.workspace,
+        agentDir: input.workspace,
+        userMessage: input.objective,
+        abort,
+        taskId: input.taskId,
+        // The same policy as the builder's own steps: autonomous, with
+        // command policy applied to every command it runs.
+        autoMode: true,
+        agentOverride: input.agentOverride,
+        extraContextSections: input.contextSections,
+        missionControlSeat: input.seat,
+        appLaunchRepair: input.repair,
+        allowedToolNames: input.allowedToolNames,
+        suppressUserQuestions: true,
+        onEvent: () => {},
+      })
+    },
+  }),
+  browserLoad: playwrightSmokeLoad,
+  escalate: (input) => {
+    const result = seatComms.recipeEscalation({
+      featureId: input.featureId,
+      body: input.body,
+      anchor: input.userStoryId
+        ? { kind: "user_story", id: input.userStoryId }
+        : null,
+    })
+    return result.ok ? result.message.id : null
+  },
+  acknowledge: (messageId) => {
+    seatComms.acknowledge(messageId)
+  },
+  markUnverified: (userStoryId, summary) => {
+    userStoryRunner.markUnverified(userStoryId, summary)
+  },
+  onSkipped: (question, failure) => {
+    if (question.userStoryId)
+      userStoryRunner.markUnverified(
+        question.userStoryId,
+        failure?.summary ?? "the user chose not to run it"
+      )
+  },
+  onChanged: (featureId) => {
+    workspaceAnalysis.appLaunchChanged(featureId)
+    milestoneNavigator.poke(featureId)
+  },
+})
+installAppRecipeService(appRecipes)
 const userStoryRunner: UserStoryRunner = new UserStoryRunner({
   startProcessRun: (input) => processService.startRun(input),
   cancelTask: (taskId) => taskRunner.cancel(taskId),
@@ -336,6 +414,7 @@ const userStoryRunner: UserStoryRunner = new UserStoryRunner({
   workerProvider,
   onCancelled: (featureId) => seatSessions.cancelFeature(featureId),
   integration: milestoneIntegration,
+  preflight: (input) => appRecipes.preflight(input),
 })
 // The Navigator (plan 106.6): deterministic GPS for each feature. It ticks
 // on durable work events (debounced), drives Autopilot's mechanical steps, and
@@ -498,6 +577,18 @@ const workspaceAnalysis = new WorkspaceAnalysisService({
     const wc = mainWindow?.webContents
     if (wc && !wc.isDestroyed())
       wc.send("missionControl:analysis:runChanged", run)
+  },
+  // How the app starts and whether it does (plan 112.3).
+  appLaunch: {
+    state: (featureId) => appRecipes.checkoutState(featureId),
+    check: (featureId) =>
+      void appRecipes
+        .checkFeature(featureId)
+        .catch((err) => console.warn("[app-recipe] check failed:", err)),
+    answer: (questionId, choiceId) =>
+      void appRecipes
+        .answer(questionId, choiceId)
+        .catch((err) => console.warn("[app-recipe] answer failed:", err)),
   },
   // QA's test browser (plan 112.1), checked with the workspace setup.
   testBrowser: {

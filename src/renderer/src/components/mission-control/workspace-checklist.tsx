@@ -232,11 +232,17 @@ function actionLabel(fix: Fix): string {
   if (fix.kind === "run-command") return fix.patch ? "Apply and run" : "Run"
   if (fix.kind === "run-checks") return "Run checks"
   if (fix.kind === "download-test-browser") return "Download"
+  if (fix.kind === "verify-app") return "Check now"
+  if (fix.kind === "answer-app-question") return fix.summary
   return "Apply"
 }
 
 function ActionIcon({ fix }: { fix: Fix }) {
-  if (fix.kind === "run-command" || fix.kind === "run-checks")
+  if (
+    fix.kind === "run-command" ||
+    fix.kind === "run-checks" ||
+    fix.kind === "verify-app"
+  )
     return <Play className="size-4" />
   if (fix.kind === "download-test-browser")
     return <Download className="size-4" />
@@ -394,9 +400,11 @@ function FindingRow({
                   title={alt.summary}
                   onClick={() => void onFix(finding.key, i)}
                 >
-                  {alt.kind === "run-command"
-                    ? "Run instead"
-                    : "Use this instead"}
+                  {alt.kind === "answer-app-question"
+                    ? alt.summary
+                    : alt.kind === "run-command"
+                      ? "Run instead"
+                      : "Use this instead"}
                 </Button>
               )
             )}
@@ -788,10 +796,22 @@ export function WorkspaceChecklist({
     setBusy(true)
     try {
       const result = await api.applyFix(featureId, key, alternative)
-      const fix = findings.find((f) => f.key === key)?.fix
+      const finding = findings.find((f) => f.key === key)
+      const fix =
+        alternative === null ? finding?.fix : finding?.alternatives[alternative]
       if (result.run) toast.message("Running in the setup terminal below")
       else if (fix?.kind === "download-test-browser" && alternative === null)
         toast.message("Downloading the test browser")
+      else if (fix?.kind === "answer-app-question")
+        toast.message(
+          fix.choiceId === "skip"
+            ? "Skipped running the app for now"
+            : "Got it. Checking the app again."
+        )
+      else if (fix?.kind === "verify-app")
+        toast.message(
+          "Checking that the app starts. If it doesn't, a builder repairs how it starts, and anything it can't fix is asked in Waiting on you."
+        )
       else toast.success("Applied")
     } catch (error) {
       toast.error(errorMessage(error))

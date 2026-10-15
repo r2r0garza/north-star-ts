@@ -1330,6 +1330,31 @@ describe.skipIf(!sqliteLoads)("Navigator copilot and map tools", () => {
     ).rejects.toThrow(/unfinished user stories/)
   })
 
+  it("lets the user mark a finished feature complete outside Autopilot", async () => {
+    const { id } = await copilot()
+    // Work in flight: refused, nothing changes.
+    await expect(navigator.complete(id)).rejects.toThrow(/isn't finished yet/)
+    expect(features.getFeature(id)!.status).toBe("active")
+    // Every milestone done (stories done, milestone landed).
+    db.prepare(
+      "UPDATE user_stories SET status = 'done' WHERE milestone_id IN (SELECT id FROM milestones WHERE feature_id = ?)"
+    ).run(id)
+    db.prepare(
+      "UPDATE milestones SET status = 'completed' WHERE feature_id = ?"
+    ).run(id)
+    const position = await navigator.position(id)
+    expect(position.maneuver.kind).toBe("complete_feature")
+    expect(position.pendingDecisions).toContainEqual(
+      expect.objectContaining({
+        kind: "feature_complete",
+        action: { kind: "complete_feature" },
+      })
+    )
+    await navigator.complete(id)
+    expect(features.getFeature(id)!.status).toBe("completed")
+    expect(notices.at(-1)).toMatch(/“Billing” is complete/)
+  })
+
   it("stops agent revisions at the budget: further changes become proposals", async () => {
     const { id, turn } = await copilot()
     features.setFeatureBudgets(id, {

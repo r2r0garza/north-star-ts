@@ -28,7 +28,7 @@ import { TOOL_EFFECTS, type ToolImage } from "./tools/types"
 import { readFileTool } from "./tools/read_file_tool"
 import { CHAT_SHELL_TOOL_NAMES, chatShellContext } from "./tools/chat_shell"
 import { toolError } from "./tools/output"
-import type { ToolContext } from "./tools/types"
+import type { AppLaunchRepairContext, ToolContext } from "./tools/types"
 import {
   FILE_CHANGE_KINDS,
   KIND_WIDE_IDENTITY,
@@ -950,6 +950,9 @@ export interface RunAgentLoopOptions {
   // app_status / app_stop; the tools re-derive the recipe and the owning
   // phase run, and the phase stops what they started when it ends.
   processAppLaunch?: boolean
+  // A builder seat's recipe-repair turn (plan 112.3): app tools, including
+  // app_launch_save, resolved from this context rather than a phase run.
+  appLaunchRepair?: AppLaunchRepairContext
   // Mission Control seat turn (plan 106.4): who is speaking on the rig and
   // what the turn may do. Offers the Comms tools (except answer-only), delivers
   // the seat's queued mail at each tool-round boundary, and — for a turn woken
@@ -1508,9 +1511,10 @@ export async function runAgentLoop(
           : [],
         // app_start / app_status / app_stop (plan 112.1): process-structural
         // like record_proof, offered only to a builder or QA seat's work step.
-        opts.processAppLaunch &&
+        ((opts.processAppLaunch &&
           opts.processRunId &&
-          opts.processPhaseRunId &&
+          opts.processPhaseRunId) ||
+          opts.appLaunchRepair) &&
           !planMode
           ? appLaunchTools.map((t) => t.definition)
           : []
@@ -3025,6 +3029,7 @@ export async function runAgentLoop(
             processRunId: opts.processRunId,
             processPhaseRunId: opts.processPhaseRunId,
             missionControlSeat: opts.missionControlSeat,
+            appLaunchRepair: opts.appLaunchRepair,
           }
           // MCP tool calls (mcp__<server>__<tool>) route to the connection pool via
           // the manager, not the static tool registry. Gate first: calling a

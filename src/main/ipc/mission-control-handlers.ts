@@ -1,3 +1,5 @@
+import { getAppRecipeService } from "../mission-control/app-recipe"
+import { findRecipeQuestion } from "../db/repositories/app-recipe-states"
 import { readFile, writeFile } from "fs/promises"
 import {
   BrowserWindow,
@@ -168,6 +170,14 @@ export function registerMissionControlHandlers(
     navigator.resume(id)
     return graphOf(id)
   })
+  // Every milestone is done: the user finishes the feature (Manual, Copilot).
+  ipcMain.handle(
+    "missionControl:drive:complete",
+    async (_event, id: string) => {
+      await navigator.complete(id)
+      return graphOf(id)
+    }
+  )
   ipcMain.handle("missionControl:drive:reopen", (_event, id: string) => {
     navigator.reopen(id)
     return graphOf(id)
@@ -541,6 +551,31 @@ export function registerMissionControlHandlers(
         allowTouchOverlap: options?.allowTouchOverlap === true,
         actor: "user",
       })
+  )
+  // Plan 112.3: accept a story the app couldn't be run for, with a note.
+  // Checking it again is an ordinary run, which burns no attempt.
+  ipcMain.handle(
+    "missionControl:userStories:acceptUnverified",
+    (_event, userStoryId: string, note: string) =>
+      userStoryRunner.acceptUnverified(userStoryId, String(note ?? ""), "user")
+  )
+  // Plan 112.3: one of recipe repair's choices. Applying it can take
+  // minutes (a repair loop), so it runs in the background; the state, the
+  // analysis panel, and the inbox follow its change events.
+  ipcMain.handle(
+    "missionControl:recipes:answer",
+    (_event, questionId: string, choiceId: string) => {
+      const service = getAppRecipeService()
+      if (!service) throw new Error("Recipe checks aren't available here.")
+      const found = findRecipeQuestion(String(questionId))
+      if (!found) throw new Error("That question was already answered.")
+      if (!found.question.choices.some((c) => c.id === choiceId))
+        throw new Error("That choice is no longer available.")
+      void service
+        .answer(String(questionId), String(choiceId))
+        .catch((err) => console.warn("[app-recipe] answer failed:", err))
+      return { ok: true }
+    }
   )
   ipcMain.handle(
     "missionControl:userStories:nudge",

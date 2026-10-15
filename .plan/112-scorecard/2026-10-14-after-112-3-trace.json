@@ -1,0 +1,317 @@
+{
+  "version": 1,
+  "label": "after-112.3-trace",
+  "date": "2026-10-14",
+  "tier": "live",
+  "commit": "180b750-dirty",
+  "model": "gpt-6-luna",
+  "provider": "codex_subscription",
+  "configuredModel": "gpt-6-luna",
+  "notes": "Live tier: each scenario run as a feature on Autopilot with a real model, from a fresh fixture copy with its pre-authored plan. Rates per outcome across runs; cost is seat model usage from the context usage log.",
+  "scenarios": [
+    {
+      "scenario": "03-app-needing-setup",
+      "runs": 3,
+      "rates": {
+        "gate_not_run": 1
+      },
+      "matchedRate": 0,
+      "runsWithOrphans": 0,
+      "checkRates": {
+        "stories": 1,
+        "failureClass": 1,
+        "waveGate": 0,
+        "attempts": 1,
+        "escalations": 1,
+        "orphans": 1
+      },
+      "runsWithPlanChanges": 0,
+      "cost": {
+        "meanWallMs": 272436,
+        "meanInputTokens": 2693622,
+        "meanOutputTokens": 7362
+      }
+    }
+  ],
+  "runs": [
+    {
+      "scenario": "03-app-needing-setup",
+      "variant": "missing-migration",
+      "tier": "live",
+      "outcome": "gate_not_run",
+      "matched": false,
+      "stories": {
+        "item-count": "done"
+      },
+      "waveGate": "not_run",
+      "failureClass": "environment",
+      "storyAttempts": 1,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 191051,
+      "orphans": [],
+      "scenarioVersion": 1,
+      "appCommit": "180b750-dirty",
+      "settle": "settled",
+      "firstVerdicts": {
+        "item-count": "rejected"
+      },
+      "resolvedStories": {
+        "item-count": "done"
+      },
+      "resolvedVerdicts": {
+        "item-count": "rejected"
+      },
+      "planChanges": {
+        "addedStories": [],
+        "addedMilestones": [],
+        "splits": {},
+        "cancelled": []
+      },
+      "attemptsByStory": {
+        "item-count": 1
+      },
+      "proofRevisions": 1,
+      "appChecks": [
+        {
+          "story": "item-count",
+          "result": "pass",
+          "cached": false,
+          "repairs": 0,
+          "questions": 0,
+          "class": null,
+          "reason": null
+        },
+        {
+          "story": "item-count",
+          "result": "pass",
+          "cached": true,
+          "repairs": 0,
+          "questions": 0,
+          "class": null,
+          "reason": null
+        }
+      ],
+      "recipeSaves": [
+        {
+          "seat": "builder@implementation",
+          "repair": false,
+          "replaced": "detector",
+          "services": [
+            "node db.js",
+            "node server.js"
+          ],
+          "setup": [
+            "node migrate.js"
+          ]
+        }
+      ],
+      "appStartFailures": [
+        {
+          "seat": "builder@implementation",
+          "class": "environment",
+          "reason": "exited_early"
+        }
+      ],
+      "cost": {
+        "rounds": 58,
+        "inputTokens": 2133380,
+        "outputTokens": 6585,
+        "estimated": false
+      },
+      "model": "gpt-6-luna",
+      "provider": "codex_subscription",
+      "checks": {
+        "stories": true,
+        "failureClass": true,
+        "waveGate": false,
+        "attempts": true,
+        "escalations": true,
+        "orphans": true
+      }
+    },
+    {
+      "scenario": "03-app-needing-setup",
+      "variant": "missing-migration",
+      "tier": "live",
+      "outcome": "gate_not_run",
+      "matched": false,
+      "stories": {
+        "item-count": "done"
+      },
+      "waveGate": "not_run",
+      "failureClass": "environment",
+      "storyAttempts": 1,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 140453,
+      "orphans": [],
+      "scenarioVersion": 1,
+      "appCommit": "180b750-dirty",
+      "settle": "settled",
+      "firstVerdicts": {
+        "item-count": "accepted"
+      },
+      "resolvedStories": {
+        "item-count": "done"
+      },
+      "resolvedVerdicts": {
+        "item-count": "accepted"
+      },
+      "planChanges": {
+        "addedStories": [],
+        "addedMilestones": [],
+        "splits": {},
+        "cancelled": []
+      },
+      "attemptsByStory": {
+        "item-count": 1
+      },
+      "proofRevisions": 0,
+      "appChecks": [
+        {
+          "story": "item-count",
+          "result": "pass",
+          "cached": false,
+          "repairs": 0,
+          "questions": 0,
+          "class": null,
+          "reason": null
+        }
+      ],
+      "recipeSaves": [
+        {
+          "seat": "builder@implementation",
+          "repair": false,
+          "replaced": "detector",
+          "services": [
+            "node db.js",
+            "node server.js"
+          ],
+          "setup": [
+            "node migrate.js"
+          ]
+        }
+      ],
+      "appStartFailures": [
+        {
+          "seat": "builder@implementation",
+          "class": "environment",
+          "reason": "exited_early"
+        }
+      ],
+      "cost": {
+        "rounds": 50,
+        "inputTokens": 1581385,
+        "outputTokens": 4244,
+        "estimated": false
+      },
+      "model": "gpt-6-luna",
+      "provider": "codex_subscription",
+      "checks": {
+        "stories": true,
+        "failureClass": true,
+        "waveGate": false,
+        "attempts": true,
+        "escalations": true,
+        "orphans": true
+      }
+    },
+    {
+      "scenario": "03-app-needing-setup",
+      "variant": "missing-migration",
+      "tier": "live",
+      "outcome": "gate_not_run",
+      "matched": false,
+      "stories": {
+        "item-count": "done"
+      },
+      "waveGate": "not_run",
+      "failureClass": "environment",
+      "storyAttempts": 1,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 485805,
+      "orphans": [],
+      "scenarioVersion": 1,
+      "appCommit": "180b750-dirty",
+      "settle": "settled",
+      "firstVerdicts": {
+        "item-count": "rejected"
+      },
+      "resolvedStories": {
+        "item-count": "done"
+      },
+      "resolvedVerdicts": {
+        "item-count": "rejected"
+      },
+      "planChanges": {
+        "addedStories": [],
+        "addedMilestones": [],
+        "splits": {},
+        "cancelled": []
+      },
+      "attemptsByStory": {
+        "item-count": 1
+      },
+      "proofRevisions": 1,
+      "appChecks": [
+        {
+          "story": "item-count",
+          "result": "pass",
+          "cached": false,
+          "repairs": 0,
+          "questions": 0,
+          "class": null,
+          "reason": null
+        },
+        {
+          "story": "item-count",
+          "result": "pass",
+          "cached": true,
+          "repairs": 0,
+          "questions": 0,
+          "class": null,
+          "reason": null
+        }
+      ],
+      "recipeSaves": [
+        {
+          "seat": "builder@implementation",
+          "repair": false,
+          "replaced": "detector",
+          "services": [
+            "node db.js",
+            "node server.js"
+          ],
+          "setup": [
+            "node migrate.js"
+          ]
+        }
+      ],
+      "appStartFailures": [
+        {
+          "seat": "builder@implementation",
+          "class": "environment",
+          "reason": "exited_early"
+        }
+      ],
+      "cost": {
+        "rounds": 112,
+        "inputTokens": 4366100,
+        "outputTokens": 11257,
+        "estimated": false
+      },
+      "model": "gpt-6-luna",
+      "provider": "codex_subscription",
+      "checks": {
+        "stories": true,
+        "failureClass": true,
+        "waveGate": false,
+        "attempts": true,
+        "escalations": true,
+        "orphans": true
+      }
+    }
+  ]
+}

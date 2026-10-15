@@ -512,6 +512,8 @@ function DecisionCard({
 }) {
   const [judging, setJudging] = useState(false)
   const [summary, setSummary] = useState("")
+  const [accepting, setAccepting] = useState(false)
+  const [note, setNote] = useState("")
   const [pending, setPending] = useState(false)
   const action = decision.action
   const run = async (work: () => Promise<unknown>, done: string) => {
@@ -575,8 +577,100 @@ function DecisionCard({
           onChange={(e) => setSummary(e.target.value)}
         />
       )}
+      {action?.kind === "resolve_unverified" && accepting && (
+        <Textarea
+          rows={2}
+          value={note}
+          placeholder="Why it's fine to accept without checking it in the running app (recorded with the story's proof)"
+          onChange={(e) => setNote(e.target.value)}
+        />
+      )}
       {action && (
         <div className="flex flex-wrap gap-2">
+          {action.kind === "resolve_unverified" &&
+            (accepting ? (
+              <>
+                <Button
+                  size="sm"
+                  disabled={pending || !note.trim()}
+                  onClick={() =>
+                    void run(
+                      () =>
+                        window.cowork.missionControl.execution.acceptUnverified(
+                          action.userStoryId,
+                          note
+                        ),
+                      "Accepted unverified"
+                    )
+                  }
+                >
+                  <Check className="size-4" /> Accept unverified
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setAccepting(false)}
+                >
+                  Back
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  size="sm"
+                  disabled={pending}
+                  title="Run the story again once the app can start. It uses no attempt."
+                  onClick={() =>
+                    void run(
+                      () =>
+                        window.cowork.missionControl.execution.runUserStory(
+                          action.userStoryId
+                        ),
+                      "Checking it again"
+                    )
+                  }
+                >
+                  <Play className="size-4" /> Check again
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setAccepting(true)}
+                >
+                  Accept unverified…
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => navigation.openUserStory(action.userStoryId)}
+                >
+                  Open user story{" "}
+                  {graph.userStories.find((s) => s.id === action.userStoryId)
+                    ?.key ?? ""}
+                </Button>
+              </>
+            ))}
+          {action.kind === "answer_app_question" &&
+            action.choices.map((choice, index) => (
+              <Button
+                key={choice.id}
+                size="sm"
+                variant={index === 0 ? "default" : "outline"}
+                disabled={pending}
+                onClick={() =>
+                  void run(
+                    () =>
+                      window.cowork.missionControl.execution.answerAppQuestion(
+                        action.questionId,
+                        choice.id
+                      ),
+                    "Answered"
+                  )
+                }
+              >
+                {choice.label}
+              </Button>
+            ))}
           {action.kind === "run_hook" && (
             <Button
               size="sm"
@@ -650,6 +744,23 @@ function DecisionCard({
                 ?.key ?? ""}
             </Button>
           )}
+          {action.kind === "complete_feature" && (
+            <Button
+              size="sm"
+              disabled={pending}
+              onClick={() =>
+                void run(
+                  () =>
+                    window.cowork.missionControl.drive.complete(
+                      graph.feature.id
+                    ),
+                  "Feature complete"
+                )
+              }
+            >
+              <Check className="size-4" /> Mark feature complete
+            </Button>
+          )}
           {action.kind === "edit_budgets" && (
             <Button
               size="sm"
@@ -665,12 +776,21 @@ function DecisionCard({
   )
 }
 
+// Recipe repair's question (plan 112.3) rides on its escalation: the user
+// answers with a choice, never a command.
+export interface AppQuestionAction {
+  questionId: string
+  choices: Array<{ id: string; label: string }>
+}
+
 function EscalationCard({
   message,
+  question,
   navigation,
   onChanged,
 }: {
   message: SeatMessage
+  question?: AppQuestionAction | null
   navigation: InboxNavigation
   onChanged: () => Promise<void>
 }) {
@@ -699,10 +819,37 @@ function EscalationCard({
         </span>
       </div>
       <p className="whitespace-pre-wrap">{message.body}</p>
-      <p className="text-xs text-muted-foreground">
-        An escalation doesn't stop the drive. Answer it here, act on what it
-        asks for (the items above), or mark it handled.
-      </p>
+      {question ? (
+        <div className="flex flex-wrap gap-2">
+          {question.choices.map((choice, index) => (
+            <Button
+              key={choice.id}
+              size="sm"
+              variant={index === 0 ? "default" : "outline"}
+              disabled={pending}
+              onClick={() =>
+                void run(
+                  () =>
+                    window.cowork.missionControl.execution.answerAppQuestion(
+                      question.questionId,
+                      choice.id
+                    ),
+                  choice.id === "skip"
+                    ? "Skipped running the app"
+                    : "Checking the app again"
+                )
+              }
+            >
+              {choice.label}
+            </Button>
+          ))}
+        </div>
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          An escalation doesn't stop the drive. Answer it here, act on what it
+          asks for (the items above), or mark it handled.
+        </p>
+      )}
       {replying && (
         <Textarea
           rows={3}
@@ -711,7 +858,7 @@ function EscalationCard({
           onChange={(e) => setBody(e.target.value)}
         />
       )}
-      <div className="flex flex-wrap gap-2">
+      <div className={`flex flex-wrap gap-2 ${question ? "hidden" : ""}`}>
         {replying ? (
           <>
             <Button
@@ -764,6 +911,8 @@ export interface WaitingItems {
   proposals: PlanProposal[]
   resolved: PlanProposal[]
   escalations: SeatMessage[]
+  // Recipe repair's questions, by the escalation that carries them.
+  questions: Record<string, AppQuestionAction>
   // Navigator decisions the inbox doesn't already show as a proposal or
   // escalation.
   decisions: Decision[]
@@ -820,6 +969,13 @@ export function useWaitingItems(
       d.owner === "user" &&
       !["proposal", "plan_proposal", "escalation"].includes(d.kind)
   )
+  const questions: Record<string, AppQuestionAction> = {}
+  for (const d of position?.pendingDecisions ?? [])
+    if (d.kind === "escalation" && d.action?.kind === "answer_app_question")
+      questions[d.target.id] = {
+        questionId: d.action.questionId,
+        choices: d.action.choices,
+      }
   const top = decisions[0]
     ? ({ kind: "decision", decision: decisions[0] } as const)
     : pending[0]
@@ -831,6 +987,7 @@ export function useWaitingItems(
     proposals: pending,
     resolved: proposals.filter((p) => p.status !== "pending"),
     escalations,
+    questions,
     decisions,
     count: pending.length + escalations.length + decisions.length,
     top,
@@ -966,6 +1123,7 @@ export function WaitingOnYou({
         >
           <EscalationCard
             message={message}
+            question={waiting.questions[message.id] ?? null}
             navigation={navigation}
             onChanged={reload}
           />

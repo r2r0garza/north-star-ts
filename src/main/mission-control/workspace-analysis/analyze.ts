@@ -30,6 +30,11 @@ import {
   type ProjectRoot,
   type ToolchainPin,
 } from "./inventory"
+import {
+  composeDraft,
+  detectAppLaunch,
+  type AppLaunchDetection,
+} from "./app-launch"
 import { checkGeneratedCommand } from "./policy"
 import { warmShellPath } from "./tool-env"
 import {
@@ -97,6 +102,8 @@ export interface AnalysisFacts {
   unsupported: Array<{ file: string; ecosystem: string }>
   // Setup-relevant file excerpts for the model (bounded).
   excerpts: Array<{ path: string; text: string }>
+  // The app launch detectors' draft (plan 112.3).
+  appLaunch: AppLaunchDetection
 }
 
 const MAX_FILES = 60_000
@@ -407,6 +414,19 @@ export async function analyzeWorkspace(
     }))
   )
 
+  // How the app starts (plan 112.3): the detectors' draft. The recipe itself
+  // is saved by the service when the workspace has none; compose files are
+  // only pointed out.
+  stage("Finding how the app starts")
+  const appLaunch = await detectAppLaunch({
+    workspace,
+    roots: inventory.roots,
+    files,
+    read,
+  })
+  const compose = composeDraft(appLaunch.compose)
+  if (compose) drafts.push(compose)
+
   // Unsupported ecosystems: never an empty result.
   const unsupported = files
     .flatMap((file) => {
@@ -460,6 +480,7 @@ export async function analyzeWorkspace(
     unknownIgnored,
     unsupported,
     excerpts,
+    appLaunch,
   }
 }
 

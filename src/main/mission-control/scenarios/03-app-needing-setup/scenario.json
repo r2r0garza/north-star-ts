@@ -65,7 +65,7 @@
       }
     },
     "missing-migration": {
-      "description": "No prepare step: the data file is never migrated.",
+      "description": "No prepare step: the data file is never migrated. A detector's draft (plan 112.3: recipes are drafted and repaired, not user-written), so recipe repair may fix it.",
       "recipe": {
         "services": [
           {
@@ -77,7 +77,7 @@
             "ready": {
               "log": "db ready"
             },
-            "source": "user"
+            "source": "detector"
           },
           {
             "key": "web",
@@ -88,7 +88,7 @@
             "ready": {
               "http": "/"
             },
-            "source": "user",
+            "source": "detector",
             "env": {
               "DATA_FILE": "data/app.json",
               "DB_PORT": "{port:db}"
@@ -117,7 +117,7 @@
             "ready": {
               "log": "db ready"
             },
-            "source": "user"
+            "source": "detector"
           },
           {
             "key": "web",
@@ -128,7 +128,7 @@
             "ready": {
               "http": "/"
             },
-            "source": "user",
+            "source": "detector",
             "prepare": "node migrate.js",
             "env": {
               "DB_PORT": "{port:db}"
@@ -140,7 +140,7 @@
       "expect": {
         "outcome": "failed",
         "service": "web",
-        "error": "prepare command",
+        "error": "setup command",
         "tail": "DATA_FILE is not set"
       }
     },
@@ -157,7 +157,7 @@
             "ready": {
               "http": "/"
             },
-            "source": "user",
+            "source": "detector",
             "prepare": "node migrate.js",
             "env": {
               "DATA_FILE": "data/app.json"

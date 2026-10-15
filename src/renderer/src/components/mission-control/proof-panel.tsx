@@ -2,7 +2,11 @@ import { CheckCircle2, CircleSlash, ShieldCheck, XCircle } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { ChangedFilesBar } from "@/components/changed-files-bar"
 import type { ChangedFile } from "@/lib/timeline"
-import type { ProofCriterionStatus, UserStoryProof, UserStorySpec } from "@/types"
+import type {
+  ProofCriterionStatus,
+  UserStoryProof,
+  UserStorySpec,
+} from "@/types"
 
 // The structured user story proof (plan 106.3): each acceptance criterion with its
 // status and evidence, the verifier, and whether verification was independent
@@ -12,7 +16,11 @@ const STATUS_META: Record<
   ProofCriterionStatus,
   { label: string; icon: typeof CheckCircle2; className: string }
 > = {
-  met: { label: "Met", icon: CheckCircle2, className: "text-emerald-600 dark:text-emerald-500" },
+  met: {
+    label: "Met",
+    icon: CheckCircle2,
+    className: "text-emerald-600 dark:text-emerald-500",
+  },
   not_met: { label: "Not met", icon: XCircle, className: "text-destructive" },
   not_verifiable: {
     label: "Not verifiable",
@@ -49,25 +57,43 @@ export function ProofPanel({
   workspacePath: string
 }) {
   const accepted = proof.verdict === "accepted"
+  // Plan 112.3: the app couldn't be run, so nothing was verified.
+  const unverified = proof.verdict === "unverified"
   const verifier =
     proof.verifiedBy.kind === "seat"
       ? proof.verifiedBy.address
-      : `command phase ${proof.verifiedBy.phaseKey}`
+      : proof.verifiedBy.kind === "command"
+        ? `command phase ${proof.verifiedBy.phaseKey}`
+        : "Mission Control"
   const independent =
     proof.verifiedBy.kind === "command" ||
-    !proof.builderAddresses.includes(proof.verifiedBy.address)
+    (proof.verifiedBy.kind === "seat" &&
+      !proof.builderAddresses.includes(proof.verifiedBy.address))
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <Badge
-          variant={accepted ? "default" : "destructive"}
-          className="capitalize"
+          variant={
+            accepted ? "default" : unverified ? "outline" : "destructive"
+          }
+          className={`capitalize ${unverified ? "border-amber-500/60 text-amber-700 dark:text-amber-400" : ""}`}
         >
           {proof.verdict}
         </Badge>
-        <Badge variant="outline" className="gap-1">
-          <ShieldCheck className="size-3" /> Verified by {verifier}
-        </Badge>
+        {unverified ? (
+          <Badge variant="outline" className="gap-1">
+            The app couldn't be run to check it
+          </Badge>
+        ) : (
+          <Badge variant="outline" className="gap-1">
+            <ShieldCheck className="size-3" /> Verified by {verifier}
+          </Badge>
+        )}
+        {proof.acceptedUnverified && (
+          <Badge variant="outline">
+            Accepted unverified: {proof.acceptedUnverified.note}
+          </Badge>
+        )}
         {independent && (
           <Badge variant="outline">
             {proof.verifiedBy.kind === "command"
@@ -116,7 +142,10 @@ export function ProofPanel({
                     }
                     onReviewAll={(files) => {
                       for (const file of files)
-                        void window.cowork.openInEditor(workspacePath, file.path)
+                        void window.cowork.openInEditor(
+                          workspacePath,
+                          file.path
+                        )
                     }}
                   />
                 </div>

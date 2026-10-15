@@ -22,11 +22,14 @@ const USER_STORY_TRANSITIONS: Record<
   draft: ["ready", "blocked", "cancelled"],
   ready: ["blocked", "running", "cancelled"],
   blocked: ["ready", "cancelled", "failed"],
-  running: ["proving", "blocked", "failed", "cancelled"],
-  proving: ["integrating", "running", "failed", "cancelled"],
+  running: ["proving", "blocked", "failed", "unverified", "cancelled"],
+  proving: ["integrating", "running", "failed", "unverified", "cancelled"],
   integrating: ["done", "failed", "cancelled"],
   done: [],
   failed: ["ready", "cancelled"],
+  // Plan 112.3: checked again (back to ready, no attempt burned), or
+  // accepted unverified by the user (merged like an accepted story).
+  unverified: ["ready", "integrating", "done", "cancelled"],
   cancelled: [],
 }
 
@@ -59,11 +62,20 @@ export function transitionUserStoryStatus(
 // or null when target is unreachable. Execution outcomes walk this path so every
 // hop is a legal transition — e.g. running → proving → integrating, and
 // straight on to done when the workspace has no integration branch.
+// Entered only on purpose, never on the way somewhere else: a story that
+// finishes must not pass through "the app couldn't be run" (plan 112.3).
+const USER_STORY_NO_TRANSIT = new Set<UserStoryStatus>(["unverified"])
+
 export function userStoryStatusPath(
   current: UserStoryStatus,
   target: UserStoryStatus
 ): UserStoryStatus[] | null {
-  return statusPath(current, target, USER_STORY_TRANSITIONS)
+  return statusPath(
+    current,
+    target,
+    USER_STORY_TRANSITIONS,
+    USER_STORY_NO_TRANSIT
+  )
 }
 
 export function milestoneStatusPath(
@@ -76,7 +88,8 @@ export function milestoneStatusPath(
 function statusPath<T extends string>(
   current: T,
   target: T,
-  table: Record<T, readonly T[]>
+  table: Record<T, readonly T[]>,
+  noTransit: ReadonlySet<T> = new Set()
 ): T[] | null {
   if (current === target) return []
   const previous = new Map<T, T>()
@@ -97,7 +110,7 @@ function statusPath<T extends string>(
         }
         return path
       }
-      queue.push(next)
+      if (!noTransit.has(next)) queue.push(next)
     }
   }
   return null

@@ -212,6 +212,18 @@ export interface ToolContext {
   // or a wake). The Comms tools take the sender from here, never from model
   // arguments. Absent otherwise — the Comms tools then report unavailable.
   missionControlSeat?: SeatTurnIdentity
+  // --- Recipe repair turn (plan 112.3) ---
+  // Set ONLY on a builder seat's recipe-repair turn, which runs outside a
+  // Process run. The app tools resolve the feature, the owner of what they
+  // start, and the main checkout from here instead of the phase run.
+  appLaunchRepair?: AppLaunchRepairContext
+}
+
+export interface AppLaunchRepairContext {
+  featureId: string
+  userStoryId: string | null
+  owner: string
+  mainRoot: string
 }
 
 export interface ToolEffects {

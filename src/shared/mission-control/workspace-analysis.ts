@@ -26,7 +26,8 @@ export type FindingCategory =
   | "build-cost"
   // Dirty tree, unborn HEAD, unsupported layout.
   | "project-state"
-  // How seats run and check the app: the test browser (plan 112.1).
+  // How seats run and check the app: the recipe (plan 112.3) and the test
+  // browser (plan 112.1).
   | "app-launch"
 
 export const CATEGORY_LABELS: Record<FindingCategory, string> = {
@@ -125,6 +126,17 @@ export type Fix =
   // Download Playwright's test browser into app data (plan 112.1). Applying
   // it is the user's consent, remembered for every later feature.
   | { kind: "download-test-browser"; summary: string; sizeMb: number | null }
+  // Start the app from its recipe and check it loads (plan 112.3); when it
+  // doesn't, recipe repair runs and anything it can't fix becomes a question.
+  | { kind: "verify-app"; summary: string }
+  // One of recipe repair's plain-language choices (plan 112.3); the summary
+  // is the choice's label. Never a command.
+  | {
+      kind: "answer-app-question"
+      summary: string
+      questionId: string
+      choiceId: string
+    }
 
 export interface Finding {
   // Stable across re-analysis, e.g. "worktree-env:.venv".

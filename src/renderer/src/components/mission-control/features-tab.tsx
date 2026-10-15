@@ -803,8 +803,17 @@ function MilestoneView({
                             </Badge>
                           ) : (
                             <Badge
-                              className={health[userStory.id] ? "" : "ml-auto"}
+                              className={`${health[userStory.id] ? "" : "ml-auto"} ${
+                                userStory.status === "unverified"
+                                  ? "border-amber-500/60 text-amber-700 dark:text-amber-400"
+                                  : ""
+                              }`}
                               variant="outline"
+                              title={
+                                userStory.status === "unverified"
+                                  ? "The app couldn't be run to check this story: not accepted, not rejected."
+                                  : undefined
+                              }
                             >
                               {userStory.status}
                             </Badge>

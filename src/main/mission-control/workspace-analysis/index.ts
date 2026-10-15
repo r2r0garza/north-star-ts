@@ -35,6 +35,8 @@ import {
   type WorkspaceBrowser,
 } from "./test-browser"
 import { toolEnv, warmShellPath } from "./tool-env"
+import { APP_LAUNCH_FINDING, appLaunchDraft } from "./app-launch"
+import type { AppRecipeState } from "../../../shared/mission-control/app-recipe"
 import type { TestBrowserState } from "../playwright-install"
 
 // Workspace setup analysis (plan 106.11): one service behind Analyze
@@ -75,7 +77,9 @@ export interface WorkspaceAnalysisDeps {
   getWorkspace(id: string): Workspace | undefined
   updateWorkspace(
     id: string,
-    patch: Pick<Workspace, "worktreeSetup" | "generatedFiles">
+    patch:
+      | Pick<Workspace, "worktreeSetup" | "generatedFiles">
+      | Pick<Workspace, "appLaunch">
   ): Workspace
   setOverlapPolicy(featureId: string, value: "wait" | "parallel"): void
   // The model, when a provider is configured; null means unavailable.
@@ -85,7 +89,26 @@ export interface WorkspaceAnalysisDeps {
   // The test browser QA's Playwright runs need (plan 112.1). Absent, no test
   // browser finding is made.
   testBrowser?: TestBrowserDeps
+  // The app launch recipe's state and verification (plan 112.3). Absent, the
+  // detectors' draft is still saved but no live finding is made.
+  appLaunch?: AppLaunchDeps
   now?: () => number
+}
+
+export interface AppLaunchView {
+  state: AppRecipeState
+  checking: boolean
+  notInCheckout: string | null
+}
+
+export interface AppLaunchDeps {
+  // The recipe's state on the workspace's checked-out branch, and whether
+  // the feature's work is still only on an integration branch.
+  state(featureId: string): Promise<AppLaunchView | null>
+  // Verify, repair, and ask, in the background ("Check that the app starts").
+  check(featureId: string): void
+  // Apply one of the pending question's choices, in the background.
+  answer(questionId: string, choiceId: string): void
 }
 
 export interface TestBrowserDeps {
@@ -143,6 +166,10 @@ export class WorkspaceAnalysisService {
   private readonly probing = new Map<string, Promise<void>>()
   // Features whose analysis was read: re-read when the test browser changes.
   private readonly watched = new Set<string>()
+  // The recipe state per feature (plan 112.3), read on its changes. A change
+  // that arrives while a read is in flight reads again after it.
+  private readonly appStates = new Map<string, AppLaunchView>()
+  private readonly appProbing = new Map<string, boolean>()
 
   constructor(private readonly deps: WorkspaceAnalysisDeps) {
     deps.testBrowser?.onChanged(() => {
@@ -232,6 +259,56 @@ export class WorkspaceAnalysisService {
     })
   }
 
+  // ── how the app starts (plan 112.3) ─────────────────────────────────────
+
+  // Re-read the recipe state (verification, repair, or a recipe write
+  // changed it), then re-read the analysis.
+  appLaunchChanged(featureId: string): void {
+    if (!this.deps.appLaunch) return
+    this.refreshApp(featureId)
+  }
+
+  private refreshApp(featureId: string): void {
+    const appLaunch = this.deps.appLaunch
+    if (!appLaunch) return
+    if (this.appProbing.has(featureId)) {
+      this.appProbing.set(featureId, true)
+      return
+    }
+    this.appProbing.set(featureId, false)
+    void appLaunch
+      .state(featureId)
+      .then((view) => {
+        if (view) this.appStates.set(featureId, view)
+      })
+      .catch(() => {})
+      .finally(() => {
+        const again = this.appProbing.get(featureId)
+        this.appProbing.delete(featureId)
+        if (again) this.refreshApp(featureId)
+        else this.deps.onChanged(featureId)
+      })
+  }
+
+  // The live "How Mission Control starts the app" finding.
+  private appDraft(
+    feature: Feature,
+    workspace: Workspace
+  ): FindingDraft | null {
+    if (!this.deps.appLaunch) return null
+    const cached = this.appStates.get(feature.id)
+    if (!cached) {
+      this.refreshApp(feature.id)
+      return null
+    }
+    return appLaunchDraft({
+      recipe: workspace.appLaunch,
+      state: cached.state,
+      checking: cached.checking,
+      notInCheckout: cached.notInCheckout,
+    })
+  }
+
   // The current analysis, resolved against the current settings. Null when
   // there is none for the feature's current workspace (changing the
   // workspace invalidates it).
@@ -251,12 +328,14 @@ export class WorkspaceAnalysisService {
     if (!stored || !workspace) return live
     this.watched.add(featureId)
     const browser = this.browserDraft(feature, workspace)
+    const app = this.appDraft(feature, workspace)
     const findings = assembleFindings({
       drafts: [
         ...(stored.drafts as FindingDraft[]).filter(
-          (d) => d.key !== TEST_BROWSER_FINDING
+          (d) => d.key !== TEST_BROWSER_FINDING && d.key !== APP_LAUNCH_FINDING
         ),
         ...(browser ? [browser] : []),
+        ...(app ? [app] : []),
       ],
       settings: this.settings(feature, workspace),
       dismissals: stored.dismissals,
@@ -404,6 +483,22 @@ export class WorkspaceAnalysisService {
     if (this.deps.getFeature(featureId)?.workspaceId !== workspace.id)
       throw new Error("The feature's workspace changed during analysis.")
     await this.refreshBrowser(workspace.path)
+    // Plan 112.3: the detectors' draft becomes the recipe when there is none
+    // (no Apply): unverified until it runs. Never replaces a recipe.
+    const current = this.deps.getWorkspace(workspace.id)
+    if (facts.appLaunch.recipe && !current?.appLaunch.services.length) {
+      try {
+        this.deps.updateWorkspace(workspace.id, {
+          appLaunch: facts.appLaunch.recipe,
+        })
+      } catch (error) {
+        console.warn(
+          "[workspace-analysis] couldn't save the app recipe:",
+          error
+        )
+      }
+    }
+    this.appStates.delete(featureId)
 
     // Model findings from the last run carry over when the model isn't asked
     // again (re-analysis after a fix).
@@ -569,7 +664,9 @@ export class WorkspaceAnalysisService {
     const draft =
       key === TEST_BROWSER_FINDING
         ? this.browserDraft(feature, workspace)
-        : (stored.drafts as FindingDraft[]).find((d) => d.key === key)
+        : key === APP_LAUNCH_FINDING
+          ? this.appDraft(feature, workspace)
+          : (stored.drafts as FindingDraft[]).find((d) => d.key === key)
     if (!draft) throw new Error("That finding is no longer current.")
     const dismissals = { ...stored.dismissals }
     if (dismissed) dismissals[key] = evidenceHash(draft)
@@ -674,6 +771,13 @@ export class WorkspaceAnalysisService {
       this.downloadTestBrowser()
       return { analysis: this.get(featureId), run: null }
     }
+    if (fix.kind === "verify-app" || fix.kind === "answer-app-question") {
+      if (!this.deps.appLaunch)
+        throw new Error("Checking the app isn't available here.")
+      if (fix.kind === "verify-app") this.deps.appLaunch.check(featureId)
+      else this.deps.appLaunch.answer(fix.questionId, fix.choiceId)
+      return { analysis: this.get(featureId), run: null }
+    }
     if (fix.kind === "apply-settings") {
       this.applySettings(featureId, fix.patch, key)
       this.deps.onChanged(featureId)
@@ -707,52 +811,61 @@ export class WorkspaceAnalysisService {
     const analysis = this.get(featureId)
     if (!analysis || analysis.status !== "ready") return []
     const order = (f: Finding) => CATEGORY_ORDER.indexOf(f.category)
-    return analysis.findings
-      .filter((f) => f.status === "open" && f.fix.kind !== "manual")
-      .sort((a, b) => order(a) - order(b))
-      .map((f): ApplyAllItem => {
-        const fix = f.fix
-        const commands: CommandSpec[] =
-          fix.kind === "run-command"
-            ? fix.commands
-            : fix.kind === "run-checks"
-              ? fix.probes.map((p) => ({
-                  label: p.label,
-                  command: p.command ?? "",
-                  cwd: p.cwd,
-                }))
-              : fix.kind === "apply-settings"
-                ? [
-                    ...(fix.patch.worktreeSetupSteps?.add ?? []).map((s) => ({
-                      label: `Saved as a worktree setup step: ${s.label}`,
-                      command: s.command,
-                      cwd: s.cwd,
-                    })),
-                    ...(fix.patch.generatedFiles?.add ?? []).map((r) => ({
-                      label: `Saved as the regeneration command for ${r.paths.join(", ")}`,
-                      command: r.command,
-                      cwd: "",
-                    })),
-                  ]
-                : []
-        return {
-          id: f.key,
-          findingKey: f.key,
-          title: f.title,
-          kind:
-            fix.kind === "apply-settings"
-              ? "settings"
+    return (
+      analysis.findings
+        // Checking the app runs it (plan 112.3): its own button, not Apply all.
+        .filter(
+          (f) =>
+            f.status === "open" &&
+            f.fix.kind !== "manual" &&
+            f.fix.kind !== "verify-app" &&
+            f.fix.kind !== "answer-app-question"
+        )
+        .sort((a, b) => order(a) - order(b))
+        .map((f): ApplyAllItem => {
+          const fix = f.fix
+          const commands: CommandSpec[] =
+            fix.kind === "run-command"
+              ? fix.commands
               : fix.kind === "run-checks"
-                ? "check"
-                : fix.kind === "download-test-browser"
-                  ? "download"
-                  : "command",
-          summary: fix.summary,
-          commands,
-          defaultSelected: f.confidence !== "guess" && !f.replacesUserSetting,
-          confidence: f.confidence,
-        }
-      })
+                ? fix.probes.map((p) => ({
+                    label: p.label,
+                    command: p.command ?? "",
+                    cwd: p.cwd,
+                  }))
+                : fix.kind === "apply-settings"
+                  ? [
+                      ...(fix.patch.worktreeSetupSteps?.add ?? []).map((s) => ({
+                        label: `Saved as a worktree setup step: ${s.label}`,
+                        command: s.command,
+                        cwd: s.cwd,
+                      })),
+                      ...(fix.patch.generatedFiles?.add ?? []).map((r) => ({
+                        label: `Saved as the regeneration command for ${r.paths.join(", ")}`,
+                        command: r.command,
+                        cwd: "",
+                      })),
+                    ]
+                  : []
+          return {
+            id: f.key,
+            findingKey: f.key,
+            title: f.title,
+            kind:
+              fix.kind === "apply-settings"
+                ? "settings"
+                : fix.kind === "run-checks"
+                  ? "check"
+                  : fix.kind === "download-test-browser"
+                    ? "download"
+                    : "command",
+            summary: fix.summary,
+            commands,
+            defaultSelected: f.confidence !== "guess" && !f.replacesUserSetting,
+            confidence: f.confidence,
+          }
+        })
+    )
   }
 
   // Apply the selected items: settings first (in order), then one run with

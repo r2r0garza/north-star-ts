@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest"
 import {
   dependenciesOf,
+  envRefs,
+  globalSetup,
   logReady,
   normalizeAppLaunch,
   placeholderKeys,
+  serviceSetup,
+  smokePaths,
   startOrder,
+  substituteEnvRefs,
   substitutePorts,
   validateAppLaunch,
   type AppService,
@@ -180,5 +185,174 @@ describe("validateAppLaunch", () => {
     expect(normalizeAppLaunch(null)).toEqual({ services: [] })
     expect(normalizeAppLaunch({})).toEqual({ services: [] })
     expect(normalizeAppLaunch("x")).toEqual({ services: [] })
+  })
+})
+
+describe("recipe additions (plan 112.3)", () => {
+  it("reads a stored per-service prepare as a setup step scoped to it", () => {
+    const recipe = normalizeAppLaunch({
+      services: [{ ...service({ key: "web" }), prepare: "node migrate.js" }],
+    })
+    expect(recipe.services[0]).not.toHaveProperty("prepare")
+    expect(recipe.setup).toEqual([
+      {
+        label: "Prepare web",
+        command: "node migrate.js",
+        cwd: "",
+        service: "web",
+      },
+    ])
+    expect(serviceSetup(recipe, "web")).toHaveLength(1)
+    expect(globalSetup(recipe)).toEqual([])
+  })
+
+  it("validates setup steps: one line, inside the workspace, ports only when scoped", () => {
+    const ok = validateAppLaunch({
+      services: [service({ key: "web" }), service({ key: "api" })],
+      setup: [
+        { label: "Build", command: "npm run build", cwd: "web" },
+        {
+          label: "Seed",
+          command: "node seed.js --api {port:api}",
+          cwd: "",
+          service: "web",
+        },
+      ],
+    })
+    expect(ok.ok).toBe(true)
+    expect(ok.recipe.setup?.map((s) => s.label)).toEqual(["Build", "Seed"])
+    const bad = validateAppLaunch({
+      services: [service({ key: "web" })],
+      setup: [
+        { command: "a\nb" },
+        { command: "x", cwd: "../out" },
+        { command: "x", service: "nope" },
+        { command: "seed --port {port:web}" },
+        { command: "echo {env:TOKEN}", service: "web" },
+      ],
+    })
+    expect(bad.ok).toBe(false)
+    if (!bad.ok) expect(bad.errors).toHaveLength(5)
+    expect(bad.recipe.setup).toBeUndefined()
+  })
+
+  it("validates prerequisites: a label and a TCP or command check", () => {
+    const result = validateAppLaunch({
+      services: [service({ key: "web" })],
+      prerequisites: [
+        {
+          label: "A Postgres database on port 5432",
+          check: { tcp: 5432 },
+          hint: "Start Postgres.",
+        },
+        { key: "redis", label: "Redis", check: { command: "redis-cli ping" } },
+        { label: "Nothing to check" },
+        {
+          label: "Postgres again",
+          key: "a-postgres-database-on-port-5432",
+          check: { tcp: 1 },
+        },
+      ],
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.errors).toHaveLength(2)
+    expect(result.recipe.prerequisites).toEqual([
+      {
+        key: "a-postgres-database-on-port-5432",
+        label: "A Postgres database on port 5432",
+        check: { tcp: 5432 },
+        hint: "Start Postgres.",
+      },
+      {
+        key: "redis",
+        label: "Redis",
+        check: { command: "redis-cli ping" },
+        hint: "",
+      },
+    ])
+  })
+
+  it("keeps {env:KEY} references and refuses literal secrets", () => {
+    const ok = validateAppLaunch({
+      services: [
+        service({
+          key: "web",
+          env: {
+            DATABASE_URL: "postgres://app:{env:DB_PASSWORD}@localhost/app",
+            API_KEY: "{env:API_KEY}",
+            LOG_LEVEL: "debug",
+          },
+        }),
+      ],
+    })
+    expect(ok.ok).toBe(true)
+    for (const [name, value] of [
+      ["API_KEY", "sk-live-123"],
+      ["GITHUB_TOKEN", "ghp_abc"],
+      ["DB_PASSWORD", "hunter2"],
+      ["STRIPE_SECRET", "x"],
+      ["PRIVATE_KEY_PEM", "-----BEGIN"],
+    ]) {
+      const result = validateAppLaunch({
+        services: [service({ key: "web", env: { [name]: value } })],
+      })
+      expect(result.ok).toBe(false)
+      if (!result.ok)
+        expect(result.errors[0]).toMatch(
+          new RegExp(`${name} looks like a secret.*\\{env:${name}\\}`)
+        )
+    }
+    const malformed = validateAppLaunch({
+      services: [service({ key: "web", env: { X: "{env:not a name}" } })],
+    })
+    expect(malformed.ok).toBe(false)
+  })
+
+  it("resolves {env:KEY} and reports what's missing", () => {
+    expect(envRefs("a {env:A} b {env: B }")).toEqual(["A", "B"])
+    expect(
+      substituteEnvRefs("{env:A}/{env:B}/{env:C}", { A: "1", C: "" })
+    ).toEqual({ text: "1//", missing: ["B"] })
+  })
+
+  it("defaults smoke to / for a service with a port, none without", () => {
+    expect(smokePaths(service({ key: "web" }))).toEqual(["/"])
+    expect(smokePaths(service({ key: "web", smoke: ["/", "/items"] }))).toEqual(
+      ["/", "/items"]
+    )
+    expect(smokePaths(service({ key: "web", smoke: [] }))).toEqual([])
+    expect(
+      smokePaths(service({ key: "worker", port: "none", ready: { log: "up" } }))
+    ).toEqual([])
+    // Ready by log (a database on a port): maybe not HTTP, so nothing.
+    expect(smokePaths(service({ key: "db", ready: { log: "ready" } }))).toEqual(
+      []
+    )
+    const bad = validateAppLaunch({
+      services: [
+        service({ key: "web", smoke: ["items"] }),
+        service({
+          key: "worker",
+          port: "none",
+          ready: { log: "up" },
+          smoke: ["/"],
+        }),
+      ],
+    })
+    expect(bad.ok).toBe(false)
+    if (!bad.ok) expect(bad.errors).toHaveLength(2)
+    // The default isn't written into a stored recipe.
+    expect(
+      validateAppLaunch({ services: [service({ key: "web" })] }).recipe
+        .services[0]
+    ).not.toHaveProperty("smoke")
+  })
+
+  it("keeps the detector source", () => {
+    expect(
+      normalizeAppLaunch({
+        services: [service({ key: "web", source: "detector" })],
+      }).services[0].source
+    ).toBe("detector")
   })
 })

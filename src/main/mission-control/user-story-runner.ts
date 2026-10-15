@@ -11,6 +11,7 @@ import { recordEvent } from "../db/repositories/mc-events"
 import { emitWorkChanged } from "./work-events"
 import type {
   Feature,
+  Milestone,
   MissionControlRunLink,
   PlaybookAltitude,
   PlaybookHookName,
@@ -86,7 +87,18 @@ export interface UserStoryRunnerDeps {
   // Worktrees and the merge queue (plan 106.5). Without it every run is
   // single-flight in the workspace, as in 106.3.
   integration?: MilestoneIntegration
+  // The app launch preflight (plan 112.3), run in the story's worktree before
+  // its run starts. Never refuses the start.
+  preflight?(input: {
+    feature: Feature
+    milestone: Milestone
+    userStory: UserStory
+    root: string
+  }): Promise<void>
 }
+
+// The statuses a story can be (re)started from.
+const STARTABLE: readonly string[] = ["draft", "ready", "failed", "unverified"]
 
 const CLI_PROVIDERS: Record<string, string> = {
   claude_code: "Claude Code",
@@ -465,12 +477,15 @@ export class UserStoryRunner {
     const feature = features.getFeature(milestone.featureId)
     if (!feature) throw new Error(`Feature not found: ${milestone.featureId}`)
     assertFeatureRunnable(feature)
-    if (!["draft", "ready", "failed"].includes(userStory.status))
+    if (!STARTABLE.includes(userStory.status))
       throw new Error(
-        `A ${userStory.status} user story cannot be run. Only draft, ready, or failed user stories can start.`
+        `A ${userStory.status} user story cannot be run. Only draft, ready, failed, or unverified user stories can start.`
       )
+    // Checking an unverified story again (plan 112.3) burns no attempt: the
+    // app not running was never the story's fault.
+    const recheck = userStory.status === "unverified"
     const cap = maxUserStoryAttempts(feature)
-    if (userStory.attempts >= cap)
+    if (!recheck && userStory.attempts >= cap)
       throw new Error(
         `User story ${userStory.key} has used all ${cap} attempts allowed by the feature's budget.`
       )
@@ -512,8 +527,25 @@ export class UserStoryRunner {
     }
 
     const playbook = playbookFor("user_story", userStory.playbookId)
-    const attempt = userStory.attempts + 1
+    const attempt = recheck ? userStory.attempts : userStory.attempts + 1
     const integration = this.deps.integration
+    const preflight = this.deps.preflight
+    const progress = (step: string) => {
+      const entry = this.starting.get(userStory.id)
+      if (!entry) return
+      entry.step = step
+      emitWorkChanged(feature.id)
+    }
+    // Plan 112.3: with no recipe, draft one at the story's starting ref and
+    // verify it before the run. Failing that, the story starts anyway.
+    const runPreflight = async (root: string) => {
+      if (!preflight) return
+      progress("Checking the app starts")
+      await preflight({ feature, milestone, userStory, root }).catch((err) =>
+        console.warn("[user-story] app preflight:", err)
+      )
+    }
+    if (!integration) await runPreflight(featureWorkspacePath(feature))
     return this.launch({
       feature,
       milestoneId: milestone.id,
@@ -541,25 +573,33 @@ export class UserStoryRunner {
       intentChain: renderIntentChain({ feature, milestone, userStory }),
       title: `User story ${userStory.key}: ${userStory.title}`,
       isolate: integration
-        ? () =>
-            integration.prepareUserStoryRun({
+        ? async () => {
+            // Checked again: the unverified attempt's worktree gives way to
+            // a fresh one (its branch is kept).
+            if (recheck)
+              await integration
+                .releaseUserStoryWorktree(userStory.id, { unverified: true })
+                .catch((err) =>
+                  console.warn("[integration] release worktree:", err)
+                )
+            const isolated = await integration.prepareUserStoryRun({
               feature,
               milestone,
               userStory,
               attempt,
-              onProgress: (step) => {
-                const entry = this.starting.get(userStory.id)
-                if (!entry) return
-                entry.step = step
-                emitWorkChanged(feature.id)
-              },
+              onProgress: progress,
             })
+            await runPreflight(
+              isolated?.workspacePath ?? featureWorkspacePath(feature)
+            )
+            return isolated
+          }
         : undefined,
       recheck: () => {
         const now = features.getUserStory(userStory.id)
         if (
           !now ||
-          !["draft", "ready", "failed"].includes(now.status) ||
+          !STARTABLE.includes(now.status) ||
           now.attempts !== userStory.attempts
         )
           throw new Error(
@@ -583,7 +623,7 @@ export class UserStoryRunner {
                 }
               : {}),
           },
-          `Attempt ${attempt} started with the "${playbook.name}" playbook${isolated?.branch ? ` on ${isolated.branch}` : ""}${options.note ? ` — note: ${options.note}` : ""}`,
+          `${recheck ? `Attempt ${attempt} checked again (the app couldn't be run before; no attempt used)` : `Attempt ${attempt} started`} with the "${playbook.name}" playbook${isolated?.branch ? ` on ${isolated.branch}` : ""}${options.note ? ` — note: ${options.note}` : ""}`,
           options.actor ?? "mission-control"
         )
         if (milestone.status === "planned")
@@ -751,7 +791,24 @@ export class UserStoryRunner {
         this.deps.integration
       ) {
         this.deps.integration.enqueueAcceptedUserStory(userStory, playbookRun)
-        return { userStory, merge: true }
+        return { userStory, merge: true, unverified: false }
+      }
+      // The harness recorded that the app couldn't be run (plan 112.3): the
+      // story ends unverified, not failed, and keeps its worktree.
+      if (
+        status !== "completed" &&
+        playbookRun.proof?.verdict === "unverified"
+      ) {
+        features.setUserStoryExecution(
+          userStory.id,
+          {
+            status: "unverified",
+            proof: playbookRun.proof,
+            finishedAt: Date.now(),
+          },
+          `Unverified: ${playbookRun.proof.criteria[0]?.reason ?? "the app couldn't be run"}`
+        )
+        return { userStory, merge: false, unverified: true }
       }
       // A cancelled run leaves the user story failed (and retryable) rather than
       // cancelled, which the work model treats as abandoned for good.
@@ -764,18 +821,96 @@ export class UserStoryRunner {
         },
         reason ?? "Proof accepted; user story done"
       )
-      return { userStory, merge: false }
+      return { userStory, merge: false, unverified: false }
     })()
     const integration = this.deps.integration
     if (!settled || !integration) return
     if (settled.merge) void integration.kick(settled.userStory.milestoneId)
     else {
-      if (status !== "completed")
+      if (status !== "completed" && !settled.unverified)
         void integration
           .releaseUserStoryWorktree(settled.userStory.id)
           .catch((err) => console.warn("[integration] release worktree:", err))
       integration.advanceMilestone(settled.userStory.milestoneId)
     }
+  }
+
+  // ── unverified (plan 112.3) ──────────────────────────────────────────────
+
+  // The app couldn't be made to run for this story, after recipe repair and
+  // the user's answer: its criteria are recorded not_verifiable with why,
+  // and the story ends unverified — not rejected, not accepted, and no
+  // attempt or proof revision charged. A running attempt is stopped.
+  markUnverified(userStoryId: string, summary: string): boolean {
+    const userStory = features.getUserStory(userStoryId)
+    if (!userStory || !["running", "proving"].includes(userStory.status))
+      return false
+    const running = playbooks
+      .listPlaybookRuns({ userStoryId, status: "running" })
+      .find((r) => r.hook === "run")
+    const proof = unverifiedProof(
+      userStory,
+      running?.proof ?? null,
+      summary,
+      running?.processRunId ?? userStory.processRunId ?? ""
+    )
+    if (!running) {
+      features.setUserStoryExecution(
+        userStory.id,
+        { status: "unverified", proof, finishedAt: Date.now() },
+        `Unverified: the app couldn't be run: ${summary}`
+      )
+      return true
+    }
+    playbooks.updatePlaybookRun(running.id, { proof })
+    this.cancelPlaybookRun(running.id)
+    return true
+  }
+
+  // The user accepts an unverified story as is, with a note: it proceeds
+  // like an accepted one (merged when it has a branch), and the proof keeps
+  // saying it was never verified.
+  async acceptUnverified(
+    userStoryId: string,
+    note: string,
+    actor = "user"
+  ): Promise<void> {
+    const userStory = features.getUserStory(userStoryId)
+    if (!userStory) throw new Error(`User story not found: ${userStoryId}`)
+    if (userStory.status !== "unverified")
+      throw new Error(`User story ${userStory.key} isn't unverified.`)
+    const text = note.trim()
+    if (!text) throw new Error("Say why it's accepted without being verified.")
+    const base = (userStory.proof as UserStoryProof | null) ?? null
+    const proof: UserStoryProof | null = base
+      ? { ...base, acceptedUnverified: { note: text, at: Date.now() } }
+      : null
+    const playbookRun = playbooks
+      .listPlaybookRuns({ userStoryId })
+      .filter((r) => r.hook === "run")
+      .at(0)
+    const integration = this.deps.integration
+    if (playbookRun?.worktreePath && userStory.worktreePath && integration) {
+      features.setUserStoryExecution(
+        userStory.id,
+        { proof },
+        `Accepted unverified by ${actor}: ${text}`,
+        actor
+      )
+      integration.enqueueAcceptedUserStory(
+        features.getUserStory(userStory.id)!,
+        { ...playbookRun, proof }
+      )
+      void integration.kick(userStory.milestoneId)
+      return
+    }
+    features.setUserStoryExecution(
+      userStory.id,
+      { status: "done", proof, finishedAt: Date.now() },
+      `Accepted unverified by ${actor}: ${text}`,
+      actor
+    )
+    integration?.advanceMilestone(userStory.milestoneId)
   }
 
   // Boot-time recovery: settle playbook runs whose Process run finished while
@@ -806,6 +941,38 @@ export class UserStoryRunner {
     return playbookRun.processRunId
       ? processes.getProcessRun(playbookRun.processRunId)
       : processes.getProcessRunByPlaybookRunId(playbookRun.id)
+  }
+}
+
+// The harness's proof for a story whose app couldn't be run: every criterion
+// a seat didn't already find met is not_verifiable, with the reason.
+export function unverifiedProof(
+  userStory: UserStory,
+  current: UserStoryProof | null,
+  summary: string,
+  processRunId: string
+): UserStoryProof {
+  const reason = `the app couldn't be run: ${summary}`
+  return {
+    version: 1,
+    criteria: userStoryCriteria(userStory).map((criterion) => {
+      const met = current?.criteria.find(
+        (c) => c.id === criterion.id && c.status === "met"
+      )
+      return (
+        met ?? {
+          id: criterion.id,
+          status: "not_verifiable" as const,
+          evidence: "Not checked: the app couldn't be run.",
+          reason,
+        }
+      )
+    }),
+    verdict: "unverified",
+    verifiedBy: { kind: "harness" },
+    builderAddresses: current?.builderAddresses ?? [],
+    processRunId,
+    acceptedAt: null,
   }
 }
 
@@ -1056,7 +1223,7 @@ export function recordUserStoryProof(input: {
   )
   return {
     ok: true,
-    status: decision.proof.verdict,
+    status: accepted ? "accepted" : "rejected",
     proof: decision.proof,
     message: accepted
       ? "Proof accepted and frozen. Summarize your verification and finish."

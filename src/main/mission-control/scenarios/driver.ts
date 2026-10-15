@@ -10,6 +10,10 @@ import {
 } from "fs"
 import { tmpdir } from "os"
 import path from "path"
+import {
+  listRecipeQuestions,
+  listRecipeStates,
+} from "../../db/repositories/app-recipe-states"
 import * as features from "../../db/repositories/features"
 import { listEvents } from "../../db/repositories/mc-events"
 import * as playbooks from "../../db/repositories/playbooks"
@@ -106,7 +110,8 @@ const DEFAULT_CAP_MS = 45 * 60 * 1000
 const DEFAULT_POLL_MS = 5000
 const DEFAULT_IDLE_MS = 3 * 60 * 1000
 const TEARDOWN_MS = 2 * 60 * 1000
-const DONE_STATUSES = new Set(["done", "failed", "cancelled"])
+// Unverified (plan 112.3) ends an attempt like failed: neither runs on.
+const DONE_STATUSES = new Set(["done", "failed", "cancelled", "unverified"])
 const TERMINAL_FEATURE = new Set(["completed", "cancelled", "failed"])
 // Maneuvers that mean the Navigator still has something to do itself.
 const ACTIVE_MANEUVERS = new Set([
@@ -194,6 +199,9 @@ function storyOutcome(
   switch (story.status) {
     case "done":
       return "done"
+    // Plan 112.3: the harness's own outcome when the app couldn't be run.
+    case "unverified":
+      return "unverified"
     case "failed": {
       if (proof?.verdict !== "rejected") return "failed"
       const statuses = proof.criteria.map((c) => c.status)
@@ -292,6 +300,13 @@ async function settleReason(
   if (!feature) return "feature_missing"
   if (TERMINAL_FEATURE.has(feature.status)) return `feature_${feature.status}`
   if (feature.status === "paused") return "paused"
+  // A story's app check waiting on recipe repair's question (plan 112.3):
+  // nobody answers in an unattended run, so after the idle wait the run is
+  // waiting on the user, though the step still counts as running.
+  if (listRecipeQuestions(featureId).length) {
+    idle.since ??= now
+    return now - idle.since >= idleMs ? "waiting_on_user" : null
+  }
   const inFlight =
     playbooks.listPlaybookRuns({ featureId, status: "running" }).length > 0 ||
     hasActiveFeatureTask(SEAT_WAKE_KIND, featureId)
@@ -597,11 +612,57 @@ function observe(
     featureId,
     toAddress: USER_ADDRESS,
   }).filter((m) => m.kind === "escalation").length
-  // This build has no wave gate or failure classification (112.3, 112.5)
-  // and no recipe repair, so those record as not run and none.
+  // No wave gate yet (112.5). Failure classes and recipe repairs come from
+  // the recipe state (plan 112.3): the worst class seen on any branch, and
+  // every repair attempt, none of which counts against a story.
   record.waveGate = "not_run"
-  record.failureClass = null
-  record.recipeRepairs = 0
+  const feature = features.getFeature(featureId)
+  const states = feature?.workspaceId
+    ? listRecipeStates(feature.workspaceId)
+    : []
+  // What happened to the running app: app checks, recipes seats saved, and
+  // seats' failed starts, each with its failure class.
+  const storyName = (id: string | null) =>
+    id ? (features.getUserStory(id)?.key ?? id) : null
+  const text = (value: unknown) => (typeof value === "string" ? value : null)
+  const asClass = (value: unknown) =>
+    value === "environment" || value === "feature" || value === "test_defect"
+      ? value
+      : null
+  const ofType = (type: string) => listEvents(featureId, { types: [type] })
+  record.appChecks = ofType("app_check").map((e) => ({
+    story: storyName(e.userStoryId),
+    result: text(e.detail?.result) ?? "unknown",
+    cached: e.detail?.cached === true,
+    repairs: Number(e.detail?.repairs) || 0,
+    questions: Number(e.detail?.questions) || 0,
+    class: asClass(e.detail?.class),
+    reason: text(e.detail?.reason),
+  }))
+  record.recipeSaves = ofType("recipe_saved").map((e) => ({
+    seat: e.seatAddress,
+    repair: e.detail?.repair === true,
+    replaced: text(e.detail?.replaced),
+    services: (e.detail?.services as string[] | undefined) ?? [],
+    setup: (e.detail?.setup as string[] | undefined) ?? [],
+  }))
+  record.appStartFailures = ofType("app_start_failed").map((e) => ({
+    seat: e.seatAddress,
+    class: asClass(e.detail?.class),
+    reason: text(e.detail?.reason),
+  }))
+  // The failure class: the worst seen anywhere — a recipe state, an app
+  // check, or a seat's failed start. Environment first: it's the class
+  // that must never count against a story.
+  const classes = [
+    ...states.map((s) => s.failure?.class),
+    ...record.appChecks.map((c) => c.class),
+    ...record.appStartFailures.map((f) => f.class),
+  ].filter((c): c is NonNullable<typeof c> => !!c)
+  record.failureClass = classes.includes("environment")
+    ? "environment"
+    : (classes[0] ?? null)
+  record.recipeRepairs = ofType("recipe_repair").length
 }
 
 function score(record: ScenarioRunRecord, scenario: LoadedScenario): void {

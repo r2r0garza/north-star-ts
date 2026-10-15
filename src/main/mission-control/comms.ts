@@ -1,5 +1,6 @@
 import type { ContextSection } from "../agent/context/context-builder"
 import { getDb } from "../db/connection"
+import { getRigGraph } from "../db/repositories/rigs"
 import * as features from "../db/repositories/features"
 import * as comms from "../db/repositories/seat-comms"
 import {
@@ -461,6 +462,39 @@ export class SeatComms {
       subject,
       hop: 0,
       expectsReply: true,
+      enforceRate: false,
+    })
+  }
+
+  // Recipe repair gave up (plan 112.3): the question goes straight to the
+  // user as an escalation from the builder seat that tried, never throttled.
+  // Its choices are answered in Mission Control, not by reply.
+  recipeEscalation(input: {
+    featureId: string
+    body: string
+    anchor?: { kind: SeatThreadAnchorKind; id: string } | null
+  }): CommsResult {
+    const feature = features.getFeature(input.featureId)
+    if (!feature) return fail("unavailable", "The feature no longer exists.")
+    // A draft has no snapshot yet: the question still reaches the user,
+    // from the live rig's builder.
+    const rig =
+      feature.rigSnapshot ?? (feature.rigId ? getRigGraph(feature.rigId) : null)
+    if (!rig) return fail("unavailable", "The feature has no rig.")
+    const builder = seatDirectory(rig).find(
+      (seat) => seat.role === "builder" && !seat.vacant
+    )
+    return this.post({
+      // Posting reads the rig's seat directory.
+      feature: { ...feature, rigSnapshot: rig },
+      from: builder?.address ?? NAVIGATOR_ADDRESS,
+      to: USER_ADDRESS,
+      body: input.body,
+      kind: "escalation",
+      anchor: input.anchor ?? null,
+      subject: `Escalation: ${subjectFrom(input.body)}`,
+      hop: 0,
+      expectsReply: false,
       enforceRate: false,
     })
   }

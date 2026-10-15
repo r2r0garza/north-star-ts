@@ -220,17 +220,24 @@ describe.skipIf(process.platform === "win32")("startServices", () => {
     expect(api.outputTail).toContain(path.join(dir, ".venv"))
   })
 
-  it("runs a service's prepare command first, and starts it only if that succeeds", async () => {
+  it("runs a service's setup steps first, and starts it only if they succeed", async () => {
     const dir = root()
     const prepared = {
       services: [
         service({
           key: "api",
-          prepare: `${NODE} -e "require('fs').writeFileSync('db.txt','ready')"`,
           command: httpServer(
             "if(require('fs').readFileSync('db.txt','utf8')!=='ready')process.exit(9);"
           ),
         }),
+      ],
+      setup: [
+        {
+          label: "Create the database",
+          command: `${NODE} -e "require('fs').writeFileSync('db.txt','ready')"`,
+          cwd: "",
+          service: "api",
+        },
       ],
     }
     expect(
@@ -238,11 +245,14 @@ describe.skipIf(process.platform === "win32")("startServices", () => {
     ).toBe(true)
 
     const failing = {
-      services: [
-        service({
-          key: "api",
-          prepare: `${NODE} -e "console.error('no database'); process.exit(4)"`,
-        }),
+      services: [service({ key: "api" })],
+      setup: [
+        {
+          label: "Migrate",
+          command: `${NODE} -e "console.error('no database'); process.exit(4)"`,
+          cwd: "",
+          service: "api",
+        },
       ],
     }
     const started = await startServices({
@@ -250,9 +260,13 @@ describe.skipIf(process.platform === "win32")("startServices", () => {
       root: root(),
       recipe: failing,
     })
-    expect(started).toMatchObject({ ok: false, code: "service_failed" })
+    expect(started).toMatchObject({
+      ok: false,
+      code: "service_failed",
+      failure: { stage: "setup", reason: "setup_failed", service: "api" },
+    })
     expect(started.ok || started.message).toMatch(
-      /prepare command .* exited with 4/
+      /setup command .* exited with 4/
     )
     expect(started.services[0].outputTail).toContain("no database")
     expect(ownerAppFailed("p2")).toBe(true)

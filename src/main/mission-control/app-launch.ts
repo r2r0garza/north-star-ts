@@ -1,25 +1,36 @@
 import { spawn, type ChildProcess } from "child_process"
-import { existsSync } from "fs"
+import { existsSync, readFileSync } from "fs"
 import path from "path"
 import { connect, createServer } from "net"
 import { stripAnsi } from "../agent/approval/ansi"
 import { resolveInWorkspaceReal } from "../agent/tools/workspace"
 import * as features from "../db/repositories/features"
 import { getWorkspace } from "../db/repositories/workspaces"
+import { getRecipeState } from "../db/repositories/app-recipe-states"
 import type { MissionControlRunLink } from "../db/types"
 import type { ContextSection } from "../agent/context/context-builder"
 import { SEAT_CONTEXT_PRIORITY } from "./seat-context"
 import {
   DEFAULT_PORT_ENV,
   DEFAULT_READY_TIMEOUT_MS,
+  envRefs,
+  globalSetup,
   logReady,
+  lowerFirst,
+  serviceSetup,
+  smokePaths,
   serviceUrl,
   startOrder,
+  substituteEnvRefs,
   substitutePorts,
   type AppLaunch,
+  type AppPrerequisite,
   type AppService,
+  type AppSetupStep,
 } from "../../shared/mission-control/app-launch"
 import { toolEnv, warmShellPath } from "./workspace-analysis/tool-env"
+import { waitForOrphans } from "./orphans"
+import type { AppRecipeStateName } from "../../shared/mission-control/app-recipe"
 
 // Running a workspace's app for a Mission Control seat (plan 112.1, ported
 // from backup:109.03). The
@@ -299,11 +310,7 @@ function spawnService(
         key: entry.service.key,
         pid: child.pid,
       })
-  const keep = (chunk: Buffer) => {
-    const next = entry.output + chunk.toString("utf8")
-    entry.output =
-      next.length > OUTPUT_KEEP ? next.slice(next.length - OUTPUT_KEEP) : next
-  }
+  const keep = (chunk: Buffer) => keepOutput(entry, chunk.toString("utf8"))
   child.stdout?.on("data", keep)
   child.stderr?.on("data", keep)
   entry.exited = new Promise((resolve) => {
@@ -342,22 +349,321 @@ export function recipeForLink(
   return workspace?.appLaunch ?? { services: [] }
 }
 
+// The recipe's state on the branch a step works in, for its briefing: the
+// story's branch (its worktree's), read from the database so a step never
+// waits on Git to start.
+export function recipeStateForStep(
+  link: MissionControlRunLink | null | undefined
+): AppRecipeStateName | null {
+  const workspace = workspaceForLink(link)
+  const story = link?.userStoryId
+    ? features.getUserStory(link.userStoryId)
+    : null
+  if (!workspace || !story?.branch) return null
+  return getRecipeState(workspace.id, story.branch)?.state ?? null
+}
+
+// The workspace behind a Mission Control run: its id and main checkout (for
+// `{env:KEY}` references a worktree's untracked files don't have).
+export function workspaceForLink(
+  link: MissionControlRunLink | null | undefined
+): { id: string; path: string } | null {
+  const feature = link ? features.getFeature(link.featureId) : null
+  const workspace = feature?.workspaceId
+    ? getWorkspace(feature.workspaceId)
+    : null
+  return workspace ? { id: workspace.id, path: workspace.path } : null
+}
+
 // ── public API ──────────────────────────────────────────────────────────────
+
+// Where a start or verification stopped (plan 112.3). Structured, so failure
+// classification reads the stage and reason instead of scraping text.
+export type LaunchStage =
+  | "prerequisites"
+  | "setup"
+  | "start"
+  | "ready"
+  | "smoke"
+  | "stop"
+
+export type LaunchFailureReason =
+  | "no_recipe"
+  | "invalid_recipe"
+  | "prerequisite_unavailable"
+  | "setup_failed"
+  | "missing_env"
+  | "port_in_use"
+  | "spawn_failed"
+  | "exited_early"
+  | "ready_timeout"
+  | "smoke_status"
+  | "smoke_unreachable"
+  | "smoke_browser"
+  | "orphans"
+  | "aborted"
+
+export interface LaunchFailure {
+  stage: LaunchStage
+  reason: LaunchFailureReason
+  // Plain language, for the user and the repair seat.
+  summary: string
+  // The end of the output of what failed (a service, a setup step).
+  logs: string
+  service?: string
+  prerequisite?: string
+  // The `{env:KEY}` references nothing resolved.
+  missingEnv?: string[]
+  // Smoke: the URL loaded, its status, and what the browser saw.
+  url?: string
+  status?: number
+  consoleErrors?: string[]
+  failedRequests?: string[]
+}
 
 export type StartOutcome =
   | { ok: true; services: ServiceView[] }
-  | { ok: false; code: string; message: string; services: ServiceView[] }
+  | {
+      ok: false
+      code: string
+      message: string
+      services: ServiceView[]
+      failure?: LaunchFailure
+    }
+
+// ── .env references ─────────────────────────────────────────────────────────
+
+// KEY=value lines of a .env file: comments, `export`, and quotes handled.
+export function parseDotenv(text: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim()
+    if (!line || line.startsWith("#")) continue
+    const match = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(
+      line
+    )
+    if (!match) continue
+    let value = match[2].trim()
+    const quote = value[0]
+    if ((quote === '"' || quote === "'") && value.endsWith(quote))
+      value = value.slice(1, -1)
+    else value = value.replace(/\s+#.*$/, "")
+    if (quote === '"') value = value.replace(/\\n/g, "\n")
+    out[match[1]] ??= value
+  }
+  return out
+}
+
+// The values `{env:KEY}` resolves to: the worktree's .env.local, then its
+// .env, then the main checkout's (a worktree has none of its untracked
+// files). The first file that has a key wins.
+export function envFileValues(
+  root: string,
+  mainRoot?: string | null
+): Record<string, string> {
+  const values: Record<string, string> = {}
+  const roots = [...new Set([root, ...(mainRoot ? [mainRoot] : [])])]
+  for (const dir of roots)
+    for (const name of [".env.local", ".env"]) {
+      const file = path.join(dir, name)
+      if (!existsSync(file)) continue
+      try {
+        for (const [k, v] of Object.entries(
+          parseDotenv(readFileSync(file, "utf8"))
+        ))
+          values[k] ??= v
+      } catch {
+        // Unreadable: treated as absent.
+      }
+    }
+  return values
+}
+
+// ── prerequisites and setup ─────────────────────────────────────────────────
+
+const PREREQUISITE_TIMEOUT_MS = 30_000
+
+async function checkPrerequisite(
+  prerequisite: AppPrerequisite,
+  cwd: string,
+  env: Record<string, string>,
+  signal?: AbortSignal
+): Promise<string | null> {
+  const { check } = prerequisite
+  if ("tcp" in check) {
+    if (
+      (await accepts(check.tcp, "127.0.0.1")) ||
+      (await accepts(check.tcp, "::1"))
+    )
+      return null
+    return `nothing answers on port ${check.tcp}`
+  }
+  const result = await runToCompletion({
+    cwd,
+    command: check.command,
+    env,
+    timeoutMs: PREREQUISITE_TIMEOUT_MS,
+    signal,
+  })
+  return result.ok ? null : `\`${check.command}\` ${result.error}`
+}
+
+// One command to completion in its own process group, with a time cap.
+function runToCompletion(input: {
+  cwd: string
+  command: string
+  env: Record<string, string>
+  timeoutMs: number
+  signal?: AbortSignal
+  onOutput?: (chunk: string) => void
+}): Promise<{ ok: boolean; error: string; output: string }> {
+  const isWin = process.platform === "win32"
+  return new Promise((resolve) => {
+    let output = ""
+    let child: ChildProcess
+    try {
+      child = spawn(
+        isWin ? "cmd.exe" : "/bin/sh",
+        isWin ? ["/d", "/s", "/c", input.command] : ["-c", input.command],
+        {
+          cwd: input.cwd,
+          env: input.env,
+          stdio: ["ignore", "pipe", "pipe"],
+          windowsHide: true,
+          detached: !isWin,
+        }
+      )
+    } catch (err) {
+      resolve({
+        ok: false,
+        error: `couldn't run: ${err instanceof Error ? err.message : String(err)}`,
+        output: "",
+      })
+      return
+    }
+    const keep = (chunk: Buffer) => {
+      const text = chunk.toString("utf8")
+      output = (output + text).slice(-OUTPUT_KEEP)
+      input.onOutput?.(text)
+    }
+    child.stdout?.on("data", keep)
+    child.stderr?.on("data", keep)
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      signalTree(child, "SIGKILL")
+    }, input.timeoutMs)
+    const abort = () => signalTree(child, "SIGKILL")
+    input.signal?.addEventListener("abort", abort, { once: true })
+    child.once("error", (err) => {
+      clearTimeout(timer)
+      input.signal?.removeEventListener("abort", abort)
+      resolve({ ok: false, error: `couldn't run: ${err.message}`, output })
+    })
+    child.once("close", (code, sig) => {
+      clearTimeout(timer)
+      input.signal?.removeEventListener("abort", abort)
+      resolve(
+        code === 0
+          ? { ok: true, error: "", output }
+          : {
+              ok: false,
+              error: timedOut
+                ? `didn't finish within ${Math.round(input.timeoutMs / 60_000) || 1} minute${input.timeoutMs > 60_000 ? "s" : ""}`
+                : `exited with ${code ?? sig ?? "an error"}`,
+              output,
+            }
+      )
+    })
+  })
+}
+
+// Base environment for anything the harness runs in a worktree.
+function baseEnv(cwd: string, root: string): Record<string, string> {
+  const env: Record<string, string> = { ...toolEnv() }
+  // Keep dev servers from opening the user's browser or waiting on a TTY.
+  env.BROWSER ??= "none"
+  env.CI ??= "1"
+  withProjectBins(env, cwd, root)
+  return env
+}
+
+// The recipe's prerequisites, then its setup steps that run before every
+// service. Null when all is well.
+async function prepareRecipe(input: {
+  root: string
+  recipe: AppLaunch
+  signal?: AbortSignal
+}): Promise<LaunchFailure | null> {
+  const { root, recipe } = input
+  for (const prerequisite of recipe.prerequisites ?? []) {
+    const env = baseEnv(root, root)
+    const problem = await checkPrerequisite(
+      prerequisite,
+      root,
+      env,
+      input.signal
+    )
+    if (problem)
+      return {
+        stage: "prerequisites",
+        reason: "prerequisite_unavailable",
+        prerequisite: prerequisite.key,
+        summary: `the app needs ${lowerFirst(prerequisite.label)}, and it isn't available (${problem})${prerequisite.hint ? `. ${prerequisite.hint}` : ""}`,
+        logs: "",
+      }
+  }
+  for (const step of globalSetup(recipe)) {
+    let cwd: string
+    try {
+      cwd = await resolveInWorkspaceReal(root, step.cwd || ".")
+    } catch (err) {
+      return setupFailure(
+        step,
+        err instanceof Error ? err.message : String(err),
+        ""
+      )
+    }
+    const result = await runToCompletion({
+      cwd,
+      command: step.command,
+      env: baseEnv(cwd, root),
+      timeoutMs: SETUP_TIMEOUT_MS,
+      signal: input.signal,
+    })
+    if (!result.ok) return setupFailure(step, result.error, result.output)
+  }
+  return null
+}
+
+function setupFailure(
+  step: AppSetupStep,
+  error: string,
+  output: string
+): LaunchFailure {
+  return {
+    stage: "setup",
+    reason: "setup_failed",
+    ...(step.service ? { service: step.service } : {}),
+    summary: `the setup step "${step.label}" (\`${step.command}\`) ${error}`,
+    logs: tail(output),
+  }
+}
 
 // Start `keys` (default: all) and their dependencies in `root`, dependencies
 // first, each awaited until ready. A service this owner already has running
-// is reused. Stops at the first service that fails; the ones already started
-// keep running (they're the owner's, stopped at phase end).
+// is reused. Before the first service it starts, the recipe's prerequisites
+// are checked and its setup steps run. Stops at the first service that
+// fails; the ones already started keep running (they're the owner's, stopped
+// at phase end). `mainRoot` is the main checkout, for `{env:KEY}` references
+// a worktree's untracked .env files don't have.
 export async function startServices(input: {
   owner: string
   root: string
   recipe: AppLaunch
   keys?: string[]
   signal?: AbortSignal
+  mainRoot?: string | null
 }): Promise<StartOutcome> {
   const { owner, root, recipe } = input
   if (!recipe.services.length)
@@ -382,6 +688,8 @@ export async function startServices(input: {
   await warmShellPath()
   const results: ServiceView[] = []
   const ports: Record<string, number | null> = {}
+  let prepared = false
+  let envValues: Record<string, string> | null = null
   for (const service of order) {
     const key = id(owner, root, service.key)
     const existing = running.get(key)
@@ -397,6 +705,26 @@ export async function startServices(input: {
         return failure(service, existing, results)
       continue
     }
+    // The first service this call starts: prerequisites and setup first.
+    if (!prepared) {
+      prepared = true
+      const problem = await prepareRecipe({
+        root,
+        recipe,
+        signal: input.signal,
+      })
+      if (problem)
+        return {
+          ok: false,
+          code:
+            problem.stage === "prerequisites"
+              ? "prerequisite_unavailable"
+              : "setup_failed",
+          message: `The app can't start: ${problem.summary}.`,
+          services: results,
+          failure: problem,
+        }
+    }
     const entry: RunningService = {
       owner,
       root,
@@ -408,18 +736,25 @@ export async function startServices(input: {
       error: null,
       exited: Promise.resolve(),
     }
-    const failEarly = (error: string) => {
+    const failEarly = (
+      error: string,
+      reason: LaunchFailureReason = "spawn_failed",
+      extra: Partial<LaunchFailure> = {}
+    ) => {
       entry.status = "failed"
       entry.error = error
       running.set(key, entry)
       results.push(view(entry, false))
-      return failure(service, entry, results)
+      return failure(service, entry, results, { reason, ...extra })
     }
     if (service.port === "auto") {
       try {
         entry.port = await allocatePort()
       } catch (err) {
-        return failEarly(err instanceof Error ? err.message : String(err))
+        return failEarly(
+          err instanceof Error ? err.message : String(err),
+          "port_in_use"
+        )
       }
     } else if (typeof service.port === "number") {
       const holder = [...running.values()].find(
@@ -429,42 +764,70 @@ export async function startServices(input: {
       )
       if (holder)
         return failEarly(
-          `port ${service.port} is in use by the "${holder.service.key}" service of ${holder.owner === owner ? "this step" : "another running step"} (in ${holder.root}). Use "auto" so parallel worktrees get their own ports.`
+          `port ${service.port} is in use by the "${holder.service.key}" service of ${holder.owner === owner ? "this step" : "another running step"} (in ${holder.root}). Use "auto" so parallel worktrees get their own ports.`,
+          "port_in_use"
         )
       if (!(await portFree(service.port)))
         return failEarly(
-          `port ${service.port} is already in use by another process on this machine. Stop it, or set this service's port to "auto".`
+          `port ${service.port} is already in use by another process on this machine. Stop it, or set this service's port to "auto".`,
+          "port_in_use"
         )
       entry.port = service.port
     }
     ports[service.key] = entry.port
     let cwd: string
     let command: string
-    const env: Record<string, string> = { ...toolEnv() }
+    let env: Record<string, string>
     try {
       cwd = await resolveInWorkspaceReal(root, service.cwd || ".")
       command = substitutePorts(service.command, entry.port, ports)
-      for (const [name, value] of Object.entries(service.env ?? {}))
-        env[name] = substitutePorts(value, entry.port, ports)
+      env = baseEnv(cwd, root)
+      const missing: string[] = []
+      for (const [name, value] of Object.entries(service.env ?? {})) {
+        let text = substitutePorts(value, entry.port, ports)
+        if (envRefs(text).length) {
+          envValues ??= envFileValues(root, input.mainRoot)
+          const resolved = substituteEnvRefs(text, envValues)
+          missing.push(...resolved.missing)
+          text = resolved.text
+        }
+        env[name] = text
+      }
+      if (missing.length)
+        return failEarly(
+          `${[...new Set(missing)].map((k) => `${k}`).join(", ")} ${missing.length === 1 ? "isn't" : "aren't"} set: the recipe reads ${missing.length === 1 ? "it" : "them"} from .env.local or .env, and neither the worktree nor the main checkout has ${missing.length === 1 ? "it" : "them"}`,
+          "missing_env",
+          { missingEnv: [...new Set(missing)] }
+        )
     } catch (err) {
       return failEarly(err instanceof Error ? err.message : String(err))
     }
     if (entry.port !== null)
       env[service.portEnv ?? DEFAULT_PORT_ENV] = String(entry.port)
-    // Keep dev servers from opening the user's browser or waiting on a TTY.
-    env.BROWSER ??= "none"
-    env.CI ??= "1"
-    withProjectBins(env, cwd, root)
     running.set(key, entry)
-    if (service.prepare) {
-      let prepare: string
+    for (const step of serviceSetup(recipe, service.key)) {
+      let stepCommand: string
+      let stepCwd: string
       try {
-        prepare = substitutePorts(service.prepare, entry.port, ports)
+        stepCommand = substitutePorts(step.command, entry.port, ports)
+        stepCwd = await resolveInWorkspaceReal(root, step.cwd || ".")
       } catch (err) {
         return failEarly(err instanceof Error ? err.message : String(err))
       }
-      const prepared = await runPrepare(entry, cwd, prepare, env, input.signal)
-      if (prepared) return failEarly(prepared)
+      const result = await runToCompletion({
+        cwd: stepCwd,
+        command: stepCommand,
+        env,
+        timeoutMs: SETUP_TIMEOUT_MS,
+        signal: input.signal,
+        onOutput: (text) => keepOutput(entry, text),
+      })
+      if (!result.ok)
+        return failEarly(
+          `its setup command (\`${step.command}\`) ${result.error}`,
+          "setup_failed",
+          { stage: "setup" }
+        )
     }
     try {
       spawnService(entry, cwd, command, env)
@@ -508,69 +871,48 @@ function withProjectBins(
   if (venv) env.VIRTUAL_ENV ??= path.dirname(venv)
 }
 
-const PREPARE_TIMEOUT_MS = 5 * 60_000
+// Each setup step's cap (plan 112.3).
+export const SETUP_TIMEOUT_MS = 5 * 60_000
 
-// A service's prepare command, to completion. Its output joins the service's;
-// returns why it failed, or null.
-function runPrepare(
-  entry: RunningService,
-  cwd: string,
-  command: string,
-  env: Record<string, string>,
-  signal?: AbortSignal
-): Promise<string | null> {
-  const isWin = process.platform === "win32"
-  return new Promise((resolve) => {
-    const child = spawn(
-      isWin ? "cmd.exe" : "/bin/sh",
-      isWin ? ["/d", "/s", "/c", command] : ["-c", command],
-      {
-        cwd,
-        env,
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-        detached: !isWin,
-      }
-    )
-    const keep = (chunk: Buffer) => {
-      const next = entry.output + chunk.toString("utf8")
-      entry.output =
-        next.length > OUTPUT_KEEP ? next.slice(next.length - OUTPUT_KEEP) : next
-    }
-    child.stdout?.on("data", keep)
-    child.stderr?.on("data", keep)
-    const timer = setTimeout(
-      () => signalTree(child, "SIGKILL"),
-      PREPARE_TIMEOUT_MS
-    )
-    const abort = () => signalTree(child, "SIGKILL")
-    signal?.addEventListener("abort", abort, { once: true })
-    child.once("error", (err) => {
-      clearTimeout(timer)
-      resolve(`its prepare command couldn't run: ${err.message}`)
-    })
-    child.once("close", (code, sig) => {
-      clearTimeout(timer)
-      signal?.removeEventListener("abort", abort)
-      resolve(
-        code === 0
-          ? null
-          : `its prepare command (\`${command}\`) exited with ${code ?? sig ?? "an error"}`
-      )
-    })
-  })
+function keepOutput(entry: RunningService, text: string): void {
+  const next = entry.output + text
+  entry.output =
+    next.length > OUTPUT_KEEP ? next.slice(next.length - OUTPUT_KEEP) : next
+}
+
+// What a service's failure was, from how it ended.
+function failureReason(entry: RunningService): LaunchFailureReason {
+  const error = entry.error ?? ""
+  if (/^not ready after/.test(error)) return "ready_timeout"
+  if (/^stopped before it was ready/.test(error)) return "aborted"
+  if (/before it was ready/.test(error)) return "exited_early"
+  return "spawn_failed"
 }
 
 function failure(
   service: AppService,
   entry: RunningService,
-  services: ServiceView[]
+  services: ServiceView[],
+  extra: Partial<LaunchFailure> & { reason?: LaunchFailureReason } = {}
 ): StartOutcome {
+  const message = `${service.label} (${service.key}) didn't start: ${entry.error ?? entry.status}.`
+  const reason = extra.reason ?? failureReason(entry)
   return {
     ok: false,
     code: "service_failed",
-    message: `${service.label} (${service.key}) didn't start: ${entry.error ?? entry.status}.`,
+    message,
     services,
+    failure: {
+      stage:
+        reason === "ready_timeout" || reason === "exited_early"
+          ? "ready"
+          : "start",
+      reason,
+      service: service.key,
+      summary: `${service.label} didn't start: ${entry.error ?? entry.status}`,
+      logs: tail(entry.output),
+      ...extra,
+    },
   }
 }
 
@@ -638,6 +980,228 @@ export function stopServices(input: {
   )
 }
 
+export { orphanProcesses, waitForOrphans } from "./orphans"
+
+// ── verification (plan 112.3) ───────────────────────────────────────────────
+
+// One browser load per smoke URL: what the page logged and which requests
+// failed. Injected: the Playwright runner in the app (smoke-load.ts), a fake
+// in tests, and the seat browser later (112.4) if it proves better.
+export interface SmokePageResult {
+  url: string
+  // Navigation failed or answered 5xx.
+  error: string | null
+  consoleErrors: string[]
+  failedRequests: string[]
+}
+
+export type SmokeBrowserLoad = (input: {
+  urls: string[]
+  cwd: string
+  signal?: AbortSignal
+}) => Promise<{ pages: SmokePageResult[] } | { notVerifiable: string }>
+
+export interface VerifyStage {
+  stage: LaunchStage
+  ok: boolean
+  ms: number
+}
+
+export interface VerifyResult {
+  ok: boolean
+  failure?: LaunchFailure
+  // A receipt: each stage reached and how long it took.
+  stages: VerifyStage[]
+  services: ServiceView[]
+  // Each smoke URL and what it answered.
+  smoke: Array<{ url: string; status: number | null }>
+  // The browser load didn't happen (no test browser yet): HTTP smoke still
+  // decided the outcome.
+  browserSkipped: string | null
+}
+
+async function smokeGet(
+  url: string,
+  signal?: AbortSignal
+): Promise<number | null> {
+  const parsed = new URL(url)
+  for (const host of ["127.0.0.1", "[::1]"]) {
+    try {
+      const res = await fetch(
+        `http://${host}:${parsed.port}${parsed.pathname}${parsed.search}`,
+        {
+          signal: signal
+            ? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
+            : AbortSignal.timeout(15_000),
+          redirect: "manual",
+        }
+      )
+      await res.body?.cancel().catch(() => {})
+      return res.status
+    } catch {
+      // Not on this address.
+    }
+  }
+  return null
+}
+
+// Verify a recipe by running it (plan 112.3): prerequisites, setup, start in
+// dependency order, readiness, smoke (an HTTP GET below 500 per smoke path,
+// then one browser load each), then stop everything and assert no process
+// outlived it. The services belong to `owner` for the duration and are
+// always stopped, whatever happened.
+export async function verifyRecipe(input: {
+  root: string
+  recipe: AppLaunch
+  owner: string
+  signal?: AbortSignal
+  mainRoot?: string | null
+  browserLoad?: SmokeBrowserLoad | null
+}): Promise<VerifyResult> {
+  const { root, recipe, owner, signal } = input
+  const stages: VerifyStage[] = []
+  const smoke: VerifyResult["smoke"] = []
+  let browserSkipped: string | null = null
+  let services: ServiceView[] = []
+  let failure: LaunchFailure | undefined
+  const pids: number[] = []
+  const stopListening = onServiceSpawned((spawned) => {
+    if (spawned.owner === owner && spawned.root === root) pids.push(spawned.pid)
+  })
+  const timed = async <T>(
+    stage: LaunchStage,
+    run: () => Promise<T>,
+    ok: (value: T) => boolean
+  ): Promise<T> => {
+    const started = Date.now()
+    const value = await run()
+    stages.push({ stage, ok: ok(value), ms: Date.now() - started })
+    return value
+  }
+  const run = async (): Promise<LaunchFailure | undefined> => {
+    const started = await timed(
+      "start",
+      () =>
+        startServices({
+          owner,
+          root,
+          recipe,
+          signal,
+          mainRoot: input.mainRoot,
+        }),
+      (outcome) => outcome.ok
+    )
+    services = started.services
+    if (!started.ok) {
+      return (
+        started.failure ?? {
+          stage: "start",
+          reason: started.code === "no_recipe" ? "no_recipe" : "invalid_recipe",
+          summary: started.message,
+          logs: "",
+        }
+      )
+    }
+    const urls: Array<{ url: string; service: AppService }> = []
+    for (const view of started.services) {
+      const service = recipe.services.find((s) => s.key === view.key)
+      if (!service || !view.url) continue
+      for (const p of smokePaths(service))
+        urls.push({ url: `${view.url}${p}`, service })
+    }
+    return timed(
+      "smoke",
+      async (): Promise<LaunchFailure | undefined> => {
+        for (const { url, service } of urls) {
+          const status = await smokeGet(url, signal)
+          smoke.push({ url, status })
+          const logs = tail(
+            running.get(id(owner, root, service.key))?.output ?? ""
+          )
+          if (status === null)
+            return {
+              stage: "smoke",
+              reason: "smoke_unreachable",
+              service: service.key,
+              url,
+              summary: `${service.label} was ready, but ${url} didn't answer`,
+              logs,
+            }
+          if (status >= 500)
+            return {
+              stage: "smoke",
+              reason: "smoke_status",
+              service: service.key,
+              url,
+              status,
+              summary: `${service.label} answered ${url} with ${status}`,
+              logs,
+            }
+        }
+        if (!urls.length || !input.browserLoad) return undefined
+        const loaded = await input.browserLoad({
+          urls: urls.map((u) => u.url),
+          cwd: root,
+          signal,
+        })
+        if ("notVerifiable" in loaded) {
+          browserSkipped = loaded.notVerifiable
+          return undefined
+        }
+        const bad = loaded.pages.find(
+          (p) => p.error || p.consoleErrors.length || p.failedRequests.length
+        )
+        if (!bad) return undefined
+        const service = urls.find((u) => u.url === bad.url)?.service
+        return {
+          stage: "smoke",
+          reason: "smoke_browser",
+          ...(service ? { service: service.key } : {}),
+          url: bad.url,
+          consoleErrors: bad.consoleErrors,
+          failedRequests: bad.failedRequests,
+          summary: `${bad.url} ${bad.error ? `didn't load in a browser (${bad.error})` : `loaded with ${[bad.consoleErrors.length ? `${bad.consoleErrors.length} console error${bad.consoleErrors.length === 1 ? "" : "s"}` : "", bad.failedRequests.length ? `${bad.failedRequests.length} failed request${bad.failedRequests.length === 1 ? "" : "s"}` : ""].filter(Boolean).join(" and ")}`}`,
+          logs: service
+            ? tail(running.get(id(owner, root, service.key))?.output ?? "")
+            : "",
+        }
+      },
+      (f) => !f
+    )
+  }
+  try {
+    failure = await run()
+  } finally {
+    stopListening()
+    const stopStarted = Date.now()
+    await stopServices({ owner, root })
+    const orphans = await waitForOrphans(pids)
+    stages.push({
+      stage: "stop",
+      ok: !orphans.length,
+      ms: Date.now() - stopStarted,
+    })
+    if (orphans.length) {
+      for (const pid of orphans)
+        try {
+          process.kill(process.platform === "win32" ? pid : -pid, "SIGKILL")
+        } catch {
+          // Gone meanwhile.
+        }
+      // A recipe that leaves processes behind isn't verified, even if the
+      // app ran: the next start would collide with them.
+      if (!failure)
+        failure = {
+          stage: "stop",
+          reason: "orphans",
+          summary: `${orphans.length} process${orphans.length === 1 ? "" : "es"} kept running after the app was stopped`,
+          logs: "",
+        }
+    }
+  }
+  return { ok: !failure, failure, stages, services, smoke, browserSkipped }
+}
+
 // App quit: signal every service's process group without waiting.
 export function stopAllServicesSync(): void {
   for (const entry of running.values()) {
@@ -700,18 +1264,22 @@ export const testAppServices = {
   },
 }
 
-// Shown to a seat that can start the app: what's configured and how to use it.
+// Shown to a seat that can start the app: what's configured and how to use
+// it, and to a builder, that keeping it working is part of its job (plan
+// 112.3: the builder's definition of done includes the recipe).
 export function appLaunchContextSection(
   recipe: AppLaunch,
-  role?: string
+  role?: string,
+  state?: AppRecipeStateName | null
 ): ContextSection {
+  const briefing = appLaunchBriefing(recipe, state)
   return {
     name: "mission_control_app_launch",
     priority: SEAT_CONTEXT_PRIORITY,
     content:
-      role === "builder"
-        ? `${appLaunchBriefing(recipe)}\n\n${BUILDER_START_RULE}`
-        : appLaunchBriefing(recipe),
+      role === "builder" && recipe.services.length
+        ? `${briefing}\n\n${BUILDER_START_RULE}`
+        : briefing,
     provenance: {
       trust: "system",
       channel: "runtime",
@@ -723,20 +1291,53 @@ export function appLaunchContextSection(
 // QA verifies in the running app, so a build that doesn't start wastes a
 // whole round (nav-test-17: the builder finished on green tests; QA's first
 // app_start failed).
-const BUILDER_START_RULE =
-  "Before you finish, start the app with `app_start` and check your change in it. If it won't start, fixing that is part of your work. Don't finish while the app fails to start."
+export const BUILDER_START_RULE =
+  "Before you finish, start the app with `app_start` and check your change in it. If it won't start, fixing that is part of your work: your code, or the recipe itself with `app_launch_save` (a missing setup step such as a migration, a wrong command, an `{env:KEY}` the app needs). If your story changes how the app runs (a new service, a new environment variable, a new setup step), update the recipe with `app_launch_save`. Don't finish while the app fails to start."
 
-// Only the "has a recipe" briefing for now: the provisional and "no recipe
-// yet" briefings come with app_launch_save (plan 112.3).
-export function appLaunchBriefing(recipe: AppLaunch): string {
+function recipeLines(recipe: AppLaunch): string[] {
   return [
-    "## Running the app",
-    "This workspace has an app launch recipe. Start the app with `app_start` (it picks free ports, waits until each service is ready, and returns the URLs); check on it with `app_status` and stop it with `app_stop`. Don't start these services by hand with a shell command: the ports would collide with other worktrees, and nothing would stop them. Everything you start is stopped when this step ends.",
+    ...(recipe.prerequisites ?? []).map(
+      (p) => `- Needs ${p.label}${p.hint ? ` (${p.hint})` : ""}`
+    ),
+    ...(recipe.setup ?? []).map(
+      (step) =>
+        `- Setup${step.service ? ` for \`${step.service}\`` : ""}: \`${step.command}\`${step.cwd ? ` in \`${step.cwd}\`` : ""}`
+    ),
     ...recipe.services.map((s) => {
       const deps = s.dependsOn?.length
         ? `, after ${s.dependsOn.join(", ")}`
         : ""
-      return `- \`${s.key}\` (${s.label}): \`${s.command}\`${s.cwd ? ` in \`${s.cwd}\`` : ""}${deps}`
+      const port =
+        s.port === "auto" && !s.command.includes("{port")
+          ? `, port in $${s.portEnv ?? DEFAULT_PORT_ENV}`
+          : ""
+      return `- \`${s.key}\` (${s.label}): \`${s.command}\`${s.cwd ? ` in \`${s.cwd}\`` : ""}${port}${deps}`
     }),
+  ]
+}
+
+export function appLaunchBriefing(
+  recipe: AppLaunch,
+  state?: AppRecipeStateName | null
+): string {
+  if (!recipe.services.length)
+    return [
+      "## Making the app startable (required)",
+      "This workspace has no app launch recipe yet, so Mission Control can't start the app for QA, the acceptance gates, or the stories after yours. Part of your job is fixing that: once your work makes the app runnable, call `app_launch_save` with how to start it (the command, its directory, and a readiness check, plus any setup steps and .env keys it needs). The app must let Mission Control choose its port (an environment variable or a `{port}` argument) so parallel worktrees don't collide. The recipe is tried in your worktree and saved only if the app starts and its pages load; fix whatever stops it and call again. Don't finish while the app runs but no recipe is saved. If your story's changes don't make anything runnable yet, say so in your summary.",
+    ].join("\n")
+  const unproven =
+    recipe.services.some((s) => s.provisional) ||
+    (state !== "verified" &&
+      recipe.services.every((s) => s.source === "detector"))
+  if (unproven)
+    return [
+      "## Running the app (recipe drafted, not yet proven)",
+      "Mission Control will start the app with the recipe below, drafted from the project's files (or planned from the feature's intent) before anyone ran it. Start it with `app_start`. If it doesn't start the app — a missing setup step, environment variable, or service — call `app_launch_save` with a recipe that works; it replaces this one only if this one can't start the app or yours adds a service. Don't start the app by hand with a shell command. Everything you start is stopped when this step ends.",
+      ...recipeLines(recipe),
+    ].join("\n")
+  return [
+    "## Running the app",
+    "This workspace has an app launch recipe. Start the app with `app_start` (it runs setup, picks free ports, waits until each service is ready, and returns the URLs); check on it with `app_status` and stop it with `app_stop`. Don't start these services by hand with a shell command: the ports would collide with other worktrees, and nothing would stop them. Everything you start is stopped when this step ends. If the app needs a service, setup step, or environment variable this recipe doesn't have, a builder adds it with `app_launch_save`.",
+    ...recipeLines(recipe),
   ].join("\n")
 }

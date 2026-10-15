@@ -89,8 +89,13 @@ export function checkSetupCommand(
       ok: false,
       reason: `unsupported shell syntax: ${analysis.reasons.join(", ")}`,
     }
-  const executable = path.basename(analysis.segments[0]?.executable ?? "")
-  if (NEVER.has(executable))
+  // The analyzer unwraps privilege wrappers (`sudo x` reads as `x`), so the
+  // command's first word is checked too.
+  const segment = analysis.segments[0]
+  const executable = [segment?.rawArgv?.[0], segment?.executable]
+    .map((word) => path.basename(word ?? ""))
+    .find((word) => NEVER.has(word))
+  if (executable)
     return {
       ok: false,
       reason: `\`${executable}\` isn't allowed in setup; do it by hand`,
@@ -145,4 +150,87 @@ export function checkGlob(glob: string): PolicyVerdict {
     return { ok: false, reason: "malformed glob" }
   }
   return OK
+}
+
+// Installing dependencies belongs to the worktree's setup (and, when a
+// story's manifest diverges, to a worktree-local install, plan 112.5), never
+// to how the app starts: a recipe that installs mutates shared directories on
+// every start.
+const INSTALL =
+  /^(?:(?:npm|pnpm|bun)\s+(?:install|i|ci|add)\b|yarn(?:\s+(?:install|add)\b|\s*$)|(?:pip3?|python3?\s+-m\s+pip|uv\s+pip)\s+install\b|uv\s+(?:add|sync)\b|poetry\s+(?:add|install)\b|pipenv\s+install\b|gem\s+install\b|bundle(?:\s+install)?\s*$|cargo\s+install\b|go\s+install\b|composer\s+(?:install|require)\b|npx\s+playwright\s+install\b)/
+
+// A program given its code on the command line (`node -e "…"`): a recipe
+// that runs that starts a stand-in, not the project. Seen in a real repair
+// turn, which "fixed" a recipe by replacing the app with a one-line server.
+const INLINE_CODE =
+  /^(?:\S*\/)?(?:node|nodejs|bun|python[\d.]*|ruby|perl|php|sh|bash|zsh)(?:\s+-{1,2}[\w-]+)*?\s+(?:-e|--eval|-p|--print|-c)(?:\s|=|$)|^(?:\S*\/)?deno\s+eval\b/
+
+// Why a recipe command isn't safe to save or run, or null (plan 112.3,
+// ported from backup:109.03's recipe-model.ts). The same policy as a
+// builder's own shell commands in setup: one command, no chaining, pipes,
+// redirects, or substitutions, nothing the classifier hard-blocks, nothing
+// outside the workspace, no sudo, and no installs. A step that must run
+// first goes in `setup`.
+export function recipeCommandRefusal(
+  command: string,
+  cwd: string
+): string | null {
+  // The policy reads a runnable command, so placeholders become values.
+  const runnable = command
+    .replace(/\{port(?::[^}]*)?\}/g, "4000")
+    .replace(/\{env:[^}]*\}/g, "value")
+  const verdict = checkSetupCommand(runnable, cwd)
+  if (!verdict.ok) return verdict.reason
+  if (INSTALL.test(runnable.trim()))
+    return "installing dependencies isn't part of starting the app (the worktree's setup installs them)"
+  if (INLINE_CODE.test(runnable.trim()))
+    return "the command runs code written into the command line; a recipe starts the project's own code (a script, an entry file, a package script)"
+  return null
+}
+
+export function serviceCommandRefusal(
+  service: { label: string; command: string; cwd: string },
+  workspace: string
+): string | null {
+  const reason = recipeCommandRefusal(
+    service.command,
+    path.join(workspace, service.cwd)
+  )
+  return reason
+    ? `${service.label}'s command (\`${service.command}\`): ${reason}`
+    : null
+}
+
+// Every command a recipe would run: services, setup steps, and command
+// prerequisite checks.
+export function recipeRefusal(
+  recipe: {
+    services: Array<{ label: string; command: string; cwd: string }>
+    setup?: Array<{ label: string; command: string; cwd: string }>
+    prerequisites?: Array<{
+      label: string
+      check: { tcp: number } | { command: string }
+    }>
+  },
+  workspace: string
+): string | null {
+  for (const service of recipe.services) {
+    const refused = serviceCommandRefusal(service, workspace)
+    if (refused) return refused
+  }
+  for (const step of recipe.setup ?? []) {
+    const reason = recipeCommandRefusal(
+      step.command,
+      path.join(workspace, step.cwd)
+    )
+    if (reason)
+      return `The setup step "${step.label}" (\`${step.command}\`): ${reason}`
+  }
+  for (const prerequisite of recipe.prerequisites ?? []) {
+    if (!("command" in prerequisite.check)) continue
+    const reason = recipeCommandRefusal(prerequisite.check.command, workspace)
+    if (reason)
+      return `The check for "${prerequisite.label}" (\`${prerequisite.check.command}\`): ${reason}`
+  }
+  return null
 }

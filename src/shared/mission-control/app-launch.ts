@@ -5,9 +5,43 @@
 // runs it) and the renderer (which edits it and shows the same errors).
 // Everything here is pure: spawning and readiness polling are in
 // src/main/mission-control/app-launch.ts.
+//
+// Plan 112.3 adds what a recipe needs to be verified by running it: `setup`
+// steps run to completion first, `prerequisites` the recipe doesn't own (a
+// database), `{env:KEY}` references to the worktree's .env files instead of
+// values, and `smoke` paths loaded during verification.
 
 export interface AppLaunch {
   services: AppService[]
+  // Run in order, to completion, before services start (migrations, seed,
+  // build). Idempotent: they run on every verification and every app_start.
+  setup?: AppSetupStep[]
+  // What the app needs that the recipe doesn't start, checked before setup.
+  prerequisites?: AppPrerequisite[]
+}
+
+export interface AppSetupStep {
+  label: string
+  // One command, run in `cwd`.
+  command: string
+  // Workspace-relative directory; "" is the workspace root.
+  cwd: string
+  // Scoped to a service: runs right before that service starts, with its
+  // environment and ports. A stored recipe's per-service `prepare` reads as
+  // one of these.
+  service?: string
+}
+
+export type AppPrerequisiteCheck = { tcp: number } | { command: string }
+
+export interface AppPrerequisite {
+  // Slug, unique among the prerequisites.
+  key: string
+  // Plain language: "A Postgres database on port 5432".
+  label: string
+  check: AppPrerequisiteCheck
+  // What makes it available, for the person running the app.
+  hint: string
 }
 
 export type AppServiceReady = { http: string } | { log: string }
@@ -18,9 +52,6 @@ export interface AppService {
   label: string
   // One shell command, run in `cwd`.
   command: string
-  // Run to completion first, in the same directory and environment (create
-  // or migrate a database, seed data); the service starts only if it exits 0.
-  prepare?: string
   // Workspace-relative directory; "" is the workspace root.
   cwd: string
   // "auto": the harness picks a free port per run, so parallel worktrees
@@ -29,6 +60,9 @@ export interface AppService {
   port: "auto" | "none" | number
   // The environment variable the port is passed in. Default PORT.
   portEnv?: string
+  // Values may use `{port}`, `{port:<key>}`, and `{env:KEY}`: a key read at
+  // start from the worktree's .env.local, then .env, then the main
+  // checkout's. The recipe stores the reference, never a secret's value.
   env?: Record<string, string>
   // Ready when an HTTP GET of this path answers below 500, or when the
   // service's output matches this regular expression.
@@ -37,15 +71,22 @@ export interface AppService {
   // Services started first. A `{port:<key>}` placeholder is an implicit
   // dependency too.
   dependsOn?: string[]
-  // Who wrote it: the user, an applied workspace-analysis finding, or a
-  // builder seat that made the app runnable (app_launch_save).
-  source: "user" | "analysis" | "seat"
+  // Paths loaded during verification: an HTTP GET below 500, then one
+  // browser load each. Default ["/"] for a service that's ready over HTTP,
+  // none otherwise; [] turns smoke off.
+  smoke?: string[]
+  // Who wrote it: the user, an applied workspace-analysis finding, a builder
+  // seat that made the app runnable (app_launch_save), or the deterministic
+  // detectors' draft (plan 112.3).
+  source: AppServiceSource
   findingKey?: string
   // Planned from the feature's intent before the app existed (a greenfield
   // workspace): the first story builds the app to start this way, and the
   // first successful start proves it.
   provisional?: boolean
 }
+
+export type AppServiceSource = "user" | "analysis" | "seat" | "detector"
 
 export function isProvisional(recipe: AppLaunch): boolean {
   return recipe.services.some((s) => s.provisional)
@@ -59,6 +100,12 @@ const MIN_READY_TIMEOUT_MS = 1_000
 const KEY = /^[a-z0-9][a-z0-9-]{0,31}$/
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
 const PLACEHOLDER = /\{port(?::([^}]*))?\}/g
+const ENV_REF = /\{env:([^}]*)\}/g
+// An environment variable whose value is a secret: it's referenced from the
+// .env files, never written into the recipe.
+export const SECRET_NAME = /SECRET|TOKEN|PASSWORD|API_?KEY|PRIVATE/i
+export const MAX_SETUP_STEPS = 10
+export const MAX_PREREQUISITES = 8
 
 export function emptyAppLaunch(): AppLaunch {
   return { services: [] }
@@ -99,6 +146,54 @@ export function placeholderKeys(text: string): string[] {
   for (const match of text.matchAll(PLACEHOLDER))
     if (match[1] !== undefined) keys.push(match[1].trim())
   return keys
+}
+
+// The .env keys a text's `{env:KEY}` references name.
+export function envRefs(text: string): string[] {
+  return [...text.matchAll(ENV_REF)].map((m) => m[1].trim())
+}
+
+// Replace each `{env:KEY}` with its value. Returns the keys it couldn't
+// resolve instead of throwing: an unresolved reference is the "missing env
+// key" signal failure classification reads (plan 112.3).
+export function substituteEnvRefs(
+  text: string,
+  values: Record<string, string>
+): { text: string; missing: string[] } {
+  const missing: string[] = []
+  const out = text.replace(ENV_REF, (_all, raw: string) => {
+    const key = raw.trim()
+    if (Object.prototype.hasOwnProperty.call(values, key)) return values[key]
+    missing.push(key)
+    return ""
+  })
+  return { text: out, missing }
+}
+
+// The paths a service's verification loads. By default an HTTP service (one
+// that's ready over HTTP) loads "/"; a service that's ready by log (a
+// database, a worker) may not speak HTTP at all, so it loads nothing unless
+// its smoke paths say so.
+export function smokePaths(service: AppService): string[] {
+  if (service.port === "none") return []
+  return service.smoke ?? ("http" in service.ready ? ["/"] : [])
+}
+
+// "A Postgres database" → "a Postgres database", for the middle of a
+// sentence. Acronyms and names stay as they are.
+export function lowerFirst(text: string): string {
+  return /^(A|An|The)\s/.test(text) || /^[A-Z][a-z]/.test(text)
+    ? `${text[0].toLowerCase()}${text.slice(1)}`
+    : text
+}
+
+// The setup steps that run before any service, and those scoped to one.
+export function globalSetup(recipe: AppLaunch): AppSetupStep[] {
+  return (recipe.setup ?? []).filter((step) => !step.service)
+}
+
+export function serviceSetup(recipe: AppLaunch, key: string): AppSetupStep[] {
+  return (recipe.setup ?? []).filter((step) => step.service === key)
 }
 
 // Replace `{port}` with the service's own port and `{port:<key>}` with
@@ -186,6 +281,7 @@ export function validateAppLaunch(value: unknown): AppLaunchValidation {
   if (value !== undefined && value !== null && !isRecord(value))
     errors.push("The app launch recipe must be an object with a services list.")
   const services: AppService[] = []
+  const prepared: AppSetupStep[] = []
   const keys = new Set<string>()
   raw.forEach((item, index) => {
     const name = `Service ${index + 1}`
@@ -218,6 +314,8 @@ export function validateAppLaunch(value: unknown): AppLaunchValidation {
       errors.push(`${called}: the command must be one line.`)
       return
     }
+    // A stored recipe's per-service prepare (backup:109.03) reads as a setup
+    // step scoped to the service.
     const prepare = typeof item.prepare === "string" ? item.prepare.trim() : ""
     if (/[\n\r]/.test(prepare)) {
       errors.push(`${called}: the prepare command must be one line.`)
@@ -259,6 +357,20 @@ export function validateAppLaunch(value: unknown): AppLaunchValidation {
         if (!ENV_NAME.test(k) || typeof v !== "string") {
           errors.push(
             `${called}: the environment variable "${k}" needs a valid name and a text value.`
+          )
+          return
+        }
+        const refs = [...v.matchAll(ENV_REF)].map((m) => m[1].trim())
+        const bad = refs.find((ref) => !ENV_NAME.test(ref))
+        if (bad !== undefined) {
+          errors.push(
+            `${called}: "{env:${bad}}" in ${k} doesn't name an environment variable.`
+          )
+          return
+        }
+        if (SECRET_NAME.test(k) && v.trim() && !refs.length) {
+          errors.push(
+            `${called}: ${k} looks like a secret, so its value can't be stored in the recipe. Put it in .env.local and use "{env:${k}}".`
           )
           return
         }
@@ -321,12 +433,39 @@ export function validateAppLaunch(value: unknown): AppLaunchValidation {
           ),
         ]
       : []
+    let smoke: string[] | undefined
+    if (item.smoke !== undefined && item.smoke !== null) {
+      if (
+        !Array.isArray(item.smoke) ||
+        item.smoke.some(
+          (p) => typeof p !== "string" || !p.trim().startsWith("/")
+        )
+      ) {
+        errors.push(
+          `${called}: smoke must be a list of paths that start with "/".`
+        )
+        return
+      }
+      smoke = [...new Set(item.smoke.map((p) => (p as string).trim()))]
+      if (smoke.length && port === "none") {
+        errors.push(
+          `${called} has no port, so it has no pages to load. Remove its smoke paths.`
+        )
+        return
+      }
+    }
+    if (prepare)
+      prepared.push({
+        label: `Prepare ${label || key}`,
+        command: prepare,
+        cwd,
+        service: key,
+      })
     keys.add(key)
     services.push({
       key,
       label: label || key,
       command,
-      ...(prepare ? { prepare } : {}),
       cwd,
       port,
       ...(portEnv !== DEFAULT_PORT_ENV ? { portEnv } : {}),
@@ -334,8 +473,11 @@ export function validateAppLaunch(value: unknown): AppLaunchValidation {
       ready,
       ...(readyTimeoutMs !== undefined ? { readyTimeoutMs } : {}),
       ...(dependsOn.length ? { dependsOn } : {}),
+      ...(smoke !== undefined ? { smoke } : {}),
       source:
-        item.source === "analysis" || item.source === "seat"
+        item.source === "analysis" ||
+        item.source === "seat" ||
+        item.source === "detector"
           ? item.source
           : "user",
       ...(typeof item.findingKey === "string" && item.findingKey
@@ -374,7 +516,20 @@ export function validateAppLaunch(value: unknown): AppLaunchValidation {
     }
     return errors.length === before
   })
-  const recipe: AppLaunch = { services: valid }
+  const validKeys = new Set(valid.map((s) => s.key))
+  const setup = [
+    ...readSetup(isRecord(value) ? value.setup : undefined, byKey, errors),
+    ...prepared,
+  ].filter((step) => !step.service || validKeys.has(step.service))
+  const prerequisites = readPrerequisites(
+    isRecord(value) ? value.prerequisites : undefined,
+    errors
+  )
+  const recipe: AppLaunch = {
+    services: valid,
+    ...(setup.length ? { setup } : {}),
+    ...(prerequisites.length ? { prerequisites } : {}),
+  }
   try {
     startOrder(recipe)
   } catch (err) {
@@ -382,6 +537,148 @@ export function validateAppLaunch(value: unknown): AppLaunchValidation {
     return { ok: false, errors, recipe: { services: [] } }
   }
   return errors.length ? { ok: false, errors, recipe } : { ok: true, recipe }
+}
+
+function readSetup(
+  value: unknown,
+  services: Map<string, AppService>,
+  errors: string[]
+): AppSetupStep[] {
+  if (value === undefined || value === null) return []
+  if (!Array.isArray(value)) {
+    errors.push("The setup steps must be a list.")
+    return []
+  }
+  if (value.length > MAX_SETUP_STEPS)
+    errors.push(`A recipe has at most ${MAX_SETUP_STEPS} setup steps.`)
+  const steps: AppSetupStep[] = []
+  value.slice(0, MAX_SETUP_STEPS).forEach((item, index) => {
+    const name = `Setup step ${index + 1}`
+    if (!isRecord(item)) {
+      errors.push(`${name} isn't an object.`)
+      return
+    }
+    const command = typeof item.command === "string" ? item.command.trim() : ""
+    const label =
+      (typeof item.label === "string" ? item.label.trim() : "") || command
+    if (!command) {
+      errors.push(`${name} needs a command.`)
+      return
+    }
+    if (/[\n\r]/.test(command)) {
+      errors.push(`${name} (${label}): the command must be one line.`)
+      return
+    }
+    const cwd = relativeDir(typeof item.cwd === "string" ? item.cwd : "")
+    if (cwd === null) {
+      errors.push(
+        `${name} (${label}): its directory must be inside the workspace.`
+      )
+      return
+    }
+    const service =
+      typeof item.service === "string" && item.service.trim()
+        ? item.service.trim()
+        : undefined
+    const owner = service ? services.get(service) : undefined
+    if (service && !owner) {
+      errors.push(
+        `${name} (${label}) is for "${service}", which isn't a service.`
+      )
+      return
+    }
+    // Ports exist only once services are given them: a step before every
+    // service has none to refer to.
+    for (const ref of placeholderKeys(command)) {
+      const other = services.get(ref)
+      if (!service || !other || other.port === "none") {
+        errors.push(
+          `${name} (${label}) uses {port:${ref}}, which only a step scoped to a service can use, for a service with a port.`
+        )
+        return
+      }
+    }
+    if (/\{port\}/.test(command) && (!owner || owner.port === "none")) {
+      errors.push(
+        `${name} (${label}) uses {port}, but it isn't scoped to a service with a port.`
+      )
+      return
+    }
+    if (envRefs(command).length) {
+      errors.push(
+        `${name} (${label}): pass {env:…} values through a service's env, not in a command.`
+      )
+      return
+    }
+    steps.push({ label, command, cwd, ...(service ? { service } : {}) })
+  })
+  return steps
+}
+
+function readPrerequisites(
+  value: unknown,
+  errors: string[]
+): AppPrerequisite[] {
+  if (value === undefined || value === null) return []
+  if (!Array.isArray(value)) {
+    errors.push("The prerequisites must be a list.")
+    return []
+  }
+  if (value.length > MAX_PREREQUISITES)
+    errors.push(`A recipe has at most ${MAX_PREREQUISITES} prerequisites.`)
+  const keys = new Set<string>()
+  const out: AppPrerequisite[] = []
+  value.slice(0, MAX_PREREQUISITES).forEach((item, index) => {
+    const name = `Prerequisite ${index + 1}`
+    if (!isRecord(item)) {
+      errors.push(`${name} isn't an object.`)
+      return
+    }
+    const label = typeof item.label === "string" ? item.label.trim() : ""
+    const key =
+      typeof item.key === "string" && item.key.trim()
+        ? item.key.trim()
+        : serviceKeyFrom(label)
+    if (!label) {
+      errors.push(`${name} needs a label that says what the app needs.`)
+      return
+    }
+    if (!KEY.test(key) || keys.has(key)) {
+      errors.push(
+        `${name} (${label}): its key "${key}" must be unique, lowercase letters, digits, and dashes.`
+      )
+      return
+    }
+    const check = isRecord(item.check) ? item.check : {}
+    let parsed: AppPrerequisiteCheck
+    if (
+      typeof check.tcp === "number" &&
+      Number.isInteger(check.tcp) &&
+      check.tcp > 0 &&
+      check.tcp < 65536
+    )
+      parsed = { tcp: check.tcp }
+    else if (
+      typeof check.command === "string" &&
+      check.command.trim() &&
+      !/[\n\r]/.test(check.command)
+    )
+      parsed = { command: check.command.trim() }
+    else {
+      errors.push(
+        `${name} (${label}) needs a check: a TCP port (1–65535) or one command that exits 0 when it's available.`
+      )
+      return
+    }
+    keys.add(key)
+    out.push({
+      key,
+      label,
+      check: parsed,
+      hint: typeof item.hint === "string" ? item.hint.trim() : "",
+    })
+  })
+  return out
 }
 
 // A stored recipe, read leniently: what validates is kept. A recipe with a

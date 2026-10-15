@@ -77,6 +77,29 @@ export const HEALTH_EVENTS = {
     weight: 0,
     label: "User story attempt failed",
   },
+  // The app couldn't be run to verify the story (plan 112.3): not the
+  // story's failure, and not progress either.
+  user_story_unverified: {
+    class: "neutral",
+    weight: 0,
+    label: "User story unverified (the app couldn't run)",
+  },
+  // Recipe repair attempts (plan 112.3): the environment, not the work.
+  recipe_repair: {
+    class: "neutral",
+    weight: 0,
+    label: "Recipe repair attempt",
+  },
+  // The app check before a story's QA step, a recipe a seat saved, and an
+  // app_start that failed (plan 112.3): what happened to the running app,
+  // for the scorecard. Detail carries the outcome and failure class.
+  app_check: { class: "neutral", weight: 0, label: "App check" },
+  recipe_saved: { class: "neutral", weight: 0, label: "App recipe saved" },
+  app_start_failed: {
+    class: "neutral",
+    weight: 0,
+    label: "The app didn't start",
+  },
   feature_active: { class: "neutral", weight: 0, label: "Drive started" },
   // A worktree's setup steps (plan 106.11): detail names the failed step.
   worktree_setup_failed: {

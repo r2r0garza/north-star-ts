@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto"
 import { getDb } from "../connection"
+import { markRecipeWritten } from "./app-recipe-states"
 import {
   normalizeWorkspaceChecks,
   parseCheckName,
@@ -312,6 +313,8 @@ export function updateWorkspace(
         "UPDATE workspaces SET app_launch = ?, updated_at = ? WHERE id = ?"
       )
       .run(JSON.stringify(validation.recipe), now, id)
+    // Plan 112.3: a new recipe is unverified on every branch until it runs.
+    markRecipeWritten(id, validation.recipe.services.length > 0)
   }
   return getWorkspace(id)!
 }

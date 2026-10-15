@@ -779,6 +779,10 @@ export type UserStoryStatus =
   | "integrating"
   | "done"
   | "failed"
+  // The app couldn't be run to verify it (plan 112.3): terminal for this
+  // attempt, neither done nor failed. Dependents wait; the milestone can't
+  // land until the user checks again or accepts it.
+  | "unverified"
   | "cancelled"
 
 export interface UserStorySpec {
@@ -1080,14 +1084,19 @@ export interface UserStoryProof {
     artifacts?: string[]
     reason?: string
   }>
-  verdict: "accepted" | "rejected"
+  // "unverified" (plan 112.3): the app couldn't be run, so the criteria
+  // that need it are not_verifiable. Set by the harness, never by a seat.
+  verdict: "accepted" | "rejected" | "unverified"
   verifiedBy:
     | { kind: "seat"; address: string }
     | { kind: "command"; phaseKey: string }
+    | { kind: "harness" }
   builderAddresses: string[]
   processRunId: string
   acceptedAt: number | null
   warnings?: string[]
+  // The user accepted an unverified story as is, with this note.
+  acceptedUnverified?: { note: string; at: number }
 }
 
 export interface ProcessRuntimeSnapshotSelection {

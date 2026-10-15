@@ -9,16 +9,11 @@
 > Mission Control, so Process UX investment remains worthwhile. `092.1` and `110`
 > moved to Deferred; low-value deferred plans were marked *dropped — pending re-review* in their own files.
 
-1. **`112.3` — Self-verifying recipes and repair.** Recipes that detectors draft, builders complete, and
-   the harness verifies by running (`setup`, `prerequisites`, `.env` references, smoke), recipe state per branch, environment-vs-feature failure
-   classification, a bounded repair loop with plain-language escalation, and an honest *unverified*
-   outcome. Parent: [`112`](112-app-run-recipes-and-acceptance-validation.md), the last ~10% blocking
-   Mission Control from shipping; measured against the `112.2` live baseline. [Plan](112.3-self-verifying-recipes-and-repair.md).
-2. **`112.4` — Exploratory story proofs.** An app check (`104` phase) before the story `test` step that
-   routes environment failures to repair; isolated seat browsers; proof methods that refuse proofs
+1. **`112.4` — Exploratory story proofs.** An app check (`104` phase) before the story `test` step that
+   routes environment failures to repair (the implicit check already runs since `112.3`); isolated seat browsers; proof methods that refuse proofs
    resting only on builder tests or code reading; scratch-only QA writes.
    [Plan](112.4-exploratory-story-proofs.md).
-3. **`112.5` — Wave gate and durable suite.** `merged` status and a wave acceptance gate where QA writes
+2. **`112.5` — Wave gate and durable suite.** `merged` status and a wave acceptance gate where QA writes
    one Playwright suite against the integrated app, with a `webServer` generated from the verified recipe
    so `npx playwright test` works for the user; fix stories with capped rounds; the runnable-skeleton
    rule; worktree-local installs on dependency divergence; overlapping stories serialized at planning

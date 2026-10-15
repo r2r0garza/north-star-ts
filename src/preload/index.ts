@@ -1209,6 +1209,20 @@ const api = {
           "missionControl:userStories:cancel",
           userStoryId
         ) as Promise<void>,
+      // Plan 112.3: accept an unverified user story as is, with a note.
+      acceptUnverified: (userStoryId: string, note: string) =>
+        ipcRenderer.invoke(
+          "missionControl:userStories:acceptUnverified",
+          userStoryId,
+          note
+        ) as Promise<void>,
+      // Plan 112.3: answer recipe repair's question with one of its choices.
+      answerAppQuestion: (questionId: string, choiceId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:recipes:answer",
+          questionId,
+          choiceId
+        ) as Promise<{ ok: true }>,
       runHook: (input: {
         featureId: string
         milestoneId?: string | null
@@ -1527,6 +1541,12 @@ const api = {
       cancel: (id: string) =>
         ipcRenderer.invoke(
           "missionControl:drive:cancel",
+          id
+        ) as Promise<FeatureGraph>,
+      // Every milestone is done: finish the feature (Manual, Copilot).
+      complete: (id: string) =>
+        ipcRenderer.invoke(
+          "missionControl:drive:complete",
           id
         ) as Promise<FeatureGraph>,
       // A completed feature takes more milestones: it reopens paused.

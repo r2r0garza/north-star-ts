@@ -192,6 +192,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureProviderImageInputColumn,
   ensureProcessCommandPhases,
   ensureWorkspaceAppLaunchColumn,
+  ensureAppRecipeStates,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -396,6 +397,26 @@ function ensureWorktreeSetupColumn(db: Database.Database): void {
 // seats (JSON AppLaunch: services, ports, readiness, dependencies).
 function ensureWorkspaceAppLaunchColumn(db: Database.Database): void {
   addColumnIfMissing(db, "workspaces", "app_launch", "TEXT")
+}
+
+// v71 (plan 112.3): whether a workspace's app launch recipe starts the app,
+// per branch: absent / unverified / verified (at a commit) / broken (with the
+// failure), the recipe repair attempts spent on it, and the question pending
+// with the user when repair gave up.
+function ensureAppRecipeStates(db: Database.Database): void {
+  db.exec(`
+CREATE TABLE IF NOT EXISTS app_recipe_states (
+  workspace_id    TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  branch          TEXT NOT NULL,
+  state           TEXT NOT NULL,
+  commit_oid      TEXT,
+  failure         TEXT,
+  repair_attempts INTEGER NOT NULL DEFAULT 0,
+  question        TEXT,
+  updated_at      INTEGER NOT NULL,
+  PRIMARY KEY (workspace_id, branch)
+);
+`)
 }
 
 // v58: a workspace's generated files and the command that rebuilds them
@@ -670,6 +691,7 @@ export function runMigrations(
       ensureToolMedia(db)
       ensureProcessCommandPhases(db)
       ensureWorkspaceAppLaunchColumn(db)
+      ensureAppRecipeStates(db)
       // After ensureSubscriptionProviderConstraints: its V65 table rebuild
       // predates this column and would drop it.
       ensureProviderImageInputColumn(db)

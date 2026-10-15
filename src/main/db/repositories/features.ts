@@ -1096,6 +1096,13 @@ function recordStatusEvent(
       refId: `${userStory.id}:${userStory.attempts}`,
       detail: { reason: reason.slice(0, 500), attempt: userStory.attempts },
     })
+  else if (userStory.status === "unverified")
+    recordEvent({
+      ...base,
+      type: "user_story_unverified",
+      refId: `${userStory.id}:${userStory.attempts}:${Date.now()}`,
+      detail: { reason: reason.slice(0, 500), attempt: userStory.attempts },
+    })
 }
 
 // Move a milestone to a status along a legal path (execution-owned, audited).

@@ -342,6 +342,105 @@ describe("computePosition — waves and dispatch", () => {
 })
 
 describe("computePosition — failures and judgment", () => {
+  it("asks the user to finish a Manual or Copilot feature whose milestones are all complete", () => {
+    for (const driveMode of ["manual", "copilot"] as const) {
+      const p = computePosition(
+        input({
+          feature: { ...input().feature, driveMode, status: "active" },
+          milestones: [milestone("m1", { status: "completed" })],
+          userStories: [userStory("a", "m1", { status: "done" })],
+        })
+      )
+      expect(p.maneuver.kind).toBe("complete_feature")
+      expect(p.pendingDecisions).toEqual([
+        expect.objectContaining({
+          key: "feature_complete",
+          owner: "user",
+          action: { kind: "complete_feature" },
+        }),
+      ])
+    }
+    // Autopilot completes it by itself.
+    const autopilot = computePosition(
+      input({
+        feature: {
+          ...input().feature,
+          driveMode: "autopilot",
+          status: "active",
+        },
+        milestones: [milestone("m1", { status: "completed" })],
+        userStories: [userStory("a", "m1", { status: "done" })],
+      })
+    )
+    expect(autopilot.maneuver.kind).toBe("complete_feature")
+    expect(autopilot.pendingDecisions).toEqual([])
+  })
+
+  it("waits on the user for an unverified story, never retrying it or treating it as done (plan 112.3)", () => {
+    const p = computePosition(
+      input({
+        userStories: [
+          userStory("a", "m1", {
+            status: "unverified",
+            attempts: 1,
+            proofVerdict: "unverified",
+          }),
+          userStory("b", "m1"),
+        ],
+        edges: [edge("a", "b")],
+      })
+    )
+    expect(p.dispatch).toEqual([])
+    expect(p.milestone?.retryable).toEqual([])
+    expect(p.milestone?.done).toEqual([])
+    expect(p.milestone?.doneConditionMet).toBe(false)
+    // Its dependent waits.
+    expect(p.milestone?.waiting).toEqual([{ userStory: "b", on: ["a"] }])
+    expect(p.pendingDecisions).toEqual([
+      expect.objectContaining({
+        key: "user_story_unverified:a:1",
+        kind: "user_story_unverified",
+        owner: "user",
+        action: { kind: "resolve_unverified", userStoryId: "a" },
+      }),
+    ])
+  })
+
+  it("carries recipe repair's question on its escalation", () => {
+    const p = computePosition(
+      input({
+        escalations: [
+          {
+            id: "msg",
+            from: "builder@impl",
+            subject: "Escalation",
+            appQuestion: {
+              id: "q",
+              question:
+                "The app needs a Postgres database. Start one with Docker?",
+              choices: [
+                { id: "docker", label: "Start one with Docker" },
+                { id: "skip", label: "Skip running the app for now" },
+              ],
+            },
+          },
+        ],
+      })
+    )
+    expect(p.pendingDecisions[0]).toMatchObject({
+      kind: "escalation",
+      summary: "The app needs a Postgres database. Start one with Docker?",
+      action: {
+        kind: "answer_app_question",
+        questionId: "q",
+        choices: [
+          { id: "docker", label: "Start one with Docker" },
+          { id: "skip", label: "Skip running the app for now" },
+        ],
+      },
+    })
+  })
+
   it("retries a user story that stopped without a rejected proof", () => {
     const p = computePosition(
       input({

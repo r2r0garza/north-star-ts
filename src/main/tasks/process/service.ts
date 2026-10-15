@@ -52,6 +52,7 @@ import {
   APP_LAUNCH_ROLES,
   appLaunchContextSection,
   recipeForLink,
+  recipeStateForStep,
   stopServices,
 } from "../../mission-control/app-launch"
 import {
@@ -104,7 +105,12 @@ import {
   resetSubProcessChild,
 } from "./flagback"
 import { unknownSideEffectingToolCalls } from "../../agent/repair"
-import { armPhaseDeadline, clearPhaseClock } from "./phase-clock"
+import {
+  armPhaseDeadline,
+  clearPhaseClock,
+  holdPhaseClock,
+} from "./phase-clock"
+import { getAppRecipeService } from "../../mission-control/app-recipe"
 import { makePolicyEngine } from "../../agent/approval/engine"
 import { productionCommandDeps } from "./command-executor-deps"
 import { executeProcessCommand } from "./command-executor"
@@ -1435,14 +1441,52 @@ export class ProcessService {
 
       // App launch (plan 112.1): a builder or QA step can start the app from
       // the workspace's recipe. What it starts belongs to this phase run and
-      // is stopped when the phase ends, however it ends.
-      const appRecipe =
+      // is stopped when the phase ends, however it ends. A builder gets the
+      // tools without a recipe too: making the app startable (and keeping
+      // the recipe current) is part of its work (plan 112.3).
+      let appRecipe =
         seat && missionControl && workspace && APP_LAUNCH_ROLES.has(seat.role)
           ? recipeForLink(missionControl)
           : null
-      const appLaunch = !!appRecipe?.services.length
+      const appLaunch =
+        !!appRecipe &&
+        (appRecipe.services.length > 0 || seat?.role === "builder")
+      const appRecipeState = appLaunch
+        ? recipeStateForStep(missionControl)
+        : null
       let releaseSeat: (() => void) | null = null
       try {
+        // The app check (plan 112.4's implicit check, brought forward with
+        // 112.3): before a story's QA proof step, make sure the app runs in
+        // the story's worktree — verify, repair the recipe, ask the user and
+        // wait. Its time isn't the step's, and it spends no attempt or proof
+        // revision. If the user stops trying, the story ends unverified.
+        const recipes = getAppRecipeService()
+        if (
+          recipes &&
+          phase.proofStep &&
+          missionControl?.userStoryId &&
+          missionControl.hook === "run" &&
+          workspace
+        ) {
+          const release = holdPhaseClock(phaseRun.id)
+          let check: Awaited<ReturnType<typeof recipes.appCheck>>
+          try {
+            check = await recipes.appCheck({
+              featureId: missionControl.featureId,
+              userStoryId: missionControl.userStoryId,
+              root: workspace,
+              signal: childAbort.signal,
+            })
+          } finally {
+            release()
+          }
+          if (check.result === "unverified")
+            recipes.endUnverified(missionControl.userStoryId, check.summary)
+          if (check.result !== "pass") return { stopped: true }
+          // Repair may have changed the recipe QA is briefed with.
+          if (appRecipe) appRecipe = recipeForLink(missionControl)
+        }
         // One turn at a time per transcript: a seat-session step waits for a
         // wake turn already running in the same session.
         if (seatTurn)
@@ -1480,7 +1524,13 @@ export class ProcessService {
               ? [commsContextSection(feature, seatTurn)]
               : []),
             ...(appLaunch
-              ? [appLaunchContextSection(appRecipe!, seat?.role)]
+              ? [
+                  appLaunchContextSection(
+                    appRecipe!,
+                    seat?.role,
+                    appRecipeState
+                  ),
+                ]
               : []),
           ],
           missionControlSeat: seatTurn ?? undefined,

@@ -199,6 +199,7 @@ import {
 } from "../db/repositories/workspaces"
 import { appStartTool } from "../agent/tools/app_launch_tools"
 import { testAppServices } from "./app-launch"
+import { installAppRecipeService } from "./app-recipe"
 import { ProcessService } from "../tasks/process/service"
 import { createDefaultPlaybook } from "./playbook-defaults"
 import {
@@ -211,6 +212,7 @@ import { startHookRun } from "./hook-runner"
 import { installSeatSessions, SeatSessionService } from "./sessions"
 import * as seatSessionsRepo from "../db/repositories/seat-sessions"
 import type { AgentDefinition } from "../agent/agents/types"
+import type { UserStoryProof } from "../db/types"
 
 const enqueued: string[] = []
 const enqueuedInputs: unknown[] = []
@@ -799,6 +801,81 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
     )
   })
 
+  it("ends a running attempt unverified and checks it again without using an attempt (plan 112.3)", async () => {
+    const rig = orchestratedRig()
+    const { userStory, feature } = billingFeature(rig.id)
+    db.prepare("UPDATE features SET budgets = ? WHERE id = ?").run(
+      JSON.stringify({ maxUserStoryAttempts: 1 }),
+      feature.id
+    )
+    const first = await runner.startUserStory(userStory.id)
+    expect(
+      runner.markUnverified(userStory.id, "it needs a Postgres database")
+    ).toBe(true)
+    // The harness's proof, not a rejection: the attempt stops, the story
+    // ends unverified, and no proof revision is counted.
+    const run = playbooks.getPlaybookRun(first.id)!
+    expect(run.status).toBe("cancelled")
+    expect(run.proofRevisions).toBe(0)
+    const unverified = features.getUserStory(userStory.id)!
+    expect(unverified.status).toBe("unverified")
+    expect(unverified.attempts).toBe(1)
+    expect((unverified.proof as UserStoryProof).verdict).toBe("unverified")
+    // Its one attempt is used, and checking again is still allowed.
+    await runner.startUserStory(userStory.id)
+    const again = features.getUserStory(userStory.id)!
+    expect(again.status).toBe("running")
+    expect(again.attempts).toBe(1)
+  })
+
+  it("checks the app before QA's proof step, and ends the story unverified when the user stops trying (plan 112.3)", async () => {
+    const rig = orchestratedRig()
+    const { userStory } = billingFeature(rig.id)
+    const checks: string[] = []
+    let verdict: "pass" | "unverified" = "pass"
+    installAppRecipeService({
+      appCheck: async (input: { userStoryId: string }) => {
+        checks.push(input.userStoryId)
+        return verdict === "pass"
+          ? { result: "pass" }
+          : { result: "unverified", summary: "it needs a Postgres database" }
+      },
+      endUnverified: (id: string, summary: string) =>
+        runner.markUnverified(id, summary),
+    } as never)
+    try {
+      // The app runs: QA proves as usual.
+      proofSubmissions.push(acceptedProof)
+      const first = await runner.startUserStory(userStory.id)
+      await drive(first.processRunId!)
+      expect(checks).toEqual([userStory.id])
+      expect(loopCalls.some((c) => c.proofStep)).toBe(true)
+
+      // The app can't be made to run: QA never starts, no revision is used,
+      // and the story ends unverified.
+      const other = features.addUserStory({
+        milestoneId: userStory.milestoneId,
+        key: "invoice-pdf",
+        title: "Invoice PDF",
+        spec: { goal: "PDF.", acceptance: ["A PDF is produced"] },
+      })
+      verdict = "unverified"
+      loopCalls.length = 0
+      const second = await runner.startUserStory(other.id)
+      await drive(second.processRunId!)
+      expect(loopCalls.some((c) => c.proofStep)).toBe(false)
+      const after = features.getUserStory(other.id)!
+      expect(after.status).toBe("unverified")
+      expect(after.attempts).toBe(1)
+      expect(playbooks.getPlaybookRun(second.id)!.proofRevisions).toBe(0)
+      expect((after.proof as UserStoryProof).criteria[0].reason).toBe(
+        "the app couldn't be run: it needs a Postgres database"
+      )
+    } finally {
+      installAppRecipeService(null)
+    }
+  })
+
   it("refuses a proof step whose seat runs on a CLI provider before spending an attempt", async () => {
     const rig = orchestratedRig()
     const { userStory } = billingFeature(rig.id)
@@ -912,19 +989,29 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
         expect(await allDead(appStarts.flatMap((s) => s.pids))).toBe(true)
       })
 
-      it("doesn't offer app tools when the workspace has no services", async () => {
+      it("gives only the builder the app tools when there's no recipe, to make the app startable (plan 112.3)", async () => {
         const rig = orchestratedRig()
         const { userStory } = billingFeature(rig.id)
         startApp = true
         proofSubmissions.push(acceptedProof)
         const playbookRun = await runner.startUserStory(userStory.id)
         await drive(playbookRun.processRunId!)
-        expect(loopCalls.length).toBeGreaterThan(0)
-        expect(loopCalls.every((c) => !c.appLaunch)).toBe(true)
-        expect(appStarts).toHaveLength(0)
-        expect(loopCalls.map((c) => c.sectionContent).join("\n")).not.toContain(
+        const builder = loopCalls.filter((c) =>
+          c.seat?.address.startsWith("builder@")
+        )
+        const qa = loopCalls.filter((c) => c.seat?.address.startsWith("qa@"))
+        expect(builder.length).toBeGreaterThan(0)
+        expect(qa.length).toBeGreaterThan(0)
+        expect(builder.every((c) => c.appLaunch)).toBe(true)
+        expect(qa.every((c) => !c.appLaunch)).toBe(true)
+        expect(builder.map((c) => c.sectionContent).join("\n")).toContain(
+          "## Making the app startable (required)"
+        )
+        expect(qa.map((c) => c.sectionContent).join("\n")).not.toContain(
           "## Running the app"
         )
+        // Nothing to start yet.
+        expect(appStarts.every((start) => !start.ready)).toBe(true)
       })
 
       it("stops the app when the run is cancelled mid-step", async () => {

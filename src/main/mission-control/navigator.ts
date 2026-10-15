@@ -5,6 +5,7 @@ import * as processes from "../db/repositories/processes"
 import { listApprovals } from "../db/repositories/approvals"
 import * as playbooks from "../db/repositories/playbooks"
 import * as proposalsRepo from "../db/repositories/proposals"
+import { listRecipeQuestions } from "../db/repositories/app-recipe-states"
 import * as comms from "../db/repositories/seat-comms"
 import type {
   DriveMode,
@@ -150,6 +151,43 @@ export function drivingLead(
     if (lead) return { address: lead.address, rights: lead.decisionRights }
   }
   return null
+}
+
+// Escalations to the user, each with recipe repair's question when it
+// carries one (plan 112.3), so the inbox answers it with a choice.
+function escalationsOf(featureId: string) {
+  const questions = new Map(
+    listRecipeQuestions(featureId)
+      .filter((q) => q.messageId)
+      .map((q) => [q.messageId!, q])
+  )
+  return comms
+    .listMessages({
+      featureId,
+      toAddress: USER_ADDRESS,
+      statuses: ["delivered"],
+    })
+    .filter((m) => m.kind === "escalation")
+    .map((m) => {
+      const question = questions.get(m.id)
+      return {
+        id: m.id,
+        from: m.fromAddress,
+        subject: m.body.split("\n")[0].slice(0, 120),
+        ...(question
+          ? {
+              appQuestion: {
+                id: question.id,
+                question: question.question,
+                choices: question.choices.map((c) => ({
+                  id: c.id,
+                  label: c.label,
+                })),
+              },
+            }
+          : {}),
+      }
+    })
 }
 
 function hookNames(
@@ -304,18 +342,7 @@ export function positionInput(
           "(no changes)",
       })),
     runApprovals: runApprovalsOf(playbookRuns, userStories),
-    escalations: comms
-      .listMessages({
-        featureId: feature.id,
-        toAddress: USER_ADDRESS,
-        statuses: ["delivered"],
-      })
-      .filter((m) => m.kind === "escalation")
-      .map((m) => ({
-        id: m.id,
-        from: m.fromAddress,
-        subject: m.body.split("\n")[0].slice(0, 120),
-      })),
+    escalations: escalationsOf(feature.id),
     workspace,
     pods: (rig?.pods ?? []).map((pod) => ({
       key: pod.key,
@@ -997,6 +1024,38 @@ export class Navigator {
       this.deps.cancelPlaybookRun(run.id)
     features.setFeatureDrive(featureId, { accountedAt: null })
     this.deps.onCancelled?.(featureId)
+    this.poke(featureId)
+    return after
+  }
+
+  // The user finishes a feature whose milestones are all complete (Manual
+  // and Copilot; Autopilot does this itself). Refused unless the position
+  // says the feature is done, so nothing in flight is cut short.
+  async complete(featureId: string): Promise<Feature> {
+    const before = features.getFeature(featureId)
+    if (!before) throw new Error(`Feature not found: ${featureId}`)
+    if (before.status !== "active")
+      throw new Error(
+        before.status === "paused"
+          ? "Resume the feature first, then mark it complete."
+          : `A ${before.status} feature can't be completed.`
+      )
+    const position = await this.position(featureId)
+    if (position.maneuver.kind !== "complete_feature")
+      throw new Error(
+        `The feature isn't finished yet: ${position.maneuver.text}`
+      )
+    features.setFeatureDrive(featureId, { accountedAt: null })
+    const after = features.setFeatureStatus(
+      featureId,
+      "completed",
+      "Every milestone is complete (marked complete by the user)",
+      "user"
+    )
+    this.deps.notifyUser(
+      `Mission Control: “${before.name}” is complete`,
+      "Every milestone landed."
+    )
     this.poke(featureId)
     return after
   }

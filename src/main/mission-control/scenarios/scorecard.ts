@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "fs"
 import path from "path"
 import type { AppLaunch } from "../../../shared/mission-control/app-launch"
+import type { FailureClass } from "../../../shared/mission-control/app-recipe"
 
 // Scenario fixtures and the scorecard (plan 112, Method; built in 112.1). Six
 // reproducible projects, one per scenario `112` must handle, each described
@@ -36,8 +37,8 @@ export type StoryOutcome =
 
 export type WaveGateOutcome = "passed" | "failed" | "not_applicable" | "not_run"
 
-// Plan 112, design B.
-export type FailureClass = "environment" | "feature" | "test_defect"
+// Plan 112, design B (defined with the recipe state, plan 112.3).
+export type { FailureClass }
 
 // What the harness tier expects of one recipe variant.
 export type HarnessExpectation =
@@ -182,6 +183,31 @@ export interface ScenarioRunRecord {
   provider?: string | null
   appCommit?: string | null
   scenarioVersion?: number
+  // ── the running app (plan 112.3) ──
+  // Each app check before a story's QA step, in order.
+  appChecks?: Array<{
+    story: string | null
+    result: string
+    cached: boolean
+    repairs: number
+    questions: number
+    class: FailureClass | null
+    reason: string | null
+  }>
+  // Recipes seats saved: by whom, and whether a repair turn did it.
+  recipeSaves?: Array<{
+    seat: string | null
+    repair: boolean
+    replaced: string | null
+    services: string[]
+    setup: string[]
+  }>
+  // Seats' app_start calls that failed, by failure class.
+  appStartFailures?: Array<{
+    seat: string | null
+    class: FailureClass | null
+    reason: string | null
+  }>
 }
 
 export interface PlanChanges {
@@ -671,35 +697,6 @@ export function formatComparison(comparison: ScorecardComparison): string {
 
 // ── orphans ─────────────────────────────────────────────────────────────────
 
-function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (err) {
-    // EPERM: it exists, it's just not ours to signal.
-    return (err as NodeJS.ErrnoException).code === "EPERM"
-  }
-}
-
-// The PIDs still alive, or whose process group still has a member (a dev
-// server's watcher outliving its shell). Each service is its own group
-// leader, so -pid probes what it spawned. Windows has no groups to probe.
-export function orphanProcesses(pids: number[]): number[] {
-  return pids.filter(
-    (pid) => alive(pid) || (process.platform !== "win32" && alive(-pid))
-  )
-}
-
-// Wait up to `ms` for teardown to finish, then report what's left.
-export async function waitForOrphans(
-  pids: number[],
-  ms = 3000
-): Promise<number[]> {
-  const deadline = Date.now() + ms
-  let left = orphanProcesses(pids)
-  while (left.length && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 50))
-    left = orphanProcesses(pids)
-  }
-  return left
-}
+// The probe lives with the harness, which checks it after every verification
+// (plan 112.3).
+export { orphanProcesses, waitForOrphans } from "../orphans"

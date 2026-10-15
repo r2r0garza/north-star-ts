@@ -123,7 +123,11 @@ export function UserStoryRunPanel({
     .filter((edge) => edge.toUserStoryId === userStory.id)
     .map((edge) => graph.userStories.find((s) => s.id === edge.fromUserStoryId))
     .filter((dep): dep is UserStory => !!dep && dep.status !== "done")
-  const canStart = ["draft", "ready", "failed"].includes(userStory.status)
+  // Plan 112.3: an unverified story is checked again without using an attempt.
+  const unverified = userStory.status === "unverified"
+  const canStart = ["draft", "ready", "failed", "unverified"].includes(
+    userStory.status
+  )
   const disabledReason =
     graph.feature.status !== "active"
       ? "Start the feature before running user stories."
@@ -133,7 +137,7 @@ export function UserStoryRunPanel({
           ? `Another playbook run is using this workspace (${busyRun.userStoryId ? `user story ${graph.userStories.find((s) => s.id === busyRun.userStoryId)?.key ?? ""}` : `the ${busyRun.hook.replace(/_/g, " ")} hook`}). User stories run in parallel only in a git workspace.`
           : blockers.length
             ? `Waiting on ${isolated ? "unmerged" : "unfinished"} user stories: ${blockers.map((b) => b.key).join(", ")}.`
-            : userStory.attempts >= cap
+            : userStory.attempts >= cap && !unverified
               ? `All ${cap} attempts are used.`
               : !userStory.spec.acceptance.length
                 ? "Add acceptance criteria so the user story can be proven."
@@ -161,7 +165,11 @@ export function UserStoryRunPanel({
         window.cowork.missionControl.execution.runUserStory(userStory.id, {
           allowTouchOverlap,
         }),
-      userStory.status === "failed" ? "Retry started" : "User story run started"
+      unverified
+        ? "Checking it again"
+        : userStory.status === "failed"
+          ? "Retry started"
+          : "User story run started"
     )
 
   const proof = isUserStoryProof(userStory.proof)
@@ -172,7 +180,16 @@ export function UserStoryRunPanel({
     <div className="space-y-4 rounded-md border p-4">
       <div className="flex flex-wrap items-center gap-2">
         <h3 className="text-sm font-medium">Execution</h3>
-        <Badge variant="outline">{userStory.status}</Badge>
+        <Badge
+          variant="outline"
+          className={
+            unverified
+              ? "border-amber-500/60 text-amber-700 dark:text-amber-400"
+              : ""
+          }
+        >
+          {userStory.status}
+        </Badge>
         <span className="text-xs text-muted-foreground">
           Attempt {userStory.attempts} of {cap}
         </span>
@@ -204,12 +221,16 @@ export function UserStoryRunPanel({
               >
                 {pending ? (
                   <Spinner className="size-3.5" />
-                ) : userStory.status === "failed" ? (
+                ) : userStory.status === "failed" || unverified ? (
                   <RotateCcw className="size-3.5" />
                 ) : (
                   <Play className="size-3.5" />
                 )}
-                {userStory.status === "failed" ? "Retry" : "Run"}
+                {unverified
+                  ? "Check again"
+                  : userStory.status === "failed"
+                    ? "Retry"
+                    : "Run"}
               </Button>
             )
           )}
@@ -231,6 +252,14 @@ export function UserStoryRunPanel({
             Run anyway
           </Button>
         </div>
+      )}
+      {unverified && (
+        <p className="text-xs text-amber-700 dark:text-amber-400">
+          Unverified: the app couldn't be run to check this story, so it's
+          neither accepted nor rejected. Fix what the app needs and check it
+          again (no attempt is used), or accept it unverified from Waiting on
+          you.
+        </p>
       )}
       {userStory.status === "integrating" && (
         <p className="text-xs text-muted-foreground">

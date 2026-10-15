@@ -164,6 +164,7 @@ const noWaiting: WaitingItems = {
   proposals: [],
   resolved: [],
   escalations: [],
+  questions: {},
   decisions: [],
   count: 0,
   top: null,

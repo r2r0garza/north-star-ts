@@ -113,6 +113,9 @@ export interface IntegrationDeps {
   startResolution?(input: ResolutionLaunchInput): Promise<PlaybookRun>
   notifyUser?(title: string, body: string): void
   onChanged?(featureId: string): void
+  // A milestone landed in the base branch (plan 112.3: the app is checked in
+  // the user's checkout once the work is there).
+  onMilestoneLanded?(featureId: string, milestoneId: string): void
   // Tests shorten the retry when the repository is busy.
   leaseRetryMs?: number
 }
@@ -171,7 +174,9 @@ function proofSummary(proof: UserStoryProof | null): string {
   const verifier =
     proof.verifiedBy.kind === "seat"
       ? proof.verifiedBy.address
-      : `command ${proof.verifiedBy.phaseKey}`
+      : proof.verifiedBy.kind === "command"
+        ? `command ${proof.verifiedBy.phaseKey}`
+        : "Mission Control (the app couldn't be run)"
   return [
     `Proof ${proof.verdict} by ${verifier}:`,
     ...proof.criteria.map(
@@ -453,11 +458,20 @@ export class MilestoneIntegration {
 
   // A user story attempt that ended without an accepted proof gives its worktree
   // back. Its branch stays for inspection until feature cleanup.
-  async releaseUserStoryWorktree(userStoryId: string): Promise<void> {
+  async releaseUserStoryWorktree(
+    userStoryId: string,
+    options: { unverified?: boolean } = {}
+  ): Promise<void> {
     const userStory = features.getUserStory(userStoryId)
     if (!userStory?.worktreePath) return
     const { milestone } = context(userStory.milestoneId)
-    if (["running", "proving", "integrating"].includes(userStory.status)) return
+    // An unverified story keeps its worktree until it's checked again or
+    // accepted (plan 112.3).
+    if (
+      ["running", "proving", "integrating"].includes(userStory.status) ||
+      (userStory.status === "unverified" && !options.unverified)
+    )
+      return
     if (milestone.repoRoot)
       await removeWorktree(milestone.repoRoot, userStory.worktreePath)
     features.setUserStoryExecution(
@@ -1505,6 +1519,7 @@ export class MilestoneIntegration {
       console.warn("[integration] milestone cleanup:", error)
     )
     this.changed(feature.id)
+    this.deps.onMilestoneLanded?.(feature.id, milestoneId)
     return landing
   }
 

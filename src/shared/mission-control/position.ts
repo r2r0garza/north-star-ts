@@ -34,7 +34,7 @@ export interface PositionUserStoryInput {
   position: number
   touchHints: string[]
   acceptanceCount: number
-  proofVerdict: "accepted" | "rejected" | null
+  proofVerdict: "accepted" | "rejected" | "unverified" | null
   // Waits for every other user story in the milestone (implicit edges).
   runsLast?: boolean
   // Set for a failed user story: why its latest run failed, and whether the
@@ -100,7 +100,18 @@ export interface PositionInput {
     summary: string
   }>
   // Escalations addressed to the user that nobody has acknowledged.
-  escalations: Array<{ id: string; from: string; subject: string }>
+  escalations: Array<{
+    id: string
+    from: string
+    subject: string
+    // Recipe repair's question (plan 112.3): answered with a choice, never a
+    // typed command.
+    appQuestion?: {
+      id: string
+      question: string
+      choices: Array<{ id: string; label: string }>
+    }
+  }>
   // Approvals a running user story or hook is waiting on (a QA send-back
   // outside Autopilot, a phase gate), so they reach Waiting on you.
   runApprovals?: Array<{
@@ -132,12 +143,14 @@ export type DecisionKind =
   | "user_story_unspecified"
   | "user_story_blocked"
   | "user_story_failed"
+  | "user_story_unverified"
   | "proof_rejected"
   | "merge_conflict"
   | "milestone_dod"
   | "milestone_landing"
   | "budget"
   | "run_approval"
+  | "feature_complete"
 
 export interface Decision {
   // Stable identity: the same pending decision keeps its key across ticks, and
@@ -157,6 +170,18 @@ export type DecisionAction =
   | { kind: "open_milestone"; milestoneId: string }
   | { kind: "open_user_story"; userStoryId: string }
   | { kind: "edit_budgets" }
+  // Every milestone is done: finish the feature (Manual and Copilot; only
+  // Autopilot completes it by itself).
+  | { kind: "complete_feature" }
+  // Plan 112.3: pick one of recipe repair's plain-language choices.
+  | {
+      kind: "answer_app_question"
+      questionId: string
+      choices: Array<{ id: string; label: string }>
+    }
+  // Plan 112.3: the app couldn't be run for this story. Check it again
+  // (burns no attempt), or accept the story as unverified with a note.
+  | { kind: "resolve_unverified"; userStoryId: string }
 
 export interface HookRef {
   hook: HookName
@@ -319,7 +344,18 @@ export function computePosition(input: PositionInput): Position {
       kind: "escalation",
       owner: "user",
       target: { kind: "message", id: escalation.id },
-      summary: `Escalation from ${escalation.from}: ${escalation.subject}`,
+      summary: escalation.appQuestion
+        ? escalation.appQuestion.question
+        : `Escalation from ${escalation.from}: ${escalation.subject}`,
+      ...(escalation.appQuestion
+        ? {
+            action: {
+              kind: "answer_app_question" as const,
+              questionId: escalation.appQuestion.id,
+              choices: escalation.appQuestion.choices,
+            },
+          }
+        : {}),
     })
   for (const meter of input.budgets) {
     // Full concurrency is normal operation, and a long phase is handled by
@@ -502,6 +538,18 @@ export function computePosition(input: PositionInput): Position {
         )
       }
     }
+    // Only Autopilot completes the feature itself; otherwise it's the
+    // user's call, or the feature would stay active with nothing to do.
+    if (feature.driveMode !== "autopilot" && feature.status === "active")
+      decide({
+        key: "feature_complete",
+        kind: "feature_complete",
+        owner: "user",
+        target: { kind: "feature", id: feature.id },
+        summary:
+          "Every milestone is complete. Mark the feature complete to finish it.",
+        action: { kind: "complete_feature" },
+      })
     return finish(
       { kind: "complete_feature", text: "Every milestone is complete." },
       { feature: { ...empty.feature, complete: true } }
@@ -610,6 +658,19 @@ export function computePosition(input: PositionInput): Position {
         done.push(userStory.id)
         break
       case "cancelled":
+        break
+      // The app couldn't be run (plan 112.3): neither accepted nor
+      // rejected, and not done, so dependents wait and the milestone can't
+      // land. Only the user can fix the environment or accept it as is.
+      case "unverified":
+        decide({
+          key: `user_story_unverified:${userStory.id}:${userStory.attempts}`,
+          kind: "user_story_unverified",
+          owner: "user",
+          target: { kind: "user_story", id: userStory.id },
+          summary: `User story ${userStory.key} is unverified: the app couldn't be run to check it. Fix the environment and check again, or accept it unverified.`,
+          action: { kind: "resolve_unverified", userStoryId: userStory.id },
+        })
         break
       case "blocked": {
         const reason = cancelledPred
