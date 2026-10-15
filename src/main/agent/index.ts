@@ -179,6 +179,7 @@ import {
   appendMessage,
   listMessages,
   getMaxMessageSeq,
+  getMessage,
 } from "../db/repositories/messages"
 import {
   findPriorToolCallLifecycleByInvocation,
@@ -220,7 +221,12 @@ import {
 import type { Conversation } from "../db/types"
 import type { FailureContext, FailureStage } from "../db/types"
 import { runClaudeConversation, runCodexConversation } from "./cli"
-import { serializeConversationTurn } from "./conversation-turns"
+import {
+  conversationTurnPending,
+  serializeConversationTurn,
+} from "./conversation-turns"
+import { bashBlockCommand, type BashBlockRequest } from "./bash-block"
+import type { ToolCallRecord } from "../db/types"
 import { normalizeClaudeModel } from "./cli/claude"
 import { makePolicyEngine } from "./approval/engine"
 import { PlanModeClassifier } from "./approval/plan-mode-classifier"
@@ -443,6 +449,7 @@ export interface ChatRequest {
   // prior history is replayed into the prompt via the ContextBuilder.
   conversationId: string
   message: string
+  bashBlock?: BashBlockRequest
   // The directory the agent's filesystem tools are confined to. Optional: the
   // Chat view runs without a workspace and relies on inlined attachments.
   workspace?: string
@@ -871,6 +878,8 @@ export interface RunAgentLoopOptions {
   // transcript with no new user turn, since context is rebuilt from stored
   // messages each round.
   userMessage?: string
+  // Validated user-clicked command; executed once before requesting a model reply.
+  bashCommand?: string
   // Receives streamed tokens and tool activity. Defaults to a no-op so a
   // background task with no renderer attached still runs.
   onEvent?: OnEvent
@@ -1113,6 +1122,8 @@ export async function runAgentLoop(
     effectiveAccount?.provider === "claude_code" ||
     effectiveAccount?.provider === "codex_cli"
   ) {
+    if (opts.bashCommand)
+      return { error: "Run code is unavailable for CLI providers." }
     if (!conversation) return { error: "Conversation not found." }
     if (!effectiveAccount.enabled) {
       const label =
@@ -2169,439 +2180,19 @@ export async function runAgentLoop(
       roundsSinceRefocus = 0
     }
 
-    // Agentic loop: call the model, run any tools it asks for, repeat until the
-    // model returns a turn with no tool calls (the final answer). No round-trip
-    // cap — like Claude Code, we let the model run until it's done; multi-step
-    // tasks (and the todo list that tracks them) need more than a handful of
-    // steps. A turn ends only on a tool-free reply or a thrown error (caught
-    // below and surfaced/persisted).
-    while (true) {
-      // Stop pressed during the previous step's tool execution: break before
-      // starting another model round-trip. (An abort mid-stream is caught by the
-      // signal on create() below and handled in `catch`.)
-      if (abort.signal.aborted) {
-        appendMessage({
-          conversationId,
-          role: "assistant",
-          content: stopNote(abort.signal),
-        })
-        return { stopped: true }
-      }
-
-      // Notes that arrived mid-turn (a user's nudge, or Mission Control
-      // telling a long phase to wrap up) join before the next model round.
-      for (const note of takeConversationNotes(conversationId)) {
-        if (note.source === REFOCUS_NOTE_SOURCE) {
-          // Only a seat turn can be refocused; anywhere else it's dropped.
-          const trigger = parseRefocusTrigger(note.body)
-          const content =
-            trigger && seatIdentity
-              ? renderRefocusEvent(seatIdentity, trigger)
-              : null
-          if (content) {
-            deliverRefocus(content)
-            recordRefocusDelivered(
-              seatIdentity!,
-              trigger!,
-              conversationId,
-              note.id
-            )
-          }
-          continue
-        }
-        const content = `${note.source === "user" ? "Note from the user while you work" : "Note from Mission Control"}:\n\n${note.body}`
-        appendMessage({ conversationId, role: "user", content })
-        messages.push({ role: "user", content })
-      }
-      if (refocusEvery > 0 && roundsSinceRefocus >= refocusEvery) {
-        const trigger = { kind: "interval" as const, rounds: refocusEvery }
-        const content = renderRefocusEvent(seatIdentity!, trigger)
-        if (content) {
-          deliverRefocus(content)
-          recordRefocusDelivered(seatIdentity!, trigger, conversationId, null)
-        } else roundsSinceRefocus = 0
-      }
-      roundsSinceRefocus++
-
-      // Recompute the toolset from the live plan-mode flag: an approval during
-      // the previous iteration's present_plan call flips planMode off, so this
-      // round-trip regains the full filesystem toolset.
-      const tools = buildTools()
-      const offeredNames = offeredToolNames(tools)
-      const baseRoundId = `after-seq:${getMaxMessageSeq(conversationId)}`
-      let logicalRoundId = baseRoundId
-      let outputCap: number = MAX_OUTPUT_TOKENS
-      // Each re-issue (a higher cap, a hung stream) gets a fresh logical id,
-      // so its own transient-retry budget.
-      let stalls = 0
-      const roundId = () =>
-        [
-          baseRoundId,
-          ...(outputCap > MAX_OUTPUT_TOKENS ? [`cap-${outputCap}`] : []),
-          ...(stalls ? [`stall-${stalls}`] : []),
-        ].join(":")
-      // The current attempt's connection, so a hung one can be closed without
-      // stopping the turn.
-      const current: { abort: AbortController | null } = { abort: null }
-      modelRound += 1
-      let requestSize: RequestSize | null = null
-      try {
-        requestSize = measureRequest(messages, tools)
-      } catch (error) {
-        console.warn("[ctx] request measurement failed:", error)
-      }
-      // The transport attempt in flight, and whether its line is written: a
-      // rolled-back attempt logs itself; one that throws without a rollback
-      // (an abort) is logged by the catch below.
-      let attempt = 0
-      let attemptLogged = false
-      const logFailedAttempt = (error: unknown, retrying: boolean) => {
-        attemptLogged = true
-        logContextUsage({
-          requestSize,
-          roundId: logicalRoundId,
-          attempt,
-          outcome: abort.signal.aborted
-            ? "aborted"
-            : error instanceof StreamStalledError
-              ? "stalled"
-              : error instanceof ModelResponseValidationError &&
-                  error.outputLimit
-                ? "truncated"
-                : retrying
-                  ? "retry"
-                  : "error",
-          diagnostics:
-            error instanceof ModelResponseValidationError
-              ? (error.diagnostics ?? null)
-              : null,
-          responseEstimate: null,
-          finishReason:
-            error instanceof ModelResponseValidationError
-              ? (error.diagnostics?.finishReason ?? null)
-              : null,
-        })
-      }
-      let round: CompletionRound
-      for (;;) {
-        const nextCap = nextOutputTokenCap(outputCap)
-        try {
-          round = await createCompletionRoundWithRetry({
-            conversationId,
-            logicalRoundId,
-            signal: abort.signal,
-            isTransientError,
-            validateRound: (round) =>
-              validateModelRoundForLoop({
-                round,
-                commandCompletionPending: commandCompletionInbox.hasPending(
-                  commandCompletionOwner
-                ),
-                canRaiseOutputCap: nextCap !== null,
-              }),
-            requestIdentity: {
-              accountId: llm.accountId,
-              modelId: llm.model,
-              apiMode: llm.apiMode,
-            },
-            recoverVisibleText: (rawText) => extractTextToolCalls(rawText).text,
-            onAttemptEvent: (() => {
-              let attemptText = ""
-              let withheldText = false
-              let visibleText = false
-              return (event) => {
-                if (event.type === "start") {
-                  attempt = event.attempt
-                  attemptLogged = false
-                  attemptText = ""
-                  withheldText = false
-                  visibleText = false
-                  onEvent({
-                    type: "stream_attempt",
-                    phase: "start",
-                    attemptId: event.attemptId,
-                    attempt: event.attempt,
-                  })
-                  return
-                }
-                if (event.type === "text") {
-                  attemptText += event.delta
-                  const trimmed = attemptText.trimStart()
-                  const mayBeTextToolCall =
-                    !streamedText &&
-                    ("[TOOL_CALL:".startsWith(trimmed) ||
-                      trimmed.startsWith("[TOOL_CALL:"))
-                  if (mayBeTextToolCall) {
-                    withheldText = true
-                    return
-                  }
-                  const visiblePiece = withheldText ? attemptText : event.delta
-                  withheldText = false
-                  if (!visibleText && streamedText) {
-                    onEvent({
-                      type: "token",
-                      delta: "\n\n",
-                      attemptId: event.attemptId,
-                    })
-                  }
-                  visibleText = true
-                  onEvent({
-                    type: "token",
-                    delta: visiblePiece,
-                    attemptId: event.attemptId,
-                  })
-                  return
-                }
-                if (event.type === "commit") {
-                  const recovered = extractTextToolCalls(attemptText)
-                  if (
-                    withheldText &&
-                    recovered.toolCalls.length === 0 &&
-                    recovered.text
-                  ) {
-                    if (streamedText) {
-                      onEvent({
-                        type: "token",
-                        delta: "\n\n",
-                        attemptId: event.attemptId,
-                      })
-                    }
-                    onEvent({
-                      type: "token",
-                      delta: recovered.text,
-                      attemptId: event.attemptId,
-                    })
-                    visibleText = true
-                  }
-                  streamedText ||= visibleText
-                  onEvent({
-                    type: "stream_attempt",
-                    phase: "commit",
-                    attemptId: event.attemptId,
-                  })
-                  return
-                }
-                logFailedAttempt(event.error, event.retrying)
-                onEvent({
-                  type: "stream_attempt",
-                  phase: "rollback",
-                  attemptId: event.attemptId,
-                  retrying: event.retrying,
-                })
-              }
-            })(),
-            request: () => {
-              const controller = new AbortController()
-              if (abort.signal.aborted) controller.abort(abort.signal.reason)
-              else
-                abort.signal.addEventListener(
-                  "abort",
-                  () => controller.abort(abort.signal.reason),
-                  { once: true }
-                )
-              current.abort = controller
-              return withStreamUsage(llm, (streamOptions) =>
-                createCompletion(
-                  llm.client,
-                  llm.model,
-                  outputCap,
-                  {
-                    messages,
-                    tools,
-                    stream: true,
-                    ...(streamOptions ? { stream_options: streamOptions } : {}),
-                  },
-                  [
-                    undefined,
-                    // The attempt's abort signal (chained to the turn's). On the
-                    // OpenAI-backed path the SDK forwards it to fetch. On the
-                    // Portkey path, breaking the iterator cancels the body.
-                    { signal: controller.signal },
-                  ],
-                  llm.apiMode
-                )
-              )
-            },
-          })
-          break
-        } catch (error) {
-          if (!attemptLogged) logFailedAttempt(error, false)
-          if (error instanceof StreamStalledError && !abort.signal.aborted) {
-            // Close the hung connection, then re-issue the round.
-            current.abort?.abort(error)
-            if (stalls < MAX_STREAM_STALLS) {
-              stalls += 1
-              logicalRoundId = roundId()
-              continue
-            }
-          }
-          const truncated =
-            error instanceof ModelResponseValidationError && error.outputLimit
-          if (truncated && nextCap !== null && !abort.signal.aborted) {
-            // A fresh logical round id gives the re-issued round its own
-            // transient-retry budget; the truncated one's budget is spent.
-            outputCap = nextCap
-            logicalRoundId = roundId()
-            continue
-          }
-          if (outputCap > MAX_OUTPUT_TOKENS && rejectsOutputCap(error))
-            throw new ModelResponseValidationError(
-              "The model hit the output limit before returning a usable answer, and the provider rejected a higher output cap.",
-              { retryable: false }
-            )
-          throw error
-        }
-      }
-
-      // Reassemble the streamed turn only after the request has completed. Each
-      // failed transport/stream attempt buffers and discards its partial text and
-      // tool fragments, so a retry cannot execute an abandoned partial tool call
-      // or duplicate partial prose in the live UI.
-      const usage = round.diagnostics.usage
-      logContextUsage({
-        requestSize,
-        roundId: logicalRoundId,
-        attempt,
-        outcome: abort.signal.aborted
-          ? "aborted"
-          : round.finishReason === "length"
-            ? "truncated"
-            : "ok",
-        diagnostics: round.diagnostics,
-        responseEstimate: measureResponse(
-          round.text,
-          round.toolFragments.map((fragment) => ({
-            name: fragment.function?.name ?? "",
-            arguments: fragment.function?.arguments ?? "",
-          }))
-        ),
-        finishReason: round.finishReason,
-      })
-      if (usage) {
-        hasTurnUsage = true
-        turnUsage.promptTokens += usage.promptTokens ?? 0
-        turnUsage.completionTokens += usage.completionTokens ?? 0
-        turnUsage.totalTokens +=
-          usage.totalTokens ??
-          (usage.promptTokens ?? 0) + (usage.completionTokens ?? 0)
-      }
-      let text = round.text
-      if (text) {
-        turnAssistantText = turnAssistantText
-          ? `${turnAssistantText}\n\n${text}`
-          : text
-      }
-      const finishReason = round.finishReason
-
-      // Stopped mid-stream (we broke out above): persist whatever text streamed
-      // so far plus the stop note, and end the turn. Don't act on a partial
-      // tool-call fragment.
-      if (abort.signal.aborted) {
-        appendMessage({
-          conversationId,
-          role: "assistant",
-          content: text
-            ? `${text}\n\n${stopNote(abort.signal)}`
-            : stopNote(abort.signal),
-        })
-        return { stopped: true }
-      }
-
-      if (round.refusal) {
-        appendMessage({
-          conversationId,
-          role: "assistant",
-          content: text,
-          nativeAssistant: round.nativeAssistant,
-        })
-        completeModelRequestRetryBudget({ conversationId, logicalRoundId })
-        return { content: text, ...(hasTurnUsage ? { usage: turnUsage } : {}) }
-      }
-
-      const structuredToolCalls = accumulateToolCalls(round.toolFragments)
-      const recovered = extractTextToolCalls(text)
-      text = recovered.text
-      const toolCalls = [...structuredToolCalls, ...recovered.toolCalls]
-      // Text was already forwarded incrementally by onAttemptEvent. Tool-call
-      // fragments remain buffered until this validated round reaches this point.
-
-      // The turn hit the output-token ceiling. If it was cut off mid tool-call,
-      // the accumulated arguments are partial/invalid JSON — parsing them below
-      // throws a cryptic SyntaxError that surfaces as an opaque "turn ended early"
-      // (the bug a large write_file_tool blob triggered). Fail cleanly and
-      // retryably instead, with a message the agent/user can act on. A truncated
-      // text-only answer falls through: its partial text is still usable.
-      if (finishReason === "length" && toolCalls.length > 0) {
-        const note =
-          "The model's response was truncated before the tool call completed " +
-          "(hit the output token limit). Retry with a smaller write, a chunked " +
-          "file write, or a higher output cap."
-        appendMessage({
-          conversationId,
-          role: "assistant",
-          content: `⚠️ ${note}`,
-        })
-        exhaustModelRequestRetryBudget({
-          conversationId,
-          logicalRoundId,
-          error: note,
-        })
-        return { error: note, retryable: false }
-      }
-
-      if (toolCalls.length === 0) {
-        if (commandCompletionInbox.hasPending(commandCompletionOwner)) {
-          if (text.trim()) {
-            appendMessage({
-              conversationId,
-              role: "assistant",
-              content: text,
-              nativeAssistant: round.nativeAssistant,
-            })
-          }
-          completeModelRequestRetryBudget({ conversationId, logicalRoundId })
-          onEvent({ type: "command_wait", phase: "start" })
-          await commandCompletionInbox.waitForEvent(commandCompletionOwner, {
-            signal: abort.signal,
-          })
-          onEvent({ type: "command_wait", phase: "done" })
-          if (abort.signal.aborted) {
-            appendMessage({
-              conversationId,
-              role: "assistant",
-              content: stopNote(abort.signal),
-            })
-            return { stopped: true }
-          }
-          appendCommandCompletionEvents({
-            conversationId,
-            messages,
-            owner: commandCompletionOwner,
-            events: commandCompletionInbox.drain(commandCompletionOwner),
-          })
-          continue
-        }
-        // No tool calls — this is the final answer. Persist it so the next turn
-        // (and a reopened conversation) has the full transcript.
-        appendMessage({
-          conversationId,
-          role: "assistant",
-          content: text,
-          nativeAssistant: round.nativeAssistant,
-        })
-        completeModelRequestRetryBudget({ conversationId, logicalRoundId })
-        return {
-          content: text,
-          ...(hasTurnUsage ? { usage: turnUsage } : {}),
-        }
-      }
-
+    const executeCalls = async (
+      toolCalls: ToolCallRecord[],
+      text: string,
+      logicalRoundId: string,
+      offeredNames: Set<string>,
+      carrier?: CompletionRound["nativeAssistant"]
+    ) => {
       // Record the assistant turn (text + the tool calls it requested) so the
       // follow-up request has the full context — both in-memory and persisted.
       messages.push({
         role: "assistant",
         content: text || null,
-        [nativeAssistant]: round.nativeAssistant,
+        [nativeAssistant]: carrier,
         tool_calls: toolCalls.map((c) => ({
           id: c.id,
           type: "function",
@@ -2615,7 +2206,7 @@ export async function runAgentLoop(
         conversationId,
         role: "assistant",
         content: text || null,
-        nativeAssistant: round.nativeAssistant,
+        nativeAssistant: carrier,
         toolCalls: toolCalls.map((c) => ({
           id: c.id,
           name: c.name,
@@ -3105,10 +2696,7 @@ export async function runAgentLoop(
         !abort.signal.aborted &&
         toolResults.some((result) => result.outcome === "unknown")
       ) {
-        return failTurn(
-          conversationId,
-          "A tool outcome is unknown. Reconcile its effects before continuing."
-        )
+        return false
       }
       const storedResults = listMessages(conversationId).filter(
         (message) =>
@@ -3122,6 +2710,481 @@ export async function runAgentLoop(
         owner: commandCompletionOwner,
         events: commandCompletionInbox.drain(commandCompletionOwner),
       })
+      return true
+    }
+    if (opts.bashCommand) {
+      const offered = offeredToolNames(buildTools())
+      if (planMode || !offered.has("exec_command")) {
+        return failTurn(
+          conversationId,
+          "Run code is unavailable in this agent or mode."
+        )
+      }
+      const settled = await executeCalls(
+        [
+          {
+            id: randomUUID(),
+            name: "exec_command",
+            arguments: JSON.stringify({
+              command: opts.bashCommand,
+              background: true,
+            }),
+          },
+        ],
+        "",
+        `user-command:${runId}`,
+        offered
+      )
+      if (!settled)
+        return failTurn(
+          conversationId,
+          "A tool outcome is unknown. Reconcile its effects before continuing."
+        )
+      // A click authorizes only this script, not model-selected follow-up actions.
+      opts.allowedToolNames = new Set(["wait_for_events"])
+    }
+
+    // Agentic loop: call the model, run any tools it asks for, repeat until the
+    // model returns a turn with no tool calls (the final answer). No round-trip
+    // cap — like Claude Code, we let the model run until it's done; multi-step
+    // tasks (and the todo list that tracks them) need more than a handful of
+    // steps. A turn ends only on a tool-free reply or a thrown error (caught
+    // below and surfaced/persisted).
+    while (true) {
+      // Stop pressed during the previous step's tool execution: break before
+      // starting another model round-trip. (An abort mid-stream is caught by the
+      // signal on create() below and handled in `catch`.)
+      if (abort.signal.aborted) {
+        appendMessage({
+          conversationId,
+          role: "assistant",
+          content: stopNote(abort.signal),
+        })
+        return { stopped: true }
+      }
+
+      // Notes that arrived mid-turn (a user's nudge, or Mission Control
+      // telling a long phase to wrap up) join before the next model round.
+      for (const note of takeConversationNotes(conversationId)) {
+        if (note.source === REFOCUS_NOTE_SOURCE) {
+          // Only a seat turn can be refocused; anywhere else it's dropped.
+          const trigger = parseRefocusTrigger(note.body)
+          const content =
+            trigger && seatIdentity
+              ? renderRefocusEvent(seatIdentity, trigger)
+              : null
+          if (content) {
+            deliverRefocus(content)
+            recordRefocusDelivered(
+              seatIdentity!,
+              trigger!,
+              conversationId,
+              note.id
+            )
+          }
+          continue
+        }
+        const content = `${note.source === "user" ? "Note from the user while you work" : "Note from Mission Control"}:\n\n${note.body}`
+        appendMessage({ conversationId, role: "user", content })
+        messages.push({ role: "user", content })
+      }
+      if (refocusEvery > 0 && roundsSinceRefocus >= refocusEvery) {
+        const trigger = { kind: "interval" as const, rounds: refocusEvery }
+        const content = renderRefocusEvent(seatIdentity!, trigger)
+        if (content) {
+          deliverRefocus(content)
+          recordRefocusDelivered(seatIdentity!, trigger, conversationId, null)
+        } else roundsSinceRefocus = 0
+      }
+      roundsSinceRefocus++
+
+      // Recompute the toolset from the live plan-mode flag: an approval during
+      // the previous iteration's present_plan call flips planMode off, so this
+      // round-trip regains the full filesystem toolset.
+      const tools = buildTools()
+      const offeredNames = offeredToolNames(tools)
+      const baseRoundId = `after-seq:${getMaxMessageSeq(conversationId)}`
+      let logicalRoundId = baseRoundId
+      let outputCap: number = MAX_OUTPUT_TOKENS
+      // Each re-issue (a higher cap, a hung stream) gets a fresh logical id,
+      // so its own transient-retry budget.
+      let stalls = 0
+      const roundId = () =>
+        [
+          baseRoundId,
+          ...(outputCap > MAX_OUTPUT_TOKENS ? [`cap-${outputCap}`] : []),
+          ...(stalls ? [`stall-${stalls}`] : []),
+        ].join(":")
+      // The current attempt's connection, so a hung one can be closed without
+      // stopping the turn.
+      const current: { abort: AbortController | null } = { abort: null }
+      modelRound += 1
+      let requestSize: RequestSize | null = null
+      try {
+        requestSize = measureRequest(messages, tools)
+      } catch (error) {
+        console.warn("[ctx] request measurement failed:", error)
+      }
+      // The transport attempt in flight, and whether its line is written: a
+      // rolled-back attempt logs itself; one that throws without a rollback
+      // (an abort) is logged by the catch below.
+      let attempt = 0
+      let attemptLogged = false
+      const logFailedAttempt = (error: unknown, retrying: boolean) => {
+        attemptLogged = true
+        logContextUsage({
+          requestSize,
+          roundId: logicalRoundId,
+          attempt,
+          outcome: abort.signal.aborted
+            ? "aborted"
+            : error instanceof StreamStalledError
+              ? "stalled"
+              : error instanceof ModelResponseValidationError &&
+                  error.outputLimit
+                ? "truncated"
+                : retrying
+                  ? "retry"
+                  : "error",
+          diagnostics:
+            error instanceof ModelResponseValidationError
+              ? (error.diagnostics ?? null)
+              : null,
+          responseEstimate: null,
+          finishReason:
+            error instanceof ModelResponseValidationError
+              ? (error.diagnostics?.finishReason ?? null)
+              : null,
+        })
+      }
+      let round: CompletionRound
+      for (;;) {
+        const nextCap = nextOutputTokenCap(outputCap)
+        try {
+          round = await createCompletionRoundWithRetry({
+            conversationId,
+            logicalRoundId,
+            signal: abort.signal,
+            isTransientError,
+            validateRound: (round) =>
+              validateModelRoundForLoop({
+                round,
+                commandCompletionPending: commandCompletionInbox.hasPending(
+                  commandCompletionOwner
+                ),
+                canRaiseOutputCap: nextCap !== null,
+              }),
+            requestIdentity: {
+              accountId: llm.accountId,
+              modelId: llm.model,
+              apiMode: llm.apiMode,
+            },
+            recoverVisibleText: (rawText) => extractTextToolCalls(rawText).text,
+            onAttemptEvent: (() => {
+              let attemptText = ""
+              let withheldText = false
+              let visibleText = false
+              return (event) => {
+                if (event.type === "start") {
+                  attempt = event.attempt
+                  attemptLogged = false
+                  attemptText = ""
+                  withheldText = false
+                  visibleText = false
+                  onEvent({
+                    type: "stream_attempt",
+                    phase: "start",
+                    attemptId: event.attemptId,
+                    attempt: event.attempt,
+                  })
+                  return
+                }
+                if (event.type === "text") {
+                  attemptText += event.delta
+                  const trimmed = attemptText.trimStart()
+                  const mayBeTextToolCall =
+                    !streamedText &&
+                    ("[TOOL_CALL:".startsWith(trimmed) ||
+                      trimmed.startsWith("[TOOL_CALL:"))
+                  if (mayBeTextToolCall) {
+                    withheldText = true
+                    return
+                  }
+                  const visiblePiece = withheldText ? attemptText : event.delta
+                  withheldText = false
+                  if (!visibleText && streamedText) {
+                    onEvent({
+                      type: "token",
+                      delta: "\n\n",
+                      attemptId: event.attemptId,
+                    })
+                  }
+                  visibleText = true
+                  onEvent({
+                    type: "token",
+                    delta: visiblePiece,
+                    attemptId: event.attemptId,
+                  })
+                  return
+                }
+                if (event.type === "commit") {
+                  const recovered = extractTextToolCalls(attemptText)
+                  if (
+                    withheldText &&
+                    recovered.toolCalls.length === 0 &&
+                    recovered.text
+                  ) {
+                    if (streamedText) {
+                      onEvent({
+                        type: "token",
+                        delta: "\n\n",
+                        attemptId: event.attemptId,
+                      })
+                    }
+                    onEvent({
+                      type: "token",
+                      delta: recovered.text,
+                      attemptId: event.attemptId,
+                    })
+                    visibleText = true
+                  }
+                  streamedText ||= visibleText
+                  onEvent({
+                    type: "stream_attempt",
+                    phase: "commit",
+                    attemptId: event.attemptId,
+                  })
+                  return
+                }
+                logFailedAttempt(event.error, event.retrying)
+                onEvent({
+                  type: "stream_attempt",
+                  phase: "rollback",
+                  attemptId: event.attemptId,
+                  retrying: event.retrying,
+                })
+              }
+            })(),
+            request: () => {
+              const controller = new AbortController()
+              if (abort.signal.aborted) controller.abort(abort.signal.reason)
+              else
+                abort.signal.addEventListener(
+                  "abort",
+                  () => controller.abort(abort.signal.reason),
+                  { once: true }
+                )
+              current.abort = controller
+              return withStreamUsage(llm, (streamOptions) =>
+                createCompletion(
+                  llm.client,
+                  llm.model,
+                  outputCap,
+                  {
+                    messages,
+                    tools,
+                    stream: true,
+                    ...(streamOptions ? { stream_options: streamOptions } : {}),
+                  },
+                  [
+                    undefined,
+                    // The attempt's abort signal (chained to the turn's). On the
+                    // OpenAI-backed path the SDK forwards it to fetch. On the
+                    // Portkey path, breaking the iterator cancels the body.
+                    { signal: controller.signal },
+                  ],
+                  llm.apiMode
+                )
+              )
+            },
+          })
+          break
+        } catch (error) {
+          if (!attemptLogged) logFailedAttempt(error, false)
+          if (error instanceof StreamStalledError && !abort.signal.aborted) {
+            // Close the hung connection, then re-issue the round.
+            current.abort?.abort(error)
+            if (stalls < MAX_STREAM_STALLS) {
+              stalls += 1
+              logicalRoundId = roundId()
+              continue
+            }
+          }
+          const truncated =
+            error instanceof ModelResponseValidationError && error.outputLimit
+          if (truncated && nextCap !== null && !abort.signal.aborted) {
+            // A fresh logical round id gives the re-issued round its own
+            // transient-retry budget; the truncated one's budget is spent.
+            outputCap = nextCap
+            logicalRoundId = roundId()
+            continue
+          }
+          if (outputCap > MAX_OUTPUT_TOKENS && rejectsOutputCap(error))
+            throw new ModelResponseValidationError(
+              "The model hit the output limit before returning a usable answer, and the provider rejected a higher output cap.",
+              { retryable: false }
+            )
+          throw error
+        }
+      }
+
+      // Reassemble the streamed turn only after the request has completed. Each
+      // failed transport/stream attempt buffers and discards its partial text and
+      // tool fragments, so a retry cannot execute an abandoned partial tool call
+      // or duplicate partial prose in the live UI.
+      const usage = round.diagnostics.usage
+      logContextUsage({
+        requestSize,
+        roundId: logicalRoundId,
+        attempt,
+        outcome: abort.signal.aborted
+          ? "aborted"
+          : round.finishReason === "length"
+            ? "truncated"
+            : "ok",
+        diagnostics: round.diagnostics,
+        responseEstimate: measureResponse(
+          round.text,
+          round.toolFragments.map((fragment) => ({
+            name: fragment.function?.name ?? "",
+            arguments: fragment.function?.arguments ?? "",
+          }))
+        ),
+        finishReason: round.finishReason,
+      })
+      if (usage) {
+        hasTurnUsage = true
+        turnUsage.promptTokens += usage.promptTokens ?? 0
+        turnUsage.completionTokens += usage.completionTokens ?? 0
+        turnUsage.totalTokens +=
+          usage.totalTokens ??
+          (usage.promptTokens ?? 0) + (usage.completionTokens ?? 0)
+      }
+      let text = round.text
+      if (text) {
+        turnAssistantText = turnAssistantText
+          ? `${turnAssistantText}\n\n${text}`
+          : text
+      }
+      const finishReason = round.finishReason
+
+      // Stopped mid-stream (we broke out above): persist whatever text streamed
+      // so far plus the stop note, and end the turn. Don't act on a partial
+      // tool-call fragment.
+      if (abort.signal.aborted) {
+        appendMessage({
+          conversationId,
+          role: "assistant",
+          content: text
+            ? `${text}\n\n${stopNote(abort.signal)}`
+            : stopNote(abort.signal),
+        })
+        return { stopped: true }
+      }
+
+      if (round.refusal) {
+        appendMessage({
+          conversationId,
+          role: "assistant",
+          content: text,
+          nativeAssistant: round.nativeAssistant,
+        })
+        completeModelRequestRetryBudget({ conversationId, logicalRoundId })
+        return { content: text, ...(hasTurnUsage ? { usage: turnUsage } : {}) }
+      }
+
+      const structuredToolCalls = accumulateToolCalls(round.toolFragments)
+      const recovered = extractTextToolCalls(text)
+      text = recovered.text
+      const toolCalls = [...structuredToolCalls, ...recovered.toolCalls]
+      // Text was already forwarded incrementally by onAttemptEvent. Tool-call
+      // fragments remain buffered until this validated round reaches this point.
+
+      // The turn hit the output-token ceiling. If it was cut off mid tool-call,
+      // the accumulated arguments are partial/invalid JSON — parsing them below
+      // throws a cryptic SyntaxError that surfaces as an opaque "turn ended early"
+      // (the bug a large write_file_tool blob triggered). Fail cleanly and
+      // retryably instead, with a message the agent/user can act on. A truncated
+      // text-only answer falls through: its partial text is still usable.
+      if (finishReason === "length" && toolCalls.length > 0) {
+        const note =
+          "The model's response was truncated before the tool call completed " +
+          "(hit the output token limit). Retry with a smaller write, a chunked " +
+          "file write, or a higher output cap."
+        appendMessage({
+          conversationId,
+          role: "assistant",
+          content: `⚠️ ${note}`,
+        })
+        exhaustModelRequestRetryBudget({
+          conversationId,
+          logicalRoundId,
+          error: note,
+        })
+        return { error: note, retryable: false }
+      }
+
+      if (toolCalls.length === 0) {
+        if (commandCompletionInbox.hasPending(commandCompletionOwner)) {
+          if (text.trim()) {
+            appendMessage({
+              conversationId,
+              role: "assistant",
+              content: text,
+              nativeAssistant: round.nativeAssistant,
+            })
+          }
+          completeModelRequestRetryBudget({ conversationId, logicalRoundId })
+          onEvent({ type: "command_wait", phase: "start" })
+          await commandCompletionInbox.waitForEvent(commandCompletionOwner, {
+            signal: abort.signal,
+          })
+          onEvent({ type: "command_wait", phase: "done" })
+          if (abort.signal.aborted) {
+            appendMessage({
+              conversationId,
+              role: "assistant",
+              content: stopNote(abort.signal),
+            })
+            return { stopped: true }
+          }
+          appendCommandCompletionEvents({
+            conversationId,
+            messages,
+            owner: commandCompletionOwner,
+            events: commandCompletionInbox.drain(commandCompletionOwner),
+          })
+          continue
+        }
+        // No tool calls — this is the final answer. Persist it so the next turn
+        // (and a reopened conversation) has the full transcript.
+        appendMessage({
+          conversationId,
+          role: "assistant",
+          content: text,
+          nativeAssistant: round.nativeAssistant,
+        })
+        completeModelRequestRetryBudget({ conversationId, logicalRoundId })
+        return {
+          content: text,
+          ...(hasTurnUsage ? { usage: turnUsage } : {}),
+        }
+      }
+
+      if (
+        !(await executeCalls(
+          toolCalls,
+          text,
+          logicalRoundId,
+          offeredNames,
+          round.nativeAssistant
+        ))
+      ) {
+        return failTurn(
+          conversationId,
+          "A tool outcome is unknown. Reconcile its effects before continuing."
+        )
+      }
       // Seat mail that arrived while this seat was busy (plan 106.4) lands
       // here, at the tool-round boundary, as one tagged turn. The claim and the
       // transcript row commit together, so it is delivered exactly once.
@@ -3807,6 +3870,7 @@ export async function runChat(
     skills,
     planMode,
     autoMode,
+    bashBlock,
   }: ChatRequest,
   onEvent: OnEvent = () => {},
   // Lets a live interactive/north_star turn hand work off to the background via
@@ -3822,6 +3886,45 @@ export async function runChat(
   // The conditional write prevents a late result from replacing a title assigned
   // while generation was in flight.
   const conversation = getConversation(conversationId)
+  let bashCommand: string | undefined
+  if (bashBlock !== undefined) {
+    if (!conversation || planMode || conversationTurnPending(conversationId)) {
+      return { error: "Run code needs an idle conversation outside plan mode." }
+    }
+    if (
+      typeof bashBlock?.messageId !== "string" ||
+      !Number.isSafeInteger(bashBlock.offset) ||
+      bashBlock.offset < 0
+    ) {
+      return { error: "Invalid Bash block request." }
+    }
+    const source = getMessage(bashBlock.messageId)
+    if (
+      source?.conversationId !== conversationId ||
+      source.role !== "assistant"
+    ) {
+      return { error: "This Bash block does not belong to this conversation." }
+    }
+    try {
+      bashCommand = await bashBlockCommand(
+        source.content ?? "",
+        bashBlock.offset
+      )
+      if (conversationTurnPending(conversationId))
+        return { error: "This conversation is already running." }
+    } catch (error) {
+      return {
+        error: error instanceof Error ? error.message : "Invalid Bash block.",
+      }
+    }
+    workspace =
+      conversation.mode === "chat"
+        ? undefined
+        : workingDirectoryOf(conversation)
+    if (conversation.mode !== "chat" && !workspace)
+      return { error: "This conversation has no execution workspace." }
+    message = `Run this Bash block and report the result. Do not retry it or execute additional commands.\n\n${bashCommand}`
+  }
   if (conversation && !conversation.title && message.trim()) {
     void generateTitle(message)
       .then((title) => {
@@ -3845,6 +3948,7 @@ export async function runChat(
         attachments,
         skills,
         userMessage: message,
+        bashCommand,
         planMode,
         autoMode,
         // Snapshot the opt-in at turn start. Process workers call runAgentLoop

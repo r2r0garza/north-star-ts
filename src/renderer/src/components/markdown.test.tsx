@@ -25,7 +25,8 @@ function mount(
   mode?: "settled" | "streaming",
   findQuery?: string,
   preserveSoftBreaks?: boolean,
-  conversationId?: string
+  conversationId?: string,
+  runProps: Partial<React.ComponentProps<typeof Markdown>> = {}
 ) {
   act(() => {
     root.render(
@@ -35,6 +36,7 @@ function mount(
         findQuery={findQuery}
         preserveSoftBreaks={preserveSoftBreaks}
         conversationId={conversationId}
+        {...runProps}
       />
     )
   })
@@ -60,6 +62,64 @@ afterEach(() => {
 })
 
 describe("Markdown fenced blocks", () => {
+  it("runs only settled nonempty Bash fences, preserving Copy and source positions", async () => {
+    const onRunBash = vi.fn().mockResolvedValue(undefined)
+    const content =
+      "Text\n\n```bash\necho one\necho two >&2\n```\n\n```sh\necho no\n```"
+    mount(content, "settled", "", false, "c1", {
+      onRunBash,
+      runDirectory: "/workspace",
+    })
+    const buttons = container.querySelectorAll<HTMLButtonElement>(
+      'button[aria-label="Run Bash code"]'
+    )
+    expect(buttons).toHaveLength(1)
+    expect(buttons[0].title).toContain("/workspace")
+    await act(async () => buttons[0].click())
+    expect(onRunBash).toHaveBeenCalledWith(content.indexOf("```bash"))
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('button[aria-label="Copy code"]')!
+        .click()
+    )
+    expect(writeText).toHaveBeenCalledWith("echo one\necho two >&2\n")
+    mount(content, "streaming", "", false, "c1", { onRunBash })
+    expect(
+      container.querySelector('button[aria-label="Run Bash code"]')
+    ).toBeNull()
+    mount(content)
+    expect(
+      container.querySelector('button[aria-label="Run Bash code"]')
+    ).toBeNull()
+  })
+
+  it("prevents duplicate clicks and honors conversation disabled state", async () => {
+    let release!: () => void
+    const onRunBash = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve
+        })
+    )
+    mount("```bash\necho yes\n```", "settled", "", false, "c1", { onRunBash })
+    const button = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Run Bash code"]'
+    )!
+    act(() => {
+      button.click()
+      button.click()
+    })
+    expect(onRunBash).toHaveBeenCalledTimes(1)
+    expect(button.disabled).toBe(true)
+    await act(async () => release())
+    mount("```bash\necho yes\n```", "settled", "", false, "c1", {
+      onRunBash,
+      runDisabled: true,
+    })
+    act(() => button.click())
+    expect(onRunBash).toHaveBeenCalledTimes(1)
+  })
+
   it("highlights TypeScript fences in settled mode by default", () => {
     mount("```ts\nconst answer = 42\n```")
 

@@ -13,7 +13,7 @@ import ReactMarkdown, { defaultUrlTransform } from "react-markdown"
 import type { Components } from "react-markdown"
 import remarkGfm from "remark-gfm"
 import rehypeHighlight from "rehype-highlight"
-import { Check, Copy } from "lucide-react"
+import { Check, Copy, Play } from "lucide-react"
 import { Mermaid } from "./mermaid"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
@@ -37,7 +37,40 @@ function nodeText(children: React.ReactNode): string {
   return ""
 }
 
-function CodeBlock({ children, ...props }: React.ComponentProps<"pre">) {
+type RunCodeProps = {
+  onRunBash?: (offset: number) => Promise<void>
+  runDisabled?: boolean
+  runDirectory?: string
+}
+
+function CodeBlock({
+  children,
+  onRun,
+  runDisabled,
+  runDirectory,
+  ...props
+}: React.ComponentProps<"pre"> & {
+  onRun?: () => Promise<void>
+  runDisabled?: boolean
+  runDirectory?: string
+}) {
+  const [running, setRunning] = useState(false)
+  const launching = useRef(false)
+  async function run() {
+    if (!onRun || launching.current || runDisabled) return
+    launching.current = true
+    setRunning(true)
+    try {
+      await onRun()
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not run this command."
+      )
+    } finally {
+      launching.current = false
+      setRunning(false)
+    }
+  }
   const [copied, setCopied] = useState(false)
   const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -64,7 +97,21 @@ function CodeBlock({ children, ...props }: React.ComponentProps<"pre">) {
       data-slot="markdown-code-block"
       className="relative my-3 max-w-full rounded-lg bg-[#0d1117] text-zinc-100"
     >
-      <div className="pointer-events-none sticky top-2 z-10 -mb-10 h-10 pt-2 pr-2 text-right">
+      <div className="pointer-events-none sticky top-2 z-10 -mb-10 flex h-10 justify-end gap-1 pt-2 pr-2">
+        {onRun && (
+          <Button
+            type="button"
+            size="icon-xs"
+            variant="ghost"
+            className="pointer-events-auto bg-[#161b22]/90 text-zinc-300 shadow-sm ring-1 ring-white/15 backdrop-blur-sm hover:bg-[#21262d] hover:text-white"
+            aria-label={running ? "Running Bash code" : "Run Bash code"}
+            title={`Run entire Bash block in ${runDirectory || "this conversation's scratch directory"}`}
+            disabled={runDisabled || running}
+            onClick={() => void run()}
+          >
+            <Play />
+          </Button>
+        )}
         <Button
           type="button"
           size="icon-xs"
@@ -93,12 +140,15 @@ function createComponents({
   renderMermaid,
   findQuery,
   conversationId,
+  onRunBash,
+  runDisabled,
+  runDirectory,
 }: {
   highlightCode: boolean
   renderMermaid: boolean
   findQuery: string
   conversationId: string
-}): Components {
+} & RunCodeProps): Components {
   const find = (children: React.ReactNode): React.ReactNode =>
     Children.map(children, (child) => {
       if (typeof child === "string") {
@@ -164,13 +214,32 @@ function createComponents({
     },
     // Settled Mermaid diagrams render their own container. Streaming Mermaid
     // source uses the same copyable code-block chrome as every other fence.
-    pre({ children, ...props }) {
+    pre({ children, node, ...props }) {
       const child: any = Array.isArray(children) ? children[0] : children
       const lang: string = child?.props?.className ?? ""
       if (renderMermaid && /language-mermaid/.test(lang)) {
         return <>{children}</>
       }
-      return <CodeBlock {...props}>{children}</CodeBlock>
+      const codeNode = node?.children.find(
+        (child) => child.type === "element" && child.tagName === "code"
+      )
+      const offset = codeNode?.position?.start.offset
+      const runnable =
+        highlightCode &&
+        onRunBash &&
+        /(?:^|\s)language-bash(?:\s|$)/.test(lang) &&
+        typeof offset === "number" &&
+        nodeText(children).trim()
+      return (
+        <CodeBlock
+          {...props}
+          onRun={runnable ? () => onRunBash(offset!) : undefined}
+          runDisabled={runDisabled}
+          runDirectory={runDirectory}
+        >
+          {children}
+        </CodeBlock>
+      )
     },
     a({ children, href, ...props }) {
       const local = href ? localFileLink(href) !== null : false
@@ -232,7 +301,7 @@ type MarkdownProps = {
   findQuery?: string
   preserveSoftBreaks?: boolean
   conversationId?: string
-}
+} & RunCodeProps
 
 // Renders assistant Markdown with GFM in both modes. Settled content adds syntax
 // highlighting and Mermaid diagrams; streaming content defers both enrichments.
@@ -242,6 +311,9 @@ export const Markdown = memo(function Markdown({
   findQuery = "",
   preserveSoftBreaks = false,
   conversationId = "",
+  onRunBash,
+  runDisabled,
+  runDirectory,
 }: MarkdownProps) {
   const components = useMemo(
     () =>
@@ -250,8 +322,11 @@ export const Markdown = memo(function Markdown({
         renderMermaid: mode === "settled",
         findQuery,
         conversationId,
+        onRunBash,
+        runDisabled,
+        runDirectory,
       }),
-    [findQuery, mode, conversationId]
+    [findQuery, mode, conversationId, onRunBash, runDisabled, runDirectory]
   )
 
   return (

@@ -100,7 +100,7 @@ import { createTask, getTask } from "../db/repositories/tasks"
 import { upsertWorkspace } from "../db/repositories/workspaces"
 import * as processes from "../db/repositories/processes"
 import { ProcessService } from "../tasks/process/service"
-import { resolveApproval, runAgentLoop } from "."
+import { resolveApproval, runAgentLoop, runChat, stopChat } from "."
 import { replaceTodos } from "../db/repositories/todos"
 import {
   repairDanglingToolCalls,
@@ -265,6 +265,189 @@ afterEach(() => {
 })
 
 describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
+  it("executes a clicked Bash script once before model interpretation and delivers failure output", async () => {
+    const workspace = await makeWorkspace()
+    const ws = upsertWorkspace(workspace)
+    const conversation = createConversation({
+      mode: "interactive",
+      workspaceId: ws.id,
+    })
+    const command =
+      "printf 'clicked stdout\\n'; printf 'clicked stderr\\n' >&2; exit 7"
+    const source = appendMessage({
+      conversationId: conversation.id,
+      role: "assistant",
+      content: `\`\`\`bash\n${command}\n\`\`\``,
+    })
+    scriptedCompletions.push(
+      (request) => {
+        const result = lastMessage(request, "tool")
+        expect(result).toBeDefined()
+        expect(request.tools).not.toContain("exec_command")
+        return streamText("Waiting for your script.")
+      },
+      (request) => {
+        expect(JSON.stringify(request.messages)).toContain("clicked stdout")
+        expect(JSON.stringify(request.messages)).toContain("clicked stderr")
+        expect(JSON.stringify(request.messages)).toContain("exitCode")
+        return streamText("The script exited with code 7.")
+      }
+    )
+    const result = await runChat({
+      conversationId: conversation.id,
+      message: "",
+      bashBlock: { messageId: source.id, offset: 0 },
+      autoMode: true,
+    })
+    expect(result.error).toBeUndefined()
+    expect(result.content).toContain("code 7")
+    const calls = listMessages(conversation.id).flatMap(
+      (m) => m.toolCalls ?? []
+    )
+    expect(calls).toHaveLength(1)
+    expect(JSON.parse(calls[0].arguments)).toEqual({
+      command: `${command}\n`,
+      background: true,
+    })
+  })
+
+  it("does not spawn a clicked command when its approval is denied", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({
+      mode: "interactive",
+      workspaceId: upsertWorkspace(workspace).id,
+    })
+    const source = appendMessage({
+      conversationId: conversation.id,
+      role: "assistant",
+      content: `\`\`\`bash\n${nodeCmd("console.log('never ran')")}\n\`\`\``,
+    })
+    const spawn = vi.spyOn(LocalEnvironment.prototype, "spawnCommand")
+    scriptedCompletions.push((request) => {
+      expect(lastMessage(request, "tool")?.content).toContain("ERROR[denied]")
+      return streamText("The command was not run.")
+    })
+    const result = await runChat(
+      {
+        conversationId: conversation.id,
+        message: "",
+        bashBlock: { messageId: source.id, offset: 0 },
+      },
+      (event) => {
+        if (event.type === "approval")
+          resolveApproval(event.requestId, "denied")
+      }
+    )
+    expect(result.error).toBeUndefined()
+    expect(spawn).not.toHaveBeenCalled()
+  })
+
+  it("stops a clicked background command without waking another model request", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({
+      mode: "interactive",
+      workspaceId: upsertWorkspace(workspace).id,
+    })
+    const source = appendMessage({
+      conversationId: conversation.id,
+      role: "assistant",
+      content: `\`\`\`bash\n${nodeCmd("setTimeout(() => console.log('late'), 2000)")}\n\`\`\``,
+    })
+    scriptedCompletions.push(() => streamText("Waiting."))
+    const result = await runChat(
+      {
+        conversationId: conversation.id,
+        message: "",
+        bashBlock: { messageId: source.id, offset: 0 },
+        autoMode: true,
+      },
+      (event) => {
+        if (event.type === "command_wait" && event.phase === "start")
+          stopChat(conversation.id)
+      }
+    )
+    expect(result.stopped).toBe(true)
+    expect(completionRequests).toHaveLength(1)
+  })
+
+  it("rejects a second click while the first command turn is active", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({
+      mode: "interactive",
+      workspaceId: upsertWorkspace(workspace).id,
+    })
+    const source = appendMessage({
+      conversationId: conversation.id,
+      role: "assistant",
+      content: `\`\`\`bash\n${nodeCmd("console.log('once')")}\n\`\`\``,
+    })
+    const req = {
+      conversationId: conversation.id,
+      message: "",
+      bashBlock: { messageId: source.id, offset: 0 },
+    }
+    let duplicate: ReturnType<typeof runChat> | undefined
+    scriptedCompletions.push(() => streamText("Not run."))
+    await runChat(req, (event) => {
+      if (event.type === "approval") {
+        duplicate = runChat(req)
+        resolveApproval(event.requestId, "denied")
+      }
+    })
+    expect((await duplicate)?.error).toContain("idle conversation")
+    expect(
+      listMessages(conversation.id).flatMap((m) => m.toolCalls ?? [])
+    ).toHaveLength(1)
+  })
+
+  it("rejects plan mode, user-authored commands, and stale block offsets", async () => {
+    const conversation = createConversation({ mode: "interactive" })
+    const source = appendMessage({
+      conversationId: conversation.id,
+      role: "assistant",
+      content: "```bash\necho no\n```",
+    })
+    const user = appendMessage({
+      conversationId: conversation.id,
+      role: "user",
+      content: source.content,
+    })
+    for (const extra of [
+      { bashBlock: { messageId: source.id, offset: 0 }, planMode: true },
+      { bashBlock: { messageId: user.id, offset: 0 } },
+      { bashBlock: { messageId: source.id, offset: 99 } },
+    ]) {
+      const result = await runChat({
+        conversationId: conversation.id,
+        message: "",
+        ...extra,
+      })
+      expect(result.error).toBeDefined()
+    }
+    expect(completionRequests).toHaveLength(0)
+    expect(
+      listMessages(conversation.id).flatMap((m) => m.toolCalls ?? [])
+    ).toHaveLength(0)
+  })
+
+  it("rejects a clicked block from another conversation without starting a model or command", async () => {
+    const a = createConversation({ mode: "chat" })
+    const b = createConversation({ mode: "chat" })
+    const source = appendMessage({
+      conversationId: a.id,
+      role: "assistant",
+      content: "```bash\necho nope\n```",
+    })
+    const result = await runChat({
+      conversationId: b.id,
+      message: "",
+      bashBlock: { messageId: source.id, offset: 0 },
+    })
+    expect(result.error).toContain("does not belong")
+    expect(completionRequests).toHaveLength(0)
+    expect(listMessages(b.id)).toHaveLength(0)
+  })
+
   it.each(["textful", "textless", "partial", "markup", "filter", "reasoning"])(
     "persists terminal refusal without tools or retries (%s)",
     async (kind) => {
