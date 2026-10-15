@@ -357,8 +357,9 @@ describe.skipIf(!sqliteLoads || process.platform === "win32")(
         })
 
       // No recipe: QA proves by commands.
-      expect(await check(service(() => {}).instance)).toEqual({
+      expect(await check(service(() => {}).instance)).toMatchObject({
         result: "pass",
+        report: expect.stringMatching(/no services/),
       })
 
       // Broken, repaired on the first attempt: QA starts.
@@ -366,7 +367,12 @@ describe.skipIf(!sqliteLoads || process.platform === "win32")(
       const repairing = service(() =>
         updateWorkspace(workspaceId, { appLaunch: FIXED })
       )
-      expect(await check(repairing.instance)).toEqual({ result: "pass" })
+      const repaired = await check(repairing.instance)
+      expect(repaired).toMatchObject({ result: "pass" })
+      // Its receipt: each verification's stages, and the repair.
+      expect(repaired.report).toMatch(/Failed at .*missing_env/)
+      expect(repaired.report).toMatch(/Stages: .*start/)
+      expect(repaired.report).toMatch(/Recipe repair: 1 attempt\./)
       expect(repairing.repairs).toHaveLength(1)
       // Recorded for the scorecard, with the class of what was repaired.
       expect(
@@ -391,7 +397,7 @@ describe.skipIf(!sqliteLoads || process.platform === "win32")(
       expect(question?.userStoryId).toBe(story.id)
       writeFileSync(path.join(root, ".env.local"), "DATA_FILE=data/app.json\n")
       await asking.instance.answer(question!.id, "retry")
-      expect(await waiting).toEqual({ result: "pass" })
+      expect(await waiting).toMatchObject({ result: "pass" })
 
       // The user skips: unverified, with why.
       rmSync(path.join(root, ".env.local"))
@@ -422,7 +428,7 @@ describe.skipIf(!sqliteLoads || process.platform === "win32")(
       )
         await new Promise((r) => setTimeout(r, 25))
       abort.abort()
-      expect(await stopping).toEqual({ result: "stopped" })
+      expect(await stopping).toMatchObject({ result: "stopped" })
       // No story attempt was spent on any of it.
       expect(features.getUserStory(story.id)!.attempts).toBe(0)
     }, 120_000)

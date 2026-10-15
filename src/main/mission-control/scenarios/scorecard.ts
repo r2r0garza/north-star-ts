@@ -100,7 +100,19 @@ export interface ScenarioSpec {
   checks?: Array<{ label: string; command: string; exitCode: number }>
   // How the live tier sets the scenario up (plan 112.2): which recipe
   // variant the workspace starts with, or null for none.
-  live?: { variant: string | null }
+  live?: {
+    variant: string | null
+    // The user story playbook's steps to keep, by key (plan 112.4). Scenario
+    // 6 runs App check → Test, so no builder rewrites the delivered code
+    // before QA judges it.
+    storySteps?: string[]
+    // The feature's story attempt budget for the run. Scenario 6's first
+    // proof is the measurement, and with no builder a retry can't change it.
+    storyAttempts?: number
+    // A line the delivered code has, so a run where it changed before QA
+    // judged it scores as builder_fixed, not as QA's miss.
+    delivered?: { file: string; contains: string }
+  }
   expected: { live: LiveExpectation }
 }
 
@@ -169,6 +181,9 @@ export interface ScenarioRunRecord {
   // Each story's first proof verdict: scenario 6 measures the first proof,
   // whatever a later fixed attempt does.
   firstVerdicts?: Record<string, "accepted" | "rejected" | null>
+  // The delivered code (live.delivered) was changed on the story's branch,
+  // so its first proof judged other code. Null when it couldn't be read.
+  deliveredChanged?: boolean | null
   // The scenario's own stories as scored: a story split during the run
   // takes its parts' worst outcome, and its verdict is rejected when any
   // part's first proof was.
@@ -418,6 +433,7 @@ export interface LiveObservation {
   escalations: number
   orphans: number[]
   settle: string
+  deliveredChanged?: boolean | null
 }
 
 // A story meets an expected rejection when its first proof was rejected,
@@ -478,6 +494,8 @@ function liveOutcome(
       ([key, outcome]) =>
         outcome === "rejected" && observed.firstVerdicts[key] === "accepted"
     )
+    // QA judged code a builder had already fixed: not QA's miss.
+    if (misread && observed.deliveredChanged) return "builder_fixed"
     if (misread) return "misread_accepted"
     for (const outcome of ["rejected", "unverified", "failed", "not_run"])
       if (

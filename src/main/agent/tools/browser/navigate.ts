@@ -1,6 +1,7 @@
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "../types"
 import type { ToolAction } from "../../approval/types"
 import { toolError } from "../output"
+import { browserFailure } from "./errors"
 
 // Navigate the agent's browser to a URL. This is a real network side effect
 // (fetches an arbitrary origin), so it routes through the approval gate. Reading
@@ -61,10 +62,7 @@ export const browserNavigateTool: Tool = {
       const { url: finalUrl, title } = await ctx.browser.navigate(url)
       return `Opened ${finalUrl} (title: ${title || "untitled"}). Use browser_snapshot to read the page or browser_screenshot to see it.`
     } catch (err) {
-      return toolError(
-        "navigation_failed",
-        err instanceof Error ? err.message : String(err)
-      )
+      return browserFailure("navigation_failed", err)
     }
   },
 }

@@ -1,0 +1,106 @@
+{
+  "version": 1,
+  "label": "after-112.4-implicit",
+  "date": "2026-10-15",
+  "tier": "live",
+  "commit": "444c507-dirty",
+  "model": "gpt-6-luna",
+  "provider": "codex_subscription",
+  "configuredModel": "gpt-6-luna",
+  "notes": "Live tier: each scenario run as a feature on Autopilot with a real model, from a fresh fixture copy with its pre-authored plan. Rates per outcome across runs; cost is seat model usage from the context usage log.",
+  "scenarios": [
+    {
+      "scenario": "06-misread-criterion",
+      "runs": 1,
+      "rates": {
+        "misread_accepted": 1
+      },
+      "matchedRate": 0,
+      "runsWithOrphans": 0,
+      "checkRates": {
+        "stories": 0,
+        "failureClass": 0,
+        "waveGate": 1,
+        "attempts": 1,
+        "escalations": 1,
+        "orphans": 1
+      },
+      "runsWithPlanChanges": 0,
+      "cost": {
+        "meanWallMs": 126001,
+        "meanInputTokens": 1633682,
+        "meanOutputTokens": 2263
+      }
+    }
+  ],
+  "runs": [
+    {
+      "scenario": "06-misread-criterion",
+      "variant": "misread",
+      "tier": "live",
+      "outcome": "misread_accepted",
+      "matched": false,
+      "stories": {
+        "bill": "done"
+      },
+      "waveGate": "not_run",
+      "failureClass": null,
+      "storyAttempts": 1,
+      "recipeRepairs": 0,
+      "escalations": 0,
+      "wallMs": 126001,
+      "orphans": [],
+      "scenarioVersion": 1,
+      "appCommit": "444c507-dirty",
+      "settle": "settled",
+      "firstVerdicts": {
+        "bill": "accepted"
+      },
+      "resolvedStories": {
+        "bill": "done"
+      },
+      "resolvedVerdicts": {
+        "bill": "accepted"
+      },
+      "planChanges": {
+        "addedStories": [],
+        "addedMilestones": [],
+        "splits": {},
+        "cancelled": []
+      },
+      "attemptsByStory": {
+        "bill": 1
+      },
+      "proofRevisions": 0,
+      "appChecks": [
+        {
+          "story": "bill",
+          "result": "pass",
+          "cached": false,
+          "repairs": 0,
+          "questions": 0,
+          "class": null,
+          "reason": null
+        }
+      ],
+      "recipeSaves": [],
+      "appStartFailures": [],
+      "cost": {
+        "rounds": 37,
+        "inputTokens": 1633682,
+        "outputTokens": 2263,
+        "estimated": false
+      },
+      "model": "gpt-6-luna",
+      "provider": "codex_subscription",
+      "checks": {
+        "stories": false,
+        "failureClass": false,
+        "waveGate": true,
+        "attempts": true,
+        "escalations": true,
+        "orphans": true
+      }
+    }
+  ]
+}

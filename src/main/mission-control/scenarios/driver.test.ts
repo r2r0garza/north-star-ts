@@ -43,6 +43,10 @@ let hang = false
 let duringBuild: ((story: UserStory, featureId: string) => void) | null = null
 const built = new Set<string>()
 const reject = new Set<string>()
+// The seats that took a turn on a story, and whether QA edits the delivered
+// code before recording its proof (standing in for a builder's fix).
+const storyTurns: string[] = []
+let editDelivered = false
 const usageLog = { current: null as null | ContextUsageLog }
 vi.mock("../../agent", () => ({
   SHUTDOWN_ABORT_REASON,
@@ -55,6 +59,7 @@ vi.mock("../../agent", () => ({
     processPhaseRunId?: string
     missionControlSeat?: { address: string; profile: string }
     abort?: AbortController
+    workspace?: string
   }) => {
     const run = input.processRunId
       ? processes.getProcessRun(input.processRunId)
@@ -74,6 +79,13 @@ vi.mock("../../agent", () => ({
     if (input.userMessage?.startsWith("# Review the"))
       content = '{"approved": true}'
     const storyId = run?.missionControl?.userStoryId
+    if (storyId && input.missionControlSeat)
+      storyTurns.push(input.missionControlSeat.address)
+    if (editDelivered && input.processProofStep && input.workspace)
+      writeFileSync(
+        path.join(input.workspace, "calc.js"),
+        "module.exports = { bill: () => ({}) }\n"
+      )
     if (
       storyId &&
       featureId &&
@@ -96,6 +108,7 @@ vi.mock("../../agent", () => ({
             id: `AC-${i + 1}`,
             status: rejected ? "not_met" : "met",
             evidence: "Called the library with the example input.",
+            method: "command",
           })),
         },
       })
@@ -224,6 +237,7 @@ function usageEntry(
 const scenarios = loadScenarios()
 const nonUi = scenarios.find((s) => s.spec.key === "05-non-ui")!
 const greenfield = scenarios.find((s) => s.spec.key === "01-greenfield")!
+const misread = scenarios.find((s) => s.spec.key === "06-misread-criterion")!
 
 let navigator: Navigator
 let deps: ScenarioDriverDeps
@@ -343,6 +357,8 @@ beforeEach(() => {
   duringBuild = null
   built.clear()
   reject.clear()
+  storyTurns.length = 0
+  editDelivered = false
   executions.clear()
   workspaces.length = 0
   logDir = mkdtempSync(path.join(tmpdir(), "driver-usage-"))
@@ -422,6 +438,37 @@ describe.skipIf(!sqliteLoads || process.platform === "win32")(
         playbooks.listPlaybooks().filter((p) => p.name.startsWith("Scenario"))
       ).toEqual([])
     }, 30_000)
+
+    it("runs scenario 6's story with App check → Test only, and scores a changed delivery as builder_fixed (plan 112.4)", async () => {
+      orchestratedRig()
+      reject.add("bill")
+      const first = await runScenario(deps, misread, FAST)
+      // No builder turn: QA judges the code as delivered, once.
+      expect(storyTurns.length).toBeGreaterThan(0)
+      expect(storyTurns.every((a) => a.startsWith("qa@"))).toBe(true)
+      expect(first).toMatchObject({
+        deliveredChanged: false,
+        firstVerdicts: { bill: "rejected" },
+        attemptsByStory: { bill: 1 },
+        // QA's rejection is a feature failure.
+        failureClass: "feature",
+        outcome: "as_expected",
+        matched: true,
+      })
+      reject.clear()
+      // The run's story playbook went with it.
+      expect(
+        playbooks.listPlaybooks().filter((p) => p.name.startsWith("Scenario"))
+      ).toEqual([])
+
+      // The delivered code changed before the proof: not QA's miss.
+      editDelivered = true
+      const second = await runScenario(deps, misread, FAST)
+      expect(second).toMatchObject({
+        deliveredChanged: true,
+        outcome: "builder_fixed",
+      })
+    }, 60_000)
 
     it("follows a story a seat adds mid-run, and reports it apart from the scenario's", async () => {
       orchestratedRig()

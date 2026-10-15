@@ -92,7 +92,12 @@ vi.mock("../agent", () => ({
         args: {
           verdict: "accepted",
           criteria: [
-            { id: "AC-1", status: "met", evidence: "Checked the file." },
+            {
+              id: "AC-1",
+              status: "met",
+              evidence: "Checked the file.",
+              method: "command",
+            },
           ],
         },
       })

@@ -411,7 +411,7 @@ export function importProcessExport(input: unknown): ProcessImportResult {
     const phaseIdByKey = new Map<string, string>()
     for (const phase of parsed.phases) {
       const subprocessId =
-        phase.kind === "command"
+        phase.kind === "command" || phase.kind === "app_check"
           ? null
           : resolveSubprocess(
               phase.subprocess,
@@ -422,8 +422,8 @@ export function importProcessExport(input: unknown): ProcessImportResult {
       // An unresolved sub-process reference keeps the pre-104 behavior: the
       // phase imports as an agent phase, with a warning already recorded.
       const kind: ProcessPhaseKind =
-        phase.kind === "command"
-          ? "command"
+        phase.kind === "command" || phase.kind === "app_check"
+          ? phase.kind
           : subprocessId
             ? "subprocess"
             : "agent"
@@ -456,11 +456,12 @@ export function importProcessExport(input: unknown): ProcessImportResult {
       })
       phaseIdByKey.set(phase.key, created.id)
 
-      if (kind === "command" && phase.agents.length > 0)
+      const runsNoAgent = kind === "command" || kind === "app_check"
+      if (runsNoAgent && phase.agents.length > 0)
         warnings.push(
-          `phase '${phase.key}' is a command phase; its agent pool was not imported.`
+          `phase '${phase.key}' is a${kind === "command" ? " command" : "n app check"} phase; its agent pool was not imported.`
         )
-      for (const agent of kind === "command" ? [] : phase.agents) {
+      for (const agent of runsNoAgent ? [] : phase.agents) {
         createPhaseAgent({
           phaseId: created.id,
           ...("seatRole" in agent.agent
@@ -679,8 +680,13 @@ function validateProcessExport(input: unknown): ProcessExport {
       throw new Error(
         `phases[${index}].command is only allowed on a command phase`
       )
-    if (kind === "command" && phase.subprocess != null)
-      throw new Error(`phases[${index}] is a command phase with a sub-process`)
+    if (
+      (kind === "command" || kind === "app_check") &&
+      phase.subprocess != null
+    )
+      throw new Error(
+        `phases[${index}] is a${kind === "command" ? " command" : "n app check"} phase with a sub-process`
+      )
     result.phases.push({
       kind,
       command,

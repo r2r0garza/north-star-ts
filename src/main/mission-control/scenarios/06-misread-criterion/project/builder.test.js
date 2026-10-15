@@ -1,5 +1,3 @@
-// Scenario 6 fixture: the builder's tests, written against its own misreading
-// of AC-2, so they pass. `node builder.test.js`; exit 0 = pass.
 const assert = require("assert")
 const { bill } = require("./calc")
 

@@ -548,13 +548,30 @@ function assertPhaseKindValid(state: {
       if (state.commandConfig == null)
         throw new Error("A command phase needs a command to run.")
       return parseCommandConfig(state.commandConfig)
+    case "app_check":
+      if (
+        state.subprocessId ||
+        state.commandConfig != null ||
+        state.fanOut ||
+        state.validator ||
+        state.proofStep
+      )
+        throw new Error(
+          "An app check phase is built in: it has no command, sub-process, fan-out, validator, or proof step."
+        )
+      return null
     default:
       throw new Error(`Unknown phase kind: ${String(state.kind)}`)
   }
 }
 
 function isPhaseKind(value: unknown): value is ProcessPhaseKind {
-  return value === "agent" || value === "command" || value === "subprocess"
+  return (
+    value === "agent" ||
+    value === "command" ||
+    value === "subprocess" ||
+    value === "app_check"
+  )
 }
 
 export function createPhase(input: {
@@ -856,8 +873,11 @@ export function createPhaseAgent(input: {
   position: number
 }): ProcessPhaseAgent {
   const identity = phaseAgentIdentity(input)
-  if (getPhase(input.phaseId)?.kind === "command")
-    throw new Error("A command phase runs no agent, so it has no agent pool.")
+  const kind = getPhase(input.phaseId)?.kind
+  if (kind === "command" || kind === "app_check")
+    throw new Error(
+      `A${kind === "command" ? " command" : "n app check"} phase runs no agent, so it has no agent pool.`
+    )
   const id = randomUUID()
   getDb()
     .prepare(
@@ -939,9 +959,10 @@ export function createEdge(input: {
 }): ProcessEdge {
   // One command per fan-out child is out of scope for v1 (plan 104), so a
   // command phase waits for its whole upstream.
+  const toKind = getPhase(input.toPhaseId)?.kind
   if (
     input.trigger === "on_each_subtask" &&
-    getPhase(input.toPhaseId)?.kind === "command"
+    (toKind === "command" || toKind === "app_check")
   )
     throw new Error(
       "A command phase can only depend on whole phases (on complete), not on each sub-task."

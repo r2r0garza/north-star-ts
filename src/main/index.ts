@@ -180,6 +180,8 @@ import {
   SEAT_WAKE_KIND,
   SeatSessionService,
 } from "./mission-control/sessions"
+import { installSeatBrowser } from "./mission-control/seat-browser"
+import { evidenceDir, setEvidenceRoot } from "./mission-control/evidence"
 import { getAccount as getProviderAccount } from "./db/repositories/provider-accounts"
 import { DashboardService, DASHBOARD_REFRESH_KIND } from "./dashboards/service"
 import { registerDashboardHandlers } from "./ipc/dashboard-handlers"
@@ -610,6 +612,14 @@ const workspaceAnalysis = new WorkspaceAnalysisService({
 // Owned here so runChat can hand each live turn a signal-bound handle; disposed
 // on will-quit. Lazily creates its window on first agent use.
 const browserManager = new BrowserManager()
+// Mission Control seats (plan 112.4) get their own isolated, local-only tabs
+// from the same manager; screenshots they take are kept as evidence in app data.
+setEvidenceRoot(join(app.getPath("userData"), "evidence"))
+browserManager.setEvidenceRoot((phaseRunId) => evidenceDir(phaseRunId)!)
+installSeatBrowser({
+  handle: (input) => browserManager.seatHandle(input),
+  release: (phaseRunId) => browserManager.releaseSeat(phaseRunId),
+})
 
 // Module-level handle to the main app window, so pushes from services that don't
 // own it (the browser manager forwarding picked elements) can reach its renderer.

@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => {
     attach: vi.fn(),
     detachCurrent: vi.fn(),
     focusUrl: vi.fn(() => true),
+    isShowing: vi.fn(() => true),
   }
   return { sessions, windowHost, sidebarHost }
 })
@@ -30,6 +31,13 @@ vi.mock("./sidebar-host", () => ({
     constructor() {
       return mocks.sidebarHost
     }
+  },
+}))
+vi.mock("./parked-host", () => ({
+  ParkedViewHost: class {
+    addView = vi.fn()
+    removeView = vi.fn()
+    dispose = vi.fn()
   },
 }))
 vi.mock("../settings/service", () => ({}))

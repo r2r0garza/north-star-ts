@@ -111,6 +111,14 @@ describe("scoreLiveRun", () => {
         firstVerdicts: { bill: "accepted" },
       })
     ).toMatchObject({ outcome: "misread_accepted", matched: false })
+    // Accepted, but the delivered code had been fixed first (plan 112.4).
+    expect(
+      run({
+        stories: { bill: "done" },
+        firstVerdicts: { bill: "accepted" },
+        deliveredChanged: true,
+      })
+    ).toMatchObject({ outcome: "builder_fixed", matched: false })
   })
 })
 

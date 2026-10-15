@@ -1,6 +1,7 @@
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "../types"
 import type { ToolAction } from "../../approval/types"
 import { toolError } from "../output"
+import { browserFailure } from "./errors"
 import { browserActionIdentity, browserOrigin } from "./approval"
 
 export const browserHoverTool: Tool = {
@@ -37,10 +38,7 @@ export const browserHoverTool: Tool = {
       target = described.target
       targetFingerprint = described.targetFingerprint
     } catch (err) {
-      return toolError(
-        "hover_failed",
-        err instanceof Error ? err.message : String(err)
-      )
+      return browserFailure("hover_failed", err)
     }
     const url = ctx.browser.state()?.url ?? ""
     const origin = browserOrigin(url)
@@ -74,10 +72,7 @@ export const browserHoverTool: Tool = {
       const { target, url, title } = await ctx.browser.hover(ref)
       return `Hovered ${target}. Page is now ${url} (title: ${title || "untitled"}). Call browser_snapshot to see current elements.`
     } catch (err) {
-      return toolError(
-        "hover_failed",
-        err instanceof Error ? err.message : String(err)
-      )
+      return browserFailure("hover_failed", err)
     }
   },
 }

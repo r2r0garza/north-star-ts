@@ -57,7 +57,10 @@
     }
   ],
   "live": {
-    "variant": "misread"
+    "variant": "misread",
+    "storySteps": ["app-check", "test"],
+    "storyAttempts": 1,
+    "delivered": { "file": "calc.js", "contains": "total * tipPercent" }
   },
   "expected": {
     "live": {

@@ -1,6 +1,7 @@
 import type {
   PlaybookRun,
   ProofCriterionStatus,
+  ProofVerificationMethod,
   SeatBinding,
   UserStoryProof,
 } from "../db/types"
@@ -19,11 +20,19 @@ const STATUSES: readonly ProofCriterionStatus[] = [
   "not_verifiable",
 ]
 
+export const PROOF_METHODS: readonly ProofVerificationMethod[] = [
+  "app_exercised",
+  "command",
+  "builder_tests",
+  "code_read",
+]
+
 export interface ProofSubmission {
   criteria: Array<{
     id: string
     status: ProofCriterionStatus
     evidence: string
+    method: ProofVerificationMethod
     artifacts?: string[]
     reason?: string
     // A deterministic command phase whose result is this criterion's evidence
@@ -36,7 +45,11 @@ export interface ProofSubmission {
 export type ProofDecision =
   | { kind: "invalid"; message: string }
   | { kind: "already_accepted"; proof: UserStoryProof }
-  | { kind: "revisions_exhausted"; proof: UserStoryProof | null; message: string }
+  | {
+      kind: "revisions_exhausted"
+      proof: UserStoryProof | null
+      message: string
+    }
   | {
       kind: "recorded"
       proof: UserStoryProof
@@ -56,7 +69,7 @@ export function parseProofSubmission(
   criteria: UserStoryCriterion[]
 ): ProofSubmission | string {
   if (args.verdict !== "accepted" && args.verdict !== "rejected")
-    return "`verdict` must be \"accepted\" or \"rejected\"."
+    return '`verdict` must be "accepted" or "rejected".'
   if (!Array.isArray(args.criteria))
     return "`criteria` must be an array with one entry per acceptance criterion."
   const expected = new Map(criteria.map((c) => [c.id, c]))
@@ -74,6 +87,8 @@ export function parseProofSubmission(
     const evidence = typeof raw.evidence === "string" ? raw.evidence.trim() : ""
     if (!evidence)
       return `Criterion ${id} needs concrete evidence (what you ran or inspected, and what you observed).`
+    if (!PROOF_METHODS.includes(raw.method as ProofVerificationMethod))
+      return `criteria[${index}].method must be one of ${PROOF_METHODS.join(", ")}: how you verified ${id}.`
     const artifacts = Array.isArray(raw.artifacts)
       ? raw.artifacts.filter(
           (a): a is string => typeof a === "string" && a.trim() !== ""
@@ -83,6 +98,7 @@ export function parseProofSubmission(
       id,
       status: raw.status as ProofCriterionStatus,
       evidence,
+      method: raw.method as ProofVerificationMethod,
       ...(artifacts?.length ? { artifacts } : {}),
       ...(typeof raw.reason === "string" && raw.reason.trim()
         ? { reason: raw.reason.trim() }
@@ -101,9 +117,45 @@ export function parseProofSubmission(
   return { criteria: parsed, verdict: args.verdict }
 }
 
+// What the harness knows about the proof step, resolved server-side (plan
+// 112.4): the submitted artifacts that are files in this step's evidence
+// directory. The model's description is never trusted for it.
+export interface ProofVerification {
+  evidence: ReadonlySet<string>
+}
+
+// Why the met criteria of an accepted proof fall short of the method rules,
+// all at once so one resubmission fixes them. Empty when it may be accepted.
+export function verificationProblems(
+  submission: ProofSubmission,
+  verification: ProofVerification
+): string[] {
+  const problems: string[] = []
+  for (const { id, status, method, artifacts } of submission.criteria) {
+    if (status !== "met") continue
+    if (method === "code_read")
+      problems.push(
+        `${id}: reading the code doesn't verify a criterion. Verify it in the running app, or record it not_verifiable with a reason.`
+      )
+    else if (method === "builder_tests")
+      problems.push(
+        `${id}: the builder's tests alone don't verify a criterion. Exercise it in the running app ("app_exercised") or run a command yourself ("command"); the builder's tests may support it in the evidence.`
+      )
+    else if (
+      method === "app_exercised" &&
+      !(artifacts ?? []).some((a) => verification.evidence.has(a))
+    )
+      problems.push(
+        `${id}: verifying in the app needs saved evidence. Take a browser_screenshot (or save console or network evidence) and list the path it returned in artifacts.`
+      )
+  }
+  return problems
+}
+
 export function decideProof(input: {
   submission: ProofSubmission
   criteria: UserStoryCriterion[]
+  verification: ProofVerification
   verifier: SeatBinding
   builderAddresses: string[]
   isCommandPhase: (phaseKey: string) => boolean
@@ -158,6 +210,12 @@ export function decideProof(input: {
         `${criterion.id} accepted as not verifiable by ${verifier.address}: ${criterion.reason}`
       )
     }
+    const problems = verificationProblems(submission, input.verification)
+    if (problems.length)
+      return {
+        kind: "invalid",
+        message: `The proof can't be accepted yet:\n${problems.map((p) => `- ${p}`).join("\n")}`,
+      }
   }
 
   // Independence: the verifier must not be a builder of this user story, unless
@@ -206,4 +264,19 @@ export function decideProof(input: {
     proofRevisions,
     exhausted: !accepted && proofRevisions >= input.maxProofRevisions,
   }
+}
+
+// The met criteria of an accepted proof that rest only on the builder's tests,
+// or that don't say how they were verified (proofs from before plan 112.4).
+// Health flags them (weak_proof).
+export function weakProofCriteria(
+  proof: unknown
+): Array<{ id: string; method: ProofVerificationMethod | null }> {
+  if (!isRecord(proof) || proof.verdict !== "accepted") return []
+  if (!Array.isArray(proof.criteria)) return []
+  return (proof as unknown as UserStoryProof).criteria
+    .filter(
+      (c) => c.status === "met" && (!c.method || c.method === "builder_tests")
+    )
+    .map((c) => ({ id: c.id, method: c.method ?? null }))
 }

@@ -2,8 +2,13 @@ import { describe, it, expect, beforeEach, vi } from "vitest"
 import Database from "better-sqlite3"
 import { randomUUID } from "crypto"
 import { tmpdir } from "os"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs"
+import { join } from "path"
 import { runMigrations } from "../db/migrations"
 import { sqliteLoadsForTests } from "../test/sqlite"
+import type { SeatHandleInput } from "../browser/seat"
+import { installSeatBrowser } from "./seat-browser"
+import { setEvidenceRoot } from "./evidence"
 
 const sqliteLoads = sqliteLoadsForTests()
 
@@ -28,6 +33,9 @@ interface LoopCall {
   proofResult?: RecordProofResult
   seat?: { address: string; profile: string; anchor: unknown }
   appLaunch: boolean
+  writeScope?: { allow: string[] }
+  // The seat browser handle input this worker would get (plan 112.4).
+  seatBrowser?: { phaseRunId: string; label: string; origins: string[] }
 }
 const loopCalls: LoopCall[] = []
 // What a proof-step worker submits through record_proof, per call (FIFO).
@@ -46,6 +54,8 @@ vi.mock("../agent", () => ({
     processPhaseRunId?: string
     missionControlSeat?: { address: string; profile: string; anchor: unknown }
     processAppLaunch?: boolean
+    writeScope?: { allow: string[] }
+    seatBrowser?: (signal: AbortSignal) => unknown
     workspace?: string
     abort?: AbortController
   }) => {
@@ -88,6 +98,17 @@ vi.mock("../agent", () => ({
       proofStep: !!input.processProofStep,
       seat: input.missionControlSeat,
       appLaunch: !!input.processAppLaunch,
+      writeScope: input.writeScope,
+    }
+    if (input.seatBrowser) {
+      const before = seatBrowserInputs.length
+      input.seatBrowser(new AbortController().signal)
+      const seen = seatBrowserInputs[before]
+      call.seatBrowser = seen && {
+        phaseRunId: seen.phaseRunId,
+        label: seen.label,
+        origins: seen.allowedOrigins(),
+      }
     }
     loopCalls.push(call)
     const msg = input.userMessage ?? ""
@@ -156,6 +177,10 @@ vi.mock("../tasks/process/command-executor", () => ({
 let routerReply = ""
 let hangLoops = false
 let flagBackOnce = false
+// The installed seat browser (plan 112.4): the handles workers asked for and
+// the phase runs whose tabs were released.
+const seatBrowserInputs: SeatHandleInput[] = []
+const seatBrowserReleases: string[] = []
 let startApp = false
 const appStarts: Array<{
   phaseRunId: string
@@ -341,8 +366,14 @@ const acceptedProof = {
       id: "AC-1",
       status: "met",
       evidence: "Ran the model tests: line items persist.",
+      method: "command",
     },
-    { id: "AC-2", status: "met", evidence: "Totals test passes." },
+    {
+      id: "AC-2",
+      status: "met",
+      evidence: "Totals test passes.",
+      method: "command",
+    },
   ],
 }
 
@@ -357,6 +388,9 @@ beforeEach(() => {
   routerReply = ""
   startApp = false
   appStarts.length = 0
+  seatBrowserInputs.length = 0
+  seatBrowserReleases.length = 0
+  installSeatBrowser(null)
   setup()
 })
 
@@ -382,6 +416,12 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
       "agentref:v1:qa",
     ])
     expect(workers.map((c) => c.proofStep)).toEqual([false, false, true])
+    // QA writes only its scratch directory (plan 112.4); builders anywhere.
+    expect(workers.map((c) => c.writeScope)).toEqual([
+      undefined,
+      undefined,
+      { allow: [`.mission-control/scratch/${playbookRun.processRunId}`] },
+    ])
     // Seat narrowing reaches the worker as a runtime-only agent override.
     expect(workers[0].agentOverride?.tools).toEqual(["read", "edit"])
     // Seat charter, rig culture, pod culture, and intent chain are in context.
@@ -404,9 +444,11 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
     const phaseRuns = processes.listPhaseRuns({
       runId: playbookRun.processRunId!,
     })
+    // The app check (plan 112.4) is the engine's: no seat.
     expect(phaseRuns.map((pr) => pr.seatAddress).sort()).toEqual([
       "builder@implementation",
       "builder@implementation",
+      null,
       "qa@implementation",
     ])
 
@@ -648,6 +690,100 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
       .find((pr) => pr.seatAddress === "qa@implementation")!
   }
 
+  it("accepts a proof on exploratory evidence and refuses builder tests or a missing screenshot (plan 112.4)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "evidence-"))
+    setEvidenceRoot(root)
+    try {
+      const rig = orchestratedRig()
+      const { userStory } = billingFeature(rig.id)
+      const { detachedRunner, driveDetached } = unsettledRunner()
+      const playbookRun = await detachedRunner.startUserStory(userStory.id)
+      await driveDetached(playbookRun.processRunId!)
+      const qa = qaPhaseRun(playbookRun.processRunId!)
+      const record = (method: string, artifacts?: string[]) =>
+        recordUserStoryProof({
+          processRunId: playbookRun.processRunId!,
+          processPhaseRunId: qa.id,
+          args: {
+            verdict: "accepted",
+            criteria: ["AC-1", "AC-2"].map((id) => ({
+              id,
+              status: "met",
+              evidence: "Saw it in the app.",
+              method,
+              ...(artifacts ? { artifacts } : {}),
+            })),
+          },
+        })
+      expect(record("builder_tests")).toMatchObject({
+        ok: false,
+        code: "proof_rejected_by_rules",
+        message: expect.stringMatching(/builder's tests alone/),
+      })
+      expect(record("app_exercised")).toMatchObject({
+        ok: false,
+        message: expect.stringMatching(/needs saved evidence/),
+      })
+      // Another phase run's screenshot isn't this step's evidence.
+      mkdirSync(join(root, "other"))
+      writeFileSync(join(root, "other", "shot.jpg"), "jpg")
+      expect(
+        record("app_exercised", [join(root, "other", "shot.jpg")])
+      ).toMatchObject({ ok: false })
+      mkdirSync(join(root, qa.id))
+      const shot = join(root, qa.id, "screenshot-001.jpg")
+      writeFileSync(shot, "jpg")
+      expect(record("app_exercised", [shot])).toMatchObject({
+        ok: true,
+        status: "accepted",
+      })
+      // Refusals spend no proof revision.
+      expect(playbooks.getPlaybookRun(playbookRun.id)!.proofRevisions).toBe(0)
+    } finally {
+      setEvidenceRoot(null)
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it("checks the app implicitly for a stored playbook without an App check step (plan 112.4)", async () => {
+    const rig = orchestratedRig()
+    const { userStory } = billingFeature(rig.id)
+    // A playbook made before the step existed: Spec → Build → Test.
+    const playbook = createDefaultPlaybook("user_story")
+    const processId = playbook.hooks.find((h) => h.hook === "run")!.processId
+    const graph = processes.getProcessGraph(processId)!
+    const byKey = (key: string) => graph.phases.find((p) => p.key === key)!
+    processes.deletePhase(byKey("app-check").id)
+    processes.createEdge({
+      processId,
+      fromPhaseId: byKey("build").id,
+      toPhaseId: byKey("test").id,
+    })
+    db.prepare("UPDATE features SET playbook_id = ?").run(playbook.id)
+    const checks: string[] = []
+    installAppRecipeService({
+      appCheck: async (input: { userStoryId: string }) => {
+        checks.push(input.userStoryId)
+        return { result: "pass", report: "ok" }
+      },
+      endUnverified: () => {},
+    } as never)
+    try {
+      proofSubmissions.push(acceptedProof)
+      const run = await runner.startUserStory(userStory.id)
+      await drive(run.processRunId!)
+      expect(checks).toEqual([userStory.id])
+      expect(
+        processes
+          .listPhaseRuns({ runId: run.processRunId! })
+          .some((pr) => pr.commandReceipt)
+      ).toBe(false)
+      expect(features.getUserStory(userStory.id)!.status).toBe("done")
+    } finally {
+      installAppRecipeService(null)
+    }
+  })
+
   it("freezes an accepted proof", async () => {
     const rig = orchestratedRig()
     const { userStory } = billingFeature(rig.id)
@@ -673,8 +809,18 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
     const rejected = {
       verdict: "rejected",
       criteria: [
-        { id: "AC-1", status: "met", evidence: "Line items persist." },
-        { id: "AC-2", status: "not_met", evidence: "Totals ignore tax." },
+        {
+          id: "AC-1",
+          status: "met",
+          evidence: "Line items persist.",
+          method: "command",
+        },
+        {
+          id: "AC-2",
+          status: "not_met",
+          evidence: "Totals ignore tax.",
+          method: "command",
+        },
       ],
     }
     proofSubmissions.push(rejected)
@@ -708,8 +854,13 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
     proofSubmissions.push({
       verdict: "accepted",
       criteria: [
-        { id: "AC-1", status: "met", evidence: "ok" },
-        { id: "AC-2", status: "not_met", evidence: "Totals ignore tax." },
+        { id: "AC-1", status: "met", evidence: "ok", method: "command" },
+        {
+          id: "AC-2",
+          status: "not_met",
+          evidence: "Totals ignore tax.",
+          method: "command",
+        },
       ],
     })
     const playbookRun = await runner.startUserStory(userStory.id)
@@ -837,8 +988,12 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
       appCheck: async (input: { userStoryId: string }) => {
         checks.push(input.userStoryId)
         return verdict === "pass"
-          ? { result: "pass" }
-          : { result: "unverified", summary: "it needs a Postgres database" }
+          ? { result: "pass", report: "ok" }
+          : {
+              result: "unverified",
+              summary: "it needs a Postgres database",
+              report: "failed",
+            }
       },
       endUnverified: (id: string, summary: string) =>
         runner.markUnverified(id, summary),
@@ -850,6 +1005,15 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
       await drive(first.processRunId!)
       expect(checks).toEqual([userStory.id])
       expect(loopCalls.some((c) => c.proofStep)).toBe(true)
+      // The default playbook's App check step ran it, with a receipt.
+      const appCheck = processes
+        .listPhaseRuns({ runId: first.processRunId! })
+        .find((pr) => pr.commandReceipt?.command === "App check")
+      expect(appCheck).toMatchObject({
+        status: "completed",
+        seatAddress: null,
+        commandReceipt: { status: "completed", stdout: "ok" },
+      })
 
       // The app can't be made to run: QA never starts, no revision is used,
       // and the story ends unverified.
@@ -976,6 +1140,11 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
         const playbookRun = await runner.startUserStory(userStory.id)
         await drive(playbookRun.processRunId!)
         expect(features.getUserStory(userStory.id)!.status).toBe("done")
+        // QA tests the app the harness started for its step (plan 112.4).
+        const qa = loopCalls.find((c) => c.proofStep)!
+        expect(qa.userMessage).toMatch(
+          /The app is already running for this step: http:\/\/[^\s,]+:\d+/
+        )
         // spec, build (builder) and test (QA): every step started it.
         expect(appStarts).toHaveLength(3)
         expect(appStarts.every((s) => s.ready && s.briefed)).toBe(true)
@@ -1042,6 +1211,53 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
       })
     }
   )
+
+  it("gives seat work steps an isolated browser and closes it when each step ends (plan 112.4)", async () => {
+    installSeatBrowser({
+      handle: (input) => {
+        seatBrowserInputs.push(input)
+        return {} as never
+      },
+      release: async (phaseRunId) => {
+        seatBrowserReleases.push(phaseRunId)
+      },
+    })
+    const rig = orchestratedRig()
+    const { userStory } = billingFeature(rig.id)
+    proofSubmissions.push(acceptedProof)
+    const playbookRun = await runner.startUserStory(userStory.id)
+    await drive(playbookRun.processRunId!)
+    expect(features.getUserStory(userStory.id)!.status).toBe("done")
+
+    const workers = loopCalls.filter(
+      (c) => !c.userMessage?.startsWith("# Review the")
+    )
+    expect(workers.map((c) => c.seatBrowser?.label)).toEqual([
+      "builder@implementation · billing.milestone-1.invoice-model",
+      "builder@implementation · billing.milestone-1.invoice-model",
+      "qa@implementation · billing.milestone-1.invoice-model",
+    ])
+    // One tab per phase run, each released when its step ended.
+    const phaseRunIds = workers.map((c) => c.seatBrowser!.phaseRunId)
+    expect(new Set(phaseRunIds).size).toBe(3)
+    expect([...seatBrowserReleases].sort()).toEqual([...phaseRunIds].sort())
+    // Nothing started, so only loopback origins are open to it.
+    expect(workers.every((c) => c.seatBrowser!.origins.length === 0)).toBe(true)
+    expect(workers[2].sectionContent).toContain("## Your browser")
+  })
+
+  it("gives seat steps no browser when none is installed", async () => {
+    const rig = orchestratedRig()
+    const { userStory } = billingFeature(rig.id)
+    proofSubmissions.push(acceptedProof)
+    const playbookRun = await runner.startUserStory(userStory.id)
+    await drive(playbookRun.processRunId!)
+    const workers = loopCalls.filter(
+      (c) => !c.userMessage?.startsWith("# Review the")
+    )
+    expect(workers.every((c) => !c.seatBrowser)).toBe(true)
+    expect(workers[2].sectionContent).not.toContain("## Your browser")
+  })
 
   it("applies a QA send-back on Autopilot, and asks the user otherwise", async () => {
     for (const mode of ["autopilot", "manual"] as const) {

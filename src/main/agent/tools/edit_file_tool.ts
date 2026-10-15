@@ -14,6 +14,7 @@ import {
   validRevision,
 } from "./file/mutation"
 import { isSkillResourceUri } from "./skill_resources"
+import { writeScopeError } from "./write_scope"
 
 // Count non-overlapping occurrences of `needle` in `haystack`.
 function countOccurrences(haystack: string, needle: string): number {
@@ -106,6 +107,8 @@ export const editFileTool: Tool = {
     if (isManagedMemoryPath(target)) {
       return toolError("not_allowed", MANAGED_MEMORY_WRITE_ERROR)
     }
+    const outOfScope = await writeScopeError(ctx, env, [path])
+    if (outOfScope) return outOfScope
 
     let info
     try {

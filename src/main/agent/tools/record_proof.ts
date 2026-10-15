@@ -31,7 +31,8 @@ export const recordProofTool: Tool = {
               properties: {
                 id: {
                   type: "string",
-                  description: "The criterion id from the objective, e.g. AC-1.",
+                  description:
+                    "The criterion id from the objective, e.g. AC-1.",
                 },
                 status: {
                   type: "string",
@@ -42,11 +43,24 @@ export const recordProofTool: Tool = {
                   description:
                     "What you ran or inspected, and what you observed.",
                 },
+                method: {
+                  type: "string",
+                  enum: [
+                    "app_exercised",
+                    "command",
+                    "builder_tests",
+                    "code_read",
+                  ],
+                  description:
+                    "How you verified it: app_exercised (drove the running app; cite saved evidence in artifacts), " +
+                    "command (ran a command yourself and read its output), builder_tests (the builder's tests only), " +
+                    "code_read (read the code only). A met criterion in an accepted proof needs app_exercised or command.",
+                },
                 artifacts: {
                   type: "array",
                   items: { type: "string" },
                   description:
-                    "Workspace-relative paths of files that support the evidence.",
+                    "Evidence paths: the paths browser_screenshot (or save_evidence) returned. Required for app_exercised.",
                 },
                 reason: {
                   type: "string",
@@ -54,7 +68,7 @@ export const recordProofTool: Tool = {
                     "Required when accepting a not_verifiable criterion: why it cannot be verified.",
                 },
               },
-              required: ["id", "status", "evidence"],
+              required: ["id", "status", "evidence", "method"],
             },
           },
           verdict: { type: "string", enum: ["accepted", "rejected"] },
@@ -78,7 +92,10 @@ export const recordProofTool: Tool = {
     return JSON.stringify({
       status: result.status,
       verifiedBy: result.proof.verifiedBy,
-      criteria: result.proof.criteria.map((c) => ({ id: c.id, status: c.status })),
+      criteria: result.proof.criteria.map((c) => ({
+        id: c.id,
+        status: c.status,
+      })),
       warnings: result.proof.warnings ?? [],
       message: result.message,
     })

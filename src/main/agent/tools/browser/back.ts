@@ -1,6 +1,7 @@
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "../types"
 import type { ToolAction } from "../../approval/types"
 import { toolError } from "../output"
+import { browserFailure } from "./errors"
 
 // Go back one page in the agent browser's history. Gated as a `browser`
 // interaction (auto-allowed; only forward navigation to a new URL prompts) —
@@ -41,10 +42,7 @@ export const browserBackTool: Tool = {
       const { url, title } = await ctx.browser.back()
       return `Went back. Page is now ${url} (title: ${title || "untitled"}). Call browser_snapshot to see the current elements.`
     } catch (err) {
-      return toolError(
-        "back_failed",
-        err instanceof Error ? err.message : String(err)
-      )
+      return browserFailure("back_failed", err)
     }
   },
 }

@@ -4,13 +4,16 @@
 
 // How a phase executes. `agent` starts an LLM worker; `command` runs a persisted
 // shell command through the run's Environment with no model involved;
-// `subprocess` runs another Process definition as a nested run.
-export type ProcessPhaseKind = "agent" | "command" | "subprocess"
+// `subprocess` runs another Process definition as a nested run; `app_check`
+// (plan 112.4) is the engine's own check that a Mission Control story's app
+// runs, before QA proves it. No command, no agent, no model.
+export type ProcessPhaseKind = "agent" | "command" | "subprocess" | "app_check"
 
 export const PROCESS_PHASE_KINDS: readonly ProcessPhaseKind[] = [
   "agent",
   "command",
   "subprocess",
+  "app_check",
 ]
 
 // What a command phase runs. A process is reused across workspaces, so a phase

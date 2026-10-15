@@ -5,6 +5,7 @@ import {
   BrowserWindow,
   dialog,
   ipcMain,
+  shell,
   type OpenDialogOptions,
 } from "electron"
 import { agentSources } from "../agent/agents/sources"
@@ -17,7 +18,11 @@ import {
   importRigExport,
   type RigExport,
 } from "../mission-control/io"
-import { createDefaultPlaybook } from "../mission-control/playbook-defaults"
+import {
+  createDefaultPlaybook,
+  diffPlaybookWithDefault,
+  resetPlaybookToDefault,
+} from "../mission-control/playbook-defaults"
 import {
   convertAgentsToSeatRoles,
   importProcessAsPlaybook,
@@ -46,6 +51,7 @@ import {
   rejectProposal,
 } from "../mission-control/map-tools"
 import * as proposalsRepo from "../db/repositories/proposals"
+import { locateEvidence, readEvidence } from "../mission-control/evidence"
 import * as seatMemoriesRepo from "../db/repositories/seat-memories"
 import {
   listSeatMemoriesForSeat,
@@ -483,6 +489,26 @@ export function registerMissionControlHandlers(
   ipcMain.handle(
     "missionControl:playbooks:createDefault",
     (_event, altitude: PlaybookAltitude) => createDefaultPlaybook(altitude)
+  )
+  // Proof evidence (plan 112.4): a saved screenshot as a data URL for the
+  // proof view, and opening any saved evidence file. Both refuse paths
+  // outside the app-data evidence directory.
+  ipcMain.handle("missionControl:evidence:read", (_event, path: string) =>
+    readEvidence(String(path))
+  )
+  ipcMain.handle(
+    "missionControl:evidence:open",
+    async (_event, path: string): Promise<void> => {
+      const file = await locateEvidence(String(path))
+      if (file) await shell.openPath(file)
+    }
+  )
+  ipcMain.handle("missionControl:playbooks:defaultDiff", (_event, id: string) =>
+    diffPlaybookWithDefault(id)
+  )
+  ipcMain.handle(
+    "missionControl:playbooks:resetToDefault",
+    (_event, id: string) => resetPlaybookToDefault(id)
   )
   ipcMain.handle(
     "missionControl:playbooks:update",

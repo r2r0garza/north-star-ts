@@ -3,6 +3,12 @@ import { createHash } from "crypto"
 import { app } from "electron"
 import { join } from "path"
 import { runAgentLoop, generateTitle } from "../../agent"
+import {
+  getSeatBrowser,
+  seatBrowserContextSection,
+  seatBrowserLabel,
+} from "../../mission-control/seat-browser"
+import { seatWriteScope } from "../../mission-control/qa-scope"
 import { SHUTDOWN_ABORT_REASON, PAUSE_ABORT_REASON } from "../../agent/abort"
 import {
   createConversation,
@@ -51,10 +57,14 @@ import { getSeatSessions } from "../../mission-control/sessions"
 import {
   APP_LAUNCH_ROLES,
   appLaunchContextSection,
+  ownerServiceUrls,
   recipeForLink,
   recipeStateForStep,
+  startServices,
   stopServices,
+  workspaceForLink,
 } from "../../mission-control/app-launch"
+import type { ProcessCommandReceipt } from "../../../shared/process-command"
 import {
   seatTurns,
   type SeatTurnIdentity,
@@ -94,6 +104,7 @@ import {
   type Decompose,
   type DecomposeResult,
   type PhaseResult,
+  type CommandPhaseResult,
   type RunCommand,
   type RunPhase,
   type RunSubProcess,
@@ -122,17 +133,34 @@ import { renderContextEnvelope } from "../../agent/context/provenance"
 // run inline via runAgentLoop in forked worker conversations.
 export const PROCESS_RUN_KIND = "process_run"
 
-// Appended to a Mission Control proof step's kickoff (plan 106.3). The slice
-// objective above it already lists each criterion with its stable id.
-const PROOF_STEP_INSTRUCTION =
-  "## Recording the proof\n" +
-  "You are this user story's verifier. Check every acceptance criterion yourself — " +
-  "run the tests or commands, read the code — and then call `record_proof` exactly " +
-  "once with one entry per criterion id (AC-1, AC-2, …) listed in the objective. " +
-  "Each entry needs a status (met, not_met, or not_verifiable) and concrete evidence: " +
-  'what you ran or inspected and what you observed. Use verdict "accepted" only when ' +
-  'every criterion is met; otherwise record "rejected". Artifacts are workspace-relative ' +
-  "file paths. The tool validates your proof and explains anything it rejects."
+// Appended to a Mission Control proof step's kickoff (plans 106.3, 112.4). The
+// slice objective above it already lists each criterion with its stable id.
+// `appUrls`: where the app the harness started for this step is running ([]
+// when the project has no services), or null when nothing was started (a
+// merge conflict's re-verification).
+export function proofStepNote(appUrls: string[] | null): string {
+  return [
+    "## Verifying by exploration",
+    "You are this user story's verifier. Verify every acceptance criterion yourself in the running app, in this worktree, the way a user would. Your job is an honest, evidence-backed answer to whether this build meets each criterion, not a reading of the builder's tests or code.",
+    appUrls === null
+      ? "- If the workspace has an app launch recipe, start the app with `app_start` and open the URL it gives you in the browser."
+      : appUrls.length
+        ? `- The app is already running for this step: ${appUrls.join(", ")}. Open it in the browser. Don't start it again or start your own server (no Playwright \`webServer\`, no shell start command): test the app that is running.`
+        : "- This project has no services to start. Exercise it with commands (its CLI, its scripts, its own test command) and quote what they printed.",
+    "- Call `browser_snapshot` before you interact and after the page changes. Exercise each criterion's happy path, then the edges it implies: empty and invalid input, repeating the action, errors.",
+    "- Take a `browser_screenshot` at the moment that shows each criterion holding (or failing), and cite its path. For what a screenshot can't show, save `browser_console` / `browser_network` output with `save_evidence: true`.",
+    "- Keyboard-only criteria: `browser_press_key` (Tab, Enter, Escape, arrows). Layout criteria: `browser_set_viewport` (e.g. 375 × 812, then 1280 × 800), screenshot each size.",
+    "- Use commands where a browser can't drive the app (a CLI, an API).",
+    "- Write nothing in the repository. Throwaway scripts and notes go in your scratch directory.",
+    "",
+    "## Recording the proof",
+    "Call `record_proof` once with one entry per criterion id (AC-1, AC-2, …) listed in the objective: a status (met, not_met, or not_verifiable), concrete evidence (what you did and what you observed), and how you verified it (`method`):",
+    "- `app_exercised`: you drove the running app. List the evidence paths `browser_screenshot` (or `save_evidence`) returned in `artifacts`.",
+    "- `command`: a command you ran yourself. Quote what it printed in the evidence.",
+    "- `builder_tests` or `code_read`: only the builder's tests, or only reading the code. Neither makes a criterion met: record it not_verifiable with a reason, or verify it another way.",
+    'Use verdict "accepted" only when every criterion is met; otherwise record "rejected". If the app stops working while you test, record what you couldn\'t verify as not_verifiable and say so: that isn\'t the build\'s fault. The tool validates your proof and explains anything it refuses.',
+  ].join("\n")
+}
 
 // The process_run task's input blob (015 producer contract): the run id, so the
 // executor finds its run on first run AND on autoResume after a crash.
@@ -1251,11 +1279,10 @@ export class ProcessService {
           // first run.
           reworkNote,
         })
-      const prompt =
-        phase.proofStep &&
-        this.missionControlRoot(run)?.missionControl?.userStoryId
-          ? `${basePrompt}\n\n${PROOF_STEP_INSTRUCTION}`
-          : basePrompt
+      const prompt = basePrompt
+      const proofNoteWanted =
+        !!phase.proofStep &&
+        !!this.missionControlRoot(run)?.missionControl?.userStoryId
 
       // Resolve the phase's agent BEFORE forking the worker: for a `dispatch`
       // phase this routes over the pool per (sub-)task, using `prompt` as the
@@ -1454,39 +1481,59 @@ export class ProcessService {
       const appRecipeState = appLaunch
         ? recipeStateForStep(missionControl)
         : null
+      // Seat browser (plan 112.4): a builder or QA step drives the app in an
+      // isolated, local-only background tab owned by this phase run, closed
+      // (and its storage cleared) when the phase ends.
+      const seatBrowser =
+        seatTurn && workspace && APP_LAUNCH_ROLES.has(seat!.role)
+          ? getSeatBrowser()
+          : null
+      const seatBrowserLabelText = seatBrowser
+        ? seatBrowserLabel(seatTurn!.address, missionControl!)
+        : ""
       let releaseSeat: (() => void) | null = null
       try {
-        // The app check (plan 112.4's implicit check, brought forward with
-        // 112.3): before a story's QA proof step, make sure the app runs in
-        // the story's worktree — verify, repair the recipe, ask the user and
-        // wait. Its time isn't the step's, and it spends no attempt or proof
-        // revision. If the user stops trying, the story ends unverified.
-        const recipes = getAppRecipeService()
+        // The app check (plan 112.4): before a story's QA proof step, make
+        // sure the app runs in the story's worktree. An app_check phase in
+        // the playbook does it; a playbook without one gets it implicitly.
+        // Then the app is started for this step, so QA tests the app the
+        // harness started. None of it spends an attempt or proof revision;
+        // if the app can't be run, the story ends unverified.
+        let appUrls: string[] | null = null
         if (
-          recipes &&
           phase.proofStep &&
           missionControl?.userStoryId &&
           missionControl.hook === "run" &&
           workspace
         ) {
-          const release = holdPhaseClock(phaseRun.id)
-          let check: Awaited<ReturnType<typeof recipes.appCheck>>
-          try {
-            check = await recipes.appCheck({
-              featureId: missionControl.featureId,
-              userStoryId: missionControl.userStoryId,
-              root: workspace,
-              signal: childAbort.signal,
-            })
-          } finally {
-            release()
+          const explicit = run.processId
+            ? processes
+                .getProcessGraph(run.processId)
+                ?.phases.some((p) => p.kind === "app_check")
+            : false
+          if (!explicit) {
+            const check = await this.appCheck(
+              missionControl,
+              phaseRun.id,
+              workspace,
+              childAbort.signal
+            )
+            if (!check.pass) return { stopped: true }
           }
-          if (check.result === "unverified")
-            recipes.endUnverified(missionControl.userStoryId, check.summary)
-          if (check.result !== "pass") return { stopped: true }
+          const started = await this.startAppForProof(
+            missionControl,
+            phaseRun.id,
+            workspace,
+            childAbort.signal
+          )
+          if (!started.ok) return { stopped: true }
+          appUrls = started.urls
           // Repair may have changed the recipe QA is briefed with.
           if (appRecipe) appRecipe = recipeForLink(missionControl)
         }
+        const workerPrompt = proofNoteWanted
+          ? `${prompt}\n\n${proofStepNote(appUrls)}`
+          : prompt
         // One turn at a time per transcript: a seat-session step waits for a
         // wake turn already running in the same session.
         if (seatTurn)
@@ -1496,11 +1543,20 @@ export class ProcessService {
             childAbort.signal
           )
         if (inSession) seatSessions!.markSessionActivity(worker.id, true)
+        // A QA seat writes only its scratch directory (plan 112.4).
+        const seatScope =
+          seat && missionControl
+            ? await seatWriteScope({
+                role: seat.role,
+                runId: run.id,
+                workingDirectory: workspace,
+              })
+            : undefined
         const result = await runAgentLoop({
           conversationId: worker.id,
           workspace,
           agentDir: workspace,
-          userMessage: resumingWorker ? undefined : prompt,
+          userMessage: resumingWorker ? undefined : workerPrompt,
           abort: childAbort,
           taskId: workerTaskId ?? undefined,
           // Phases are autonomous; the phase gate is the HITL point.
@@ -1532,11 +1588,24 @@ export class ProcessService {
                   ),
                 ]
               : []),
+            ...(seatScope ? [seatScope.contextSection] : []),
+            ...(seatBrowser ? [seatBrowserContextSection()] : []),
           ],
           missionControlSeat: seatTurn ?? undefined,
+          writeScope: seatScope?.writeScope,
           processProofStep:
             !!phase.proofStep && !!this.missionControlRoot(run)?.missionControl,
           processAppLaunch: appLaunch,
+          seatBrowser: seatBrowser
+            ? (signal) =>
+                seatBrowser.handle({
+                  phaseRunId: phaseRun.id,
+                  conversationId: worker.id,
+                  label: seatBrowserLabelText,
+                  signal,
+                  allowedOrigins: () => ownerServiceUrls(phaseRun.id),
+                })
+            : undefined,
           // Headless worker: no user to answer a clarifying question (it would only
           // stall until interrupted). The kickoff frames the work as self-contained.
           suppressUserQuestions: true,
@@ -1592,6 +1661,11 @@ export class ProcessService {
         await stopServices({ owner: phaseRun.id }).catch((err) =>
           console.warn("[process] could not stop the app's services:", err)
         )
+        await seatBrowser
+          ?.release(phaseRun.id)
+          .catch((err) =>
+            console.warn("[process] could not close the seat's browser:", err)
+          )
       }
     }
   }
@@ -1642,8 +1716,124 @@ export class ProcessService {
   // frozen command in the run's workspace (a Mission Control story's
   // worktree) through the configured Environment. No conversation, no agent,
   // no model request.
+  // The app check (plan 112.4), shared by the app_check phase and the
+  // implicit check before a story's proof step: verify, repair, ask the user
+  // and wait, with the phase clock held. "unverified" ends the story.
+  private async appCheck(
+    link: MissionControlRunLink,
+    phaseRunId: string,
+    root: string,
+    signal: AbortSignal
+  ): Promise<{ pass: boolean; report: string }> {
+    const recipes = getAppRecipeService()
+    if (!recipes || !link.userStoryId)
+      return { pass: true, report: "No app check here." }
+    const release = holdPhaseClock(phaseRunId)
+    let check: Awaited<ReturnType<typeof recipes.appCheck>>
+    try {
+      check = await recipes.appCheck({
+        featureId: link.featureId,
+        userStoryId: link.userStoryId,
+        root,
+        signal,
+      })
+    } finally {
+      release()
+    }
+    if (check.result === "unverified")
+      recipes.endUnverified(link.userStoryId, check.summary)
+    return { pass: check.result === "pass", report: check.report }
+  }
+
+  // Start the app for a story's proof step, owned by its phase run (stopped
+  // when the step ends). The check verified the recipe and stopped what it
+  // started (its stop stage proves nothing outlives the app), so this is a
+  // fresh start; a cached check started nothing at all.
+  // shortcut: a start that fails right after a passing check ends the story
+  // unverified without another repair round; route it to repair if it shows
+  // up in the scorecard.
+  private async startAppForProof(
+    link: MissionControlRunLink,
+    phaseRunId: string,
+    root: string,
+    signal: AbortSignal
+  ): Promise<{ ok: true; urls: string[] } | { ok: false }> {
+    const recipe = recipeForLink(link)
+    if (!recipe.services.length) return { ok: true, urls: [] }
+    const release = holdPhaseClock(phaseRunId)
+    try {
+      const started = await startServices({
+        owner: phaseRunId,
+        root,
+        recipe,
+        signal,
+        mainRoot: workspaceForLink(link)?.path,
+      })
+      if (started.ok) return { ok: true, urls: ownerServiceUrls(phaseRunId) }
+      if (!signal.aborted && link.userStoryId)
+        getAppRecipeService()?.endUnverified(
+          link.userStoryId,
+          `the app passed its check but didn't start for QA: ${started.failure?.summary ?? started.message}`
+        )
+      return { ok: false }
+    } finally {
+      release()
+    }
+  }
+
+  // An app_check phase (plan 112.4): the engine's check, settled through the
+  // command path with a receipt (stages, durations, smoke, log tail). Safe to
+  // re-run after a crash: what it starts is stopped with it.
+  private async runAppCheckPhase(
+    run: ProcessRun,
+    phaseRun: ProcessPhaseRun,
+    signal: AbortSignal,
+    onStart: (receipt: ProcessCommandReceipt) => void
+  ): Promise<CommandPhaseResult> {
+    const startedAt = Date.now()
+    const receipt = (
+      status: ProcessCommandReceipt["status"],
+      report: string
+    ): ProcessCommandReceipt => ({
+      version: 1,
+      check: null,
+      command: "App check",
+      cwd: null,
+      environment: "local",
+      status,
+      exitCode: status === "completed" ? 0 : null,
+      signal: null,
+      startedAt,
+      finishedAt: status === "running" ? null : Date.now(),
+      stdout: report,
+      stderr: "",
+      outputTruncated: false,
+      capturedOutputBytes: report.length,
+      observedOutputBytes: report.length,
+      error: null,
+    })
+    const link = this.missionControlRoot(run)?.missionControl
+    const source = run.sourceConversationId
+      ? getConversation(run.sourceConversationId)
+      : undefined
+    const { workspace } = runPlace(run, source)
+    if (!link?.userStoryId || link.hook !== "run" || !workspace)
+      return {
+        receipt: receipt(
+          "completed",
+          "Not a Mission Control story run: nothing to check."
+        ),
+      }
+    onStart(receipt("running", "Checking that the app runs…"))
+    const check = await this.appCheck(link, phaseRun.id, workspace, signal)
+    if (check.pass) return { receipt: receipt("completed", check.report) }
+    return { receipt: receipt("cancelled", check.report), stopped: true }
+  }
+
   private makeRunCommand(run: ProcessRun): RunCommand {
     return async ({ phase, phaseRun, signal, onStart, onProgress }) => {
+      if (phase.kind === "app_check")
+        return this.runAppCheckPhase(run, phaseRun, signal, onStart)
       const config = processes.getProcessRun(run.id)?.commandSnapshot?.[
         phase.id
       ]
@@ -2277,7 +2467,8 @@ export class ProcessService {
         ? this.aggregateChildContent(run.id, pr.id)
         : src.subprocessId
           ? this.aggregateSubProcessContent(pr.id)
-          : src.kind === "command" && pr.resultContent
+          : (src.kind === "command" || src.kind === "app_check") &&
+              pr.resultContent
             ? // A command phase's receipt summary (plan 104) carries raw shell
               // output: hand it on as data, the way run_shell_tool output is.
               renderContextEnvelope(

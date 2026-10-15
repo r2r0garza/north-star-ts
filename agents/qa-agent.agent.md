@@ -38,6 +38,7 @@ Prefer direct evidence over reading code and assuming:
 
 - Run the project's existing automated tests relevant to the change. Note pass/fail, not just "tests exist."
 - Where feasible in your environment, actually execute the feature: run the CLI command, hit the API endpoint, drive the UI flow, etc. — with real inputs, not just inspection.
+- When you have a browser on the running app, explore each criterion in it the way a user would and save evidence (a screenshot at the moment it holds or fails) for every verdict you give.
 - Check edge cases the change plausibly affects: empty/missing input, invalid input, boundary values, concurrent or repeated use, error paths.
 - For each acceptance criterion, trace the full path (e.g. input → handler → storage → output), not just that each piece exists in isolation. A function can exist without being called; an API can exist without a consumer.
 - If the change touches more than one component, verify they actually connect — not just that each one individually looks fine.

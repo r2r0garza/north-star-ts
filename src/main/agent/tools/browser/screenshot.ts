@@ -1,5 +1,6 @@
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "../types"
 import { toolError } from "../output"
+import { browserFailure } from "./errors"
 
 // Capture the current page as an image for the vision model. The tool result
 // itself is text (results are persisted/replayed as strings), so the image is
@@ -24,22 +25,22 @@ export const browserScreenshotTool: Tool = {
       return toolError("no_browser", "The agent browser is unavailable.")
     }
     try {
-      const { jpeg, width, height } = await ctx.browser.screenshot()
+      const { jpeg, width, height, evidencePath } =
+        await ctx.browser.screenshot()
+      // A Mission Control seat's screenshots are also kept as evidence.
+      const saved = evidencePath ? ` Saved as evidence: ${evidencePath}` : ""
       if (ctx.emitImage) {
         ctx.emitImage({
           jpegBase64: jpeg.toString("base64"),
           alt: "Screenshot of the current browser page",
         })
-        return `Screenshot captured (${width}×${height}); it is attached below.`
+        return `Screenshot captured (${width}×${height}); it is attached below.${saved}`
       }
       // No image channel (e.g. a headless context): report the capture so the
       // model still knows the page rendered, even without the pixels.
-      return `Screenshot captured (${width}×${height}), but this context can't display images to you. Use browser_snapshot to read the page instead.`
+      return `Screenshot captured (${width}×${height}), but this context can't display images to you. Use browser_snapshot to read the page instead.${saved}`
     } catch (err) {
-      return toolError(
-        "screenshot_failed",
-        err instanceof Error ? err.message : String(err)
-      )
+      return browserFailure("screenshot_failed", err)
     }
   },
 }

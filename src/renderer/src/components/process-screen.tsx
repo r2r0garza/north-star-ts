@@ -1563,6 +1563,8 @@ function PhaseCard({
   const isCommand = kind === "command"
   const [commandDraft, setCommandDraft] = useState(false)
   const shownKind: ProcessPhaseKind = commandDraft ? "command" : kind
+  // No agent: a command, or the engine's built-in app check (plan 112.4).
+  const runsNoAgent = shownKind === "command" || shownKind === "app_check"
   const [confirmDiscard, confirmDiscardDialog] = useConfirmDiscard()
   const depCount = incoming.length
   // Sub-process picker (plan 038.1): candidate definitions minus self (the repo
@@ -1799,6 +1801,10 @@ function PhaseCard({
             <div className="flex shrink-0 flex-wrap items-center gap-1">
               {isCommand ? (
                 <CommandBadge config={phase.commandConfig} />
+              ) : kind === "app_check" ? (
+                <Badge variant="outline" className="text-[10px]">
+                  app check
+                </Badge>
               ) : (
                 <Badge variant="outline" className="text-[10px]">
                   {phase.routing}
@@ -1877,7 +1883,7 @@ function PhaseCard({
                   </TooltipContent>
                 </Tooltip>
               )}
-              {!isCommand && (
+              {!runsNoAgent && (
                 <Badge variant="secondary" className="text-[10px]">
                   {pool.length} {pool.length === 1 ? "agent" : "agents"}
                 </Badge>
@@ -1942,11 +1948,19 @@ function PhaseCard({
             </Tooltip>
           </div>
 
-          <PhaseKindControl
-            value={shownKind}
-            allowSubprocess={subprocessCandidates.length > 0}
-            onChange={(next) => void changeKind(next)}
-          />
+          {kind === "app_check" ? (
+            <p className="text-xs text-muted-foreground">
+              Built in: Mission Control checks that the story&apos;s app starts
+              in its worktree, repairing the launch recipe if it doesn&apos;t,
+              before QA verifies it. Nothing to configure.
+            </p>
+          ) : (
+            <PhaseKindControl
+              value={shownKind}
+              allowSubprocess={subprocessCandidates.length > 0}
+              onChange={(next) => void changeKind(next)}
+            />
+          )}
           {shownKind === "command" && (
             <CommandPhaseEditor
               phaseId={phase.id}
@@ -1956,7 +1970,7 @@ function PhaseCard({
             />
           )}
 
-          {!phase.subprocessId && shownKind !== "command" && (
+          {!phase.subprocessId && !runsNoAgent && (
             <div className="space-y-2 text-xs">
               <label className="flex items-center gap-2">
                 <span className="text-muted-foreground">Completion policy</span>
@@ -2000,7 +2014,7 @@ function PhaseCard({
             </div>
           )}
 
-          {providerModels.length > 0 && shownKind !== "command" && (
+          {providerModels.length > 0 && !runsNoAgent && (
             <div className="space-y-2 rounded-md border border-dashed p-2">
               <div className="text-xs font-medium">Runtime profile</div>
               <div className="flex flex-wrap gap-2">
@@ -2041,7 +2055,7 @@ function PhaseCard({
 
           {/* Row 2: routing / gate / fan-out. */}
           <div className="flex flex-wrap items-center gap-4">
-            {shownKind !== "command" && (
+            {!runsNoAgent && (
               <Tooltip>
                 <TooltipTrigger asChild>
                   <label className="flex items-center gap-2 text-xs">
@@ -2093,7 +2107,7 @@ function PhaseCard({
                 Approve waits for human approval before releasing them.
               </TooltipContent>
             </Tooltip>
-            {shownKind !== "command" && (
+            {!runsNoAgent && (
               <Tooltip>
                 <TooltipTrigger asChild>
                   <label className="flex items-center gap-2 text-xs">
@@ -2114,7 +2128,7 @@ function PhaseCard({
             run instead of an agent worker. Combinable with fan-out (plan 038.3): a
             phase with both decomposes into sub-tasks and runs the sub-process once
             per child. Only offered when there's a candidate definition to run. */}
-            {shownKind !== "command" && (
+            {!runsNoAgent && (
               <Tooltip>
                 <TooltipTrigger asChild>
                   <label className="flex items-center gap-2 text-xs">
@@ -2130,25 +2144,23 @@ function PhaseCard({
                 </TooltipContent>
               </Tooltip>
             )}
-            {!phase.fanOut &&
-              !phase.subprocessId &&
-              shownKind !== "command" && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <label className="flex items-center gap-2 text-xs">
-                      <span className="text-muted-foreground">Proof step</span>
-                      <Switch
-                        checked={phase.proofStep ?? false}
-                        onCheckedChange={(v) => patchPhase({ proofStep: v })}
-                      />
-                    </label>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    In a Mission Control user story run, this phase records the
-                    verified proof. Ignored by ordinary Process runs.
-                  </TooltipContent>
-                </Tooltip>
-              )}
+            {!phase.fanOut && !phase.subprocessId && !runsNoAgent && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <label className="flex items-center gap-2 text-xs">
+                    <span className="text-muted-foreground">Proof step</span>
+                    <Switch
+                      checked={phase.proofStep ?? false}
+                      onCheckedChange={(v) => patchPhase({ proofStep: v })}
+                    />
+                  </label>
+                </TooltipTrigger>
+                <TooltipContent>
+                  In a Mission Control user story run, this phase records the
+                  verified proof. Ignored by ordinary Process runs.
+                </TooltipContent>
+              </Tooltip>
+            )}
             {/* Mission Control context scope (plan 106.4): only meaningful for
             a seat-role step; fan-out children always start fresh. Each option
             explains itself in a tooltip to its right, so nothing covers the
@@ -2156,7 +2168,7 @@ function PhaseCard({
             {poolRoles.size > 0 &&
               !phase.fanOut &&
               !phase.subprocessId &&
-              shownKind !== "command" && (
+              !runsNoAgent && (
                 <div className="flex items-center gap-2 text-xs">
                   <ContextScopeHelpButton />
                   <span className="-ml-1 text-muted-foreground">Context</span>
@@ -2209,34 +2221,32 @@ function PhaseCard({
             output and sends it back with feedback until it passes, bounded. Not
             offered for a fan-out phase (sub-DAG review is plan 031.2) or a
             sub-process phase (its inner phases carry their own validators, 038.1). */}
-            {!phase.fanOut &&
-              !phase.subprocessId &&
-              shownKind !== "command" && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <label className="flex items-center gap-2 text-xs">
-                      <span className="text-muted-foreground">Validator</span>
-                      <Switch
-                        checked={phase.validator}
-                        onCheckedChange={(v) =>
-                          // Seed a concrete default cap (3) when enabling, so the field never
-                          // sits at the 0 sentinel — the validator is bounded by construction.
-                          patchPhase({
-                            validator: v,
-                            ...(v && phase.validatorMaxIterations < 1
-                              ? { validatorMaxIterations: 3 }
-                              : {}),
-                          })
-                        }
-                      />
-                    </label>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    After this phase completes, a second agent reviews its
-                    output and can send it back with feedback (bounded)
-                  </TooltipContent>
-                </Tooltip>
-              )}
+            {!phase.fanOut && !phase.subprocessId && !runsNoAgent && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <label className="flex items-center gap-2 text-xs">
+                    <span className="text-muted-foreground">Validator</span>
+                    <Switch
+                      checked={phase.validator}
+                      onCheckedChange={(v) =>
+                        // Seed a concrete default cap (3) when enabling, so the field never
+                        // sits at the 0 sentinel — the validator is bounded by construction.
+                        patchPhase({
+                          validator: v,
+                          ...(v && phase.validatorMaxIterations < 1
+                            ? { validatorMaxIterations: 3 }
+                            : {}),
+                        })
+                      }
+                    />
+                  </label>
+                </TooltipTrigger>
+                <TooltipContent>
+                  After this phase completes, a second agent reviews its output
+                  and can send it back with feedback (bounded)
+                </TooltipContent>
+              </Tooltip>
+            )}
             {/* The "Request changes" rework cap (plan 029), only meaningful for an
             approve gate. 0 = unlimited. */}
             {phase.gatePolicy === "approve" &&
@@ -2274,7 +2284,7 @@ function PhaseCard({
           {phase.validator &&
             !phase.fanOut &&
             !phase.subprocessId &&
-            shownKind !== "command" && (
+            !runsNoAgent && (
               <div className="flex flex-wrap items-center gap-4">
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -2423,7 +2433,7 @@ function PhaseCard({
           {/* Sub-process config (plan 038.1): the definition this phase runs as a
           nested run, shown only when the sub-process toggle is on. Self is filtered
           out; the repo hard-rejects a cyclic pick (surfaced via the patch toast). */}
-          {phase.subprocessId && shownKind !== "command" && (
+          {phase.subprocessId && !runsNoAgent && (
             <div className="flex flex-col gap-1.5">
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -2466,7 +2476,7 @@ function PhaseCard({
           {/* Row 3: agent pool. Hidden for a PURE sub-process phase (no worker to
           pool). A combined fan-out + sub-process phase (plan 038.3) still needs the
           pool for its decomposition pass, so show it when fan-out is on. */}
-          {(!phase.subprocessId || phase.fanOut) && shownKind !== "command" && (
+          {(!phase.subprocessId || phase.fanOut) && !runsNoAgent && (
             <div className="flex flex-col gap-1.5">
               <span className="text-xs text-muted-foreground">
                 Agent pool
@@ -3000,10 +3010,13 @@ export function RunMonitor({
   )
 
   // The command phase (plan 104) for a phase id, or undefined for other kinds.
+  // An app check (plan 112.4) settles with a command receipt too.
   const commandPhase = useCallback(
     (phaseId: string) => {
       const phase = graph?.phases.find((p) => p.id === phaseId)
-      return phase?.kind === "command" ? phase : undefined
+      return phase?.kind === "command" || phase?.kind === "app_check"
+        ? phase
+        : undefined
     },
     [graph]
   )
@@ -3597,7 +3610,11 @@ function PhaseRunItem({
       >
         <StatusIcon status={displayStatus} />
         <span className="min-w-0 flex-1 truncate font-medium">{name}</span>
-        {commandPhase ? (
+        {commandPhase?.kind === "app_check" ? (
+          <Badge variant="outline" className="h-5 text-[10px]">
+            app check
+          </Badge>
+        ) : commandPhase ? (
           <CommandBadge config={commandPhase.commandConfig} />
         ) : phaseRun.seatAddress ? (
           <Tooltip>

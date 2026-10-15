@@ -1221,7 +1221,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       parentId: childRun.parentId,
     })
     const prompt = childPrompts.get(childRun.id)
-    if (phase.kind === "command") {
+    if (phase.kind === "command" || phase.kind === "app_check") {
       // Authoring rejects per-child command phases (v1); never run an agent for one.
       inFlight.set(
         childRun.id,
@@ -2464,7 +2464,9 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
     if (!flagPending)
       for (const phase of ready) {
         if (inFlight.size >= PER_RUN_CONCURRENCY) break
-        if (phase.kind === "command") dispatchCommand(phase)
+        // An app check (plan 112.4) runs through the same deterministic path.
+        if (phase.kind === "command" || phase.kind === "app_check")
+          dispatchCommand(phase)
         else if (phase.fanOut) dispatchDecompose(phase)
         else if (phase.subprocessId) dispatchSubProcess(phase)
         else dispatch(phase)

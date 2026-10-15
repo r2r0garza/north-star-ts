@@ -89,6 +89,8 @@ export interface VerifyTarget {
   branch?: string
   commit?: string | null
   signal?: AbortSignal
+  // Told each verification's outcome (the app check's receipt, plan 112.4).
+  onVerify?: (outcome: VerifyOutcome) => void
 }
 
 export interface VerifyOutcome {
@@ -122,7 +124,7 @@ export type EnsureOutcome =
 
 // What a question needs to run again after it's answered.
 interface QuestionContext {
-  target: Omit<VerifyTarget, "signal">
+  target: Omit<VerifyTarget, "signal" | "onVerify">
   userStoryId: string | null
 }
 
@@ -282,17 +284,24 @@ export class AppRecipeService {
         ? { branch: target.branch, commit: target.commit ?? null }
         : await headOf(target.root)
     const key = `${target.workspaceId}\0${head.branch}`
-    const existing = this.inflight.get(key)
-    if (existing) return existing
-    const run = this.runVerify(target, head).finally(() => {
-      this.inflight.delete(key)
-      this.checking.delete(key)
+    let run = this.inflight.get(key)
+    if (!run) {
+      run = this.runVerify(target, head).finally(() => {
+        this.inflight.delete(key)
+        this.checking.delete(key)
+        this.changed(target.featureId)
+      })
+      this.inflight.set(key, run)
+      this.checking.add(key)
       this.changed(target.featureId)
-    })
-    this.inflight.set(key, run)
-    this.checking.add(key)
-    this.changed(target.featureId)
-    return run
+    }
+    const { onVerify } = target
+    return onVerify
+      ? run.then((outcome) => {
+          onVerify(outcome)
+          return outcome
+        })
+      : run
   }
 
   private async runVerify(
@@ -506,7 +515,7 @@ export class AppRecipeService {
       ...this.state(target.workspaceId, input.branch),
       question: pending,
     })
-    const { signal: _signal, ...rest } = target
+    const { signal: _signal, onVerify: _onVerify, ...rest } = target
     this.contexts.set(pending.id, {
       target: { ...rest, branch: input.branch },
       userStoryId: input.userStoryId,
@@ -581,23 +590,31 @@ export class AppRecipeService {
   // spends the story's attempts or proof revisions. "pass": QA starts (also
   // when there's no recipe: QA proves by commands). "unverified": the user
   // chose to stop trying; the caller ends the story unverified. "stopped":
-  // the step was cancelled while it waited.
+  // the step was cancelled while it waited. `report` is its receipt: each
+  // verification's stages, durations, smoke results, and log tail.
   async appCheck(input: {
     featureId: string
     userStoryId: string
     root: string
     signal: AbortSignal
   }): Promise<
-    | { result: "pass" }
-    | { result: "unverified"; summary: string }
-    | { result: "stopped" }
+    (
+      | { result: "pass" }
+      | { result: "unverified"; summary: string }
+      | { result: "stopped" }
+    ) & { report: string }
   > {
     const feature = features.getFeature(input.featureId)
     const workspace = feature?.workspaceId
       ? getWorkspace(feature.workspaceId)
       : null
     if (!workspace || !workspace.appLaunch.services.length)
-      return { result: "pass" }
+      return {
+        result: "pass",
+        report:
+          "The app launch recipe has no services: nothing to start. QA proves by commands.",
+      }
+    const report: string[] = []
     const head = await headOf(input.root)
     // Uncommitted work isn't the commit a verified state holds for.
     const dirty = await git(input.root, ["status", "--porcelain"])
@@ -609,6 +626,7 @@ export class AppRecipeService {
       branch: head.branch,
       commit: dirty.ok && !dirty.stdout.trim() ? head.commit : null,
       signal: input.signal,
+      onVerify: (outcome) => report.push(verifyReport(outcome)),
     }
     const before = this.state(workspace.id, head.branch)
     let repairs = 0
@@ -617,7 +635,7 @@ export class AppRecipeService {
     const done = <T extends { result: string }>(
       result: T,
       summary?: string
-    ): T => {
+    ): T & { report: string } => {
       recordEvent({
         featureId: input.featureId,
         userStoryId: input.userStoryId,
@@ -645,7 +663,15 @@ export class AppRecipeService {
           source: this.recipe(workspace.id).services[0]?.source ?? null,
         },
       })
-      return result
+      if (repairs)
+        report.push(
+          `Recipe repair: ${repairs} attempt${repairs === 1 ? "" : "s"}.`
+        )
+      if (asked)
+        report.push(
+          `Asked the user ${asked === 1 ? "once" : `${asked} times`}.`
+        )
+      return { ...result, report: report.join("\n\n") }
     }
     let outcome = await this.ensureRunnable({
       target,
@@ -770,6 +796,31 @@ export class AppRecipeService {
       signal: input.signal,
     })
   }
+}
+
+// One verification, for the app check's receipt.
+export function verifyReport(outcome: VerifyOutcome): string {
+  if (outcome.cached)
+    return `Already verified at ${outcome.state.commit?.slice(0, 7) ?? "this commit"}: nothing to run.`
+  const lines: string[] = []
+  const result = outcome.result
+  if (result) {
+    lines.push(
+      `Stages: ${result.stages.map((s) => `${s.stage} ${(s.ms / 1000).toFixed(1)}s ${s.ok ? "✓" : "✗"}`).join(" · ") || "none"}`
+    )
+    for (const s of result.smoke)
+      lines.push(`GET ${s.url} → ${s.status ?? "no answer"}`)
+    if (result.browserSkipped)
+      lines.push(`Browser load skipped: ${result.browserSkipped}`)
+  }
+  const failure = outcome.failure
+  if (failure) {
+    lines.push(
+      `Failed at ${failure.stage} (${failure.reason}, ${failure.class}): ${failure.summary}`
+    )
+    if (failure.logs) lines.push(failure.logs)
+  } else if (outcome.ok) lines.push("The app started and passed smoke.")
+  return lines.join("\n")
 }
 
 // A question asked right after the user answered one says how that went:

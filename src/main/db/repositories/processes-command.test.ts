@@ -75,7 +75,7 @@ describe.skipIf(!sqliteLoads)("v69 migration", () => {
       kind: "subprocess",
       subprocessId: "child",
     })
-    expect(db.pragma("user_version", { simple: true })).toBe(71)
+    expect(db.pragma("user_version", { simple: true })).toBe(72)
   })
 
   it("rejects an unknown kind at the column", () => {
@@ -537,5 +537,41 @@ describe.skipIf(!sqliteLoads)("workspace checks (plan 104)", () => {
       "e2e",
       "test",
     ])
+  })
+})
+
+// The built-in app check (plan 112.4): no command, no agent, no LLM features.
+describe.skipIf(!sqliteLoads)("app_check phases", () => {
+  it("store with no command and refuse an agent pool or LLM features", () => {
+    const d = definition()
+    const phase = createPhase({
+      processId: d.id,
+      kind: "app_check",
+      key: "app-check",
+      name: "Check that the app runs",
+      position: 0,
+    })
+    expect(getPhase(phase.id)).toMatchObject({
+      kind: "app_check",
+      commandConfig: null,
+    })
+    expect(() =>
+      createPhaseAgent({ phaseId: phase.id, seatRole: "qa", position: 0 })
+    ).toThrow(/app check phase runs no agent/)
+    for (const extra of [
+      { proofStep: true },
+      { validator: true },
+      { commandConfig: test },
+    ])
+      expect(() =>
+        createPhase({
+          processId: d.id,
+          kind: "app_check",
+          key: "x",
+          name: "X",
+          position: 1,
+          ...extra,
+        })
+      ).toThrow(/app check phase is built in/)
   })
 })

@@ -939,13 +939,12 @@ export function ownerServiceUrls(owner: string): string[] {
     .map((e) => serviceUrl(e.port!))
 }
 
-// Whether the owner tried to start the app and nothing came up: a step that
-// can't reach the app it must verify (the proof gate won't defer then).
+// Whether the owner's app is down: a service it started failed or exited.
+// A proof step whose app went down can't verify anything (plan 112.4): its
+// story goes unverified instead of rejected.
 export function ownerAppFailed(owner: string): boolean {
-  const mine = [...running.values()].filter((e) => e.owner === owner)
-  return (
-    mine.some((e) => e.status === "failed") &&
-    !mine.some((e) => e.status === "ready")
+  return [...running.values()].some(
+    (e) => e.owner === owner && (e.status === "failed" || e.status === "exited")
   )
 }
 

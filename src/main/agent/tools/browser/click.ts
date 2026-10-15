@@ -1,6 +1,7 @@
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "../types"
 import type { ToolAction } from "../../approval/types"
 import { toolError } from "../output"
+import { browserFailure } from "./errors"
 import {
   browserActionIdentity,
   browserOrigin,
@@ -50,10 +51,7 @@ export const browserClickTool: Tool = {
       target = described.target
       targetFingerprint = described.targetFingerprint
     } catch (err) {
-      return toolError(
-        "click_failed",
-        err instanceof Error ? err.message : String(err)
-      )
+      return browserFailure("click_failed", err)
     }
     const state = ctx.browser.state()
     const url = state?.url ?? ""
@@ -93,10 +91,7 @@ export const browserClickTool: Tool = {
       const { target, url, title } = await ctx.browser.click(ref)
       return `Clicked ${target}. Page is now ${url} (title: ${title || "untitled"}). Call browser_snapshot to see the current elements.`
     } catch (err) {
-      return toolError(
-        "click_failed",
-        err instanceof Error ? err.message : String(err)
-      )
+      return browserFailure("click_failed", err)
     }
   },
 }

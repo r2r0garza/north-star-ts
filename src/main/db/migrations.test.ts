@@ -92,8 +92,32 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(71)
+    expect(db.pragma("user_version", { simple: true })).toBe(72)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
+    db.close()
+  })
+
+  it("widens the phase kind to app_check in v72, keeping rows and cascades", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db, { through: 71 })
+    db.prepare(
+      "INSERT INTO process_definitions (id, name, created_at, updated_at) VALUES ('p', 'P', 0, 0)"
+    ).run()
+    const phase = db.prepare(
+      "INSERT INTO process_phases (id, process_id, key, name, position, kind) VALUES (?, 'p', ?, ?, ?, ?)"
+    )
+    phase.run("a", "a", "A", 0, "agent")
+    expect(() => phase.run("x", "x", "X", 1, "app_check")).toThrow(/CHECK/)
+    db.prepare(
+      "INSERT INTO process_phase_agents (id, phase_id, position) VALUES ('ag', 'a', 0)"
+    ).run()
+    runMigrations(db)
+    phase.run("c", "c", "Check", 1, "app_check")
+    expect(count(db, "process_phases")).toBe(2)
+    expect(db.pragma("foreign_key_check")).toHaveLength(0)
+    db.prepare("DELETE FROM process_phases WHERE id = 'a'").run()
+    expect(count(db, "process_phase_agents")).toBe(0)
     db.close()
   })
 
@@ -403,7 +427,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
           .all()
       ).toEqual([{ value: 1 }])
       expect(db.pragma("user_version", { simple: true })).toBe(
-        version === 999 ? 999 : 71
+        version === 999 ? 999 : 72
       )
       expect(db.pragma("foreign_keys", { simple: true })).toBe(1)
       expect(db.pragma("foreign_key_check")).toEqual([])
@@ -855,7 +879,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
 
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(71)
+    expect(db.pragma("user_version", { simple: true })).toBe(72)
     expect(
       (db.pragma("table_info(process_phases)") as Array<{ name: string }>).map(
         (c) => c.name
@@ -1073,7 +1097,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(71)
+    expect(db.pragma("user_version", { simple: true })).toBe(72)
 
     // Reaped: orphan + its nested descendant, and all their state.
     const taskIds = (
@@ -1167,7 +1191,7 @@ describe.skipIf(!sqliteLoads)(
 
       runMigrations(db)
 
-      expect(db.pragma("user_version", { simple: true })).toBe(71)
+      expect(db.pragma("user_version", { simple: true })).toBe(72)
       const columns = db.pragma("table_info(process_phase_agents)") as Array<{
         name: string
         notnull: number
@@ -1270,7 +1294,7 @@ describe.skipIf(!sqliteLoads)("context scopes migration (v51)", () => {
         ('a', 'd', 'a', 'A', 0, 'fresh'), ('b', 'd', 'b', 'B', 1, 'seat_session');
     `)
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(71)
+    expect(db.pragma("user_version", { simple: true })).toBe(72)
     // v51 moved them to the initiative scope; v54 renamed it to feature.
     expect(
       db
@@ -1369,7 +1393,7 @@ describe.skipIf(!sqliteLoads)("work terms migration (v54)", () => {
 
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(71)
+    expect(db.pragma("user_version", { simple: true })).toBe(72)
     const tables = db
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
       .pluck()
@@ -1502,7 +1526,7 @@ describe.skipIf(!sqliteLoads)("work terms migration (v54)", () => {
 
     // Running it again changes nothing.
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(71)
+    expect(db.pragma("user_version", { simple: true })).toBe(72)
     db.close()
   })
 })

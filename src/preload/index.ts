@@ -85,6 +85,7 @@ import type {
   SeatBindingsSnapshot,
   UserStoryProof,
   ProofCriterionStatus,
+  ProofVerificationMethod,
   MissionControlRunLink,
   MergePolicyMode,
   MilestoneLanding,
@@ -114,6 +115,7 @@ import type {
   PlaybookAgentRole,
   ProcessRunHistoryEntry,
 } from "../main/mission-control/playbook-import"
+import type { PlaybookDefaultDiff } from "../main/mission-control/playbook-defaults"
 import type {
   MilestoneIntegrationStatus,
   UserStoryWorkspaceInfo,
@@ -1092,6 +1094,20 @@ const api = {
           edges
         ) as Promise<RigOversight[]>,
     },
+    // Saved proof evidence (plan 112.4): screenshots for the proof view, and
+    // opening an evidence file. Only paths under the app-data evidence dir.
+    evidence: {
+      read: (path: string) =>
+        ipcRenderer.invoke("missionControl:evidence:read", path) as Promise<{
+          path: string
+          dataUrl: string | null
+        } | null>,
+      open: (path: string) =>
+        ipcRenderer.invoke(
+          "missionControl:evidence:open",
+          path
+        ) as Promise<void>,
+    },
     // Playbooks and execution (plan 106.3).
     playbooks: {
       list: () =>
@@ -1110,6 +1126,17 @@ const api = {
         ipcRenderer.invoke(
           "missionControl:playbooks:create",
           input
+        ) as Promise<PlaybookWithHooks>,
+      // Reset to default (plan 112.4): the step diff first, then the reset.
+      defaultDiff: (id: string) =>
+        ipcRenderer.invoke(
+          "missionControl:playbooks:defaultDiff",
+          id
+        ) as Promise<PlaybookDefaultDiff>,
+      resetToDefault: (id: string) =>
+        ipcRenderer.invoke(
+          "missionControl:playbooks:resetToDefault",
+          id
         ) as Promise<PlaybookWithHooks>,
       createDefault: (altitude: PlaybookAltitude) =>
         ipcRenderer.invoke(
@@ -3082,6 +3109,7 @@ export type {
   SeatBindingsSnapshot,
   UserStoryProof,
   ProofCriterionStatus,
+  ProofVerificationMethod,
   MissionControlRunLink,
   MergePolicyMode,
   MergeQueueEntry,
@@ -3236,6 +3264,11 @@ export type {
   PlaybookAgentRole,
   ProcessRunHistoryEntry,
 } from "../main/mission-control/playbook-import"
+export type {
+  PlaybookDefaultDiff,
+  PlaybookStepChange,
+  PlaybookStepSummary,
+} from "../main/mission-control/playbook-defaults"
 export type {
   MilestoneIntegrationStatus,
   PolicyOption,

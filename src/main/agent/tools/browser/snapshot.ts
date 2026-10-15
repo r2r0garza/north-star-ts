@@ -1,5 +1,6 @@
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "../types"
 import { toolError, truncateForModel } from "../output"
+import { browserFailure } from "./errors"
 
 // Read the current page as a compact accessibility outline (roles + names). This
 // is the model's primary "what's on the page" perception — it works even when
@@ -27,10 +28,7 @@ export const browserSnapshotTool: Tool = {
       const outline = await ctx.browser.snapshot()
       return truncateForModel(outline).text
     } catch (err) {
-      return toolError(
-        "snapshot_failed",
-        err instanceof Error ? err.message : String(err)
-      )
+      return browserFailure("snapshot_failed", err)
     }
   },
 }

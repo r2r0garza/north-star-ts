@@ -23,6 +23,9 @@ import type {
   UserStory,
 } from "../db/types"
 import { ensureDefaultPlaybook } from "./playbook-defaults"
+import { savedEvidence } from "./evidence"
+import { ownerAppFailed } from "./app-launch"
+import { getAppRecipeService } from "./app-recipe"
 import {
   decideProof,
   DEFAULT_MAX_PROOF_REVISIONS,
@@ -1154,9 +1157,35 @@ export function recordUserStoryProof(input: {
   if (typeof submission === "string")
     return { ok: false, code: "bad_args", message: submission }
 
+  // A proof that only failed because the app went down is the environment's
+  // problem, not the story's (plan 112.4): the story ends unverified, and
+  // no proof revision is spent.
+  const recipes = getAppRecipeService()
+  if (
+    recipes &&
+    submission.verdict === "rejected" &&
+    submission.criteria.some((c) => c.status === "not_verifiable") &&
+    !submission.criteria.some((c) => c.status === "not_met") &&
+    ownerAppFailed(phaseRun.id)
+  ) {
+    recipes.endUnverified(userStory.id, "the app stopped running during QA")
+    return {
+      ok: false,
+      code: "app_unavailable",
+      message:
+        "The app stopped running, so this isn't a rejection: the story ends unverified, and running it again checks the app first. Finish now.",
+    }
+  }
+
   const decision = decideProof({
     submission,
     criteria,
+    verification: {
+      evidence: savedEvidence(
+        phaseRun.id,
+        submission.criteria.flatMap((c) => c.artifacts ?? [])
+      ),
+    },
     verifier,
     builderAddresses: builderAddresses(root),
     isCommandPhase: (phaseKey) => completedCommandPhase(root, phaseKey),

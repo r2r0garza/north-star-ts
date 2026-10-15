@@ -1074,6 +1074,13 @@ export interface SeatBindingsSnapshot {
 }
 
 export type ProofCriterionStatus = "met" | "not_met" | "not_verifiable"
+// How a criterion was verified (plan 112.4). Absent on proofs recorded before
+// it existed (shown as Unspecified).
+export type ProofVerificationMethod =
+  | "app_exercised"
+  | "command"
+  | "builder_tests"
+  | "code_read"
 
 export interface UserStoryProof {
   version: 1
@@ -1081,6 +1088,7 @@ export interface UserStoryProof {
     id: string
     status: ProofCriterionStatus
     evidence: string
+    method?: ProofVerificationMethod
     artifacts?: string[]
     reason?: string
   }>

@@ -7,6 +7,7 @@ import type { Environment } from "../env/types"
 import type { TodoStatus } from "../../db/types"
 import type { BrowserHandle } from "../../browser/manager"
 import type { SeatTurnIdentity } from "../../mission-control/seat-turns"
+import type { WriteScope } from "./write_scope"
 import type {
   SpawnSubagentsInput,
   SubagentResult,
@@ -217,6 +218,11 @@ export interface ToolContext {
   // Process run. The app tools resolve the feature, the owner of what they
   // start, and the main checkout from here instead of the phase run.
   appLaunchRepair?: AppLaunchRepairContext
+  // Workspace-relative directories the write-family tools may change (plan
+  // 112.4). Set server-side from the seat's role: a Mission Control `qa`
+  // seat writes only its scratch directory. Absent = anywhere in the
+  // workspace. See write_scope.ts.
+  writeScope?: WriteScope
 }
 
 export interface AppLaunchRepairContext {

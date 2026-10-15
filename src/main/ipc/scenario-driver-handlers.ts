@@ -17,7 +17,9 @@ import {
 // MC_SCENARIO_DATE (YYYY-MM-DD, to keep adding to an earlier day's file),
 // MC_SCENARIO_CAP_MIN (per-run cap, default 45), MC_SCENARIO_RIG (rig id),
 // MC_SCENARIO_KEEP=1 (leave features and workspaces in place),
-// MC_SCENARIO_SKIP_PREFLIGHT=1, MC_SCENARIO_QUIT=1 (quit when done).
+// MC_SCENARIO_SKIP_PREFLIGHT=1, MC_SCENARIO_QUIT=1 (quit when done),
+// MC_SCENARIO_VARIANT (a recipe variant from scenario.json, for every
+// selected scenario; "none" runs without one).
 
 export type ScenarioRunRequest = Omit<
   ScenarioBatchOptions,
@@ -88,6 +90,14 @@ export function registerScenarioDriver(
     rigId: env("MC_SCENARIO_RIG") ?? null,
     keep: env("MC_SCENARIO_KEEP") === "1",
     skipPreflight: env("MC_SCENARIO_SKIP_PREFLIGHT") === "1",
+    ...(env("MC_SCENARIO_VARIANT")
+      ? {
+          variant:
+            env("MC_SCENARIO_VARIANT") === "none"
+              ? null
+              : env("MC_SCENARIO_VARIANT"),
+        }
+      : {}),
     ...(capMin > 0 ? { capMs: capMin * 60 * 1000 } : {}),
   })
     .catch((err) => console.error("[scenarios] batch failed:", err))

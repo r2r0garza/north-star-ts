@@ -92,6 +92,7 @@ const KIND_LABELS: Record<ProcessPhaseKind, string> = {
   agent: "Agent",
   command: "Command",
   subprocess: "Sub-process",
+  app_check: "App check",
 }
 
 // What switching `phase` to `next` throws away. Empty → no confirmation needed.

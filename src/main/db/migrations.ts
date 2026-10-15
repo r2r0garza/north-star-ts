@@ -193,6 +193,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureProcessCommandPhases,
   ensureWorkspaceAppLaunchColumn,
   ensureAppRecipeStates,
+  ensureAppCheckPhaseKind,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -417,6 +418,43 @@ CREATE TABLE IF NOT EXISTS app_recipe_states (
   PRIMARY KEY (workspace_id, branch)
 );
 `)
+}
+
+// v72 (plan 112.4): the `app_check` phase kind. SQLite can't alter a CHECK
+// constraint, so process_phases is rebuilt from its own current definition
+// with the widened list (create → copy → drop → rename, under the loop's
+// foreign_keys=OFF), and its indexes recreated.
+function ensureAppCheckPhaseKind(db: Database.Database): void {
+  const sql = db
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'process_phases'"
+    )
+    .pluck()
+    .get() as string | undefined
+  const narrow =
+    /CHECK\s*\(\s*kind\s+IN\s*\(\s*'agent'\s*,\s*'command'\s*,\s*'subprocess'\s*\)\s*\)/
+  if (!sql || !narrow.test(sql)) return
+  const indexes = db
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'process_phases' AND sql IS NOT NULL"
+    )
+    .pluck()
+    .all() as string[]
+  db.exec(
+    sql
+      .replace(
+        narrow,
+        "CHECK (kind IN ('agent','command','subprocess','app_check'))"
+      )
+      .replace(
+        /^CREATE TABLE\s+"?process_phases"?/,
+        "CREATE TABLE process_phases_new"
+      )
+  )
+  db.exec("INSERT INTO process_phases_new SELECT * FROM process_phases")
+  db.exec("DROP TABLE process_phases")
+  db.exec("ALTER TABLE process_phases_new RENAME TO process_phases")
+  for (const index of indexes) db.exec(index)
 }
 
 // v58: a workspace's generated files and the command that rebuilds them
@@ -692,6 +730,7 @@ export function runMigrations(
       ensureProcessCommandPhases(db)
       ensureWorkspaceAppLaunchColumn(db)
       ensureAppRecipeStates(db)
+      ensureAppCheckPhaseKind(db)
       // After ensureSubscriptionProviderConstraints: its V65 table rebuild
       // predates this column and would drop it.
       ensureProviderImageInputColumn(db)

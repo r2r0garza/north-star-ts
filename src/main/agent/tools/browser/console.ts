@@ -1,5 +1,6 @@
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "../types"
 import { toolError } from "../output"
+import { SAVE_EVIDENCE_PARAM, withSavedEvidence } from "./errors"
 
 export const browserConsoleTool: Tool = {
   effects: TOOL_EFFECTS.openWorldRead,
@@ -25,6 +26,7 @@ export const browserConsoleTool: Tool = {
             type: "number",
             description: "Only entries from this recent window.",
           },
+          save_evidence: SAVE_EVIDENCE_PARAM,
         },
       },
     },
@@ -38,7 +40,12 @@ export const browserConsoleTool: Tool = {
       limit: numberArg(args.limit),
       sinceMs: numberArg(args.sinceMs),
     })
-    return JSON.stringify(page, null, 2)
+    return withSavedEvidence(
+      ctx,
+      args.save_evidence,
+      "console.json",
+      JSON.stringify(page, null, 2)
+    )
   },
 }
 

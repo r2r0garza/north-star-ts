@@ -11,6 +11,7 @@ import {
 } from "./file/mutation"
 import { renderMetadata, toolError } from "./output"
 import { isSkillResourceUri, resolveSkillResourcePath } from "./skill_resources"
+import { writeScopeError } from "./write_scope"
 
 type PathKind = "file" | "directory" | "other"
 
@@ -181,6 +182,8 @@ export const createDirectoryTool: Tool = {
     if (isManagedMemoryPath(target)) {
       return toolError("not_allowed", MANAGED_MEMORY_WRITE_ERROR)
     }
+    const outOfScope = await writeScopeError(ctx, env, [path])
+    if (outOfScope) return outOfScope
     const protectedRoot = await rootGuard(env, target, "create")
     if (protectedRoot) return protectedRoot
     const gate = await gateMutation(ctx, {
@@ -275,6 +278,11 @@ export const movePathTool: Tool = {
     if (isManagedMemoryPath(source) || isManagedMemoryPath(target)) {
       return toolError("not_allowed", MANAGED_MEMORY_WRITE_ERROR)
     }
+    // Both ends: moving product code into the checks directory removes it.
+    const outOfScope = await writeScopeError(ctx, env, [from, to], {
+      followLeaf: false,
+    })
+    if (outOfScope) return outOfScope
     const protectedRoot = await rootGuard(env, source, "move")
     if (protectedRoot) return protectedRoot
 
@@ -384,6 +392,10 @@ export const deletePathTool: Tool = {
     if (isManagedMemoryPath(target)) {
       return toolError("not_allowed", MANAGED_MEMORY_WRITE_ERROR)
     }
+    const outOfScope = await writeScopeError(ctx, env, [path], {
+      followLeaf: false,
+    })
+    if (outOfScope) return outOfScope
     const protectedRoot = await rootGuard(env, target, "delete")
     if (protectedRoot) return protectedRoot
     let before

@@ -17,6 +17,7 @@ import {
   runDetectors,
   scopeDrift,
   stalled,
+  weakProof,
   type HealthSnapshot,
   type SnapshotMessage,
 } from "./detectors"
@@ -470,6 +471,67 @@ describe("retry_churn", () => {
     ).toBe(
       normalizeFailure("Run 9a9a9a9a-1111-4222-8333-444455556666 failed 7x")
     )
+  })
+})
+
+describe("weak_proof", () => {
+  const story = (patch: Partial<HealthSnapshot["userStories"][number]>) => ({
+    id: "s1",
+    key: "invoice-model",
+    title: "Invoice model",
+    status: "done" as const,
+    attempts: 1,
+    podKey: "implementation",
+    touchHints: [],
+    proofAcceptedAt: NOW - 10 * MIN,
+    proofVerifier: "qa@implementation",
+    ...patch,
+  })
+
+  it("flags a story accepted on the builder's tests or unspecified methods", () => {
+    const [finding] = weakProof(
+      snapshot({
+        userStories: [
+          story({
+            weakProof: [
+              { id: "AC-1", method: "builder_tests" },
+              { id: "AC-3", method: null },
+            ],
+          }),
+        ],
+      })
+    )
+    expect(finding).toMatchObject({
+      detector: "weak_proof",
+      severity: "info",
+      anchor: { kind: "user_story", id: "s1" },
+      offenders: { addresses: [], userStoryIds: [] },
+      latestAt: NOW - 10 * MIN,
+    })
+    expect(finding.summary).toBe(
+      "invoice-model was accepted with AC-1 only on the builder's tests, and AC-3 without saying how it was verified."
+    )
+    expect(finding.evidence.map((e) => e.label)).toEqual([
+      "AC-1: builder's tests only · qa@implementation",
+      "AC-3: method unspecified · qa@implementation",
+    ])
+  })
+
+  it("stays quiet on independently verified or cancelled stories", () => {
+    expect(
+      weakProof(
+        snapshot({
+          userStories: [
+            story({ weakProof: [] }),
+            story({
+              id: "s2",
+              status: "cancelled",
+              weakProof: [{ id: "AC-1", method: "builder_tests" }],
+            }),
+          ],
+        })
+      )
+    ).toEqual([])
   })
 })
 

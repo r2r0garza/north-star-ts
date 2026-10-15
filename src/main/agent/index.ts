@@ -7,6 +7,7 @@ import { askUser } from "./questions/broker"
 import {
   toolDefinitions,
   browserToolDefinitions,
+  seatBrowserToolDefinitions,
   webSearchDefinition,
   webFetchDefinition,
   runTool,
@@ -29,6 +30,7 @@ import { readFileTool } from "./tools/read_file_tool"
 import { CHAT_SHELL_TOOL_NAMES, chatShellContext } from "./tools/chat_shell"
 import { toolError } from "./tools/output"
 import type { AppLaunchRepairContext, ToolContext } from "./tools/types"
+import type { WriteScope } from "./tools/write_scope"
 import {
   FILE_CHANGE_KINDS,
   KIND_WIDE_IDENTITY,
@@ -888,6 +890,12 @@ export interface RunAgentLoopOptions {
   // singleton) rather than imported — same cycle-avoidance as enqueueTask. Absent
   // in contexts with no browser (e.g. the durable task runner, unit tests).
   provideBrowser?: (signal: AbortSignal) => BrowserHandle
+  // A Mission Control seat's browser for a `work` turn (plan 109.04): an
+  // isolated, local-only tab owned by the phase run. Kept apart from
+  // provideBrowser on purpose: it doesn't make the turn a live one, isn't lent
+  // to CLI providers, and comes without browser_handoff (no human is waiting
+  // in a headless phase).
+  seatBrowser?: (signal: AbortSignal) => BrowserHandle
   // The durable task this run belongs to, when driven by the runner's runOne.
   // Absent on the live `chat` path (which has no task). Used only to surface this
   // task's prior gate decisions in the approvals context section (plan 021) so a
@@ -959,6 +967,11 @@ export interface RunAgentLoopOptions {
   // by mail (consult / answer_only) — narrows the toolset to read/search tools
   // so a message can never cause a side effect.
   missionControlSeat?: SeatTurnIdentity
+  // Workspace-relative directories this turn's write-family tools may change
+  // (plan 112.4): a Mission Control `qa` seat's scratch directory. Absent =
+  // the whole workspace. Inherited by any subagent this turn spawns, so
+  // delegating can't widen it.
+  writeScope?: WriteScope
   // Extra system-block context sections supplied by the caller — e.g. the
   // Mission Control seat context (charter, cultures, intent chain). Budgeted
   // by the ContextBuilder like every other section.
@@ -1275,7 +1288,11 @@ export async function runAgentLoop(
   // The agent browser is offered when the caller wired a provider (the live chat
   // path does; the durable task runner does not — a background task has no window
   // to drive). Bound to this turn's signal so Stop unwinds an in-flight browser op.
-  const browser = opts.provideBrowser?.(abort.signal)
+  const browser =
+    opts.provideBrowser?.(abort.signal) ?? opts.seatBrowser?.(abort.signal)
+  const browserTools = opts.provideBrowser
+    ? browserToolDefinitions
+    : seatBrowserToolDefinitions
 
   // Custom-agent tool restriction. When the selected agent declares a `tools`
   // frontmatter, this is the set of internal tool names it may be offered (plus
@@ -1452,7 +1469,7 @@ export async function runAgentLoop(
           : [todoWriteTool.definition, runTodosInBackgroundTool.definition]
         : []),
       ...(useIndex ? [indexQueryTool.definition] : []),
-      ...(browser ? browserToolDefinitions : []),
+      ...(browser ? browserTools : []),
       // Web tools are offered in every mode, independent of workspace/browser.
       // In plan mode, web_fetch remains behind its ordinary per-origin approval
       // gate; it researches external sources without mutating the workspace.
@@ -2985,6 +3002,7 @@ export async function runAgentLoop(
                     skillResourceRoots,
                     parentSignal: callSignal,
                     parentChatPythonVenv: opts.chatPythonVenv,
+                    parentWriteScope: opts.writeScope,
                     parentAutoMode: autoMode,
                     subscribeParentAutoMode: (subscriber) => {
                       autoModeSubscribers.add(subscriber)
@@ -3014,6 +3032,7 @@ export async function runAgentLoop(
                     parentConversation: conversation,
                     parentSignal: callSignal,
                     parentChatPythonVenv: opts.chatPythonVenv,
+                    parentWriteScope: opts.writeScope,
                     depth: (opts.agentDepth ?? 0) + 1,
                     ancestors: [
                       ...(opts.agentAncestors ?? []),
@@ -3029,6 +3048,7 @@ export async function runAgentLoop(
             processRunId: opts.processRunId,
             processPhaseRunId: opts.processPhaseRunId,
             missionControlSeat: opts.missionControlSeat,
+            writeScope: opts.writeScope,
             appLaunchRepair: opts.appLaunchRepair,
           }
           // MCP tool calls (mcp__<server>__<tool>) route to the connection pool via
@@ -3315,6 +3335,8 @@ async function spawnSubagentBatch(input: {
   parentSignal: AbortSignal
   // A chat's subagents share its Python venv; see RunAgentLoopOptions.
   parentChatPythonVenv?: boolean
+  // The parent's write scope; a child never writes more widely than it.
+  parentWriteScope?: WriteScope
   parentAutoMode: boolean
   subscribeParentAutoMode: (
     subscriber: (enabled: boolean) => void
@@ -3558,6 +3580,7 @@ async function spawnSubagentBatch(input: {
         suppressUserQuestions: true,
         subagentRun: true,
         chatPythonVenv: input.parentChatPythonVenv,
+        writeScope: input.parentWriteScope,
         repositoryLeaseToken: lease?.token,
         beforeApproval: (signal) => approvalCoordinator.acquire(signal),
         onApprovalWaitingChange: (waiting) => {
@@ -3696,6 +3719,8 @@ async function spawnSubagent(input: {
   parentSignal: AbortSignal
   // A chat's subagents share its Python venv; see RunAgentLoopOptions.
   parentChatPythonVenv?: boolean
+  // The parent's write scope; a child never writes more widely than it.
+  parentWriteScope?: WriteScope
   depth: number
   ancestors: string[]
 }): Promise<{ content?: string; error?: string; stopped?: boolean }> {
@@ -3762,6 +3787,7 @@ async function spawnSubagent(input: {
       suppressUserQuestions: true,
       subagentRun: true,
       chatPythonVenv: input.parentChatPythonVenv,
+      writeScope: input.parentWriteScope,
     })
     if (result.stopped || childAbort.signal.aborted) return { stopped: true }
     if (result.error) return { error: result.error }

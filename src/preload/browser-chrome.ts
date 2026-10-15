@@ -15,6 +15,8 @@ export interface ChromeTab {
   canGoBack: boolean
   canGoForward: boolean
   active: boolean
+  // A Mission Control seat's tab: watch-only from the chrome.
+  seat?: boolean
 }
 
 const api = {

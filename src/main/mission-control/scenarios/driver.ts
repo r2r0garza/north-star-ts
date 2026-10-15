@@ -18,8 +18,12 @@ import * as features from "../../db/repositories/features"
 import { listEvents } from "../../db/repositories/mc-events"
 import * as playbooks from "../../db/repositories/playbooks"
 import {
+  createEdge,
+  deleteEdge,
+  deletePhase,
   deleteProcessDefinition,
   getPhaseRun,
+  getProcessGraph,
   getProcessRun,
 } from "../../db/repositories/processes"
 import * as rigs from "../../db/repositories/rigs"
@@ -164,6 +168,66 @@ function playbookWithoutReview(): string {
     name: "Scenario driver · no planning review",
   })
   return playbook.id
+}
+
+// The default user story playbook with only `steps` (by key), chained in
+// that order (plan 112.4: scenario 6 runs App check → Test, so no builder
+// rewrites the code QA must judge). One per run, deleted with it.
+function storyPlaybook(steps: string[]): string {
+  // The user's default stays the default: ours must not become it.
+  ensureDefaultPlaybook("user_story")
+  const playbook = createDefaultPlaybook("user_story")
+  const processId = playbook.hooks.find((h) => h.hook === "run")!.processId
+  const graph = getProcessGraph(processId)!
+  const kept = steps.map((key) => {
+    const phase = graph.phases.find((p) => p.key === key)
+    if (!phase)
+      throw new Error(`The default user story playbook has no "${key}" step.`)
+    return phase
+  })
+  for (const edge of graph.edges) deleteEdge(edge.id)
+  for (const phase of graph.phases)
+    if (!steps.includes(phase.key)) deletePhase(phase.id)
+  kept
+    .slice(1)
+    .forEach((phase, i) =>
+      createEdge({ processId, fromPhaseId: kept[i].id, toPhaseId: phase.id })
+    )
+  playbooks.updatePlaybook(playbook.id, {
+    name: `Scenario driver · ${steps.join(" → ")}`,
+  })
+  return playbook.id
+}
+
+// Whether a story's branch (or, once merged, the integration branch)
+// changed the delivered code: its file no longer has the marker line. A
+// story that ran without a branch worked in the checkout itself. Null when
+// none of them has the file.
+function deliveredChanged(
+  dir: string,
+  refs: Array<string | null | undefined>,
+  delivered: { file: string; contains: string }
+): boolean | null {
+  for (const ref of refs) {
+    if (!ref) continue
+    try {
+      const text = execFileSync("git", ["show", `${ref}:${delivered.file}`], {
+        cwd: dir,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      })
+      return !text.includes(delivered.contains)
+    } catch {
+      // Not on this ref.
+    }
+  }
+  try {
+    return !readFileSync(path.join(dir, delivered.file), "utf8").includes(
+      delivered.contains
+    )
+  } catch {
+    return null
+  }
 }
 
 // The first rig with a builder and a QA seat (plan 112.2: scenarios run with
@@ -389,6 +453,7 @@ export async function runScenario(
   let dir: string | null = null
   let workspaceId: string | null = null
   let playbookId: string | null = null
+  let storyPlaybookId: string | null = null
   // The scenario's milestone and the stories it started with, by key.
   let scenarioMilestoneId: string | null = null
   let seeded = new Map<string, string>()
@@ -421,6 +486,10 @@ export async function runScenario(
       workspaceId: workspace.id,
     })
     featureId = graph.feature.id
+    if (spec.live?.storyAttempts)
+      features.setFeatureBudgets(featureId, {
+        maxUserStoryAttempts: spec.live.storyAttempts,
+      })
     const applied = applyPlanChanges({
       featureId,
       milestoneId: null,
@@ -454,6 +523,11 @@ export async function runScenario(
       playbookId = playbookWithoutReview()
       features.updateMilestone(milestoneId, { playbookId })
     }
+    if (spec.live?.storySteps?.length) {
+      storyPlaybookId = storyPlaybook(spec.live.storySteps)
+      for (const id of seeded.values())
+        features.updateUserStory(id, { playbookId: storyPlaybookId })
+    }
 
     checkAbort()
     const preflight = await deps.preflight(featureId)
@@ -483,6 +557,21 @@ export async function runScenario(
     }
     record.settle = settle
     observe(record, featureId, milestoneId, seeded)
+    if (spec.live?.delivered) {
+      const milestone = features.getMilestone(milestoneId)
+      const changed = [...seeded.values()].map((id) =>
+        deliveredChanged(
+          dir!,
+          [features.getUserStory(id)?.branch, milestone?.integrationBranch],
+          spec.live!.delivered!
+        )
+      )
+      record.deliveredChanged = changed.includes(true)
+        ? true
+        : changed.includes(false)
+          ? false
+          : null
+    }
   } catch (error) {
     record.aborted = true
     record.outcome = "aborted"
@@ -519,6 +608,7 @@ export async function runScenario(
             .join("\n")
         })
       if (playbookId) playbooks.deletePlaybook(playbookId)
+      if (storyPlaybookId) playbooks.deletePlaybook(storyPlaybookId)
       if (workspaceId) deleteWorkspace(workspaceId)
       if (dir) rmSync(dir, { recursive: true, force: true })
     }
@@ -659,9 +749,14 @@ function observe(
     ...record.appChecks.map((c) => c.class),
     ...record.appStartFailures.map((f) => f.class),
   ].filter((c): c is NonNullable<typeof c> => !!c)
+  // With no app failure, a story whose first proof QA rejected is a
+  // feature failure (scenario 6).
   record.failureClass = classes.includes("environment")
     ? "environment"
-    : (classes[0] ?? null)
+    : (classes[0] ??
+      (Object.values(record.resolvedVerdicts ?? {}).includes("rejected")
+        ? "feature"
+        : null))
   record.recipeRepairs = ofType("recipe_repair").length
 }
 
@@ -679,6 +774,7 @@ function score(record: ScenarioRunRecord, scenario: LoadedScenario): void {
     escalations: record.escalations,
     orphans: record.orphans,
     settle: record.settle ?? "",
+    deliveredChanged: record.deliveredChanged,
   })
   record.outcome = scored.outcome
   record.matched = scored.matched

@@ -13,7 +13,8 @@ import type { BrowserSession } from "./session"
 // inside React/CSS. So the renderer must feed it a rect (reportBounds) and the
 // host must hide it (setVisible(false)) whenever the DOM needs to draw over it —
 // the panel is closed, not in Browser mode, or a modal/sheet is open. Otherwise
-// the page would occlude those overlays.
+// the page would occlude those overlays. A hidden view can't be screenshotted,
+// so the manager then moves it back to the ParkedViewHost (see isShowing).
 
 export interface SidebarBounds {
   x: number
@@ -41,6 +42,13 @@ export class SidebarBrowserHost {
 
   private hasWindow(): boolean {
     return !!this.window && !this.window.isDestroyed()
+  }
+
+  // Whether an embedded view would be on screen right now. The manager embeds
+  // a view only while this holds and parks it otherwise: a view this host hides
+  // can't be screenshotted.
+  isShowing(): boolean {
+    return this.hasWindow() && this.visible && !!this.bounds
   }
 
   // Embed a view (the active conversation's). Detaches any previously embedded

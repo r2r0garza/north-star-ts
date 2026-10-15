@@ -1,6 +1,7 @@
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "../types"
 import type { ToolAction } from "../../approval/types"
 import { toolError } from "../output"
+import { browserFailure } from "./errors"
 import { browserOrigin, hashBrowserPayload } from "./approval"
 
 export const browserEvaluateTool: Tool = {
@@ -60,10 +61,7 @@ export const browserEvaluateTool: Tool = {
     try {
       return JSON.stringify(await ctx.browser.evaluate(expression), null, 2)
     } catch (err) {
-      return toolError(
-        "evaluate_failed",
-        err instanceof Error ? err.message : String(err)
-      )
+      return browserFailure("evaluate_failed", err)
     }
   },
 }
