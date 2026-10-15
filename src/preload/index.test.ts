@@ -35,6 +35,30 @@ beforeEach(() => {
 })
 
 describe("preload database bridge", () => {
+  it("forwards a Bash block reference through the conversation-scoped chat bridge", async () => {
+    const req = {
+      conversationId: "c1",
+      message: "",
+      bashBlock: { messageId: "m1", offset: 12 },
+    }
+    const onEvent = vi.fn()
+    await electron.api.chat(req, onEvent)
+    expect(electron.invoke).toHaveBeenCalledWith("chat", req)
+    const [channel, listener] = electron.on.mock.calls[0]
+    expect(channel).toBe("chat:event")
+    listener(
+      {},
+      { conversationId: "other", event: { type: "token", delta: "no" } }
+    )
+    expect(onEvent).not.toHaveBeenCalled()
+    listener(
+      {},
+      { conversationId: "c1", event: { type: "token", delta: "yes" } }
+    )
+    expect(onEvent).toHaveBeenCalledOnce()
+    expect(electron.removeListener).toHaveBeenCalledWith("chat:event", listener)
+  })
+
   it("reads stored media using only scoped identifiers", async () => {
     await electron.api.db.messages.readMedia("conversation", "result", "image")
     expect(electron.invoke).toHaveBeenCalledWith(

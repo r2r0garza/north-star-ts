@@ -1481,8 +1481,21 @@ function App(
     [agentName]
   )
 
-  async function sendMessage() {
-    if (!canSend) return
+  const bashLaunchRef = useRef(new Set<string>())
+  async function sendMessage(bashBlock?: {
+    messageId: string
+    offset: number
+  }) {
+    if (
+      bashBlock
+        ? !conversationId ||
+          loading ||
+          !hasLlm ||
+          effectiveIsCli ||
+          agentMode === "plan"
+        : !canSend
+    )
+      return
     if (!(await preflightExternalAgentModel("send"))) return
     // Expand confirmed file mentions before sending, so the model gets bare
     // workspace paths (`@src/foo.ts` → `src/foo.ts`). Skill mentions stay literal
@@ -1492,10 +1505,12 @@ function App(
     // which on-page element(s) the user is pointing at. It can act on each two
     // ways: edit the source that renders it (grep the selector/text), or
     // browser_snapshot + match the role/name to click it.
-    const text = pickedElements.length
-      ? `${pickedElements.map(formatPickedElement).join("\n")}\n\n${base}`
-      : base
-    const sentAttachments = attachments
+    const text = bashBlock
+      ? "Run Bash block and report the result."
+      : pickedElements.length
+        ? `${pickedElements.map(formatPickedElement).join("\n")}\n\n${base}`
+        : base
+    const sentAttachments = bashBlock ? [] : attachments
 
     // Ensure a conversation exists — created lazily on first send. For
     // workspace views, link the picked workspace at creation time.
@@ -1547,13 +1562,15 @@ function App(
         createdAt,
       },
     ])
-    setMessage("")
-    setConfirmedSkills(new Set())
-    setConfirmedFiles(new Set())
-    setMenu(null)
-    setMenuActive(null)
-    setAttachments([])
-    setPickedElements([])
+    if (!bashBlock) {
+      setMessage("")
+      setConfirmedSkills(new Set())
+      setConfirmedFiles(new Set())
+      setMenu(null)
+      setMenuActive(null)
+      setAttachments([])
+      setPickedElements([])
+    }
     // A new turn resumes normal following for this conversation, even if its
     // previous settled response intentionally omitted the replacement anchor.
     setTranscriptScroll((prev) => resetTranscriptScroll(prev, turnConvoId))
@@ -1584,10 +1601,11 @@ function App(
         {
           conversationId: turnConvoId,
           message: text,
+          bashBlock,
           // Chat sends no workspace and inlines attachments instead.
           workspace: isChat ? undefined : workspace.trim(),
           attachments: isChat ? sentAttachments : undefined,
-          skills: [...confirmedSkills],
+          skills: bashBlock ? [] : [...confirmedSkills],
           // Plan mode is interactive/north_star only (never Chat); auto mode is
           // available everywhere, including Chat (suppresses browser_navigate
           // prompts).
@@ -1724,6 +1742,7 @@ function App(
       // reads the persisted error note.)
       const unexpectedEmptySuccess = isUnexpectedEmptyChatSuccess(data)
       if (data.error) {
+        if (bashBlock) toast.error(data.error)
         if (data.errorCode === "execution_backend_unavailable") {
           toast.error("Selected execution backend is unavailable", {
             id: `backend-unavailable-${turnConvoId}`,
@@ -1991,6 +2010,23 @@ function App(
   )
   const reviewTranscriptFiles = useCallback(
     () => onReviewFilesRef.current?.(),
+    []
+  )
+  const runBashRef = useRef(sendMessage)
+  useLayoutEffect(() => {
+    runBashRef.current = sendMessage
+  })
+  const runTranscriptBash = useCallback(
+    async (messageId: string, offset: number) => {
+      const id = viewingRef.current
+      if (!id || bashLaunchRef.current.has(id)) return
+      bashLaunchRef.current.add(id)
+      try {
+        await runBashRef.current({ messageId, offset })
+      } finally {
+        bashLaunchRef.current.delete(id)
+      }
+    },
     []
   )
   const activeConversationFindQuery = conversationFindOpen
@@ -3060,7 +3096,7 @@ function App(
                     <Button
                       type="button"
                       size="icon"
-                      onClick={sendMessage}
+                      onClick={() => void sendMessage()}
                       disabled={!canSend}
                       aria-label="Send"
                       className="size-8 rounded-full"
@@ -3349,6 +3385,8 @@ function App(
                 anchorLast={!loading && !suppressSettledAnchor}
                 findQuery={activeConversationFindQuery}
                 latestAssistantKey={latestSettledAssistantKey}
+                onRunBash={effectiveIsCli ? undefined : runTranscriptBash}
+                runDisabled={loading || !hasLlm || agentMode === "plan"}
                 workspace={transcriptWorkspace}
                 conversationId={conversationId ?? undefined}
                 onOpenHtml={openTranscriptHtml}

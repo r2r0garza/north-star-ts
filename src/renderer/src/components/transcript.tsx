@@ -36,7 +36,13 @@ interface ChangedFilesCallbacks {
   onReviewFiles: () => void
 }
 
-interface SettledTranscriptProps extends ChangedFilesCallbacks {
+interface RunBashCallbacks {
+  onRunBash?: (messageId: string, offset: number) => Promise<void>
+  runDisabled?: boolean
+}
+
+interface SettledTranscriptProps
+  extends ChangedFilesCallbacks, RunBashCallbacks {
   items: TimelineItem[]
   // Whether the final settled row is the scroll anchor (false while a live turn
   // owns the anchor or a reader's off-bottom position is being preserved).
@@ -54,6 +60,8 @@ export const SettledTranscript = memo(function SettledTranscript({
   conversationId,
   onOpenHtml,
   onReviewFiles,
+  onRunBash,
+  runDisabled,
 }: SettledTranscriptProps) {
   return items.map((item, i) => (
     <SettledTranscriptRow
@@ -70,11 +78,14 @@ export const SettledTranscript = memo(function SettledTranscript({
       conversationId={conversationId}
       onOpenHtml={onOpenHtml}
       onReviewFiles={onReviewFiles}
+      onRunBash={onRunBash}
+      runDisabled={runDisabled}
     />
   ))
 })
 
-interface SettledTranscriptRowProps extends ChangedFilesCallbacks {
+interface SettledTranscriptRowProps
+  extends ChangedFilesCallbacks, RunBashCallbacks {
   item: TimelineItem
   scrollAnchor: boolean
   findQuery: string
@@ -93,6 +104,8 @@ const SettledTranscriptRow = memo(function SettledTranscriptRow({
   conversationId,
   onOpenHtml,
   onReviewFiles,
+  onRunBash,
+  runDisabled,
 }: SettledTranscriptRowProps) {
   if (item.kind === "tools") {
     return (
@@ -138,6 +151,14 @@ const SettledTranscriptRow = memo(function SettledTranscriptRow({
                   content={item.content}
                   findQuery={findQuery}
                   conversationId={conversationId}
+                  onRunBash={
+                    onRunBash
+                      ? (offset) =>
+                          onRunBash(item.key.replace(/:text$/, ""), offset)
+                      : undefined
+                  }
+                  runDisabled={runDisabled}
+                  runDirectory={workspace}
                 />
               ) : (
                 <ConversationFindText text={item.content} query={findQuery} />

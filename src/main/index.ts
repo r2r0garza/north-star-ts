@@ -657,6 +657,18 @@ ipcMain.handle(
 )
 
 ipcMain.handle("chat", async (event, req: ChatRequest) => {
+  if (req?.bashBlock !== undefined) {
+    const contents = mainWindow?.webContents
+    if (
+      !contents ||
+      event.sender !== contents ||
+      event.senderFrame !== contents.mainFrame ||
+      typeof req.conversationId !== "string" ||
+      typeof req.message !== "string"
+    ) {
+      throw new Error("Invalid Run code request.")
+    }
+  }
   const result = await runChat(
     req,
     (chatEvent) => {

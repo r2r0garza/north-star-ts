@@ -27,10 +27,14 @@ vi.mock("@/components/markdown", () => ({
     content,
     mode = "settled",
     conversationId,
+    onRunBash,
+    runDisabled,
   }: {
     content: string
     mode?: string
     conversationId?: string
+    onRunBash?: (offset: number) => Promise<void>
+    runDisabled?: boolean
   }) => {
     bump(`md:${mode}:${content.slice(0, 12)}`)
     return (
@@ -40,6 +44,11 @@ vi.mock("@/components/markdown", () => ({
         data-conversation-id={conversationId}
       >
         {content}
+        {onRunBash && (
+          <button disabled={runDisabled} onClick={() => void onRunBash(10)}>
+            Run test
+          </button>
+        )}
       </div>
     )
   },
@@ -104,6 +113,8 @@ const items: TimelineItem[] = [
 const noop = () => {}
 
 interface RenderOptions {
+  onRunBash?: (messageId: string, offset: number) => Promise<void>
+  runDisabled?: boolean
   settled?: TimelineItem[]
   anchorLast?: boolean
   findQuery?: string
@@ -114,6 +125,8 @@ interface RenderOptions {
 }
 
 function render({
+  onRunBash,
+  runDisabled,
   settled = items,
   anchorLast = false,
   findQuery = "",
@@ -136,6 +149,8 @@ function render({
                 anchorLast={anchorLast}
                 findQuery={findQuery}
                 latestAssistantKey={latestAssistantKey}
+                onRunBash={onRunBash}
+                runDisabled={runDisabled}
                 workspace=""
                 conversationId="conv-chat"
                 onOpenHtml={noop}
@@ -179,6 +194,30 @@ function anchors() {
 }
 
 describe("transcript render boundaries", () => {
+  it("offers Run only on settled assistant rows and forwards their persisted message identity", async () => {
+    const onRunBash = vi.fn().mockResolvedValue(undefined)
+    render({
+      onRunBash,
+      settled: [
+        {
+          kind: "text",
+          key: "message-1:text",
+          role: "assistant",
+          content: "bash block",
+          createdAt: 1,
+        },
+      ],
+      live: [{ kind: "text", text: "unfinished" }],
+    })
+    const buttons = container.querySelectorAll<HTMLButtonElement>("button")
+    const run = Array.from(buttons).filter(
+      (button) => button.textContent === "Run test"
+    )
+    expect(run).toHaveLength(1)
+    await act(async () => run[0].click())
+    expect(onRunBash).toHaveBeenCalledWith("message-1", 10)
+  })
+
   it("does not rerender settled rows while live text streams", () => {
     render({ live: [{ kind: "text", text: "Streaming" }] })
     const before = settledRenderCounts()
