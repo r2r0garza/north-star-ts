@@ -416,6 +416,7 @@ const api = {
     req: {
       conversationId: string
       message: string
+      bashBlock?: { messageId: string; offset: number }
       workspace?: string
       attachments?: string[]
       skills?: string[]

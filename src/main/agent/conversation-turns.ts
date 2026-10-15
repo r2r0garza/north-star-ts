@@ -1,5 +1,9 @@
 const tails = new Map<string, Promise<unknown>>()
 
+export function conversationTurnPending(conversationId: string): boolean {
+  return tails.has(conversationId)
+}
+
 export function serializeConversationTurn<T>(
   conversationId: string,
   run: () => Promise<T>
