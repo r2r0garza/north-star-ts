@@ -17,7 +17,9 @@ import path from "path"
 import { afterEach, describe, expect, it } from "vitest"
 import { listWorktrees } from "../agent/subagents/worktrees"
 import {
+  commitGateSuite,
   commitWorktreeChanges,
+  createGateWorktree,
   createUserStoryWorktree,
   finalizeResolution,
   findUserStoryMerge,
@@ -549,5 +551,85 @@ describe("regenerating generated files on a merge conflict", () => {
     })
     expect(outcome.status).toBe("conflict")
     expect(outcome).not.toHaveProperty("regenerateError")
+  })
+})
+
+// Plan 112.5: the wave gate's suite reaches the integration branch by
+// fast-forward, and only the suite does.
+describe("the wave gate's suite", () => {
+  async function gate(root: string) {
+    await startIntegrationBranch({ workspace: root, branch: INTEGRATION })
+    const worktree = scratch("gate")
+    await createGateWorktree({
+      root,
+      integrationBranch: INTEGRATION,
+      directory: worktree,
+    })
+    mkdirSync(path.join(worktree, "e2e"), { recursive: true })
+    writeFileSync(
+      path.join(worktree, "e2e", "a.spec.ts"),
+      "test('x @R @AC-1')\n"
+    )
+    writeFileSync(
+      path.join(worktree, "playwright.config.ts"),
+      "export default {}\n"
+    )
+    const commit = () =>
+      commitGateSuite({
+        root,
+        integrationBranch: INTEGRATION,
+        worktree,
+        workspacePath: worktree,
+        paths: ["e2e", "playwright.config.ts"],
+        gateId: "gate-1",
+        message: "test(m1): acceptance gate round 1",
+      })
+    return { worktree, commit }
+  }
+
+  it("commits only the suite and fast-forwards the integration branch, once", async () => {
+    const root = repo()
+    const { worktree, commit } = await gate(root)
+    // Product code QA touched isn't staged.
+    writeFileSync(path.join(worktree, "shared.txt"), "changed\n")
+    const outcome = await commit()
+    expect(outcome.status).toBe("committed")
+    const tip = git(root, "rev-parse", INTEGRATION)
+    expect(outcome).toEqual({ status: "committed", commit: tip })
+    expect(
+      git(root, "show", "--name-only", "--format=", tip).split("\n").sort()
+    ).toEqual(["e2e/a.spec.ts", "playwright.config.ts"])
+    expect(git(root, "log", "-1", "--format=%B", tip)).toContain(
+      "Mission-Control-Gate: gate-1"
+    )
+    // A replay after a crash finds its own commit.
+    expect(await commit()).toEqual({ status: "committed", commit: tip })
+  })
+
+  it("refuses commits that touch anything else, or a branch that moved", async () => {
+    const root = repo()
+    const sneaky = await gate(root)
+    writeFileSync(path.join(sneaky.worktree, "shared.txt"), "changed\n")
+    git(sneaky.worktree, "commit", "-qam", "product change")
+    const refused = await sneaky.commit()
+    expect(refused).toMatchObject({ status: "refused" })
+    expect(refused.status === "refused" && refused.reason).toMatch(
+      /change files outside the suite \(shared\.txt\)/
+    )
+
+    const other = repo()
+    const moved = await gate(other)
+    const story = await userStory(other, "a", "a.txt", "a\n")
+    await mergeUserStory({
+      root: other,
+      integrationBranch: INTEGRATION,
+      userStoryHead: story.head,
+      scratchDirectory: scratch("merge"),
+      message: "merge a",
+    })
+    const outcome = await moved.commit()
+    expect(outcome.status === "refused" && outcome.reason).toMatch(
+      /moved while the gate ran/
+    )
   })
 })

@@ -77,6 +77,7 @@ import { spawnSubagentsTool } from "./spawn_subagents"
 import { flagForReworkTool } from "./flag_for_rework"
 import { recordProofTool } from "./record_proof"
 import { appLaunchTools } from "./app_launch_tools"
+import { gateTools } from "./gate_tools"
 import { seatCommsTools } from "./seat_comms_tools"
 import { mapTools } from "./map_tools"
 import { dashboardWriteTool } from "./dashboard_write"
@@ -156,6 +157,9 @@ const otherTools: Tool[] = [
   // Control builder or QA seat's work step (plan 112.1 —
   // opts.processAppLaunch). Not in toolDefinitions.
   ...appLaunchTools,
+  // run_suite / record_gate: offered by runChat only to a milestone acceptance
+  // gate's QA step (plan 112.5 — opts.processGateStep). Not in toolDefinitions.
+  ...gateTools,
   // Mission Control Comms (plan 106.4): send_message / reply / list_inbox /
   // escalate, offered by runChat only to seat turns (opts.missionControlSeat)
   // and never to an answer-only wake. Not in toolDefinitions.

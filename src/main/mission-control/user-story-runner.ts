@@ -26,6 +26,7 @@ import { ensureDefaultPlaybook } from "./playbook-defaults"
 import { savedEvidence } from "./evidence"
 import { ownerAppFailed } from "./app-launch"
 import { getAppRecipeService } from "./app-recipe"
+import { concludeWaveGate, failWaveGateForRun } from "./wave-gate"
 import {
   decideProof,
   DEFAULT_MAX_PROOF_REVISIONS,
@@ -47,7 +48,6 @@ import {
 } from "../../shared/mission-control/waves"
 import {
   DEFAULT_MAX_CONCURRENT_USER_STORIES,
-  type IsolatedUserStoryWorkspace,
   type MilestoneIntegration,
 } from "./integration"
 
@@ -123,7 +123,7 @@ export interface LaunchRequest {
   // Give the run its own worktree (user story runs). Called after every check
   // passes; null means the workspace can't isolate and the run is
   // single-flight in place.
-  isolate?: () => Promise<IsolatedUserStoryWorkspace | null>
+  isolate?: () => Promise<IsolatedWorkspace | null>
   // A worktree prepared by the caller (conflict resolution).
   isolated?: IsolatedWorkspace
   // Runs inside the launch transaction before the playbook run exists: a
@@ -242,6 +242,12 @@ function describeRun(run: PlaybookRun): string {
 
 export class UserStoryRunner {
   constructor(private readonly deps: UserStoryRunnerDeps) {}
+
+  // The integration service, for hooks that work in its worktrees (the wave
+  // gate, plan 112.5).
+  get integration(): MilestoneIntegration | undefined {
+    return this.deps.integration
+  }
 
   // ── launching ─────────────────────────────────────────────────────────────
 
@@ -504,10 +510,15 @@ export class UserStoryRunner {
       .filter((edge) => edge.toUserStoryId === userStory.id)
       .map((edge) => features.getUserStory(edge.fromUserStoryId))
       .filter((dep): dep is UserStory => !!dep && dep.status !== "done")
-    if (blockers.length)
+    if (blockers.length) {
+      // Merged predecessors still wait on their wave's acceptance gate (110).
+      const gated = blockers.filter((b) => b.status === "merged")
       throw new Error(
-        `User story ${userStory.key} depends on unmerged user stories: ${blockers.map((b) => b.key).join(", ")}. A user story starts once its predecessors are done${milestone.integrationBranch ? " and merged into the integration branch" : ""}.`
+        gated.length === blockers.length
+          ? `User story ${userStory.key} depends on user stories awaiting their acceptance gate: ${gated.map((b) => b.key).join(", ")}. A user story starts once its predecessors are done, which a merged one is when the milestone's acceptance gate passes.`
+          : `User story ${userStory.key} depends on unmerged user stories: ${blockers.map((b) => (b.status === "merged" ? `${b.key} (merged, awaiting its acceptance gate)` : b.key)).join(", ")}. A user story starts once its predecessors are done${milestone.integrationBranch ? " and merged into the integration branch" : ""}.`
       )
+    }
     // Overlapping touch hints serialize by default (decision 7): two user stories
     // editing the same area in parallel is how merge conflicts are made. The
     // feature's "parallel" policy, or a one-off "Run anyway", opts out.
@@ -720,11 +731,25 @@ export class UserStoryRunner {
 
     if (!playbookRun.userStoryId) {
       const status = run.status as "completed" | "failed" | "cancelled"
+      // A wave gate (plan 112.5) that ran to the end: the integration
+      // service commits its suite, then the gate finishes from QA's record.
+      if (playbookRun.hook === "after_each_wave" && status === "completed") {
+        if (this.deps.integration)
+          this.deps.integration.onGateSettled(playbookRun.id)
+        else concludeWaveGate(playbookRun.id, { commit: null })
+        return
+      }
       this.applyOutcome(
         playbookRun.id,
         status,
         status === "completed" ? null : `The hook's Process run ${status}.`
       )
+      if (playbookRun.hook === "after_each_wave")
+        void this.deps.integration
+          ?.dropGateWorktree(playbookRun.id)
+          .catch((err) =>
+            console.warn("[integration] drop gate worktree:", err)
+          )
       return
     }
 
@@ -783,6 +808,11 @@ export class UserStoryRunner {
       if (!playbooks.finishPlaybookRun(playbookRunId, status, reason))
         return null
       const playbookRun = playbooks.getPlaybookRun(playbookRunId)!
+      if (playbookRun.hook === "after_each_wave" && status !== "completed")
+        failWaveGateForRun(
+          playbookRun.id,
+          reason ?? `The acceptance gate's run ${status}.`
+        )
       if (!playbookRun.userStoryId || playbookRun.hook !== "run") return null
       const userStory = features.getUserStory(playbookRun.userStoryId)
       if (!userStory || !["running", "proving"].includes(userStory.status))

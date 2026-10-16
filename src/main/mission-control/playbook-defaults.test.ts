@@ -17,7 +17,11 @@ describe("default playbooks", () => {
 
   it("gates proof steps with the proof tool alone, not a validator", () => {
     const proofSteps = steps.filter((step) => step!.proofStep)
-    expect(proofSteps.map((step) => step!.key)).toEqual(["test", "reverify"])
+    expect(proofSteps.map((step) => step!.key)).toEqual([
+      "test",
+      "smoke",
+      "accept",
+    ])
     for (const step of proofSteps) expect(step!.validator).toBeFalsy()
   })
 })

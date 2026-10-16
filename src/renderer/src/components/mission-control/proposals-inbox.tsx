@@ -487,6 +487,7 @@ function FollowupCard({
 const HOOK_LABELS: Record<string, string> = {
   plan: "planning",
   before_user_stories: "the planning review",
+  after_each_wave: "the acceptance gate",
   after_all_user_stories: "the milestone review",
   between_milestones: "the release",
   on_complete: "completion",

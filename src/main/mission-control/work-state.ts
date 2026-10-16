@@ -24,7 +24,10 @@ const USER_STORY_TRANSITIONS: Record<
   blocked: ["ready", "cancelled", "failed"],
   running: ["proving", "blocked", "failed", "unverified", "cancelled"],
   proving: ["integrating", "running", "failed", "unverified", "cancelled"],
-  integrating: ["done", "failed", "cancelled"],
+  // merged when the milestone has a wave acceptance gate (plan 112.5): done
+  // only once a gate passes its criteria.
+  integrating: ["merged", "done", "failed", "cancelled"],
+  merged: ["done"],
   done: [],
   failed: ["ready", "cancelled"],
   // Plan 112.3: checked again (back to ready, no attempt burned), or

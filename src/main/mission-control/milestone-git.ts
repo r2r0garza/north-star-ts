@@ -630,6 +630,122 @@ export async function finalizeResolution(input: {
   return moved ? { status: "merged", mergeCommit } : { status: "moved" }
 }
 
+// ── the wave gate's suite (plan 112.5) ─────────────────────────────────────
+
+// A detached worktree at the integration head, for a wave gate to write and
+// run the acceptance suite against the integrated app.
+export async function createGateWorktree(input: {
+  root: string
+  integrationBranch: string
+  directory: string
+}): Promise<{ baseOid: string }> {
+  const baseOid = await branchOid(input.root, input.integrationBranch)
+  if (!baseOid)
+    throw new Error(
+      `The integration branch ${input.integrationBranch} is missing. It may have been deleted outside Mission Control.`
+    )
+  await addWorktree({
+    root: input.root,
+    directory: input.directory,
+    startPoint: baseOid,
+  })
+  return { baseOid }
+}
+
+export function gateCommitTrailer(gateId: string): string {
+  return `Mission-Control-Gate: ${gateId}`
+}
+
+export type GateSuiteOutcome =
+  | { status: "committed"; commit: string }
+  | { status: "unchanged" }
+  | { status: "refused"; reason: string }
+
+// Commit the gate's suite and fast-forward the integration branch to it by
+// compare-and-swap. Only `paths` (the suite directory and its generated
+// config) are staged, and the commit may change nothing else: QA never
+// changes product code. Idempotent: a replay after a crash finds its own
+// commit by the gate's trailer, on the branch or not yet.
+export async function commitGateSuite(input: {
+  root: string
+  integrationBranch: string
+  // The gate's worktree, and the workspace's folder inside it.
+  worktree: string
+  workspacePath: string
+  // Workspace-relative.
+  paths: string[]
+  gateId: string
+  message: string
+}): Promise<GateSuiteOutcome> {
+  const { root, integrationBranch, workspacePath } = input
+  const operation = await inProgressOperation(input.worktree)
+  if (operation)
+    return {
+      status: "refused",
+      reason: `The gate's worktree has a ${operation.replace("_HEAD", "").toLowerCase()} in progress.`,
+    }
+  await runGit(workspacePath, ["add", "-A", "--", ...input.paths])
+  const staged = !(await gitSucceeds(workspacePath, [
+    "diff",
+    "--cached",
+    "--quiet",
+  ]))
+  if (staged)
+    await commitGit(workspacePath, [
+      "commit",
+      "--no-verify",
+      "-q",
+      "-m",
+      `${input.message}\n\n${gateCommitTrailer(input.gateId)}`,
+    ])
+  const tip = await runGit(input.worktree, ["rev-parse", "HEAD"])
+  const body = await runGit(input.worktree, ["log", "-1", "--format=%B", tip])
+  if (!body.includes(gateCommitTrailer(input.gateId)))
+    return { status: "unchanged" }
+  const head = await branchOid(root, integrationBranch)
+  if (!head)
+    return {
+      status: "refused",
+      reason: `The integration branch ${integrationBranch} is missing.`,
+    }
+  if (head === tip || (await isAncestor(root, tip, head)))
+    return { status: "committed", commit: tip }
+  if (!(await isAncestor(root, head, tip)))
+    return {
+      status: "refused",
+      reason: `The integration branch ${integrationBranch} moved while the gate ran, so its suite can't be fast-forwarded onto it.`,
+    }
+  const subpath = (
+    await workspaceSubpath(input.worktree, workspacePath).catch(() => "")
+  )
+    .split(path.sep)
+    .join("/")
+  const allowed = input.paths.map((p) => path.posix.join(subpath, p))
+  const touched = (await changedFiles(root, head, tip)).filter(
+    (file) => !allowed.some((a) => file === a || file.startsWith(`${a}/`))
+  )
+  if (touched.length)
+    return {
+      status: "refused",
+      reason: `The gate's commits change files outside the suite (${touched.slice(0, 5).join(", ")}${touched.length > 5 ? ", …" : ""}), so they weren't put on the integration branch.`,
+    }
+  const guard = await checkedOutGuard(root, integrationBranch)
+  if (guard) return { status: "refused", reason: guard }
+  const moved = await moveBranch(
+    root,
+    integrationBranch,
+    tip,
+    head,
+    "mission-control: acceptance gate suite"
+  )
+  return moved
+    ? { status: "committed", commit: tip }
+    : {
+        status: "refused",
+        reason: `The integration branch ${integrationBranch} moved while the suite was being committed.`,
+      }
+}
+
 // ── landing ─────────────────────────────────────────────────────────────────
 
 export interface LandingSummary {

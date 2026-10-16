@@ -13,6 +13,7 @@ import type {
   UserStoryProof,
 } from "../types"
 import {
+  assertProcessDefinitionAvailable,
   createProcessDefinition,
   deleteProcessDefinition,
   getProcessDefinition,
@@ -37,6 +38,7 @@ export const PLAYBOOK_HOOKS: Record<
   milestone: [
     "before_user_stories",
     "after_each_user_story",
+    "after_each_wave",
     "after_all_user_stories",
   ],
   feature: ["plan", "between_milestones", "on_complete"],
@@ -208,7 +210,7 @@ export function updatePlaybook(
 
 // Deleting a playbook also deletes the hook definitions it owns, unless another
 // playbook still references one. An imported Process (not owned) is kept.
-// Past Process runs keep their rows (their process_id is SET NULL), and
+// Past Process runs keep their definitions and graphs for history, and
 // playbook_runs keep their history.
 export function deletePlaybook(id: string): void {
   const playbook = getPlaybook(id)
@@ -229,8 +231,7 @@ export function deletePlaybook(id: string): void {
       try {
         deleteProcessDefinition(hook.processId)
       } catch {
-        // Phase-runs still reference its phases (run history): keep the
-        // definition as an ordinary Process rather than losing that history.
+        // A live run or another process still needs this definition.
       }
     }
   })()
@@ -269,6 +270,7 @@ export function setHook(
   const playbook = getPlaybook(playbookId)
   if (!playbook) throw new Error(`Playbook not found: ${playbookId}`)
   const name = assertHookForAltitude(playbook.altitude, hook)
+  assertProcessDefinitionAvailable(processId)
   if (!getProcessDefinition(processId))
     throw new Error(`Process definition not found: ${processId}`)
   getDb().transaction(() => {

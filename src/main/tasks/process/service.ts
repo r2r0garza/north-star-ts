@@ -1,6 +1,7 @@
 import { completionInstruction } from "./completion"
 import { createHash } from "crypto"
 import { app } from "electron"
+import { existsSync } from "fs"
 import { join } from "path"
 import { runAgentLoop, generateTitle } from "../../agent"
 import {
@@ -9,6 +10,12 @@ import {
   seatBrowserLabel,
 } from "../../mission-control/seat-browser"
 import { seatWriteScope } from "../../mission-control/qa-scope"
+import { localizeDivergedLinks } from "../../mission-control/worktree-env"
+import {
+  gateContext,
+  gateStepNote,
+  SUITE_DIR,
+} from "../../mission-control/gate-step"
 import { SHUTDOWN_ABORT_REASON, PAUSE_ABORT_REASON } from "../../agent/abort"
 import {
   createConversation,
@@ -159,6 +166,27 @@ export function proofStepNote(appUrls: string[] | null): string {
     "- `command`: a command you ran yourself. Quote what it printed in the evidence.",
     "- `builder_tests` or `code_read`: only the builder's tests, or only reading the code. Neither makes a criterion met: record it not_verifiable with a reason, or verify it another way.",
     'Use verdict "accepted" only when every criterion is met; otherwise record "rejected". If the app stops working while you test, record what you couldn\'t verify as not_verifiable and say so: that isn\'t the build\'s fault. The tool validates your proof and explains anything it refuses.',
+  ].join("\n")
+}
+
+// Appended to a merge conflict's smoke step (plan 112.5): a quick check that
+// the integrator's resolution still runs and still does what the story says,
+// before the merge commits. The wave gate proves it thoroughly later.
+export function smokeStepNote(appUrls: string[] | null): string {
+  return [
+    "## Smoke-testing the merged result",
+    "The integrator resolved a merge conflict between this user story and the work already on the integration branch. Before the merge commits, check that the merged result still runs and still does what this story's criteria say. Be quick: the milestone's acceptance gate proves every criterion thoroughly once the wave merges.",
+    appUrls?.length
+      ? `- The app is already running for this step: ${appUrls.join(", ")}. Open it in the browser; don't start it again.`
+      : appUrls
+        ? "- This project has no services to start: exercise it with commands."
+        : "- If the workspace has an app launch recipe, start the app with `app_start`.",
+    "- Run the project's own tests (its test command), and quote what they printed.",
+    "- Then a quick exploratory pass over each criterion in the running app: the happy path, a `browser_screenshot` of it holding.",
+    "- Write nothing in the repository.",
+    "",
+    "## Recording the smoke step",
+    'Call `record_proof` once with one entry per criterion id: met with evidence (`method` app_exercised or command), or not_met with what broke. Use verdict "accepted" only when every criterion still holds; "rejected" keeps the resolution for the user to accept as is, fix themselves, or drop the criteria.',
   ].join("\n")
 }
 
@@ -1500,10 +1528,57 @@ export class ProcessService {
         // harness started. None of it spends an attempt or proof revision;
         // if the app can't be run, the story ends unverified.
         let appUrls: string[] | null = null
+        // The acceptance gate's QA step (plan 112.5): the same app check, on
+        // the integration head. An app that can't be run there fails the
+        // gate as setup (repaired before QA ever starts, never a fix story).
+        const gateStep =
+          !!phase.proofStep &&
+          missionControl?.hook === "after_each_wave" &&
+          !!workspace
+        let gateNote: string | null = null
+        if (gateStep) {
+          const check = await this.appCheck(
+            missionControl!,
+            phaseRun.id,
+            workspace!,
+            childAbort.signal
+          )
+          if (childAbort.signal.aborted) return { stopped: true }
+          if (!check.pass)
+            return {
+              error: `The app couldn't be run at the integration head, so the acceptance gate couldn't test it.\n\n${check.report}`,
+              retryable: false,
+            }
+          const started = await this.startAppForProof(
+            missionControl!,
+            phaseRun.id,
+            workspace!,
+            childAbort.signal
+          )
+          if (!started.ok)
+            return {
+              error:
+                "The app passed its check at the integration head but didn't start for the acceptance gate.",
+              retryable: false,
+            }
+          const gate = gateContext(run.id, phaseRun.id)
+          if (!gate.ok) return { error: gate.message, retryable: false }
+          gateNote = gateStepNote({
+            ctx: gate.ctx,
+            appUrls: started.urls,
+            suiteExists: existsSync(join(workspace!, SUITE_DIR)),
+          })
+          if (appRecipe) appRecipe = recipeForLink(missionControl)
+        }
+        // A merge conflict's smoke step (plan 112.5) checks and starts the
+        // app on the merged result the same way; an app that won't run there
+        // fails the resolution run, which escalates to the user.
+        const smokeStep =
+          !!phase.proofStep && missionControl?.hook === "after_each_user_story"
         if (
           phase.proofStep &&
           missionControl?.userStoryId &&
-          missionControl.hook === "run" &&
+          (missionControl.hook === "run" || smokeStep) &&
           workspace
         ) {
           const explicit = run.processId
@@ -1518,7 +1593,13 @@ export class ProcessService {
               workspace,
               childAbort.signal
             )
-            if (!check.pass) return { stopped: true }
+            if (!check.pass)
+              return smokeStep && !childAbort.signal.aborted
+                ? {
+                    error: `The app couldn't be run on the merged result, so the smoke step couldn't test it.\n\n${check.report}`,
+                    retryable: false,
+                  }
+                : { stopped: true }
           }
           const started = await this.startAppForProof(
             missionControl,
@@ -1526,14 +1607,23 @@ export class ProcessService {
             workspace,
             childAbort.signal
           )
-          if (!started.ok) return { stopped: true }
+          if (!started.ok)
+            return smokeStep && !childAbort.signal.aborted
+              ? {
+                  error:
+                    "The app passed its check on the merged result but didn't start for the smoke step.",
+                  retryable: false,
+                }
+              : { stopped: true }
           appUrls = started.urls
           // Repair may have changed the recipe QA is briefed with.
           if (appRecipe) appRecipe = recipeForLink(missionControl)
         }
-        const workerPrompt = proofNoteWanted
-          ? `${prompt}\n\n${proofStepNote(appUrls)}`
-          : prompt
+        const workerPrompt = gateNote
+          ? `${prompt}\n\n${gateNote}`
+          : proofNoteWanted
+            ? `${prompt}\n\n${smokeStep ? smokeStepNote(appUrls) : proofStepNote(appUrls)}`
+            : prompt
         // One turn at a time per transcript: a seat-session step waits for a
         // wake turn already running in the same session.
         if (seatTurn)
@@ -1550,6 +1640,7 @@ export class ProcessService {
                 role: seat.role,
                 runId: run.id,
                 workingDirectory: workspace,
+                ...(gateStep ? { suiteDir: SUITE_DIR } : {}),
               })
             : undefined
         const result = await runAgentLoop({
@@ -1595,6 +1686,7 @@ export class ProcessService {
           writeScope: seatScope?.writeScope,
           processProofStep:
             !!phase.proofStep && !!this.missionControlRoot(run)?.missionControl,
+          processGateStep: gateStep,
           processAppLaunch: appLaunch,
           seatBrowser: seatBrowser
             ? (signal) =>
@@ -1726,11 +1818,29 @@ export class ProcessService {
     signal: AbortSignal
   ): Promise<{ pass: boolean; report: string }> {
     const recipes = getAppRecipeService()
-    if (!recipes || !link.userStoryId)
+    // A story's run, or a milestone's acceptance gate (plan 112.5).
+    if (!recipes || (!link.userStoryId && link.hook !== "after_each_wave"))
       return { pass: true, report: "No app check here." }
     const release = holdPhaseClock(phaseRunId)
     let check: Awaited<ReturnType<typeof recipes.appCheck>>
+    let installs = ""
     try {
+      // A worktree whose dependencies diverged from the main checkout's
+      // gets its own install first (plan 112.5).
+      const main = workspaceForLink(link)
+      const setup = main ? getWorkspace(main.id)?.worktreeSetup : null
+      if (main && setup && main.path !== root) {
+        const local = await localizeDivergedLinks({
+          mainWorkspace: main.path,
+          worktreeWorkspace: root,
+          setup,
+        })
+        installs = local
+          .map(
+            (r) => `${r.label}: ${r.status}${r.error ? ` (${r.error})` : ""}`
+          )
+          .join("\n")
+      }
       check = await recipes.appCheck({
         featureId: link.featureId,
         userStoryId: link.userStoryId,
@@ -1740,9 +1850,12 @@ export class ProcessService {
     } finally {
       release()
     }
-    if (check.result === "unverified")
+    if (check.result === "unverified" && link.userStoryId)
       recipes.endUnverified(link.userStoryId, check.summary)
-    return { pass: check.result === "pass", report: check.report }
+    return {
+      pass: check.result === "pass",
+      report: installs ? `${installs}\n\n${check.report}` : check.report,
+    }
   }
 
   // Start the app for a story's proof step, owned by its phase run (stopped

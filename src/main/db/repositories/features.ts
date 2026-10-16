@@ -16,6 +16,7 @@ import type {
   UserStorySpec,
   WorkRevision,
   UserStory,
+  UserStoryFixTarget,
 } from "../types"
 import { getRigGraph } from "./rigs"
 import {
@@ -85,6 +86,8 @@ interface UserStoryRow {
   base_oid: string | null
   attempts: number
   origin: UserStory["origin"]
+  gate_id: string | null
+  fixes: string | null
   position: number
   started_at: number | null
   finished_at: number | null
@@ -282,6 +285,8 @@ function toUserStory(row: UserStoryRow): UserStory {
     baseOid: row.base_oid,
     attempts: row.attempts,
     origin: row.origin,
+    gateId: row.gate_id ?? null,
+    fixes: parse<UserStoryFixTarget | null>(row.fixes ?? null, null),
     position: row.position,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
@@ -819,6 +824,8 @@ export function addUserStory(input: {
   podKey?: string | null
   // User stories a seat added (plan 106.6) carry origin 'agent' and its address.
   origin?: UserStory["origin"]
+  // A fix story (plan 112.5): its gate and the criterion it fixes.
+  fix?: { gateId: string; target: UserStoryFixTarget } | null
   actor?: string
   reason?: string
 }): UserStory {
@@ -840,7 +847,7 @@ export function addUserStory(input: {
   ).position
   getDb()
     .prepare(
-      "INSERT INTO user_stories (id, milestone_id, key, title, spec, pod_key, status, origin, position) VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?)"
+      "INSERT INTO user_stories (id, milestone_id, key, title, spec, pod_key, status, origin, gate_id, fixes, position) VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)"
     )
     .run(
       id,
@@ -855,7 +862,9 @@ export function addUserStory(input: {
       text(input.title, "User story title"),
       JSON.stringify(spec(input.spec)),
       input.podKey ?? null,
-      input.origin ?? "user",
+      input.fix ? "gate" : (input.origin ?? "user"),
+      input.fix?.gateId ?? null,
+      input.fix ? JSON.stringify(input.fix.target) : null,
       position
     )
   audit(
@@ -1024,6 +1033,9 @@ export function setUserStoryExecution(
     proof?: unknown | null
     startedAt?: number | null
     finishedAt?: number | null
+    // The execution workflow's own spec revisions (a criterion the user
+    // dropped at an acceptance gate, plan 112.5).
+    spec?: UserStorySpec
   },
   reason: string,
   actor = "mission-control"
@@ -1054,6 +1066,7 @@ export function setUserStoryExecution(
     add("proof", patch.proof === null ? null : JSON.stringify(patch.proof))
   if (patch.startedAt !== undefined) add("started_at", patch.startedAt)
   if (patch.finishedAt !== undefined) add("finished_at", patch.finishedAt)
+  if (patch.spec !== undefined) add("spec", JSON.stringify(spec(patch.spec)))
   if (!sets.length) return before
   values.push(id)
   getDb()

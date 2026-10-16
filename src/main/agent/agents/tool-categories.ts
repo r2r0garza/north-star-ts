@@ -93,6 +93,9 @@ const UNIVERSAL = new Set([
   // record_proof (plan 106.3) is offered only to a Mission Control proof step,
   // which must be able to record regardless of its agent's tool narrowing.
   "record_proof",
+  // Likewise the acceptance gate's QA tools (plan 112.5).
+  "run_suite",
+  "record_gate",
 ])
 
 export function isUniversalTool(name: string): boolean {

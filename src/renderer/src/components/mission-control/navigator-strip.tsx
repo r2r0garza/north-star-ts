@@ -91,6 +91,7 @@ function summaryParts(position: Position, m: NonNullable<Position["milestone"]>)
     [m.done.length, "done"],
     [m.running.length, "running"],
     [m.integrating.length, "merging"],
+    [m.merged?.length ?? 0, "awaiting gate"],
     [m.ready.filter((id) => !held.has(id)).length, "ready"],
     [held.size, "held back"],
     [m.waiting.length, "waiting on merges"],

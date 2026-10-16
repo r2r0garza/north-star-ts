@@ -75,7 +75,7 @@ describe.skipIf(!sqliteLoads)("v69 migration", () => {
       kind: "subprocess",
       subprocessId: "child",
     })
-    expect(db.pragma("user_version", { simple: true })).toBe(72)
+    expect(db.pragma("user_version", { simple: true })).toBe(74)
   })
 
   it("rejects an unknown kind at the column", () => {

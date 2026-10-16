@@ -34,6 +34,11 @@ import type {
   Milestone,
   MilestoneIntegrationStatus,
 } from "@/types"
+import {
+  DecisionActions,
+  RESOLUTION_LABEL,
+  WaveGateHistory,
+} from "./wave-gate-panel"
 
 // Milestone integration (plan 106.5): the integration branch, the merge policy,
 // the merge queue, and the landing step. Landing a milestone is an explicit
@@ -140,6 +145,42 @@ function QueueRow({
           {entry.resolutionAttempts > 0 ? " · resolved by the integrator" : ""}
         </p>
       )}
+      {entry.smoke && (
+        <div className="space-y-1.5 rounded-md border border-destructive/40 bg-destructive/5 p-2 text-xs">
+          <div className="font-medium">
+            The smoke step found these not holding on the merged result:
+          </div>
+          <ul className="space-y-1">
+            {entry.smoke.criteria.map((c) => (
+              <li key={c.id}>
+                <span className="font-medium">{c.id}</span> {c.text}
+                <div className="text-muted-foreground">{c.evidence}</div>
+              </li>
+            ))}
+          </ul>
+          {entry.smoke.decision ? (
+            <p className="text-muted-foreground">
+              {RESOLUTION_LABEL[entry.smoke.decision.action]} by{" "}
+              {entry.smoke.decision.by}
+              {entry.smoke.decision.note
+                ? `: ${entry.smoke.decision.note}`
+                : ""}
+            </p>
+          ) : (
+            entry.status === "conflict" && (
+              <DecisionActions
+                what={userStory?.key ?? "The merge"}
+                fixTitle="Pause the feature while you fix the user story branch; resuming retries the merge"
+                dropConfirm={`Drop ${entry.smoke.criteria.map((c) => c.id).join(", ")} from ${userStory?.key ?? "the user story"} and commit the integrator's resolution?`}
+                onDecide={async (action, note) => {
+                  await api.resolveSmoke(entry.id, action, note)
+                  await onChanged()
+                }}
+              />
+            )
+          )}
+        </div>
+      )}
       {entry.status === "conflict" && (
         <div className="flex flex-wrap gap-2 pt-1">
           <Button
@@ -155,7 +196,7 @@ function QueueRow({
             size="sm"
             variant="outline"
             disabled={pending}
-            title="Run the milestone playbook's after-each-user-story hook to resolve and re-verify"
+            title="Run the milestone playbook's after-each-user-story hook to resolve and smoke-test"
             onClick={() => void act(() => api.resolve(entry.id), "Integrator started")}
           >
             <Wrench className="size-3.5" /> Run integrator
@@ -432,6 +473,8 @@ export function MilestoneIntegrationPanel({
           ))}
         </div>
       )}
+
+      <WaveGateHistory graph={graph} gates={status.gates} onChanged={reload} />
 
       {milestone.status === "review" && (
         <div className="space-y-3 rounded-md border border-primary/40 bg-primary/5 p-3">

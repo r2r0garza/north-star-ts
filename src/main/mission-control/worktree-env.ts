@@ -7,6 +7,8 @@ import {
   mkdir,
   readdir,
   readFile,
+  readlink,
+  rm,
   symlink,
   stat,
   unlink,
@@ -222,7 +224,8 @@ async function sitePackages(venv: string): Promise<string | null> {
 
 async function dependencyFilesDiffer(
   mainRoot: string,
-  worktreeRoot: string
+  worktreeRoot: string,
+  files: RegExp = DEPENDENCY_FILES
 ): Promise<string[]> {
   const names = new Set([
     ...(await readdir(mainRoot).catch(() => [] as string[])),
@@ -230,7 +233,7 @@ async function dependencyFilesDiffer(
   ])
   const changed: string[] = []
   for (const name of names) {
-    if (!DEPENDENCY_FILES.test(name)) continue
+    if (!files.test(name)) continue
     const [a, b] = await Promise.all([
       readFile(path.join(mainRoot, name), "utf8").catch(() => null),
       readFile(path.join(worktreeRoot, name), "utf8").catch(() => null),
@@ -391,6 +394,107 @@ async function unlinkQuiet(file: string) {
 // Git sees a symlink as a file, so an ignore rule for a directory (".venv/")
 // doesn't cover a linked .venv and the worktree's changes would commit it.
 // Exclude the link by its exact path in the repository's shared info/exclude.
+// ── diverged dependencies (plan 112.5) ──────────────────────────────────────
+
+const NODE_FILES =
+  /^(package\.json|pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lockb?)$/
+
+// The install for a linked dependency directory's project root: the
+// workspace's own setup step there, else the one its lockfile implies.
+// Null for a link that isn't a dependency directory we know.
+function installCommand(
+  setup: WorktreeSetup,
+  root: string,
+  name: string,
+  present: Set<string>
+): string | null {
+  const own = setup.steps.find(
+    (s) => s.cwd === root && s.kind !== "python-shared-venv"
+  )
+  if (own) return own.command
+  if (name === "node_modules")
+    return present.has("pnpm-lock.yaml")
+      ? "pnpm install"
+      : present.has("yarn.lock")
+        ? "yarn install"
+        : "npm install"
+  if (![".venv", "venv"].includes(name)) return null
+  if (present.has("uv.lock")) return "uv sync"
+  if (present.has("poetry.lock")) return "poetry install"
+  const bin = `${name}/${process.platform === "win32" ? "Scripts" : "bin"}/pip`
+  const requirements = [...present].find((f) =>
+    /^requirements[^/]*\.txt$/.test(f)
+  )
+  return `python3 -m venv ${name} && ${bin} install ${requirements ? `-r ${requirements}` : "-e ."}`
+}
+
+// Before the app check: a linked dependency directory (node_modules, .venv)
+// whose project root's manifest or lockfile differs from the main
+// checkout's is replaced by a worktree-local install, so the story's new
+// dependency doesn't touch the shared directory or the user's checkout.
+// The install lives in the worktree and goes with it. A failed install
+// puts the link back, and is reported.
+export async function localizeDivergedLinks(input: {
+  mainWorkspace: string
+  worktreeWorkspace: string
+  setup: WorktreeSetup
+  run?: (cwd: string, command: string) => Promise<StepRunResult | void>
+}): Promise<WorktreeStepResult[]> {
+  const results: WorktreeStepResult[] = []
+  for (const relative of input.setup.linkPaths) {
+    const target = path.join(input.worktreeWorkspace, relative)
+    if (!(await lstat(target).catch(() => null))?.isSymbolicLink()) continue
+    const name = path.basename(relative)
+    const root = path.dirname(relative) === "." ? "" : path.dirname(relative)
+    const mainRoot = path.join(input.mainWorkspace, root)
+    const worktreeRoot = path.join(input.worktreeWorkspace, root)
+    const changed = await dependencyFilesDiffer(
+      mainRoot,
+      worktreeRoot,
+      name === "node_modules" ? NODE_FILES : DEPENDENCY_FILES
+    )
+    if (!changed.length) continue
+    const present = new Set(await readdir(worktreeRoot).catch(() => []))
+    const command = installCommand(input.setup, root, name, present)
+    if (!command) continue
+    const started = Date.now()
+    const base = {
+      id: `local-install:${relative}`,
+      label: `Install ${relative} in the worktree (${changed.join(", ")} differ from the main checkout)`,
+      command,
+      cwd: root,
+    }
+    const source = await readlink(target)
+    await unlink(target)
+    try {
+      const result = await (input.run ?? runShell)(worktreeRoot, command)
+      results.push({
+        ...base,
+        status: "ok",
+        exitCode: result?.exitCode ?? 0,
+        durationMs: Date.now() - started,
+        outputTail: tail(result?.output ?? ""),
+        error: null,
+      })
+    } catch (failure) {
+      await rm(target, { recursive: true, force: true }).catch(() => {})
+      await symlink(source, target).catch(() => {})
+      results.push({
+        ...base,
+        status: "failed",
+        exitCode: null,
+        durationMs: Date.now() - started,
+        outputTail: "",
+        error: (failure instanceof Error
+          ? failure.message
+          : String(failure)
+        ).slice(0, 400),
+      })
+    }
+  }
+  return results
+}
+
 async function excludeFromGit(
   worktree: string,
   relative: string

@@ -5,6 +5,8 @@ import * as events from "../../db/repositories/mc-events"
 import * as playbooks from "../../db/repositories/playbooks"
 import * as comms from "../../db/repositories/seat-comms"
 import * as signals from "../../db/repositories/health-signals"
+import * as waveGates from "../../db/repositories/wave-gates"
+import { openEscalations } from "../gate-fixes"
 import { hasActiveFeatureTask } from "../../db/repositories/tasks"
 import type {
   Feature,
@@ -265,6 +267,27 @@ export function offenderConversations(
 }
 
 // Time each seat spent running playbook steps in this feature.
+// User stories and milestones already waiting on the user (plan 112.5): an
+// escalated merge conflict, or an open acceptance gate escalation. Health
+// doesn't pause the feature over them; the user already has the decision.
+export function pendingDecisionAnchors(featureId: string): Set<string> {
+  const anchors = new Set<string>()
+  for (const entry of mergeQueue.listMergeEntries({
+    featureId,
+    statuses: ["conflict"],
+  }))
+    if (entry.escalated) {
+      anchors.add(entry.userStoryId)
+      anchors.add(entry.milestoneId)
+    }
+  for (const gate of waveGates.listFeatureWaveGates(featureId))
+    for (const escalation of openEscalations(gate)) {
+      anchors.add(escalation.root.userStoryId)
+      anchors.add(gate.milestoneId)
+    }
+  return anchors
+}
+
 function busyBySeat(featureId: string, now: number): Map<string, number> {
   const rows = getDb()
     .prepare(
@@ -475,6 +498,7 @@ export class HealthMonitor {
   ): void {
     const critical: AlertContent[] = []
     const escalateMs = settings.healthEscalateMinutes * MINUTE_MS
+    const awaitingUser = pendingDecisionAnchors(feature.id)
     for (const { finding } of pairs) {
       // Re-read: an earlier pair in this pass may have updated it.
       const signal = signals.getSignal(
@@ -488,12 +512,15 @@ export class HealthMonitor {
         anchorLabel: finding.anchor.label,
         evidence: finding.evidence,
       }
+      // An anchor with a pending user decision never auto-pauses: the
+      // decision is already in front of the user (plan 112.5).
       const escalate =
-        finding.severity === "critical" ||
-        (finding.severity === "warn" &&
-          signal.status === "open" &&
-          escalateMs > 0 &&
-          now - signal.firstSeenAt >= escalateMs)
+        !awaitingUser.has(finding.anchor.id) &&
+        (finding.severity === "critical" ||
+          (finding.severity === "warn" &&
+            signal.status === "open" &&
+            escalateMs > 0 &&
+            now - signal.firstSeenAt >= escalateMs))
       if (RANK[finding.severity] >= RANK.warn && signal.alertedAt === null) {
         const to = feature.rigSnapshot
           ? contextSeat(feature.rigSnapshot, {

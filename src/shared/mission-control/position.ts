@@ -20,6 +20,7 @@ export type HookName =
   | "on_complete"
   | "before_user_stories"
   | "after_each_user_story"
+  | "after_each_wave"
   | "after_all_user_stories"
   | "run"
 
@@ -67,6 +68,21 @@ export interface PositionRunInput {
   createdAt: number
 }
 
+// A wave acceptance gate (plan 112.5) a milestone ran over its merged stories.
+export interface PositionGateInput {
+  id: string
+  milestoneId: string
+  round: number
+  status: "running" | "passed" | "fixing" | "escalated" | "failed"
+  storyIds: string[]
+  // Plan 110.03: the fix stories the gate created, its Manual proposal of
+  // them still waiting, and the criteria past the fix-round cap that wait on
+  // the user.
+  fixStoryIds?: string[]
+  proposalPending?: boolean
+  escalations?: Array<{ id: string; summary: string }>
+}
+
 export interface PositionInput {
   feature: {
     id: string
@@ -86,6 +102,7 @@ export interface PositionInput {
     toUserStoryId: string
   }>
   runs: PositionRunInput[]
+  gates?: PositionGateInput[]
   mergeQueue: Array<{
     id: string
     userStoryId: string
@@ -146,6 +163,7 @@ export type DecisionKind =
   | "user_story_unverified"
   | "proof_rejected"
   | "merge_conflict"
+  | "gate_escalation"
   | "milestone_dod"
   | "milestone_landing"
   | "budget"
@@ -217,8 +235,17 @@ export interface Position {
     ready: string[]
     running: string[]
     integrating: string[]
+    // Merged into the integration branch, awaiting the wave gate (plan 112.5).
+    merged: string[]
     done: string[]
-    // Waiting on predecessors that are not merged yet.
+    // The milestone's latest acceptance gate, and its fix stories not yet
+    // through a gate.
+    gate: {
+      round: number
+      status: PositionGateInput["status"]
+      fixing: string[]
+    } | null
+    // Waiting on predecessors that are not done yet.
     waiting: Array<{ userStory: string; on: string[] }>
     blocked: Array<{ userStory: string; reason: string }>
     // Failed user stories the Navigator may retry mechanically.
@@ -263,6 +290,7 @@ const HOOK_LABEL: Record<string, string> = {
   before_user_stories: "milestone planning review",
   after_all_user_stories: "milestone review",
   after_each_user_story: "conflict resolution",
+  after_each_wave: "acceptance gate",
   run: "user story run",
 }
 
@@ -363,6 +391,8 @@ export function computePosition(input: PositionInput): Position {
     if (
       meter.key === "maxConcurrentUserStories" ||
       meter.key === "maxPhaseMinutes" ||
+      // The gate escalates the criterion itself (plan 112.5).
+      meter.key === "maxGateFixRounds" ||
       meter.level === "ok" ||
       meter.final
     )
@@ -423,7 +453,11 @@ export function computePosition(input: PositionInput): Position {
     extra: Partial<typeof empty> = {}
   ): Position => {
     // Only Autopilot runs hooks itself; otherwise a due hook waits on the user.
-    if (maneuver.kind === "run_hook" && feature.driveMode !== "autopilot")
+    // Copilot also runs the acceptance gate: it's verification, not a decision.
+    if (
+      maneuver.kind === "run_hook" &&
+      !runsItself(feature.driveMode, maneuver.hook.hook)
+    )
       decide({
         key: `hook_due:${maneuver.hook.hook}:${maneuver.hook.milestoneId ?? ""}`,
         kind: "hook_due",
@@ -632,6 +666,7 @@ export function computePosition(input: PositionInput): Position {
   const ready: string[] = []
   const runningUserStories: string[] = []
   const integrating: string[] = []
+  const merged: string[] = []
   const done: string[] = []
   const waiting: Array<{ userStory: string; on: string[] }> = []
   const blocked: Array<{ userStory: string; reason: string }> = []
@@ -653,6 +688,9 @@ export function computePosition(input: PositionInput): Position {
         break
       case "integrating":
         integrating.push(userStory.id)
+        break
+      case "merged":
+        merged.push(userStory.id)
         break
       case "done":
         done.push(userStory.id)
@@ -723,7 +761,8 @@ export function computePosition(input: PositionInput): Position {
         break
       }
       default: {
-        // draft / ready: runnable once every predecessor has merged.
+        // draft / ready: runnable once every predecessor is done (merged
+        // and, with a wave gate, through it).
         if (cancelledPred) {
           blocked.push({
             userStory: userStory.id,
@@ -771,6 +810,31 @@ export function computePosition(input: PositionInput): Position {
 
   const allSettled =
     userStories.length > 0 && userStories.every((s) => s.status === "done")
+  const gates = (input.gates ?? [])
+    .filter((gate) => gate.milestoneId === milestone.id)
+    .sort((a, b) => a.round - b.round)
+  const latestGate = gates.at(-1) ?? null
+  // A gate that failed with app bugs (plan 112.5): its fix stories run as
+  // the next wave, before anything else, and criteria past the fix-round cap
+  // wait on the user. The next gate runs once they're all in.
+  const gateOpen =
+    latestGate?.status === "fixing" || latestGate?.status === "escalated"
+  const fixIds = new Set(gateOpen ? (latestGate?.fixStoryIds ?? []) : [])
+  const openFixes = [...fixIds].filter((id) => {
+    const status = byId.get(id)?.status
+    return status && !["merged", "done", "cancelled"].includes(status)
+  })
+  const escalations =
+    latestGate?.status === "escalated" ? (latestGate.escalations ?? []) : []
+  for (const escalation of escalations)
+    decide({
+      key: `gate_escalation:${latestGate!.id}:${escalation.id}`,
+      kind: "gate_escalation",
+      owner: "user",
+      target: { kind: "milestone", id: milestone.id },
+      summary: escalation.summary,
+    })
+  const fixProposal = gateOpen && latestGate?.proposalPending === true
   const milestoneState: NonNullable<Position["milestone"]> = {
     id: milestone.id,
     key: milestone.key,
@@ -781,7 +845,17 @@ export function computePosition(input: PositionInput): Position {
     ready,
     running: runningUserStories,
     integrating,
+    merged,
     done,
+    gate: latestGate
+      ? {
+          round: latestGate.round,
+          status: latestGate.status,
+          fixing: [...fixIds].filter(
+            (id) => !["done", "cancelled"].includes(byId.get(id)?.status ?? "")
+          ),
+        }
+      : null,
     waiting,
     blocked,
     retryable,
@@ -861,6 +935,10 @@ export function computePosition(input: PositionInput): Position {
   // ── the milestone's work is merged: review, judgment, landing ─────────────
   if (
     allSettled &&
+    // A gate decision still open (a regression the user hasn't decided on)
+    // holds the milestone back from review.
+    !escalations.length &&
+    !fixProposal &&
     ["review", "active", "integrating"].includes(milestone.status)
   ) {
     if (milestone.hooks.includes("after_all_user_stories")) {
@@ -953,57 +1031,179 @@ export function computePosition(input: PositionInput): Position {
   // ── dispatch: ready user stories, critical path first, then position ──────────
   const critical = new Set(criticalPath)
   const order = (id: string) => byId.get(id)?.position ?? 0
-  const candidates = [
-    ...ready.map((id) => ({ id, retry: false })),
-    ...retryable.map((id) => ({ id, retry: true })),
-  ].sort(
-    (a, b) =>
-      Number(critical.has(b.id)) - Number(critical.has(a.id)) ||
-      order(a.id) - order(b.id)
-  )
-  const dispatch: Position["dispatch"] = []
-  const deferred: Position["deferred"] = []
-  const podsFree = { ...capacity.podsFree }
-  let free = capacity.concurrencyFree
-  const building = allMilestoneUserStories.filter(
-    (s) => s.status === "running" || s.status === "proving"
-  )
-  for (const candidate of candidates) {
-    const userStory = byId.get(candidate.id)!
-    const pod = userStory.podKey ?? feature.defaultPodKey
-    if (free <= 0) {
-      deferred.push({
-        userStory: userStory.id,
-        reason:
-          capacity.reason ??
-          (capacity.mode === "git"
-            ? `the budget allows ${input.limits.maxConcurrentUserStories} user stories at once`
-            : "the workspace isn't a git repository, so one run at a time"),
-      })
-      continue
+  const plan = (
+    allowed: (id: string) => boolean
+  ): { dispatch: Position["dispatch"]; deferred: Position["deferred"] } => {
+    const candidates = [
+      ...ready.map((id) => ({ id, retry: false })),
+      ...retryable.map((id) => ({ id, retry: true })),
+    ]
+      .filter((c) => allowed(c.id))
+      .sort(
+        (a, b) =>
+          Number(critical.has(b.id)) - Number(critical.has(a.id)) ||
+          order(a.id) - order(b.id)
+      )
+    const dispatch: Position["dispatch"] = []
+    const deferred: Position["deferred"] = []
+    const podsFree = { ...capacity.podsFree }
+    let free = capacity.concurrencyFree
+    const building = allMilestoneUserStories.filter(
+      (s) => s.status === "running" || s.status === "proving"
+    )
+    for (const candidate of candidates) {
+      const userStory = byId.get(candidate.id)!
+      const pod = userStory.podKey ?? feature.defaultPodKey
+      if (free <= 0) {
+        deferred.push({
+          userStory: userStory.id,
+          reason:
+            capacity.reason ??
+            (capacity.mode === "git"
+              ? `the budget allows ${input.limits.maxConcurrentUserStories} user stories at once`
+              : "the workspace isn't a git repository, so one run at a time"),
+        })
+        continue
+      }
+      if (pod && (podsFree[pod] ?? 1) <= 0) {
+        deferred.push({ userStory: userStory.id, reason: `pod ${pod} is busy` })
+        continue
+      }
+      const overlap =
+        input.feature.overlapPolicy === "parallel"
+          ? undefined
+          : [...building, ...dispatch.map((d) => byId.get(d.userStory)!)].find(
+              (other) =>
+                touchHintsOverlap(userStory.touchHints, other.touchHints)
+            )
+      if (overlap) {
+        deferred.push({
+          userStory: userStory.id,
+          reason: `touch hints overlap ${overlap.key}`,
+        })
+        continue
+      }
+      dispatch.push({ userStory: userStory.id, retry: candidate.retry })
+      free--
+      if (pod) podsFree[pod] = (podsFree[pod] ?? 1) - 1
     }
-    if (pod && (podsFree[pod] ?? 1) <= 0) {
-      deferred.push({ userStory: userStory.id, reason: `pod ${pod} is busy` })
-      continue
-    }
-    const overlap =
-      input.feature.overlapPolicy === "parallel"
-        ? undefined
-        : [...building, ...dispatch.map((d) => byId.get(d.userStory)!)].find(
-            (other) => touchHintsOverlap(userStory.touchHints, other.touchHints)
-          )
-    if (overlap) {
-      deferred.push({
-        userStory: userStory.id,
-        reason: `touch hints overlap ${overlap.key}`,
-      })
-      continue
-    }
-    dispatch.push({ userStory: userStory.id, retry: candidate.retry })
-    free--
-    if (pod) podsFree[pod] = (podsFree[pod] ?? 1) - 1
+    return { dispatch, deferred }
   }
 
+  // ── the wave gate (plan 112.5): a barrier while merged stories await it ──────
+  if (merged.length || openFixes.length || escalations.length || fixProposal) {
+    const keys = merged.map(keyOf).join(", ")
+    // No new story starts while a gate is due, running, or fixing; only the
+    // gate's own fix stories do.
+    const held = [...ready, ...retryable]
+      .filter((id) => !fixIds.has(id))
+      .map((id) => ({
+        userStory: id,
+        reason: gateOpen
+          ? "waiting for the acceptance gate's fix stories"
+          : "waiting for the acceptance gate",
+      }))
+    const gateRunning =
+      latestGate?.status === "running" ||
+      hookState(input.runs, "after_each_wave", milestone.id) === "running"
+    if (gateRunning)
+      return withMilestone(
+        {
+          kind: "wait",
+          text: `The acceptance gate for ${milestone.key}${latestGate ? ` (round ${latestGate.round})` : ""} is running on ${keys}.`,
+        },
+        { deferred: held }
+      )
+    if (fixProposal)
+      return withMilestone(
+        {
+          kind: "decide",
+          text: `The acceptance gate for ${milestone.key} (round ${latestGate!.round}) proposed fix stories: apply or reject them.`,
+        },
+        { deferred: held }
+      )
+    if (openFixes.length) {
+      const fixes = plan((id) => fixIds.has(id))
+      if (fixes.dispatch.length)
+        return withMilestone(
+          {
+            kind: "dispatch",
+            text: `Start the acceptance gate's fix ${fixes.dispatch.length === 1 ? "story" : "stories"} ${fixes.dispatch.map((d) => keyOf(d.userStory)).join(", ")}.`,
+          },
+          { dispatch: fixes.dispatch, deferred: [...fixes.deferred, ...held] }
+        )
+      return withMilestone(
+        {
+          kind:
+            escalations.length ||
+            openFixes.some((id) => decisions.some((d) => d.target.id === id))
+              ? "decide"
+              : "wait",
+          text: `Waiting on the acceptance gate's fix stories for ${milestone.key}: ${openFixes.map(keyOf).join(", ")}.`,
+        },
+        { deferred: [...fixes.deferred, ...held] }
+      )
+    }
+    if (escalations.length)
+      return withMilestone(
+        {
+          kind: "decide",
+          text: `The acceptance gate for ${milestone.key} (round ${latestGate!.round}) needs you: ${escalations.length} criteri${escalations.length === 1 ? "on" : "a"} still failing after the fix rounds.`,
+        },
+        { deferred: held }
+      )
+    const busy = [
+      runningUserStories.length ? `${runningUserStories.length} running` : "",
+      integrating.length ? `${integrating.length} merging` : "",
+    ].filter(Boolean)
+    if (busy.length)
+      return withMilestone(
+        {
+          kind: "wait",
+          text: `Waiting on user stories: ${busy.join(", ")}; then the acceptance gate for ${milestone.key} runs on the merged ones.`,
+        },
+        { deferred: held }
+      )
+    // A gate that failed on this same batch waits on the user.
+    if (
+      latestGate?.status === "failed" &&
+      merged.every((id) => latestGate.storyIds.includes(id))
+    ) {
+      decide({
+        key: `hook_failed:after_each_wave:${latestGate.id}`,
+        kind: "hook_failed",
+        owner: "user",
+        target: { kind: "milestone", id: milestone.id },
+        summary: `The acceptance gate for ${milestone.key} (round ${latestGate.round}) failed on ${keys}. Run it again.`,
+        action: {
+          kind: "run_hook",
+          hook: "after_each_wave",
+          milestoneId: milestone.id,
+        },
+      })
+      return withMilestone(
+        {
+          kind: "decide",
+          text: `The acceptance gate for ${milestone.key} failed.`,
+        },
+        { deferred: held }
+      )
+    }
+    // Fix stories all cancelled, and nothing merged left to prove: carry on.
+    if (merged.length) {
+      const hook = hookRef("after_each_wave", milestone.id, milestone.key)
+      return withMilestone(
+        {
+          kind: "run_hook",
+          hook,
+          text: `Run the acceptance gate for ${milestone.key} (round ${(latestGate?.round ?? 0) + 1}) on ${keys}.`,
+        },
+        { nextHook: hook, deferred: held }
+      )
+    }
+  }
+
+  const { dispatch, deferred } = plan(() => true)
   if (dispatch.length)
     return withMilestone(
       {
@@ -1032,6 +1232,13 @@ export function computePosition(input: PositionInput): Position {
         : "Nothing can move right now.",
     },
     { deferred }
+  )
+}
+
+// Whether the drive starts a due hook itself rather than asking the user.
+export function runsItself(mode: DriveMode, hook: HookName): boolean {
+  return (
+    mode === "autopilot" || (mode === "copilot" && hook === "after_each_wave")
   )
 }
 
@@ -1121,7 +1328,11 @@ export function positionFingerprint(position: Position): string {
           position.milestone.ready,
           position.milestone.running,
           position.milestone.integrating,
+          position.milestone.merged,
           position.milestone.done,
+          position.milestone.gate?.round ?? null,
+          position.milestone.gate?.status ?? null,
+          position.milestone.gate?.fixing ?? [],
           position.milestone.blocked.map((b) => b.userStory),
           position.milestone.retryable,
           position.milestone.waiting.map((w) => w.userStory),
@@ -1163,8 +1374,12 @@ export function renderPosition(position: Position): string {
       `Active milestone: ${m.key} "${m.name}" (${m.status}).`,
       `Waves: ${m.waves.map((wave, i) => `${i + 1}) ${keys(wave)}`).join("  ") || "none"}`,
       `Critical path: ${keys(m.criticalPath)}`,
-      `Ready: ${keys(m.ready)} · Running: ${keys(m.running)} · Merging: ${keys(m.integrating)} · Done: ${keys(m.done)}`
+      `Ready: ${keys(m.ready)} · Running: ${keys(m.running)} · Merging: ${keys(m.integrating)}${m.merged.length ? ` · Merged, awaiting the acceptance gate: ${keys(m.merged)}` : ""} · Done: ${keys(m.done)}`
     )
+    if (m.gate)
+      lines.push(
+        `Acceptance gate: round ${m.gate.round}, ${m.gate.status}.${m.gate.fixing.length ? ` Fix stories (they run before anything else): ${keys(m.gate.fixing)}.` : ""}`
+      )
     if (m.waiting.length)
       lines.push(
         `Waiting: ${m.waiting.map((w) => `${key(w.userStory)} (on ${keys(w.on)})`).join("; ")}`

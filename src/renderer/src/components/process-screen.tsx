@@ -1023,8 +1023,7 @@ export function ProcessScreen({
         </div>
       )}
 
-      {/* Confirmation before deleting a definition — deletion is irreversible and
-          cascades to phases / agents / edges (but not past runs). */}
+      {/* Past runs retain their graph when a definition is removed. */}
       <AlertDialog
         open={pendingDelete !== null}
         onOpenChange={(o) => {
@@ -1035,8 +1034,8 @@ export function ProcessScreen({
           <AlertDialogHeader>
             <AlertDialogTitle>Delete this process?</AlertDialogTitle>
             <AlertDialogDescription>
-              “{pendingDelete?.name}” and its phases, agent pools, and edges
-              will be permanently deleted. This can’t be undone.
+              “{pendingDelete?.name}” will be removed from Processes. Past runs
+              and their details will be preserved. This can’t be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

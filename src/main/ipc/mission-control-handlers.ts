@@ -36,6 +36,8 @@ import * as seatCommsRepo from "../db/repositories/seat-comms"
 import * as seatSessionsRepo from "../db/repositories/seat-sessions"
 import { deleteConversationsWithArtifacts } from "../conversations/lifecycle"
 import { startHookRun } from "../mission-control/hook-runner"
+import { resolveGateEscalation } from "../mission-control/gate-fixes"
+import type { GateEscalationAction } from "../db/types"
 import type { MilestoneIntegration } from "../mission-control/integration"
 import type { Navigator } from "../mission-control/navigator"
 import type { HealthMonitor } from "../mission-control/health/monitor"
@@ -174,6 +176,8 @@ export function registerMissionControlHandlers(
   )
   ipcMain.handle("missionControl:drive:resume", (_event, id: string) => {
     navigator.resume(id)
+    // Merges the user said they'd fix themselves are retried (plan 112.5).
+    integration.onFeatureResumed(id)
     return graphOf(id)
   })
   // Every milestone is done: the user finishes the feature (Manual, Copilot).
@@ -427,6 +431,49 @@ export function registerMissionControlHandlers(
   ipcMain.handle(
     "missionControl:integration:abandon",
     (_event, entryId: string) => integration.abandon(entryId)
+  )
+  // A failed smoke step (plan 112.5): accept the merge as is, fix it
+  // yourself (pauses the feature), or drop the failing criteria.
+  ipcMain.handle(
+    "missionControl:integration:resolveSmoke",
+    async (_event, entryId: string, action: unknown, note?: unknown) => {
+      if (!isEscalationAction(action))
+        throw new Error("Choose accept, user_fix, or drop.")
+      const { entry, pause } = await integration.resolveSmokeFailure({
+        entryId,
+        action,
+        note: typeof note === "string" ? note : "",
+      })
+      const featureId = features.getMilestone(entry.milestoneId)?.featureId
+      if (pause && featureId) navigator.pause(featureId, pause, "user")
+      return entry
+    }
+  )
+  // An acceptance gate escalation (plan 112.5): the same three actions.
+  ipcMain.handle(
+    "missionControl:gate:resolveEscalation",
+    (
+      _event,
+      gateId: string,
+      escalationId: string,
+      action: unknown,
+      note?: unknown
+    ) => {
+      if (!isEscalationAction(action))
+        throw new Error("Choose accept, user_fix, or drop.")
+      const { gate, pause } = resolveGateEscalation({
+        gateId,
+        escalationId,
+        action,
+        note: typeof note === "string" ? note : "",
+      })
+      const milestone = features.getMilestone(gate.milestoneId)
+      if (milestone) {
+        if (pause) navigator.pause(milestone.featureId, pause, "user")
+        integration.advanceMilestone(milestone.id)
+      }
+      return gate
+    }
   )
   ipcMain.handle(
     "missionControl:integration:userStoryInfo",
@@ -837,4 +884,8 @@ export function registerMissionControlHandlers(
       }
     }
   )
+}
+
+function isEscalationAction(value: unknown): value is GateEscalationAction {
+  return value === "accept" || value === "user_fix" || value === "drop"
 }

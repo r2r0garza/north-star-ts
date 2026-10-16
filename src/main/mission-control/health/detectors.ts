@@ -148,8 +148,10 @@ function messageEvidence(message: SnapshotMessage): HealthEvidence {
 
 const isSeat = (address: string) => parseSeatAddress(address) !== null
 const podOf = (address: string) => parseSeatAddress(address)?.podKey ?? null
+// A merged story awaiting its wave gate (plan 110) is settled too: its work
+// is on the integration branch and the gate, not the story, moves next.
 const settled = (status: UserStoryStatus) =>
-  status === "done" || status === "cancelled"
+  status === "done" || status === "merged" || status === "cancelled"
 
 // ── ceremony_rising (bureaucracy) ───────────────────────────────────────────
 
@@ -260,12 +262,16 @@ export function stalled(s: HealthSnapshot): Finding[] {
 // ── proof_polishing (recursive proof loop) ──────────────────────────────────
 
 // A proof re-recorded after it was accepted, or rejected again and again
-// across a user story's attempts.
+// across a user story's attempts. Counted since the user last decided on the
+// story (plan 112.5): a decision is the answer to the loop, not more of it.
 export function proofPolishing(s: HealthSnapshot): Finding[] {
   const findings: Finding[] = []
   for (const story of s.userStories) {
     if (story.status === "cancelled") continue
-    const mine = s.events.filter((e) => e.userStoryId === story.id)
+    const all = s.events.filter((e) => e.userStoryId === story.id)
+    const mine = all.slice(
+      all.findLastIndex((e) => e.type === "user_decision") + 1
+    )
     const after = mine.filter((e) => e.type === "proof_after_acceptance")
     const rejected = mine.filter((e) => e.type === "proof_rejected")
     if (!after.length && rejected.length < PROOF_REJECTIONS) continue

@@ -79,7 +79,7 @@ function MethodBadge({ method }: { method?: ProofVerificationMethod }) {
 // Saved evidence lives in app data (absolute paths); main reads it only from
 // the evidence directory. Screenshots show as thumbnails, other files as
 // names; clicking opens the file.
-function EvidenceFiles({ paths }: { paths: string[] }) {
+export function EvidenceFiles({ paths }: { paths: string[] }) {
   const [files, setFiles] = useState<
     Record<string, { dataUrl: string | null } | null>
   >({})

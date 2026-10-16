@@ -22,18 +22,29 @@ import { toolEnv, warmShellPath } from "./workspace-analysis/tool-env"
 import { getWorkspace } from "../db/repositories/workspaces"
 import type {
   Feature,
+  GateEscalationAction,
   MergePolicyMode,
   MergeQueueEntry,
+  MergeSmokeFailure,
   Milestone,
   MilestoneLanding,
   PlaybookRun,
   UserStoryProof,
   UserStory,
+  WaveGate,
 } from "../db/types"
 import { deriveWaves } from "../../shared/mission-control/waves"
+import { concludeWaveGate, hasWaveGate } from "./wave-gate"
+import * as waveGates from "../db/repositories/wave-gates"
+import { isWaveGateReport, summarizeGateReport } from "./gate-record"
+import { SUITE_DIR, writeSuiteConfig } from "./gate-step"
+import type { IsolatedWorkspace } from "./user-story-runner"
+import { userStoryCriteria } from "./user-story-objective"
 import {
   changedFiles,
+  commitGateSuite,
   commitWorktreeChanges,
+  createGateWorktree,
   createUserStoryWorktree,
   deleteMergedBranches,
   findUserStoryMerge,
@@ -64,7 +75,8 @@ import {
 // - gives each user story attempt its own branch + worktree off the integration head,
 // - merges finished user stories through a serialized, dependency-ordered queue,
 // - hands conflicts to the milestone's after_each_user_story hook (integrator seat),
-//   which must re-verify the user story before the merge commits, or escalates,
+//   whose smoke step must pass before the merge commits, or escalates (a
+//   failed smoke step offers the user accept / fix it myself / drop, 112.5),
 // - lands the milestone per its merge policy, and
 // - cleans up its own worktrees and `mc/…` branches.
 //
@@ -139,6 +151,8 @@ export interface MilestoneIntegrationStatus {
   queue: MergeQueueEntry[]
   summary: LandingSummary | null
   landing: MilestoneLanding | null
+  // The milestone's wave acceptance gates, newest first (plan 112.5).
+  gates: WaveGate[]
 }
 
 export interface UserStoryWorkspaceInfo {
@@ -191,11 +205,14 @@ export function userStoryMergeMessage(input: {
   proof: UserStoryProof | null
   playbookRunId: string | null
   resolvedBy?: string | null
+  // The user merged it over a failed smoke step (plan 112.5).
+  decision?: string | null
 }): string {
   return [
     `user story ${input.userStory.key}: ${input.userStory.title}`,
     "",
     proofSummary(input.proof),
+    ...(input.decision ? ["", input.decision] : []),
     "",
     `Mission-Control-User-Story: ${input.userStory.id}`,
     `Mission-Control-Proof: ${input.playbookRunId ?? "none"}`,
@@ -203,6 +220,53 @@ export function userStoryMergeMessage(input: {
       ? [`Mission-Control-Resolved-By: ${input.resolvedBy}`]
       : []),
   ].join("\n")
+}
+
+// ── a failed smoke step (plan 112.5) ───────────────────────────────────────
+
+// The criteria the resolution's smoke step didn't find holding, with their
+// words from the story as it is now.
+function smokeFailure(
+  entry: MergeQueueEntry,
+  run: PlaybookRun
+): MergeSmokeFailure {
+  const userStory = features.getUserStory(entry.userStoryId)
+  const text = new Map(
+    (userStory ? userStoryCriteria(userStory) : []).map((c) => [c.id, c.text])
+  )
+  return {
+    resolutionRunId: run.id,
+    criteria: (run.proof?.criteria ?? [])
+      .filter((c) => c.status !== "met")
+      .map((c) => ({
+        id: c.id,
+        text: text.get(c.id) ?? "",
+        status: c.status,
+        evidence: c.evidence,
+        ...(c.reason ? { reason: c.reason } : {}),
+      })),
+    decision: null,
+  }
+}
+
+function smokeNote(smoke: MergeSmokeFailure): string {
+  const failed = smoke.criteria.map((c) => c.id)
+  return `The integrator resolved the conflict, but the smoke step found ${failed.length ? failed.join(", ") : "the merged result"} not holding. Accept the merge as is (the acceptance gate still checks it), fix it yourself, or drop the criteria.`
+}
+
+// The user chose to commit the resolution over its failed smoke step.
+function mergesOverSmoke(entry: MergeQueueEntry, runId: string): boolean {
+  const action = entry.smoke?.decision?.action
+  return (
+    entry.smoke?.resolutionRunId === runId &&
+    (action === "accept" || action === "drop")
+  )
+}
+
+function smokeDecisionLine(smoke: MergeSmokeFailure): string {
+  const ids = smoke.criteria.map((c) => c.id).join(", ") || "the smoke step"
+  const decision = smoke.decision!
+  return `${decision.action === "drop" ? `Merged after dropping ${ids}` : `Merged as is over ${ids}`} (smoke step decided by ${decision.by}${decision.note ? `: ${decision.note}` : ""}).`
 }
 
 // Give a new worktree the workspace's environment (linked paths, setup
@@ -454,6 +518,150 @@ export class MilestoneIntegration {
       if (this.prepares.get(milestoneId) === next)
         this.prepares.delete(milestoneId)
     }
+  }
+
+  // ── the wave gate (plan 112.5) ───────────────────────────────────────────
+
+  // A detached worktree at the milestone's integration head, with the
+  // workspace's environment, for its acceptance gate. Null when there is no
+  // integration branch (not a git workspace): the gate runs in place.
+  async prepareGateRun(input: {
+    feature: Feature
+    milestone: Milestone
+  }): Promise<IsolatedWorkspace | null> {
+    const workspace = workspacePathOf(input.feature)
+    if (!workspace) return null
+    if ((await this.workspaceMode(input.feature)).mode !== "git") return null
+    await this.ready
+    const milestone = features.getMilestone(input.milestone.id)
+    const root = milestone?.repoRoot
+    if (!milestone || !root || !milestone.integrationBranch) return null
+    const directory = path.join(
+      this.deps.worktreeRoot(),
+      input.feature.id,
+      `gate-${milestone.key}-${suffix()}`
+    )
+    const { baseOid } = await this.gitTurn(root, () =>
+      createGateWorktree({
+        root,
+        integrationBranch: milestone.integrationBranch!,
+        directory,
+      })
+    )
+    const discard = () => removeWorktree(root, directory)
+    try {
+      const workspacePath = path.join(
+        directory,
+        await workspaceSubpath(root, workspace)
+      )
+      const environment = await prepareEnvironment(
+        input.feature,
+        workspace,
+        workspacePath
+      )
+      return {
+        workspacePath,
+        worktreePath: directory,
+        environment,
+        baseOid,
+        integrationBranch: milestone.integrationBranch,
+        discard,
+      }
+    } catch (error) {
+      await discard()
+      throw error
+    }
+  }
+
+  // The gate's run completed: write the generated Playwright config, commit
+  // the suite to the integration branch (pass or fail, so fix stories branch
+  // from the exact failing tests), finish the gate from QA's record, and
+  // remove the worktree. Restart-safe: a replay finds the gate's commit by
+  // its trailer.
+  onGateSettled(playbookRunId: string): void {
+    const run = playbooks.getPlaybookRun(playbookRunId)
+    if (!run || run.status !== "running" || !run.milestoneId) return
+    const milestoneId = run.milestoneId
+    void this.enqueueWork(milestoneId, async () => {
+      const gate = waveGates.getWaveGateByRun(run.id)
+      const { milestone, feature } = context(milestoneId)
+      const suite: { commit: string | null; note?: string } = { commit: null }
+      const root = milestone.repoRoot
+      if (
+        gate?.status === "running" &&
+        run.worktreePath &&
+        root &&
+        milestone.integrationBranch
+      ) {
+        if (!existsSync(run.worktreePath))
+          suite.note =
+            "The gate's worktree is gone, so its suite wasn't committed."
+        else {
+          const lease = await repositoryDelegationLeases
+            .acquire(root, `Mission Control acceptance gate (${milestone.key})`)
+            .catch(() => null)
+          if (!lease) {
+            setTimeout(
+              () => this.onGateSettled(run.id),
+              this.deps.leaseRetryMs ?? LEASE_RETRY_MS
+            ).unref?.()
+            return
+          }
+          try {
+            const workspacePath =
+              (run.processRunId && processWorkspace(run.processRunId)) ||
+              run.worktreePath
+            const recipe = feature.workspaceId
+              ? (getWorkspace(feature.workspaceId)?.appLaunch ?? null)
+              : null
+            // Regenerated from the recipe at every gate, so `npx playwright
+            // test` starts the app the way the harness does.
+            const config =
+              recipe && existsSync(path.join(workspacePath, SUITE_DIR))
+                ? await writeSuiteConfig(workspacePath, recipe)
+                : []
+            const outcome = await commitGateSuite({
+              root,
+              integrationBranch: milestone.integrationBranch,
+              worktree: run.worktreePath,
+              workspacePath,
+              paths: [SUITE_DIR, ...config],
+              gateId: gate.id,
+              message: `test(${milestone.key}): acceptance gate round ${gate.round}${
+                isWaveGateReport(gate.report)
+                  ? `\n\n${summarizeGateReport(gate.report)}`
+                  : ""
+              }`,
+            })
+            if (outcome.status === "committed") suite.commit = outcome.commit
+            else if (outcome.status === "refused") suite.note = outcome.reason
+          } catch (error) {
+            suite.note = `Committing the suite failed: ${message(error)}`
+          } finally {
+            repositoryDelegationLeases.release(lease)
+          }
+        }
+      }
+      concludeWaveGate(run.id, suite)
+      await this.dropGateWorktree(run.id)
+      this.advanceMilestone(milestoneId)
+      this.changed(feature.id)
+    })
+  }
+
+  // Remove a finished gate run's worktree.
+  async dropGateWorktree(playbookRunId: string): Promise<void> {
+    const run = playbooks.getPlaybookRun(playbookRunId)
+    if (
+      !run ||
+      run.hook !== "after_each_wave" ||
+      run.status === "running" ||
+      !run.worktreePath ||
+      !run.milestoneId
+    )
+      return
+    const root = features.getMilestone(run.milestoneId)?.repoRoot
+    if (root) await removeWorktree(root, run.worktreePath)
   }
 
   // A user story attempt that ended without an accepted proof gives its worktree
@@ -838,7 +1046,8 @@ export class MilestoneIntegration {
     return path.join(this.deps.worktreeRoot(), featureId, `${kind}-${suffix()}`)
   }
 
-  // A merge landed: the entry is merged, the user story done, its worktree gone.
+  // A merge landed: the entry is merged, the user story done (or merged and
+  // awaiting its wave gate), its worktree gone.
   private async completeMerge(
     entry: MergeQueueEntry,
     mergeCommit: string | null,
@@ -863,13 +1072,19 @@ export class MilestoneIntegration {
       )
       if (!updated) return null
       const userStory = features.getUserStory(entry.userStoryId)
+      const milestone = features.getMilestone(entry.milestoneId)
+      // With a wave acceptance gate (plan 110) the story waits, merged, for
+      // the gate to prove it on the integration branch.
+      const gated = !!milestone && hasWaveGate(milestone)
       if (userStory?.status === "integrating")
         features.setUserStoryExecution(
           userStory.id,
-          { status: "done", finishedAt: Date.now() },
-          mergeCommit
-            ? `Merged into the integration branch (${mergeCommit.slice(0, 10)})`
-            : "Merged into the integration branch (no changes)"
+          { status: gated ? "merged" : "done", finishedAt: Date.now() },
+          `${
+            mergeCommit
+              ? `Merged into the integration branch (${mergeCommit.slice(0, 10)})`
+              : "Merged into the integration branch (no changes)"
+          }${gated ? "; awaiting its acceptance gate" : ""}`
         )
       return updated
     })()
@@ -894,11 +1109,12 @@ export class MilestoneIntegration {
   private escalate(
     entry: MergeQueueEntry,
     note: string,
-    from: MergeQueueEntry["status"][]
+    from: MergeQueueEntry["status"][],
+    patch: mergeQueue.MergeEntryPatch = {}
   ): void {
     const updated = mergeQueue.updateMergeEntry(
       entry.id,
-      { status: "conflict", escalated: true, note },
+      { ...patch, status: "conflict", escalated: true, note },
       from
     )
     if (!updated) return
@@ -948,6 +1164,9 @@ export class MilestoneIntegration {
       )
       return
     }
+    // A failed smoke step kept the last resolution's worktree: a new run
+    // starts over from a fresh merge.
+    if (entry.resolutionWorktree) await this.dropResolutionWorktree(entry)
     const workspace = workspacePathOf(feature)
     const directory = path.join(
       this.deps.worktreeRoot(),
@@ -975,6 +1194,7 @@ export class MilestoneIntegration {
           resolutionWorktree: directory,
           resolutionStartOid: prepared.startOid,
           resolutionAttempts: entry.resolutionAttempts + 1,
+          smoke: null,
           note: "The integrator is resolving the conflict.",
         },
         ["conflict"]
@@ -1026,9 +1246,21 @@ export class MilestoneIntegration {
     void this.enqueueWork(entry.milestoneId, async () => {
       const current = mergeQueue.getMergeEntry(entry.id)
       if (!current || current.status !== "resolving") return
-      if (run.status === "completed" && run.proof?.verdict === "accepted")
+      if (
+        (run.status === "completed" && run.proof?.verdict === "accepted") ||
+        mergesOverSmoke(current, run.id)
+      )
         await this.finalize(current, run)
-      else {
+      else if (
+        run.proof?.verdict === "rejected" &&
+        current.resolutionWorktree &&
+        existsSync(current.resolutionWorktree)
+      ) {
+        // The smoke step rejected the merged result: keep the worktree so
+        // the user can still accept it as is.
+        const smoke = smokeFailure(current, run)
+        this.escalate(current, smokeNote(smoke), ["resolving"], { smoke })
+      } else {
         await this.dropResolutionWorktree(current)
         this.escalate(
           current,
@@ -1100,6 +1332,9 @@ export class MilestoneIntegration {
           resolvedBy: [...(run.proof?.builderAddresses ?? []), verifier]
             .filter(Boolean)
             .join(", "),
+          decision: mergesOverSmoke(entry, run.id)
+            ? smokeDecisionLine(entry.smoke!)
+            : null,
         }),
       })
       switch (outcome.status) {
@@ -1149,31 +1384,163 @@ export class MilestoneIntegration {
   // ── user actions on the queue ─────────────────────────────────────────────
 
   // Try the merge again (e.g. after the user fixed the user story branch).
-  retry(entryId: string): Promise<void> {
+  async retry(entryId: string, by = "user"): Promise<void> {
     const entry = mergeQueue.getMergeEntry(entryId)
     if (!entry) throw new Error("That merge is no longer queued.")
+    if (entry.status !== "conflict")
+      throw new Error("Only a conflicted merge can be retried.")
+    if (entry.resolutionWorktree) await this.dropResolutionWorktree(entry)
     const updated = mergeQueue.updateMergeEntry(
       entryId,
       {
         status: "queued",
         escalated: false,
+        smoke: null,
         note: "Retry requested by the user",
       },
       ["conflict"]
     )
     if (!updated) throw new Error("Only a conflicted merge can be retried.")
+    this.decided(entry, by)
     this.changed(context(entry.milestoneId).feature.id)
     return this.kick(entry.milestoneId)
   }
 
   // Run the integrator again on a conflicted merge.
-  resolve(entryId: string): Promise<void> {
+  resolve(entryId: string, by = "user"): Promise<void> {
     const entry = mergeQueue.getMergeEntry(entryId)
     if (!entry || entry.status !== "conflict")
       throw new Error("Only a conflicted merge can be resolved.")
+    this.decided(entry, by)
     return this.enqueueWork(entry.milestoneId, () =>
       this.startResolution(entryId, true)
     )
+  }
+
+  // The user's decision on a failed smoke step (plan 112.5), the same three
+  // actions as an acceptance gate escalation:
+  // - accept: commit the integrator's resolution as it is. The acceptance
+  //   gate still proves the story's criteria once the wave merges.
+  // - drop: remove the failing criteria from the story, then commit.
+  // - user_fix: the user fixes the story branch; the feature pauses, and
+  //   resuming it retries the merge.
+  // Returns the pause reason for "user_fix".
+  async resolveSmokeFailure(input: {
+    entryId: string
+    action: GateEscalationAction
+    note?: string
+    by?: string
+  }): Promise<{ entry: MergeQueueEntry; pause: string | null }> {
+    const by = input.by ?? "user"
+    const note = input.note?.trim() ?? ""
+    const entry = mergeQueue.getMergeEntry(input.entryId)
+    if (!entry) throw new Error("That merge is no longer queued.")
+    if (entry.status !== "conflict" || !entry.smoke)
+      throw new Error("This merge isn't waiting on a smoke step decision.")
+    if (entry.smoke.decision)
+      throw new Error("That smoke step was already decided.")
+    const userStory = features.getUserStory(entry.userStoryId)
+    if (!userStory) throw new Error("The user story no longer exists.")
+    const { milestone, feature } = context(entry.milestoneId)
+    const smoke: MergeSmokeFailure = {
+      ...entry.smoke,
+      decision: { action: input.action, note, by, at: Date.now() },
+    }
+    const ids = smoke.criteria.map((c) => c.id).join(", ") || "its criteria"
+
+    if (input.action === "user_fix") {
+      if (entry.resolutionWorktree) await this.dropResolutionWorktree(entry)
+      const branch = userStory.branch ? `\`${userStory.branch}\`` : "its branch"
+      const where = userStory.worktreePath
+        ? ` (or in its worktree, ${userStory.worktreePath})`
+        : ""
+      const updated = mergeQueue.updateMergeEntry(
+        entry.id,
+        {
+          smoke,
+          note: `You're fixing ${userStory.key} yourself. Commit the fix on ${branch}${where}, then resume the feature: the merge is retried.`,
+        },
+        ["conflict"]
+      )
+      if (!updated) throw new Error("That merge changed while you decided.")
+      this.decided(entry, by)
+      this.changed(feature.id)
+      return {
+        entry: updated,
+        pause: `You're fixing ${userStory.key}'s merge yourself (${ids}). Commit the fix on ${branch}${where}, then resume: the merge into ${milestone.integrationBranch ?? "the integration branch"} is retried.`,
+      }
+    }
+
+    const run = playbooks.getPlaybookRun(smoke.resolutionRunId)
+    if (
+      !run ||
+      !entry.resolutionWorktree ||
+      !existsSync(entry.resolutionWorktree)
+    )
+      throw new Error(
+        "The integrator's resolution is gone, so it can't be merged as is. Run the integrator again or retry the merge."
+      )
+    // The decision is recorded on the entry and in the merge commit;
+    // dropping also revises the story's spec (audited).
+    if (input.action === "drop") {
+      const dropped = new Set(smoke.criteria.map((c) => c.text))
+      features.setUserStoryExecution(
+        userStory.id,
+        {
+          spec: {
+            ...userStory.spec,
+            acceptance: userStory.spec.acceptance.filter(
+              (text) => !dropped.has(text)
+            ),
+          },
+        },
+        `Dropped ${ids} after the merge's smoke step${note ? `: ${note}` : ""}`,
+        by
+      )
+    }
+    const updated = mergeQueue.updateMergeEntry(
+      entry.id,
+      {
+        smoke,
+        status: "resolving",
+        escalated: false,
+        note:
+          input.action === "drop"
+            ? `Dropped ${ids}; committing the integrator's resolution.`
+            : "Accepted as is; committing the integrator's resolution.",
+      },
+      ["conflict"]
+    )
+    if (!updated) throw new Error("That merge changed while you decided.")
+    this.decided(entry, by)
+    this.changed(feature.id)
+    this.onResolutionSettled(run.id)
+    return { entry: updated, pause: null }
+  }
+
+  // The feature resumed: merges the user said they'd fix are retried.
+  onFeatureResumed(featureId: string): void {
+    for (const entry of mergeQueue.listMergeEntries({
+      featureId,
+      statuses: ["conflict"],
+    }))
+      if (entry.smoke?.decision?.action === "user_fix")
+        void this.retry(entry.id, "navigator").catch((error) =>
+          console.warn("[integration] retry after resume:", error)
+        )
+  }
+
+  // A user decision on a story's merge: health's proof-polishing count for
+  // the story starts over.
+  private decided(entry: MergeQueueEntry, by: string): void {
+    if (by === "navigator") return
+    recordEvent({
+      featureId: context(entry.milestoneId).feature.id,
+      type: "user_decision",
+      milestoneId: entry.milestoneId,
+      userStoryId: entry.userStoryId,
+      refId: `${entry.id}:${Date.now()}`,
+    })
   }
 
   // Give up on merging this user story attempt: the user story fails (and can be
@@ -1181,6 +1548,7 @@ export class MilestoneIntegration {
   async abandon(entryId: string): Promise<void> {
     const entry = mergeQueue.getMergeEntry(entryId)
     if (!entry) throw new Error("That merge is no longer queued.")
+    if (entry.escalated) this.decided(entry, "user")
     await this.enqueueWork(entry.milestoneId, async () => {
       const cancelled = getDb().transaction(() => {
         const updated = mergeQueue.updateMergeEntry(
@@ -1214,8 +1582,9 @@ export class MilestoneIntegration {
 
   // ── milestone progress and landing ──────────────────────────────────────────
 
-  // active → integrating while finished user stories wait to merge; → review once
-  // every user story that wasn't cancelled is done; back to active when one leaves
+  // active → integrating while finished user stories wait to merge (or, merged,
+  // for their acceptance gate); → review once every user story that wasn't
+  // cancelled is done; back to active when one leaves
   // the queue unmerged. Idempotent and quiet when nothing changes, so it is
   // safe to call on every read (status) and after plan edits (user story delete).
   advanceMilestone(milestoneId: string): void {
@@ -1228,7 +1597,10 @@ export class MilestoneIntegration {
     if (!userStories.length) return
     const allDone = userStories.every((s) => s.status === "done")
     const settled = userStories.every(
-      (s) => s.status === "done" || s.status === "integrating"
+      (s) =>
+        s.status === "done" ||
+        s.status === "merged" ||
+        s.status === "integrating"
     )
     const target = allDone
       ? "review"
@@ -1251,7 +1623,7 @@ export class MilestoneIntegration {
         features.advanceMilestoneStatus(
           milestoneId,
           "integrating",
-          "Every user story is merging"
+          "Every user story is merging or awaiting its acceptance gate"
         )
       else if (!settled && milestone.status === "integrating")
         features.advanceMilestoneStatus(
@@ -1335,6 +1707,7 @@ export class MilestoneIntegration {
       queue: mergeQueue.listMergeEntries({ milestoneId }),
       summary,
       landing: milestone.landing,
+      gates: waveGates.listWaveGates(milestoneId).reverse(),
     }
   }
 
@@ -1657,13 +2030,17 @@ export class MilestoneIntegration {
         for (const userStory of features.listUserStories(milestone.id))
           if (userStory.worktreePath)
             referenced.add(path.resolve(userStory.worktreePath))
+        // A failed smoke step keeps its worktree for "accept as is".
         for (const entry of mergeQueue.listMergeEntries({
           milestoneId: milestone.id,
-          statuses: ["resolving"],
+          statuses: ["resolving", "conflict"],
         }))
           if (entry.resolutionWorktree)
             referenced.add(path.resolve(entry.resolutionWorktree))
       }
+    // A running wave gate's worktree (plan 112.5).
+    for (const run of playbooks.listPlaybookRuns({ status: "running" }))
+      if (run.worktreePath) referenced.add(path.resolve(run.worktreePath))
     for (const [featureDir, names] of listed) {
       const dir = path.join(root, featureDir)
       const feature = features.getFeature(featureDir)

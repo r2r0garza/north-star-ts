@@ -43,6 +43,11 @@ const loopCalls: LoopCall[] = []
 const builds = new Map<string, Record<string, string>>()
 // What the integrator writes into the conflicted files.
 let resolution: Record<string, string> | null = null
+// How the gate's QA triages a criterion (plan 112.5), by "<story key> <id>";
+// passed when unset. An app_bug's test fails on an assertion.
+const gateOutcomes = new Map<string, "passed" | "app_bug">()
+// The conflict smoke step rejects the merged result (plan 112.5).
+let smokeRejects = false
 
 vi.mock("../agent", () => ({
   SHUTDOWN_ABORT_REASON,
@@ -52,6 +57,7 @@ vi.mock("../agent", () => ({
     workspace: string
     userMessage?: string
     processProofStep?: boolean
+    processGateStep?: boolean
     processRunId?: string
     processPhaseRunId?: string
   }) => {
@@ -74,20 +80,29 @@ vi.mock("../agent", () => ({
       for (const [file, text] of Object.entries(resolution))
         writeFileSync(path.join(input.workspace, file), text)
     }
-    if (input.processProofStep) {
+    if (input.processGateStep) {
+      await fakeGateQa(input, (key, id) => gateOutcomes.get(`${key} ${id}`))
+      content = "gate recorded"
+    } else if (input.processProofStep) {
+      const link = processes.getProcessRun(input.processRunId!)?.missionControl
+      const storyId = link?.userStoryId
+      const rejected = smokeRejects && link?.hook === "after_each_user_story"
+      const count = storyId
+        ? features.getUserStory(storyId)!.spec.acceptance.length
+        : 1
       recordUserStoryProof({
         processRunId: input.processRunId!,
         processPhaseRunId: input.processPhaseRunId!,
         args: {
-          verdict: "accepted",
-          criteria: [
-            {
-              id: "AC-1",
-              status: "met",
-              evidence: "Checked the file.",
-              method: "command",
-            },
-          ],
+          verdict: rejected ? "rejected" : "accepted",
+          criteria: Array.from({ length: Math.max(count, 1) }, (_, i) => ({
+            id: `AC-${i + 1}`,
+            status: rejected ? "not_met" : "met",
+            evidence: rejected
+              ? "The merged file lost a's line."
+              : "Checked the file.",
+            method: "command",
+          })),
         },
       })
       content = "verified"
@@ -137,8 +152,11 @@ import {
 } from "../db/repositories/workspaces"
 import { ProcessService } from "../tasks/process/service"
 import { UserStoryRunner, recordUserStoryProof } from "./user-story-runner"
-import { startConflictResolution } from "./hook-runner"
+import { startConflictResolution, startHookRun } from "./hook-runner"
+import * as waveGates from "../db/repositories/wave-gates"
 import { MilestoneIntegration } from "./integration"
+import { fakeGateQa } from "../test/fake-gate-qa"
+import { openEscalations, resolveGateEscalation } from "./gate-fixes"
 import { createDefaultPlaybook } from "./playbook-defaults"
 import type { AgentDefinition } from "../agent/agents/types"
 import { listWorktrees } from "../agent/subagents/worktrees"
@@ -244,7 +262,14 @@ function rig() {
   return created
 }
 
-function featureIn(workspace: string, keys: string[]) {
+// Most tests here are about the merge queue (106.5), so their milestone
+// playbook has no wave acceptance gate and a merge lands the story done.
+// `gate: true` keeps the default playbook's gate (plan 110).
+function featureIn(
+  workspace: string,
+  keys: string[],
+  options: { gate?: boolean } = {}
+) {
   const graph = features.createFeature({
     key: "billing",
     name: "Billing",
@@ -254,6 +279,11 @@ function featureIn(workspace: string, keys: string[]) {
     workspaceId: upsertWorkspace(workspace).id,
   })
   const milestone = graph.milestones[0]
+  if (!options.gate) {
+    const playbook = createDefaultPlaybook("milestone")
+    playbooks.removeHook(playbook.id, "after_each_wave")
+    features.updateMilestone(milestone.id, { playbookId: playbook.id })
+  }
   for (const key of keys)
     features.createUserStory({
       milestoneId: milestone.id,
@@ -301,6 +331,8 @@ beforeEach(() => {
   loopCalls.length = 0
   builds.clear()
   resolution = null
+  gateOutcomes.clear()
+  smokeRejects = false
   notices.length = 0
 })
 
@@ -317,6 +349,317 @@ afterEach(async () => {
 })
 
 describe.skipIf(!sqliteLoads)("milestone integration", () => {
+  it("lands a merge as merged with the wave gate, and the gate makes it done", async () => {
+    setup()
+    const root = repo()
+    const { feature, milestone, userStory } = featureIn(
+      root,
+      ["api", "pdf", "ui"],
+      { gate: true }
+    )
+    features.setUserStoryEdges(milestone.id, [
+      {
+        fromUserStoryId: userStory("api").id,
+        toUserStoryId: userStory("ui").id,
+      },
+      {
+        fromUserStoryId: userStory("pdf").id,
+        toUserStoryId: userStory("ui").id,
+      },
+    ])
+    builds.set("api", { "api.txt": "api\n" })
+    builds.set("pdf", { "pdf.txt": "pdf\n" })
+    const api = await runner.startUserStory(userStory("api").id)
+    await drive(api.processRunId!)
+    await integration.idle()
+    expect(features.getUserStory(userStory("api").id)!.status).toBe("merged")
+    // Its worktree is gone like any merged story's.
+    expect(existsSync(api.worktreePath!)).toBe(false)
+    // pdf is still running: no gate yet, and the dependent waits on both.
+    const pdf = await runner.startUserStory(userStory("pdf").id)
+    await expect(
+      startHookRun(runner, {
+        featureId: feature.id,
+        milestoneId: milestone.id,
+        hook: "after_each_wave",
+      })
+    ).rejects.toThrow(/Wait for pdf \(running\)/)
+    await drive(pdf.processRunId!)
+    await integration.idle()
+    await expect(runner.startUserStory(userStory("ui").id)).rejects.toThrow(
+      /awaiting their acceptance gate: (api, pdf|pdf, api)\./
+    )
+    expect(features.getMilestone(milestone.id)!.status).toBe("active")
+
+    const run = await startHookRun(runner, {
+      featureId: feature.id,
+      milestoneId: milestone.id,
+      hook: "after_each_wave",
+    })
+    // The gate runs in a worktree at the integration head.
+    expect(run).toMatchObject({ hook: "after_each_wave", status: "running" })
+    expect(run.worktreePath && existsSync(run.worktreePath)).toBe(true)
+    await drive(run.processRunId!)
+    await integration.idle()
+    expect(playbooks.getPlaybookRun(run.id)!.status).toBe("completed")
+    const [gate] = waveGates.listWaveGates(milestone.id)
+    expect(gate).toMatchObject({
+      round: 1,
+      status: "passed",
+      playbookRunId: run.id,
+    })
+    // The suite, and the config `npx playwright test` reads, are committed
+    // to the integration branch; the worktree is gone.
+    expect(gate.checksCommit).toBeTruthy()
+    const branch = features.getMilestone(milestone.id)!.integrationBranch!
+    expect(git(root, "rev-parse", branch)).toBe(gate.checksCommit)
+    expect(git(root, "show", `${branch}:e2e/specs/gate.spec.ts`)).toContain(
+      "@AC-1"
+    )
+    expect(git(root, "show", `${branch}:playwright.config.ts`)).toContain(
+      "Generated by North Star"
+    )
+    expect(git(root, "log", "-1", "--format=%B", branch)).toContain(
+      `Mission-Control-Gate: ${gate.id}`
+    )
+    expect(existsSync(run.worktreePath!)).toBe(false)
+    expect(gate.storyIds.sort()).toEqual(
+      [userStory("api").id, userStory("pdf").id].sort()
+    )
+    expect(features.getUserStory(userStory("api").id)!.status).toBe("done")
+    expect(features.getUserStory(userStory("pdf").id)!.status).toBe("done")
+    // Nothing is merged now, so there is no gate to run.
+    await expect(
+      startHookRun(runner, {
+        featureId: feature.id,
+        milestoneId: milestone.id,
+        hook: "after_each_wave",
+      })
+    ).rejects.toThrow(/No user story in milestone-1 is merged/)
+
+    // The dependent starts once both are done; after it, the second gate's
+    // batch is only ui, and passing it brings the milestone to review.
+    const ui = await runner.startUserStory(userStory("ui").id)
+    await drive(ui.processRunId!)
+    await integration.idle()
+    expect(features.getUserStory(userStory("ui").id)!.status).toBe("merged")
+    expect(features.getMilestone(milestone.id)!.status).toBe("integrating")
+    const secondRun = await startHookRun(runner, {
+      featureId: feature.id,
+      milestoneId: milestone.id,
+      hook: "after_each_wave",
+    })
+    await drive(secondRun.processRunId!)
+    await integration.idle()
+    const second = waveGates.listWaveGates(milestone.id)[1]
+    expect(second).toMatchObject({
+      round: 2,
+      status: "passed",
+      storyIds: [userStory("ui").id],
+    })
+    integration.advanceMilestone(milestone.id)
+    expect(features.getMilestone(milestone.id)!.status).toBe("review")
+  })
+
+  it("settles merged stories when the playbook drops its gate", async () => {
+    setup()
+    const root = repo()
+    const { feature, milestone, userStory } = featureIn(root, ["a"], {
+      gate: true,
+    })
+    builds.set("a", { "a.txt": "a\n" })
+    const a = await runner.startUserStory(userStory("a").id)
+    await drive(a.processRunId!)
+    await integration.idle()
+    expect(features.getUserStory(userStory("a").id)!.status).toBe("merged")
+    const playbook = playbooks
+      .listPlaybooks()
+      .find((p) => p.altitude === "milestone")!
+    playbooks.removeHook(playbook.id, "after_each_wave")
+    await startHookRun(runner, {
+      featureId: feature.id,
+      milestoneId: milestone.id,
+      hook: "after_each_wave",
+    })
+    expect(features.getUserStory(userStory("a").id)!.status).toBe("done")
+    expect(waveGates.listWaveGates(milestone.id)[0].report).toMatchObject({
+      reason: "The milestone playbook has no gate hook.",
+    })
+  })
+
+  it("fails the gate when its run ends without a result, keeping the batch merged", async () => {
+    setup()
+    const root = repo()
+    const { feature, milestone, userStory } = featureIn(root, ["a"], {
+      gate: true,
+    })
+    builds.set("a", { "a.txt": "a\n" })
+    const a = await runner.startUserStory(userStory("a").id)
+    await drive(a.processRunId!)
+    await integration.idle()
+    // A gate run interrupted before it recorded a result (110.02 runs steps).
+    const run = playbooks.createPlaybookRun({
+      playbookId: null,
+      hook: "after_each_wave",
+      featureId: feature.id,
+      milestoneId: milestone.id,
+    })
+    const gate = waveGates.createWaveGate({
+      milestoneId: milestone.id,
+      storyIds: [userStory("a").id],
+      playbookRunId: run.id,
+    })
+    runner.reconcile()
+    expect(waveGates.getWaveGate(gate.id)!.status).toBe("failed")
+    expect(features.getUserStory(userStory("a").id)!.status).toBe("merged")
+    // Re-running it opens the next round.
+    const again = await startHookRun(runner, {
+      featureId: feature.id,
+      milestoneId: milestone.id,
+      hook: "after_each_wave",
+    })
+    await drive(again.processRunId!)
+    await integration.idle()
+    expect(waveGates.listWaveGates(milestone.id).map((g) => g.status)).toEqual([
+      "failed",
+      "passed",
+    ])
+    expect(features.getUserStory(userStory("a").id)!.status).toBe("done")
+  })
+
+  it("turns an app bug into a fix story that runs next, and passes the gate once it's fixed", async () => {
+    setup()
+    const root = repo()
+    const { feature, milestone, userStory } = featureIn(root, ["a"], {
+      gate: true,
+    })
+    builds.set("a", { "a.txt": "a\n" })
+    const a = await runner.startUserStory(userStory("a").id)
+    await drive(a.processRunId!)
+    await integration.idle()
+    gateOutcomes.set("a AC-1", "app_bug")
+    const first = await startHookRun(runner, {
+      featureId: feature.id,
+      milestoneId: milestone.id,
+      hook: "after_each_wave",
+    })
+    await drive(first.processRunId!)
+    await integration.idle()
+    const [gate] = waveGates.listWaveGates(milestone.id)
+    expect(gate.status).toBe("fixing")
+    // The suite is on the integration branch even though the gate failed.
+    expect(gate.checksCommit).toBeTruthy()
+    const fix = features
+      .listUserStories(milestone.id)
+      .find((s) => s.gateId === gate.id)!
+    expect(fix).toMatchObject({
+      key: "fix-a-ac1",
+      origin: "gate",
+      fixes: {
+        userStoryId: userStory("a").id,
+        criterionId: "AC-1",
+        criterion: "The file exists",
+      },
+    })
+    expect(fix.spec.acceptance[1]).toMatch(
+      /tagged `@billing\.milestone-1\.a @AC-1` pass/
+    )
+    expect(fix.spec.notes).toContain("The file is missing.")
+    expect(features.listEdges(milestone.id)).toEqual([])
+    expect(features.getUserStory(userStory("a").id)!.status).toBe("merged")
+
+    // The fix story merges; the next gate proves both and passes.
+    gateOutcomes.clear()
+    builds.set("fix-a-ac1", { "a.txt": "fixed\n" })
+    const run = await runner.startUserStory(fix.id)
+    await drive(run.processRunId!)
+    await integration.idle()
+    const second = await startHookRun(runner, {
+      featureId: feature.id,
+      milestoneId: milestone.id,
+      hook: "after_each_wave",
+    })
+    await drive(second.processRunId!)
+    await integration.idle()
+    expect(waveGates.listWaveGates(milestone.id)[1]).toMatchObject({
+      status: "passed",
+    })
+    expect(features.getUserStory(userStory("a").id)!.status).toBe("done")
+    expect(features.getUserStory(fix.id)!.status).toBe("done")
+  })
+
+  it("asks the user past the fix-round cap: accept, fix it yourself, or drop", async () => {
+    setup()
+    const root = repo()
+    const { feature, milestone } = featureIn(root, [], { gate: true })
+    features.createUserStory({
+      milestoneId: milestone.id,
+      key: "a",
+      title: "a",
+      spec: { goal: "a", acceptance: ["one", "two", "three"] },
+    })
+    const story = () =>
+      features.listUserStories(milestone.id).find((s) => s.key === "a")!
+    features.setFeatureBudgets(feature.id, { maxGateFixRounds: 0 })
+    builds.set("a", { "a.txt": "a\n" })
+    const run = await runner.startUserStory(story().id)
+    await drive(run.processRunId!)
+    await integration.idle()
+    for (const id of ["AC-1", "AC-2", "AC-3"])
+      gateOutcomes.set(`a ${id}`, "app_bug")
+    const gateRun = await startHookRun(runner, {
+      featureId: feature.id,
+      milestoneId: milestone.id,
+      hook: "after_each_wave",
+    })
+    await drive(gateRun.processRunId!)
+    await integration.idle()
+    let [gate] = waveGates.listWaveGates(milestone.id)
+    expect(gate.status).toBe("escalated")
+    const escalations = openEscalations(gate)
+    expect(escalations.map((e) => e.root.criterionId)).toEqual([
+      "AC-1",
+      "AC-2",
+      "AC-3",
+    ])
+    expect(features.listUserStories(milestone.id)).toHaveLength(1)
+
+    resolveGateEscalation({
+      gateId: gate.id,
+      escalationId: escalations[0].id,
+      action: "accept",
+      note: "Good enough.",
+    })
+    resolveGateEscalation({
+      gateId: gate.id,
+      escalationId: escalations[1].id,
+      action: "drop",
+    })
+    const { gate: decided, pause } = resolveGateEscalation({
+      gateId: gate.id,
+      escalationId: escalations[2].id,
+      action: "user_fix",
+    })
+    // Dropping revised the spec; fixing it yourself pauses; both re-run it.
+    expect(story().spec.acceptance).toEqual(["one", "three"])
+    expect(pause).toMatch(/You're fixing a AC-3 yourself/)
+    expect(decided.status).toBe("fixing")
+    expect(story().status).toBe("merged")
+
+    // The re-run gate counts the accepted criterion as passed.
+    gateOutcomes.clear()
+    const rerun = await startHookRun(runner, {
+      featureId: feature.id,
+      milestoneId: milestone.id,
+      hook: "after_each_wave",
+    })
+    await drive(rerun.processRunId!)
+    await integration.idle()
+    gate = waveGates.listWaveGates(milestone.id)[1]
+    expect(gate.status).toBe("passed")
+    expect(story().status).toBe("done")
+  })
+
   it("runs independent user stories in parallel worktrees, merges them in order, and starts the dependent user story on both", async () => {
     setup()
     const root = repo()
@@ -492,6 +835,48 @@ describe.skipIf(!sqliteLoads)("milestone integration", () => {
     )
     expect(git(root, "status", "--porcelain")).toBe("")
     expect((await listWorktrees(root)).length).toBe(1)
+  })
+
+  it("keeps a resolution the smoke step rejected, and merges it when the user accepts it as is", async () => {
+    setup()
+    const root = repo()
+    const { userStory } = featureIn(root, ["a", "b"])
+    builds.set("a", { "shared.txt": "one\nTWO from a\nthree\n" })
+    builds.set("b", { "shared.txt": "one\nTWO from b\nthree\n" })
+    resolution = { "shared.txt": "one\nTWO from b\nthree\n" }
+    smokeRejects = true
+    const a = await runner.startUserStory(userStory("a").id)
+    const b = await runner.startUserStory(userStory("b").id)
+    await drive(a.processRunId!)
+    await drive(b.processRunId!)
+    await settleAll()
+    const entry = mergeQueue.listMergeEntries({
+      userStoryId: userStory("b").id,
+    })[0]
+    expect(entry).toMatchObject({ status: "conflict", escalated: true })
+    expect(entry.note).toMatch(/smoke step found AC-1 not holding/)
+    expect(entry.smoke).toMatchObject({
+      criteria: [{ id: "AC-1", text: "The file exists", status: "not_met" }],
+      decision: null,
+    })
+    // The worktree is kept, and a sweep leaves it alone.
+    expect(existsSync(entry.resolutionWorktree!)).toBe(true)
+    await integration.reconcile()
+    expect(existsSync(entry.resolutionWorktree!)).toBe(true)
+
+    await integration.resolveSmokeFailure({
+      entryId: entry.id,
+      action: "accept",
+      note: "The gate checks it.",
+    })
+    await integration.idle()
+    const merged = mergeQueue.getMergeEntry(entry.id)!
+    expect(merged.status).toBe("merged")
+    expect(features.getUserStory(userStory("b").id)!.status).toBe("done")
+    const branch = features.getMilestone(merged.milestoneId)!.integrationBranch!
+    expect(git(root, "log", "-1", "--format=%B", branch)).toContain(
+      "Merged as is over AC-1 (smoke step decided by user: The gate checks it.)"
+    )
   })
 
   it("escalates a conflict with no way to resolve it and leaves the repository clean", async () => {

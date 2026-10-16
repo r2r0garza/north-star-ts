@@ -777,6 +777,9 @@ export type UserStoryStatus =
   | "running"
   | "proving"
   | "integrating"
+  // Merged into the integration branch and awaiting its wave's acceptance
+  // gate (plan 110). Only "done" satisfies a dependency.
+  | "merged"
   | "done"
   | "failed"
   // The app couldn't be run to verify it (plan 112.3): terminal for this
@@ -925,10 +928,36 @@ export interface MergeQueueEntry {
   resolutionStartOid: string | null
   resolutionAttempts: number
   proofAcceptedAt: number
+  // The conflict resolution's smoke step found criteria that don't hold
+  // (plan 112.5); null otherwise.
+  smoke: MergeSmokeFailure | null
   createdAt: number
   updatedAt: number
   startedAt: number | null
   finishedAt: number | null
+}
+
+// A merge conflict's smoke step that rejected the merged result (plan
+// 112.5). The resolution worktree is kept, so the user can accept the merge
+// as is, fix it themselves, or drop the criteria: the same three actions as
+// an acceptance gate escalation.
+export interface MergeSmokeFailure {
+  resolutionRunId: string
+  // The criteria the smoke step didn't find holding, with their words at the
+  // time (positional ids shift when a criterion is dropped).
+  criteria: Array<{
+    id: string
+    text: string
+    status: ProofCriterionStatus
+    evidence: string
+    reason?: string
+  }>
+  decision: {
+    action: GateEscalationAction
+    note: string
+    by: string
+    at: number
+  } | null
 }
 
 export interface UserStory {
@@ -947,10 +976,22 @@ export interface UserStory {
   worktreePath: string | null
   baseOid: string | null
   attempts: number
-  origin: "user" | "agent"
+  // "gate": a fix story an acceptance gate added (plan 112.5).
+  origin: "user" | "agent" | "gate"
+  // Fix stories: the gate that created it, and the criterion it fixes.
+  gateId: string | null
+  fixes: UserStoryFixTarget | null
   position: number
   startedAt: number | null
   finishedAt: number | null
+}
+
+// The criterion a fix story fixes, with its words when the gate found it
+// broken (positional ids shift when criteria change).
+export interface UserStoryFixTarget {
+  userStoryId: string
+  criterionId: string
+  criterion: string
 }
 
 export interface UserStoryEdge {
@@ -985,6 +1026,7 @@ export type PlaybookHookName =
   | "run"
   | "before_user_stories"
   | "after_each_user_story"
+  | "after_each_wave"
   | "after_all_user_stories"
   | "plan"
   | "between_milestones"
@@ -1031,6 +1073,153 @@ export interface PlaybookRun {
   worktreePath: string | null
   createdAt: number
   finishedAt: number | null
+}
+
+// A wave acceptance gate (plan 110): the milestone's merged user stories (the
+// batch) proven together on the integration branch.
+export type WaveGateStatus =
+  | "running"
+  | "passed"
+  | "fixing"
+  | "escalated"
+  | "failed"
+
+export interface WaveGate {
+  id: string
+  milestoneId: string
+  // 1, 2, … per milestone.
+  round: number
+  // The batch: exactly the user stories that were merged when the gate opened.
+  storyIds: string[]
+  status: WaveGateStatus
+  playbookRunId: string | null
+  // While running: QA's latest record_gate (a WaveGateReport). Finished: that
+  // record with the outcome, or { reason } when there was none.
+  report: unknown | null
+  // The latest whole-suite run_suite on this gate: what record_gate reads.
+  suiteRun: SuiteRun | null
+  checksCommit: string | null
+  createdAt: number
+  finishedAt: number | null
+}
+
+// One run of the wave suite (plan 112.5), stamped with the suite directory's
+// content hash so a record counts only results on the suite as it is.
+export interface SuiteRun {
+  hash: string
+  ranAt: number
+  tests: Array<{
+    title: string
+    file: string
+    status: "passed" | "failed" | "timedOut" | "skipped" | "interrupted"
+    error?: string
+    // A failed test's class (classifyRunFailure): an assertion against the
+    // app is "feature"; an unreachable app "environment"; a broken spec
+    // "test_defect".
+    class?: "environment" | "feature" | "test_defect"
+  }>
+  // Set when the run failed with no per-test result to blame (it didn't
+  // start, a spec didn't load): its class and the signal that decided it.
+  failure?: {
+    class: "environment" | "feature" | "test_defect"
+    signal: string
+  } | null
+}
+
+// How QA triaged a criterion at the gate (plan 112.5). `environment`: the
+// app or the suite couldn't run (setup); `spec_question`: a later story
+// changed what an earlier criterion relied on and the criterion no longer
+// holds as written, so the user decides.
+export type GateCriterionOutcome =
+  | "passed"
+  | "app_bug"
+  | "check_fixed"
+  | "environment"
+  | "spec_question"
+
+export interface GateCriterionResult {
+  id: string
+  // The criterion's words when the gate finished.
+  text?: string
+  outcome: GateCriterionOutcome
+  evidence: string
+  // Its tagged tests' results on the suite as recorded.
+  tests: Array<{ title: string; status: string }>
+  artifacts?: string[]
+  problem?: string
+  justification?: string
+  reason?: string
+  question?: string
+  // Accepted as is by the user at an earlier gate.
+  waived?: boolean
+}
+
+export interface GateStoryResult {
+  userStoryId: string
+  key: string
+  storyRef: string
+  // In this gate's batch (as opposed to a story an earlier gate passed).
+  batch: boolean
+  criteria: GateCriterionResult[]
+}
+
+// A file of the suite the gate changed, with the earlier stories whose tests
+// it held.
+export interface GateTestChange {
+  path: string
+  change: "added" | "modified" | "deleted"
+  earlierStories: string[]
+}
+
+export interface WaveGateReport {
+  version: 1
+  stories: GateStoryResult[]
+  testChanges: GateTestChange[]
+  suite: { tests: number; passed: number; hash: string }
+  warnings: string[]
+  recordedBy: string
+  recordedAt: number
+  processRunId: string
+  // Set when the gate finished.
+  outcome?: "passed" | "failed"
+  reason?: string
+  commitNote?: string
+  fixes?: GateFix[]
+  escalations?: GateEscalation[]
+}
+
+// An app_bug the gate turned into a fix story (or proposed one in Manual).
+export interface GateFix {
+  userStoryId: string
+  key: string
+  criterionId: string
+  // The criterion it traces back to: a fix story's bug is its original's.
+  root: UserStoryFixTarget & { key: string }
+  fixRound: number
+  fixStoryId: string | null
+  fixStoryKey: string | null
+  proposalId: string | null
+}
+
+export type GateEscalationAction = "accept" | "user_fix" | "drop"
+
+// A criterion still app_bug after maxGateFixRounds fix rounds, or a spec
+// question: the user accepts it as is, fixes it themselves, or drops it.
+export interface GateEscalation {
+  id: string
+  root: UserStoryFixTarget & { key: string }
+  rounds: number
+  problem: string
+  evidence: string
+  question?: string
+  tests: Array<{ title: string; status: string }>
+  artifacts?: string[]
+  resolution?: {
+    action: GateEscalationAction
+    note: string
+    by: string
+    at: number
+  }
 }
 
 export interface MissionControlRunLink {

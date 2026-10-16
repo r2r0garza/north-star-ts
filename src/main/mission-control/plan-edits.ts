@@ -8,6 +8,7 @@ import {
   type PlanChange,
   type UserStoryDraft,
 } from "../../shared/mission-control/plan-changes"
+import { shapePlan } from "./plan-shape"
 import { emitWorkChanged } from "./work-events"
 
 // Applies structural plan changes (plan 106.6). One engine serves both paths:
@@ -177,6 +178,7 @@ function createUserStory(
     spec: specOf(draft),
     podKey: draft.pod ?? null,
     origin: input.origin,
+    fix: draft.fix ?? null,
     actor: input.actor,
     reason: input.reason,
   })
@@ -574,11 +576,22 @@ function applyAll(
         )
       }
     }
+    const created = new Set(result.createdUserStoryIds)
     const touched = new Set(
-      [input.milestoneId, ...result.createdMilestoneIds].filter(
-        (id): id is string => !!id
-      )
+      [
+        input.milestoneId,
+        ...result.createdMilestoneIds,
+        ...[...created].map((id) => features.getUserStory(id)?.milestoneId),
+      ].filter((id): id is string => !!id)
     )
+    // The runnable skeleton and overlap edges (plan 112.5).
+    for (const milestoneId of touched)
+      shapePlan({
+        feature,
+        milestoneId,
+        createdIds: created,
+        actor: input.actor,
+      })
     for (const milestone of features.listMilestones(feature.id))
       if (
         touched.has(milestone.id) ||

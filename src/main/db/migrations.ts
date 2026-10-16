@@ -110,6 +110,10 @@ function ensureToolMedia(db: Database.Database): void {
   CREATE INDEX IF NOT EXISTS tool_media_conversation ON tool_media(conversation_id, tool_call_id);`)
 }
 
+function ensureProcessDeletionColumn(db: Database.Database): void {
+  addColumnIfMissing(db, "process_definitions", "deleted_at", "INTEGER")
+}
+
 const MIGRATIONS: Array<(db: Database.Database) => void> = [
   (db) => db.exec(SCHEMA_V1),
   (db) => db.exec(SCHEMA_V2),
@@ -194,6 +198,8 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureWorkspaceAppLaunchColumn,
   ensureAppRecipeStates,
   ensureAppCheckPhaseKind,
+  ensureWaveGates,
+  ensureProcessDeletionColumn,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -455,6 +461,37 @@ function ensureAppCheckPhaseKind(db: Database.Database): void {
   db.exec("DROP TABLE process_phases")
   db.exec("ALTER TABLE process_phases_new RENAME TO process_phases")
   for (const index of indexes) db.exec(index)
+}
+
+// v73 (plan 112.5): wave acceptance gates, one row per gate a milestone ran
+// over its merged user stories, and the columns fix stories and the merge
+// smoke step need. Idempotent for the self-heal pass.
+function ensureWaveGates(db: Database.Database): void {
+  if (!tableExists(db, "milestones")) return
+  db.exec(`
+CREATE TABLE IF NOT EXISTS wave_gates (
+  id              TEXT PRIMARY KEY,
+  milestone_id    TEXT NOT NULL REFERENCES milestones(id) ON DELETE CASCADE,
+  round           INTEGER NOT NULL,
+  story_ids       TEXT NOT NULL DEFAULT '[]',
+  status          TEXT NOT NULL,
+  playbook_run_id TEXT,
+  report          TEXT,
+  checks_commit   TEXT,
+  created_at      INTEGER NOT NULL,
+  finished_at     INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wave_gates_round ON wave_gates(milestone_id, round);
+CREATE INDEX IF NOT EXISTS idx_wave_gates_run ON wave_gates(playbook_run_id);
+`)
+  // The gate's latest whole-suite run (JSON SuiteRun), what record_gate reads.
+  addColumnIfMissing(db, "wave_gates", "suite_run", "TEXT")
+  // A fix story's gate and the criterion it fixes (JSON UserStoryFixTarget).
+  addColumnIfMissing(db, "user_stories", "gate_id", "TEXT")
+  addColumnIfMissing(db, "user_stories", "fixes", "TEXT")
+  // A conflict resolution's smoke step that rejected the merged result, and
+  // the user's decision on it (JSON MergeSmokeFailure).
+  addColumnIfMissing(db, "merge_queue", "smoke", "TEXT")
 }
 
 // v58: a workspace's generated files and the command that rebuilds them
@@ -731,6 +768,8 @@ export function runMigrations(
       ensureWorkspaceAppLaunchColumn(db)
       ensureAppRecipeStates(db)
       ensureAppCheckPhaseKind(db)
+      ensureWaveGates(db)
+      ensureProcessDeletionColumn(db)
       // After ensureSubscriptionProviderConstraints: its V65 table rebuild
       // predates this column and would drop it.
       ensureProviderImageInputColumn(db)

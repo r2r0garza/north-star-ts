@@ -113,6 +113,9 @@ export const HEALTH_EVENTS = {
     label: "Worktree setup ran",
   },
   steer: { class: "neutral", weight: 0, label: "Message from the user" },
+  // The user decided an acceptance gate escalation or a merge smoke failure
+  // (plan 112.5): the story's proof-polishing count starts over.
+  user_decision: { class: "neutral", weight: 0, label: "User decision" },
 } as const satisfies Record<string, HealthEventSpec>
 
 export type HealthEventType = keyof typeof HEALTH_EVENTS

@@ -64,6 +64,11 @@ const ALTITUDES: Array<{
         label: "After each user story",
         note: "Reserved for merges once worktrees land.",
       },
+      {
+        hook: "after_each_wave",
+        label: "After each wave",
+        note: "The acceptance gate: merged user stories are done once it passes.",
+      },
       { hook: "after_all_user_stories", label: "After all user stories" },
     ],
   },

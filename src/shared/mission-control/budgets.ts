@@ -10,6 +10,7 @@ export type BudgetKey =
   | "maxMessagesPerHour"
   | "maxActiveHours"
   | "maxPhaseMinutes"
+  | "maxGateFixRounds"
 
 export type BudgetLevel = "ok" | "soft" | "hard"
 
@@ -73,6 +74,14 @@ export const BUDGET_SPECS: readonly BudgetSpec[] = [
     onHard:
       "The phase is told to wrap up; at twice the limit it stops and the user story retries.",
   },
+  {
+    key: "maxGateFixRounds",
+    label: "Fix rounds per gate criterion",
+    default: 2,
+    unit: "rounds",
+    onHard:
+      "The acceptance gate asks you about the criterion instead of adding another fix story.",
+  },
 ]
 
 export const SOFT_BUDGET_RATIO = 0.8
@@ -118,6 +127,7 @@ export const MILESTONE_BUDGETS: ReadonlySet<BudgetKey> = new Set([
   "maxUserStoryAttempts",
   "maxPlanRevisionsPerMilestone",
   "maxAgentUserStoriesPerMilestone",
+  "maxGateFixRounds",
 ])
 
 export function budgetMeters(

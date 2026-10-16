@@ -1,6 +1,11 @@
 import { mkdir, writeFile } from "fs/promises"
 import * as features from "../db/repositories/features"
-import type { MissionControlRunLink } from "../db/types"
+import type {
+  Feature,
+  Milestone,
+  MissionControlRunLink,
+  UserStory,
+} from "../db/types"
 import type { WriteScope } from "../agent/tools/write_scope"
 import { resolveInWorkspaceReal } from "../agent/tools/workspace"
 import type { ContextSection } from "../agent/context/context-builder"
@@ -19,7 +24,16 @@ export interface SeatScope {
   contextSection: ContextSection
 }
 
-// A user story run's reference, e.g. `CHK.M1.US2`. Null for a milestone run.
+// A user story's reference, e.g. `CHK.M1.US2`: its tag in the wave suite.
+export function userStoryRef(
+  feature: Pick<Feature, "key">,
+  milestone: Pick<Milestone, "key">,
+  userStory: Pick<UserStory, "key">
+): string {
+  return `${feature.key}.${milestone.key}.${userStory.key}`
+}
+
+// A user story run's reference. Null for a milestone run.
 export function storyRefForRun(link: MissionControlRunLink): string | null {
   const feature = features.getFeature(link.featureId)
   const userStory = link.userStoryId
@@ -29,24 +43,30 @@ export function storyRefForRun(link: MissionControlRunLink): string | null {
     ? features.getMilestone(userStory.milestoneId)
     : null
   return feature && userStory && milestone
-    ? `${feature.key}.${milestone.key}.${userStory.key}`
+    ? userStoryRef(feature, milestone, userStory)
     : null
 }
 
 // The scope of a QA seat's turn (plan 112.4): it may write only the run's
-// scratch directory; every other role is unrestricted (undefined). The
-// acceptance-checks directory comes with 112.5's suite. Resolved server-side
-// when the phase starts, never from model arguments.
+// scratch directory, plus the wave suite's directory at an acceptance gate
+// (112.5); every other role is unrestricted (undefined). Resolved
+// server-side when the phase starts, never from model arguments.
 export async function seatWriteScope(input: {
   role: string
   runId: string
   workingDirectory: string | undefined
+  // The wave suite's directory, for a gate step.
+  suiteDir?: string
 }): Promise<SeatScope | undefined> {
   if (input.role !== QA_ROLE) return undefined
   const scratch = `${SCRATCH_DIR}/${input.runId}`
   const scope: SeatScope = {
-    writeScope: { allow: [scratch] },
-    contextSection: writeScopeContextSection(scratch),
+    writeScope: {
+      allow: input.suiteDir ? [scratch, input.suiteDir] : [scratch],
+    },
+    contextSection: input.suiteDir
+      ? suiteScopeContextSection(scratch, input.suiteDir)
+      : writeScopeContextSection(scratch),
   }
   if (!input.workingDirectory) return scope
   try {
@@ -85,5 +105,21 @@ export function writeScopeContextSection(scratch: string): ContextSection {
       channel: "runtime",
       source: "mission_control_write_scope",
     },
+  }
+}
+
+// The gate step's scope (plan 112.5): the suite and scratch, nothing else.
+function suiteScopeContextSection(
+  scratch: string,
+  suiteDir: string
+): ContextSection {
+  return {
+    ...writeScopeContextSection(scratch),
+    content: [
+      "## Where you may write",
+      `In this step you write the acceptance suite. You can create, edit, move, and delete files only inside \`${suiteDir}/\` (the suite) and \`${scratch}/\` (throwaway scripts and notes, never committed).`,
+      "",
+      "Every other path in the workspace is read-only to you, and the file tools refuse writes there. Don't work around that with shell commands: you verify product code, you don't change it. Report what's wrong as app_bug in the gate record.",
+    ].join("\n"),
   }
 }

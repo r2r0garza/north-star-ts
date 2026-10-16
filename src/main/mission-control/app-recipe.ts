@@ -594,7 +594,8 @@ export class AppRecipeService {
   // verification's stages, durations, smoke results, and log tail.
   async appCheck(input: {
     featureId: string
-    userStoryId: string
+    // Null for a milestone's acceptance gate (plan 112.5).
+    userStoryId: string | null
     root: string
     signal: AbortSignal
   }): Promise<
@@ -640,7 +641,7 @@ export class AppRecipeService {
         featureId: input.featureId,
         userStoryId: input.userStoryId,
         type: "app_check",
-        refId: `${input.userStoryId}:${randomUUID()}`,
+        refId: `${input.userStoryId ?? "gate"}:${randomUUID()}`,
         detail: {
           result: result.result,
           cached:

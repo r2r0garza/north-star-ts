@@ -1,6 +1,10 @@
 import { randomUUID } from "crypto"
 import { getDb } from "../connection"
-import type { MergeQueueEntry, MergeQueueStatus } from "../types"
+import type {
+  MergeQueueEntry,
+  MergeQueueStatus,
+  MergeSmokeFailure,
+} from "../types"
 import { recordEvent } from "./mc-events"
 
 // The Mission Control merge queue (plan 106.5). One row per user story attempt whose
@@ -28,6 +32,7 @@ interface MergeQueueRow {
   resolution_start_oid: string | null
   resolution_attempts: number
   proof_accepted_at: number
+  smoke: string | null
   created_at: number
   updated_at: number
   started_at: number | null
@@ -47,6 +52,16 @@ function list(value: string): string[] {
     return Array.isArray(parsed) ? parsed.filter((v) => typeof v === "string") : []
   } catch {
     return []
+  }
+}
+
+function smoke(value: string | null): MergeSmokeFailure | null {
+  if (!value) return null
+  try {
+    const parsed = JSON.parse(value) as MergeSmokeFailure
+    return parsed && Array.isArray(parsed.criteria) ? parsed : null
+  } catch {
+    return null
   }
 }
 
@@ -70,6 +85,7 @@ function toEntry(row: MergeQueueRow): MergeQueueEntry {
     resolutionStartOid: row.resolution_start_oid,
     resolutionAttempts: row.resolution_attempts,
     proofAcceptedAt: row.proof_accepted_at,
+    smoke: smoke(row.smoke ?? null),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     startedAt: row.started_at,
@@ -172,6 +188,7 @@ export interface MergeEntryPatch {
   resolutionWorktree?: string | null
   resolutionStartOid?: string | null
   resolutionAttempts?: number
+  smoke?: MergeSmokeFailure | null
   startedAt?: number | null
   finishedAt?: number | null
 }
@@ -209,6 +226,8 @@ export function updateMergeEntry(
     add("resolution_start_oid", patch.resolutionStartOid)
   if (patch.resolutionAttempts !== undefined)
     add("resolution_attempts", patch.resolutionAttempts)
+  if (patch.smoke !== undefined)
+    add("smoke", patch.smoke ? JSON.stringify(patch.smoke) : null)
   if (patch.startedAt !== undefined) add("started_at", patch.startedAt)
   if (patch.finishedAt !== undefined) add("finished_at", patch.finishedAt)
   add("updated_at", Date.now())

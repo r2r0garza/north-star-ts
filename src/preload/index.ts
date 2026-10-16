@@ -95,6 +95,9 @@ import type {
   SeatMemory,
   SeatMemoryRetraction,
   HealthSignal,
+  GateEscalationAction,
+  MergeQueueEntry,
+  WaveGate,
 } from "../main/db/types"
 import type { Position } from "../shared/mission-control/position"
 import type {
@@ -1308,6 +1311,32 @@ const api = {
           "missionControl:integration:abandon",
           entryId
         ) as Promise<void>,
+      // A failed smoke step (plan 112.5).
+      resolveSmoke: (
+        entryId: string,
+        action: GateEscalationAction,
+        note?: string
+      ) =>
+        ipcRenderer.invoke(
+          "missionControl:integration:resolveSmoke",
+          entryId,
+          action,
+          note
+        ) as Promise<MergeQueueEntry>,
+      // An acceptance gate escalation (plan 112.5).
+      resolveGateEscalation: (
+        gateId: string,
+        escalationId: string,
+        action: GateEscalationAction,
+        note?: string
+      ) =>
+        ipcRenderer.invoke(
+          "missionControl:gate:resolveEscalation",
+          gateId,
+          escalationId,
+          action,
+          note
+        ) as Promise<WaveGate>,
       userStoryInfo: (userStoryId: string) =>
         ipcRenderer.invoke(
           "missionControl:integration:userStoryInfo",
@@ -3114,6 +3143,11 @@ export type {
   MissionControlRunLink,
   MergePolicyMode,
   MergeQueueEntry,
+  MergeSmokeFailure,
+  GateEscalation,
+  GateEscalationAction,
+  WaveGate,
+  WaveGateReport,
   MergeQueueStatus,
   MilestoneLanding,
   PhaseContextScope,

@@ -16,7 +16,11 @@ import { tmpdir } from "os"
 import path from "path"
 import { afterEach, describe, expect, it } from "vitest"
 import type { WorktreeSetupStep } from "../db/types"
-import { prepareWorktreeEnvironment, renderEnvironment } from "./worktree-env"
+import {
+  localizeDivergedLinks,
+  prepareWorktreeEnvironment,
+  renderEnvironment,
+} from "./worktree-env"
 
 const dirs: string[] = []
 const git = (cwd: string, ...args: string[]) =>
@@ -336,5 +340,119 @@ describe.skipIf(!python)("python-shared-venv", () => {
       setup: { linkPaths: [], steps: [step] },
     })
     expect(existsSync(path.join(worktree, "fallback-ran"))).toBe(true)
+  })
+})
+
+// Plan 112.5: a story that changes its dependencies gets its own install.
+describe("localizeDivergedLinks", () => {
+  function nodeRepo() {
+    const root = realpathSync(mkdtempSync(path.join(tmpdir(), "wt-deps-")))
+    dirs.push(root)
+    git(root, "init", "-b", "main")
+    git(root, "config", "user.email", "t@example.com")
+    git(root, "config", "user.name", "T")
+    writeFileSync(path.join(root, ".gitignore"), "node_modules/\n")
+    writeFileSync(path.join(root, "package.json"), '{"dependencies":{}}\n')
+    writeFileSync(path.join(root, "pnpm-lock.yaml"), "lockfileVersion: 9\n")
+    git(root, "add", ".")
+    git(root, "commit", "-m", "base")
+    mkdirSync(path.join(root, "node_modules", "left-pad"), { recursive: true })
+    const worktree = `${root}-story`
+    dirs.push(worktree)
+    git(root, "worktree", "add", "-q", "-b", "story", worktree)
+    return { root, worktree }
+  }
+  const setup = { linkPaths: ["node_modules"], steps: [] }
+
+  it("keeps the shared link while the manifests match", async () => {
+    const { root, worktree } = nodeRepo()
+    await prepareWorktreeEnvironment({
+      mainWorkspace: root,
+      worktreeWorkspace: worktree,
+      setup,
+    })
+    const runs: string[] = []
+    const results = await localizeDivergedLinks({
+      mainWorkspace: root,
+      worktreeWorkspace: worktree,
+      setup,
+      run: async (_cwd, command) => {
+        runs.push(command)
+      },
+    })
+    expect(results).toEqual([])
+    expect(runs).toEqual([])
+    expect(
+      lstatSync(path.join(worktree, "node_modules")).isSymbolicLink()
+    ).toBe(true)
+  })
+
+  it("installs in the worktree on divergence, leaving the main checkout's alone", async () => {
+    const { root, worktree } = nodeRepo()
+    await prepareWorktreeEnvironment({
+      mainWorkspace: root,
+      worktreeWorkspace: worktree,
+      setup,
+    })
+    writeFileSync(
+      path.join(worktree, "package.json"),
+      '{"dependencies":{"is-even":"1.0.0"}}\n'
+    )
+    const runs: Array<{ cwd: string; command: string }> = []
+    const results = await localizeDivergedLinks({
+      mainWorkspace: root,
+      worktreeWorkspace: worktree,
+      setup,
+      run: async (cwd, command) => {
+        runs.push({ cwd, command })
+        mkdirSync(path.join(cwd, "node_modules", "is-even"), {
+          recursive: true,
+        })
+      },
+    })
+    expect(runs).toEqual([{ cwd: worktree, command: "pnpm install" }])
+    expect(results).toMatchObject([{ status: "ok", cwd: "" }])
+    expect(results[0].label).toContain("package.json")
+    const local = path.join(worktree, "node_modules")
+    expect(lstatSync(local).isSymbolicLink()).toBe(false)
+    expect(existsSync(path.join(local, "is-even"))).toBe(true)
+    // The shared directory is untouched.
+    expect(existsSync(path.join(root, "node_modules", "is-even"))).toBe(false)
+    expect(existsSync(path.join(root, "node_modules", "left-pad"))).toBe(true)
+    // Removing the worktree removes the local install with it.
+    git(root, "worktree", "remove", "--force", worktree)
+    expect(existsSync(local)).toBe(false)
+    expect(existsSync(path.join(root, "node_modules", "left-pad"))).toBe(true)
+  })
+
+  it("puts the link back when the install fails", async () => {
+    const { root, worktree } = nodeRepo()
+    await prepareWorktreeEnvironment({
+      mainWorkspace: root,
+      worktreeWorkspace: worktree,
+      setup,
+    })
+    writeFileSync(
+      path.join(worktree, "pnpm-lock.yaml"),
+      "lockfileVersion: 10\n"
+    )
+    const results = await localizeDivergedLinks({
+      mainWorkspace: root,
+      worktreeWorkspace: worktree,
+      // The workspace's own setup step for that root is what runs.
+      setup: {
+        linkPaths: ["node_modules"],
+        steps: [step("deps", "make deps")],
+      },
+      run: async (_cwd, command) => {
+        throw new Error(`${command}: offline`)
+      },
+    })
+    expect(results).toMatchObject([
+      { status: "failed", command: "make deps", error: "make deps: offline" },
+    ])
+    expect(
+      lstatSync(path.join(worktree, "node_modules")).isSymbolicLink()
+    ).toBe(true)
   })
 })
