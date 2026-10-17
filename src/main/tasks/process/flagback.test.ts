@@ -288,6 +288,55 @@ describe.skipIf(!sqliteLoads)("flagback — resolveTarget", () => {
     expect("targetChildRunId" in res && res.targetChildRunId).toBe(s.I[0])
   })
 
+  it("accepts a transitive ancestor (grandparent), not only a direct parent", () => {
+    // build → test → validate; validate flags build.
+    const pid = buildProcess({
+      phases: [{ key: "build" }, { key: "test" }, { key: "validate" }],
+      edges: [
+        ["build", "test"],
+        ["test", "validate"],
+      ],
+    })
+    const run = processes.createProcessRun({
+      processId: pid,
+      sourceConversationId: null,
+      taskId: freshTask(),
+      objective: "o",
+      status: "running",
+    })
+    for (const key of ["build", "test"])
+      processes.createPhaseRun({
+        runId: run.id,
+        phaseId: phaseId(pid, key),
+        status: "completed",
+      })
+    const vRun = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: phaseId(pid, "validate"),
+      status: "running",
+    })
+    const res = resolveTarget(graphOf(pid), run.id, vRun, {
+      targetPhaseKey: "build",
+    })
+    expect(res).toEqual({ targetPhaseId: phaseId(pid, "build") })
+  })
+
+  it("walks a chained instance's lineage to the ancestor's own sub-task", () => {
+    // An instance downstream of T2 (itself sourced from I2) flags implement →
+    // resolves to I2, not the whole phase.
+    const s = buildFanoutScenario()
+    const downstream = processes.createPhaseRun({
+      runId: s.runId,
+      phaseId: phaseId(s.pid, "publish"),
+      status: "running",
+      sourceChildRunId: s.T[1],
+    })
+    const res = resolveTarget(graphOf(s.pid), s.runId, downstream, {
+      targetPhaseKey: "implement",
+    })
+    expect("targetChildRunId" in res && res.targetChildRunId).toBe(s.I[1])
+  })
+
   it("rejects a forward target, unknown key, and self", () => {
     const pid = buildProcess({
       phases: [{ key: "a" }, { key: "b" }],
@@ -417,6 +466,59 @@ describe.skipIf(!sqliteLoads)("flagback — applyFlagBack", () => {
     expect(processes.getPhaseRun(a.id)?.reworkNote).toBe("wrong approach")
     expect(processes.getPhaseRun(b.id)?.reworkNote).toContain("upstream")
     expect(processes.getPhaseRun(a.id)?.reworkRound).toBe(1)
+  })
+
+  it("diamond: flagging a branch leaves the parallel branch completed", () => {
+    // build → {a, b} → validate; validate flags a.
+    const pid = buildProcess({
+      phases: [{ key: "build" }, { key: "a" }, { key: "b" }, { key: "validate" }],
+      edges: [
+        ["build", "a"],
+        ["build", "b"],
+        ["a", "validate"],
+        ["b", "validate"],
+      ],
+    })
+    const taskId = freshTask()
+    const run = processes.createProcessRun({
+      processId: pid,
+      sourceConversationId: null,
+      taskId,
+      objective: "o",
+      status: "running",
+    })
+    const runs = Object.fromEntries(
+      ["build", "a", "b", "validate"].map((key) => [
+        key,
+        processes.createPhaseRun({
+          runId: run.id,
+          phaseId: phaseId(pid, key),
+          status: "completed",
+        }).id,
+      ])
+    )
+
+    applyFlagBack({
+      taskId,
+      runId: run.id,
+      graph: graphOf(pid),
+      target: { targetPhaseId: phaseId(pid, "a") },
+      reason: "branch a is wrong",
+    })
+    expect(statusOf(runs.build)).toBe("completed")
+    expect(statusOf(runs.a)).toBe("pending")
+    expect(statusOf(runs.b)).toBe("completed")
+    expect(statusOf(runs.validate)).toBe("pending")
+
+    // Flagging the root re-runs every branch.
+    applyFlagBack({
+      taskId,
+      runId: run.id,
+      graph: graphOf(pid),
+      target: { targetPhaseId: phaseId(pid, "build") },
+      reason: "build is wrong",
+    })
+    for (const id of Object.values(runs)) expect(statusOf(id)).toBe("pending")
   })
 
   it("gives the flagging phase its own findings; other downstream get the generic note", () => {

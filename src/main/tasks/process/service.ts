@@ -82,6 +82,7 @@ import {
   type PlannerAgentOption,
   UNATTENDED_WORK_NOTE,
   validatorPrompt,
+  type FlaggablePhase,
   type UpstreamResult,
 } from "./prompts"
 import {
@@ -98,6 +99,7 @@ import {
   type Validate,
 } from "./scheduler"
 import {
+  ancestorsOf,
   applyFlagBack,
   isContainer,
   previousOutcomeSummary,
@@ -1351,6 +1353,7 @@ export class ProcessService {
           phase,
           objective: run.objective ?? "",
           upstream: this.collectUpstream(run, phase),
+          flaggable: this.collectFlaggable(run, phase),
           // A "Request changes" send-back (plan 029) OR a validator rejection
           // (plan 031.1) stamped feedback on the phase-run; surface it so the
           // re-run addresses it. Re-read FRESH from the DB — a validator loop
@@ -1955,6 +1958,7 @@ export class ProcessService {
         sourcePhaseKey: sourceChildRun.phaseId
           ? this.phaseKey(run, sourceChildRun.phaseId)
           : undefined,
+        flaggable: this.collectFlaggable(run, phase),
         subtaskContent: sourceChildRun.resultContent,
       })
     }
@@ -2333,6 +2337,27 @@ export class ProcessService {
         : undefined
     }
     return null
+  }
+
+  // Every completed ancestor of `phase` (not only direct inputs), in graph order —
+  // the flag_for_rework targets resolveTarget will accept.
+  private collectFlaggable(
+    run: ProcessRun,
+    phase: ProcessPhase
+  ): FlaggablePhase[] {
+    if (!run.processId) return []
+    const graph = processes.getProcessGraph(run.processId)
+    if (!graph) return []
+    const ancestors = ancestorsOf(graph, phase.id)
+    const completed = new Set(
+      processes
+        .listPhaseRuns({ runId: run.id, parentId: null })
+        .filter((pr) => pr.status === "completed")
+        .map((pr) => pr.phaseId)
+    )
+    return graph.phases
+      .filter((p) => ancestors.has(p.id) && completed.has(p.id))
+      .map((p) => ({ phaseKey: p.key, phaseName: p.name }))
   }
 
   // A digest of the completed upstream phases' final output, for the kickoff.

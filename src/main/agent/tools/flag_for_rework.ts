@@ -24,7 +24,7 @@ export const flagForReworkTool: Tool = {
         "Flag a defect that an EARLIER phase of this process owns, instead of fixing it " +
         "yourself (fixing out of your lane leaves the real source untouched). The earlier " +
         "phase — and everything built on its output — will be re-run to address your feedback.\n\n" +
-        "Only flag work that ran BEFORE you; you cannot flag your own phase or a later one. " +
+        "Only flag work that ran BEFORE you — any earlier phase you depend on, directly or indirectly; you cannot flag your own phase or a later one. " +
         "Name the target by its phase key (shown in the 'Phases you may flag for rework' section " +
         "of your briefing). If you are reviewing a single sub-task of a fan-out phase, just name " +
         "that phase's key — the engine knows which sub-task you are working on.\n\n" +

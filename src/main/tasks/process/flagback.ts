@@ -168,16 +168,11 @@ export function resolveTarget(
       error: `phase "${input.targetPhaseKey}" has not completed; only a completed phase can be flagged`,
     }
 
-  // Per-child: the flagging instance consumed one specific child of the target.
-  if (
-    flaggingPhaseRun.sourceChildRunId &&
-    isSourcePhaseOfInstance(runId, flaggingPhaseRun, target.id)
-  ) {
-    return {
-      targetPhaseId: target.id,
-      targetChildRunId: flaggingPhaseRun.sourceChildRunId,
-    }
-  }
+  // Per-child: the flagging instance descends (possibly through a chain of
+  // on_each_subtask instances) from one specific child of the target.
+  const lineageChild = lineageRunInPhase(flaggingPhaseRun, target.id)
+  if (lineageChild)
+    return { targetPhaseId: target.id, targetChildRunId: lineageChild }
 
   // Per-child by explicit index (a non-fan-out consumer naming `key#N`).
   if (input.subtaskIndex !== undefined) {
@@ -195,16 +190,23 @@ export function resolveTarget(
   return { targetPhaseId: target.id }
 }
 
-// Is `target` the source phase whose child the flagging INSTANCE consumes? (i.e.
-// the instance's sourceChildRunId is a child of `targetPhaseId`'s top-level run.)
-function isSourcePhaseOfInstance(
-  runId: string,
+// Walk an instance's sourceChildRunId chain upward and return the first run that
+// belongs to `targetPhaseId` (the sub-task this instance ultimately consumed), or
+// undefined if the lineage never passes through that phase.
+function lineageRunInPhase(
   instance: ProcessPhaseRun,
   targetPhaseId: string
-): boolean {
-  if (!instance.sourceChildRunId) return false
-  const child = processes.getPhaseRun(instance.sourceChildRunId)
-  return child?.phaseId === targetPhaseId
+): string | undefined {
+  const seen = new Set<string>()
+  let id = instance.sourceChildRunId
+  while (id && !seen.has(id)) {
+    seen.add(id)
+    const run = processes.getPhaseRun(id)
+    if (!run) return undefined
+    if (run.phaseId === targetPhaseId) return run.id
+    id = run.sourceChildRunId
+  }
+  return undefined
 }
 
 // Children of a container's top-level run, in creation order (stable positional

@@ -416,6 +416,21 @@ describe("kickoffPrompt — flag-for-rework section (plan 031.2)", () => {
     expect(p).toContain("do not report your phase as complete")
   })
 
+  it("lists every flaggable ancestor, not only the direct upstream", () => {
+    const p = kickoffPrompt({
+      phase,
+      objective: "ship it",
+      upstream: [{ phaseName: "Test", phaseKey: "test", content: "ok" }],
+      flaggable: [
+        { phaseName: "Build", phaseKey: "build" },
+        { phaseName: "Test", phaseKey: "test" },
+      ],
+    })
+    expect(p).toContain("- `build` — Build")
+    expect(p).toContain("- `test` — Test")
+    expect(p).not.toContain("### Build") // the output digest stays direct-only
+  })
+
   it("omits the section when there is nothing upstream", () => {
     const p = kickoffPrompt({ phase, objective: "ship it", upstream: [] })
     expect(p).not.toContain("## Phases you may flag for rework")

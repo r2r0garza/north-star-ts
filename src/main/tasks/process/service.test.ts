@@ -598,6 +598,50 @@ describe.skipIf(!sqliteLoads)("ProcessService dispatch routing", () => {
     expect(phaseRun.resultContent).toBe("done")
   })
 
+  it("lets a phase flag any completed ancestor, not only its direct parent", async () => {
+    // build → test → validate: validate's kickoff lists build as flaggable.
+    const def = processes.createProcessDefinition({ name: "T" })
+    const [build, test, validate] = ["build", "test", "validate"].map(
+      (key, position) =>
+        processes.createPhase({
+          processId: def.id,
+          key,
+          name: key.toUpperCase(),
+          position,
+        })
+    )
+    processes.createEdge({
+      processId: def.id,
+      fromPhaseId: build.id,
+      toPhaseId: test.id,
+    })
+    processes.createEdge({
+      processId: def.id,
+      fromPhaseId: test.id,
+      toPhaseId: validate.id,
+    })
+    const { taskId } = seedTaskRow()
+    const run = processes.createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      taskId,
+      objective: "build it",
+      status: "running",
+    })
+    await new ProcessService(fakeRunner).execute({
+      task: { id: taskId, input: { processRunId: run.id } } as never,
+      signal: new AbortController().signal,
+      emit: () => {},
+      workspace: undefined,
+    })
+
+    const kickoff = loopCalls.find((c) =>
+      c.userMessage?.startsWith("# Process phase: VALIDATE")
+    )?.userMessage
+    expect(kickoff).toContain("- `build` — BUILD")
+    expect(kickoff).toContain("- `test` — TEST")
+  })
+
   it("keeps downstream input fixed when a completed worker transcript changes", async () => {
     const def = processes.createProcessDefinition({ name: "T" })
     const first = processes.createPhase({

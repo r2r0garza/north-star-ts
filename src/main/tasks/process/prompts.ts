@@ -14,17 +14,22 @@ export interface UpstreamResult {
   content: string | null
 }
 
+// A phase a worker may name as a flag_for_rework target: any completed ancestor.
+export type FlaggablePhase = Pick<UpstreamResult, "phaseKey" | "phaseName">
+
 // The "Phases you may flag for rework" section (plan 031.2): lists the upstream
-// phases by KEY so a worker that finds an upstream-owned defect can name a valid
-// flag_for_rework target. Returns "" when there's nothing upstream to flag.
-function flagForReworkSection(upstream: UpstreamResult[]): string {
+// phases (every ancestor, not only direct inputs) by KEY so a worker that finds an
+// upstream-owned defect can name a valid flag_for_rework target. Returns "" when
+// there's nothing upstream to flag.
+function flagForReworkSection(upstream: FlaggablePhase[]): string {
   if (upstream.length === 0) return ""
   const lines: string[] = []
   lines.push("## Phases you may flag for rework")
   lines.push(
     "If you find a defect that one of the EARLIER phases below owns, do NOT fix it " +
       "yourself — call `flag_for_rework` with that phase's key and a specific reason. " +
-      "The engine will re-run that phase (and everything built on it). Prefer completing " +
+      "The engine will re-run that phase (and everything built on it). Name the phase " +
+      "that owns the defect, even if it is not the one directly before you. Prefer completing " +
       "your own work when the issue is yours to fix."
   )
   lines.push(
@@ -76,6 +81,8 @@ export function kickoffPrompt(input: {
   // Set when reworkNote came from a flag: this phase raised it ("flagger") or
   // was its target ("flagged"). Unset keeps the reviewer framing.
   reworkSource?: "flagger" | "flagged"
+  // Every completed ancestor a worker may flag; defaults to `upstream`.
+  flaggable?: FlaggablePhase[]
 }): string {
   const { phase, objective, upstream, reworkNote, reworkSource } = input
   const lines: string[] = []
@@ -127,7 +134,7 @@ export function kickoffPrompt(input: {
   )
   lines.push("")
   lines.push(UNATTENDED_WORK_NOTE)
-  const flag = flagForReworkSection(upstream)
+  const flag = flagForReworkSection(input.flaggable ?? upstream)
   if (flag) {
     lines.push("")
     lines.push(flag)
@@ -167,6 +174,8 @@ export function eachSubtaskKickoffPrompt(input: {
   // The source fan-out phase's key — the flag_for_rework target if this sub-task's
   // input turns out to be defective (plan 031.2). Optional (older callers omit it).
   sourcePhaseKey?: string
+  // Every completed ancestor a worker may flag; defaults to the source phase.
+  flaggable?: FlaggablePhase[]
   // The triggering sub-task's final output (its worker's last assistant message).
   subtaskContent: string | null
 }): string {
@@ -195,13 +204,15 @@ export function eachSubtaskKickoffPrompt(input: {
   )
   lines.push("")
   lines.push(UNATTENDED_WORK_NOTE)
-  if (sourcePhaseKey) {
+  const flaggable =
+    input.flaggable ??
+    (sourcePhaseKey
+      ? [{ phaseName: sourcePhaseName, phaseKey: sourcePhaseKey }]
+      : [])
+  const flag = flagForReworkSection(flaggable)
+  if (flag) {
     lines.push("")
-    lines.push(
-      flagForReworkSection([
-        { phaseName: sourcePhaseName, phaseKey: sourcePhaseKey, content: null },
-      ])
-    )
+    lines.push(flag)
   }
   const dotFolder = dotFolderInstruction(phase)
   if (dotFolder) {
