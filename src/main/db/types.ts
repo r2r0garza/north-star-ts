@@ -1124,6 +1124,8 @@ export interface ProcessPhase {
   processId: string
   key: string
   name: string
+  // Optional task text sent to the agent with the name; null = the name alone.
+  instructions?: string | null
   routing: PhaseRouting
   gatePolicy: PhaseGatePolicy
   fanOut: boolean

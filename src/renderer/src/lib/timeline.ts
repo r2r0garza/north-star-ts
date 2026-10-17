@@ -285,7 +285,12 @@ export function toToolUse(call: {
 // rows with text become text items; assistant rows with tool_calls become a
 // tools group; role:"tool" rows attach their result to the matching call by id.
 // An assistant row with BOTH preamble text and tool calls emits both.
-export function buildTimeline(rows: DbMessage[]): TimelineItem[] {
+// `live`: the conversation's turn is still running (a phase worker viewed
+// mid-run), so a call without a result is in flight, not interrupted.
+export function buildTimeline(
+  rows: DbMessage[],
+  opts?: { live?: boolean }
+): TimelineItem[] {
   const items: TimelineItem[] = []
   const callById = new Map<string, ToolUse>()
 
@@ -352,7 +357,7 @@ export function buildTimeline(rows: DbMessage[]): TimelineItem[] {
   // ever catches truly dangling calls.) The next user message repairs the
   // transcript main-side (repairDanglingToolCalls) so the conversation continues.
   for (const use of callById.values()) {
-    if (use.status === "running") {
+    if (use.status === "running" && !opts?.live) {
       use.status = "interrupted"
       use.label = deriveLabel(use.name, use.args, use.status)
     }

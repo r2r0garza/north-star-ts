@@ -44,6 +44,12 @@ import {
 } from "./scheduler"
 import { PAUSE_ABORT_REASON, SHUTDOWN_ABORT_REASON } from "../../agent/abort"
 import type { TaskEventPayload } from "../runner"
+import {
+  flagForReworkTool,
+  MAX_FLAGS_PER_RUN,
+} from "../../agent/tools/flag_for_rework"
+import type { ToolContext } from "../../agent/tools/types"
+import { applyFlagBack } from "./flagback"
 import type { FailureContext, FailureStage, ProcessFlag } from "../../db/types"
 
 // Create a backing task row so approvals/checkpoints (FK to tasks) can attach.
@@ -2931,7 +2937,11 @@ describe.skipIf(!sqliteLoads)("recorded phase completion contracts", () => {
       }))
       const { ctx, runId } = makeCtx(id, worker)
       await expect(runScheduler(ctx)).rejects.toThrow("a process phase failed")
-      expect(worker).toHaveBeenCalledTimes(1)
+      // A malformed outcome gets one corrective re-prompt; a declared
+      // blocked/failed outcome is final.
+      expect(worker).toHaveBeenCalledTimes(
+        status === "missing" || status === "invalid" ? 2 : 1
+      )
       const rows = processes.listPhaseRuns({ runId })
       expect(rows.find((r) => r.status === "failed")?.failure?.stage).toBe(
         "output_validation"
@@ -2939,6 +2949,56 @@ describe.skipIf(!sqliteLoads)("recorded phase completion contracts", () => {
       expect(rows.some((r) => r.status === "pending")).toBe(true)
     }
   )
+
+  it("re-prompts once after a malformed outcome, then accepts the correction", async () => {
+    const { id } = validatedProcess()
+    const corrections: Array<string | undefined> = []
+    const worker = vi.fn<RunPhase>(async ({ attemptId, correction, phase }) => {
+      if (phase.key !== "work") return { content: "after" }
+      corrections.push(correction)
+      return corrections.length === 1
+        ? {
+            content: JSON.stringify({
+              version: 1,
+              attemptId,
+              status: "blocked",
+              output: "Tests could not run",
+            }),
+          }
+        : { content: completed(attemptId) }
+    })
+    const { ctx, runId } = makeCtx(id, worker)
+    await runScheduler(ctx)
+    expect(corrections).toHaveLength(2)
+    expect(corrections[0]).toBeUndefined()
+    expect(corrections[1]).toContain("`evidence` is missing or empty")
+    expect(corrections[1]).toContain("`reason` and `nextAction`")
+    const rows = processes.listPhaseRuns({ runId })
+    expect(rows.every((r) => r.status === "completed")).toBe(true)
+    const ledger = processes.listPhaseAttempts({ runId })
+    expect(ledger).toHaveLength(1)
+    expect(ledger[0].failure.code).toBe("phase_outcome_invalid")
+  })
+
+  it("fails with the named problems when the correction is malformed too", async () => {
+    const { id } = validatedProcess()
+    const worker = vi.fn<RunPhase>(async ({ attemptId }) => ({
+      content: JSON.stringify({
+        version: 1,
+        attemptId,
+        status: "completed",
+        output: "done",
+      }),
+    }))
+    const { ctx, runId } = makeCtx(id, worker)
+    await expect(runScheduler(ctx)).rejects.toThrow("a process phase failed")
+    expect(worker).toHaveBeenCalledTimes(2)
+    const failed = processes
+      .listPhaseRuns({ runId })
+      .find((r) => r.status === "failed")!
+    expect(failed.error).toContain("`evidence` is missing or empty")
+    expect(failed.error).toContain("you can add feedback for the agent")
+  })
 
   it("captures freeform and validated phase results explicitly", async () => {
     const freeformId = buildProcess({ phases: [{ key: "freeform" }] })
@@ -3050,9 +3110,264 @@ describe.skipIf(!sqliteLoads)("recorded phase completion contracts", () => {
       decompose: async () => ({ subtasks: ["one"] }),
     })
     await expect(runScheduler(ctx)).rejects.toThrow()
-    expect(worker).toHaveBeenCalledTimes(1)
+    // The child's malformed outcome gets its one correction, then fails.
+    expect(worker).toHaveBeenCalledTimes(2)
     expect(
       processes.listPhaseRuns({ runId }).filter((r) => r.status === "failed")
     ).toHaveLength(2)
+  })
+})
+
+describe.skipIf(!sqliteLoads)("validated outcomes with flag_for_rework", () => {
+  // build → verify, verify validated. applyFlag is the real reset; flags go
+  // through the real tool so the per-run budget is enforced.
+  function verifyProcess() {
+    const id = buildProcess({
+      phases: [{ key: "build" }, { key: "verify" }],
+      edges: [["build", "verify"]],
+    })
+    const verify = processes.listPhases(id).find((p) => p.key === "verify")!
+    processes.updatePhase(verify.id, {
+      completionContract: {
+        policy: "validated",
+        version: 1,
+        requiredArtifacts: [],
+      },
+    })
+    return id
+  }
+  const outcome = (
+    attemptId: string,
+    status: "completed" | "failed" | "blocked",
+    round = 1
+  ) =>
+    JSON.stringify({
+      version: 1,
+      attemptId,
+      status,
+      output: `round ${round} report`,
+      evidence: "ran the checks",
+      ...(status === "completed"
+        ? {}
+        : {
+            reason: `priority enum mismatch (round ${round})`,
+            nextAction: "align P1-P4",
+          }),
+    })
+  const flag = (phaseRun: { runId: string; id: string }, reason: string) =>
+    flagForReworkTool.execute({ target: "build", reason }, {
+      workspace: "",
+      processRunId: phaseRun.runId,
+      processPhaseRunId: phaseRun.id,
+    } as ToolContext)
+  // Wire the scheduler's applyFlag to the production reset.
+  const withRealApply = (
+    id: string,
+    runPhase: RunPhase,
+    opts: { requireFlagApproval?: boolean; abort?: AbortController } = {}
+  ) => {
+    let runId = ""
+    let taskId = ""
+    const made = makeCtx(id, runPhase, {
+      requireFlagApproval: opts.requireFlagApproval ?? false,
+      abort: opts.abort,
+      applyFlag: (f) =>
+        applyFlagBack({
+          taskId,
+          runId,
+          graph: processes.getProcessGraph(id)!,
+          target: {
+            targetPhaseId: f.targetPhaseId,
+            targetChildRunId: f.targetChildRunId ?? undefined,
+          },
+          reason: f.reason,
+          flaggingPhaseRunId: f.flaggingPhaseRunId,
+        }),
+    })
+    runId = made.runId
+    taskId = made.ctx.taskId
+    return made
+  }
+  const verifyRow = (runId: string, id: string) =>
+    runsForKey(runId, id, "verify").find((r) => r.parentId === null)!
+
+  it("completes on a successful validated outcome", async () => {
+    const id = verifyProcess()
+    const { ctx, runId } = withRealApply(id, async ({ phase, attemptId }) =>
+      phase.key === "verify"
+        ? { content: outcome(attemptId, "completed") }
+        : { content: "built" }
+    )
+    await runScheduler(ctx)
+    expect(statusByKey(runId, id)).toEqual({
+      build: "completed",
+      verify: "completed",
+    })
+    expect(verifyRow(runId, id).completionReceipt?.outcome.status).toBe(
+      "completed"
+    )
+  })
+
+  it("fails the run on a failed outcome with no flag", async () => {
+    const id = verifyProcess()
+    const ran: string[] = []
+    const { ctx, runId } = withRealApply(id, async ({ phase, attemptId }) => {
+      ran.push(phase.key)
+      return phase.key === "verify"
+        ? { content: outcome(attemptId, "failed") }
+        : { content: "built" }
+    })
+    await expect(runScheduler(ctx)).rejects.toThrow("a process phase failed")
+    expect(ran).toEqual(["build", "verify"])
+    expect(statusByKey(runId, id).verify).toBe("failed")
+  })
+
+  it.each(["failed", "blocked"] as const)(
+    "routes rework for a %s outcome that flagged build, then re-verifies",
+    async (status) => {
+      const id = verifyProcess()
+      const ran: string[] = []
+      const attempts: string[] = []
+      const notes: Array<string | null> = []
+      const { ctx, runId } = withRealApply(
+        id,
+        async ({ phase, phaseRun, attemptId }) => {
+          ran.push(phase.key)
+          if (phase.key !== "verify") return { content: "built" }
+          attempts.push(attemptId)
+          notes.push(processes.getPhaseRun(phaseRun.id)!.reworkNote)
+          if (attempts.length === 1) {
+            await flag(phaseRun, "backend priority is High/Medium/Low")
+            return { content: outcome(attemptId, status) }
+          }
+          return { content: outcome(attemptId, "completed", 2) }
+        }
+      )
+      await runScheduler(ctx)
+      expect(ran).toEqual(["build", "verify", "build", "verify"])
+      expect(new Set(attempts).size).toBe(2)
+      expect(statusByKey(runId, id)).toEqual({
+        build: "completed",
+        verify: "completed",
+      })
+      expect(processes.listFlags({ runId, status: "applied" })).toHaveLength(1)
+      // The re-run sees its own findings, not just the generic note.
+      expect(notes[0]).toBeNull()
+      expect(notes[1]).toContain("backend priority is High/Medium/Low")
+      expect(notes[1]).toContain("priority enum mismatch (round 1)")
+      // The failed round is kept in the attempt ledger after the reset.
+      const row = verifyRow(runId, id)
+      const ledger = processes.listPhaseAttempts({ phaseRunId: row.id })
+      expect(ledger).toHaveLength(1)
+      expect(ledger[0].failure.code).toBe(`phase_outcome_${status}`)
+      expect(row.completionReceipt?.outcome.status).toBe("completed")
+    }
+  )
+
+  it("repeats rework until verification passes", async () => {
+    const id = verifyProcess()
+    let rounds = 0
+    const { ctx, runId } = withRealApply(
+      id,
+      async ({ phase, phaseRun, attemptId }) => {
+        if (phase.key !== "verify") return { content: "built" }
+        rounds++
+        if (rounds < 3) {
+          await flag(phaseRun, `defect ${rounds}`)
+          return { content: outcome(attemptId, "failed", rounds) }
+        }
+        return { content: outcome(attemptId, "completed", rounds) }
+      }
+    )
+    await runScheduler(ctx)
+    expect(rounds).toBe(3)
+    expect(processes.listFlags({ runId, status: "applied" })).toHaveLength(2)
+    expect(verifyRow(runId, id).reworkRound).toBe(2)
+    expect(statusByKey(runId, id).verify).toBe("completed")
+  })
+
+  it("fails once the flag budget is exhausted", async () => {
+    const id = verifyProcess()
+    let rounds = 0
+    const { ctx, runId } = withRealApply(
+      id,
+      async ({ phase, phaseRun, attemptId }) => {
+        if (phase.key !== "verify") return { content: "built" }
+        rounds++
+        await flag(phaseRun, `still broken ${rounds}`)
+        return { content: outcome(attemptId, "failed", rounds) }
+      }
+    )
+    await expect(runScheduler(ctx)).rejects.toThrow("a process phase failed")
+    expect(processes.listFlags({ runId })).toHaveLength(MAX_FLAGS_PER_RUN)
+    expect(rounds).toBe(MAX_FLAGS_PER_RUN + 1)
+    expect(statusByKey(runId, id).verify).toBe("failed")
+  })
+
+  it("pauses on a flag gate in confirm mode without accepting the failure", async () => {
+    const id = verifyProcess()
+    const { ctx, runId } = withRealApply(
+      id,
+      async ({ phase, phaseRun, attemptId }) => {
+        if (phase.key !== "verify") return { content: "built" }
+        await flag(phaseRun, "needs a human look")
+        return { content: outcome(attemptId, "failed") }
+      },
+      { requireFlagApproval: true }
+    )
+    await expect(runScheduler(ctx)).rejects.toBeInstanceOf(GateBlockedError)
+    expect(statusByKey(runId, id).verify).toBe("failed")
+    expect(processes.listFlags({ runId, status: "pending" })).toHaveLength(1)
+  })
+
+  it("routes a flag raised before an interruption once the run resumes", async () => {
+    const id = verifyProcess()
+    const abort = new AbortController()
+    let rounds = 0
+    const runPhase: RunPhase = async ({ phase, phaseRun, attemptId }) => {
+      if (phase.key !== "verify") return { content: "built" }
+      rounds++
+      if (rounds === 1) {
+        await flag(phaseRun, "found before pause")
+        abort.abort(PAUSE_ABORT_REASON)
+        return { stopped: true }
+      }
+      return { content: outcome(attemptId, "completed", rounds) }
+    }
+    const { ctx, runId } = withRealApply(id, runPhase, { abort })
+    await runScheduler(ctx)
+    expect(statusByKey(runId, id).verify).toBe("running")
+    expect(processes.listFlags({ runId, status: "pending" })).toHaveLength(1)
+
+    // Crash-reset shape: running → pending, then resume on a fresh signal.
+    processes.updatePhaseRun(verifyRow(runId, id).id, { status: "pending" })
+    ctx.signal = new AbortController().signal
+    await runScheduler(ctx)
+    expect(rounds).toBe(2)
+    expect(statusByKey(runId, id)).toEqual({
+      build: "completed",
+      verify: "completed",
+    })
+    expect(verifyRow(runId, id).reworkNote).toContain("found before pause")
+  })
+
+  it("links each completed round to its worker task", async () => {
+    const id = verifyProcess()
+    const { ctx, events } = withRealApply(
+      id,
+      async ({ phase, phaseRun, attemptId }) => {
+        processes.updatePhaseRun(phaseRun.id, { taskId: freshTask() })
+        return phase.key === "verify"
+          ? { content: outcome(attemptId, "completed") }
+          : { content: "built" }
+      }
+    )
+    await runScheduler(ctx)
+    const done = events.filter(
+      (e) => e.type === "process_phase" && e.status === "completed"
+    )
+    expect(done).toHaveLength(2)
+    for (const e of done)
+      expect(e.type === "process_phase" && e.workerTaskId).toBeTruthy()
   })
 })

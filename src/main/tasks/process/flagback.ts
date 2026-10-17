@@ -318,6 +318,44 @@ export interface ApplyFlagBackInput {
   graph: ProcessGraph
   target: FlagTarget
   reason: string
+  // The phase-run that raised the flag. It is downstream of the target, so it
+  // re-runs too; it gets its own findings back instead of the generic note.
+  flaggingPhaseRunId?: string | null
+}
+
+const UPSTREAM_REWORKED_NOTE = `An upstream phase this depends on was reworked; re-check your output.`
+
+// The note for a downstream phase-run: the flagger sees the defect it reported
+// and its previous validated outcome (the receipt survives toPending until the
+// next attempt starts); everyone else gets `fallback`.
+function downstreamNote(
+  input: ApplyFlagBackInput,
+  phaseRun: ProcessPhaseRun,
+  fallback: string
+): string {
+  if (phaseRun.id !== input.flaggingPhaseRunId) return fallback
+  const lines = [`You flagged an upstream phase for rework: ${input.reason}`]
+  const previous = previousOutcomeSummary(phaseRun)
+  if (previous) lines.push(previous)
+  lines.push(
+    "That phase was re-run. Re-verify these findings and report a fresh outcome."
+  )
+  return lines.join("\n\n")
+}
+
+// What the phase-run's last attempt concluded: its declared validated outcome,
+// else the recorded failure. Null when it has neither.
+export function previousOutcomeSummary(
+  phaseRun: ProcessPhaseRun
+): string | null {
+  const outcome = phaseRun.completionReceipt?.outcome
+  if (outcome)
+    return (
+      `Your previous outcome was ${outcome.status}: ${outcome.reason ?? outcome.output}` +
+      (outcome.nextAction ? ` Next action: ${outcome.nextAction}` : "")
+    )
+  const failure = phaseRun.failure?.message ?? phaseRun.error
+  return failure ? `Your previous attempt failed: ${failure}` : null
 }
 
 // Apply a resolved flag: reset the target (+ downstream) to pending in ONE
@@ -388,7 +426,7 @@ function applyWholePhase(input: ApplyFlagBackInput): void {
     const isTarget = phaseId === target.targetPhaseId
     const note = isTarget
       ? reason
-      : `An upstream phase this depends on was reworked; re-check your output.`
+      : downstreamNote(input, topLevel, UPSTREAM_REWORKED_NOTE)
     if (isContainer(graph, phaseId)) {
       resetContainerWhole(taskId, runId, topLevel, note)
     } else {
@@ -422,7 +460,11 @@ function resetAggregatingDownstream(
       .listPhaseRuns({ runId, phaseId })
       .find((pr) => pr.parentId === null)
     if (!topLevel) continue
-    const note = `An upstream sub-task was reworked; re-check your output.`
+    const note = downstreamNote(
+      input,
+      topLevel,
+      `An upstream sub-task was reworked; re-check your output.`
+    )
     if (isContainer(graph, phaseId))
       resetContainerWhole(taskId, runId, topLevel, note)
     else resetPlain(topLevel, note)

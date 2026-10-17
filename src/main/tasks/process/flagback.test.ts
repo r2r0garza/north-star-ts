@@ -419,6 +419,70 @@ describe.skipIf(!sqliteLoads)("flagback — applyFlagBack", () => {
     expect(processes.getPhaseRun(a.id)?.reworkRound).toBe(1)
   })
 
+  it("gives the flagging phase its own findings; other downstream get the generic note", () => {
+    // a → b → c; c flagged a after a failed validated outcome.
+    const pid = buildProcess({
+      phases: [{ key: "a" }, { key: "b" }, { key: "c" }],
+      edges: [
+        ["a", "b"],
+        ["b", "c"],
+      ],
+    })
+    const taskId = freshTask()
+    const run = processes.createProcessRun({
+      processId: pid,
+      sourceConversationId: null,
+      taskId,
+      objective: "o",
+      status: "running",
+    })
+    for (const key of ["a", "b"])
+      processes.createPhaseRun({
+        runId: run.id,
+        phaseId: phaseId(pid, key),
+        status: "completed",
+      })
+    const c = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: phaseId(pid, "c"),
+      status: "failed",
+    })
+    processes.updatePhaseRun(c.id, {
+      completionReceipt: {
+        outcome: {
+          version: 1,
+          attemptId: "x",
+          status: "failed",
+          output: "report",
+          evidence: "ran",
+          reason: "priority enum mismatch",
+          nextAction: "use P1-P4",
+        },
+        checkedArtifacts: [],
+        checkedAt: 1,
+      },
+    })
+
+    applyFlagBack({
+      taskId,
+      runId: run.id,
+      graph: graphOf(pid),
+      target: { targetPhaseId: phaseId(pid, "a") },
+      reason: "backend priority values wrong",
+      flaggingPhaseRunId: c.id,
+    })
+
+    const b = processes
+      .listPhaseRuns({ runId: run.id, phaseId: phaseId(pid, "b") })
+      .find((r) => r.parentId === null)!
+    expect(b.reworkNote).toContain("upstream")
+    const note = processes.getPhaseRun(c.id)!.reworkNote!
+    expect(statusOf(c.id)).toBe("pending")
+    expect(note).toContain("backend priority values wrong")
+    expect(note).toContain("failed: priority enum mismatch")
+    expect(note).toContain("use P1-P4")
+  })
+
   it("per-child: resets only the flagged sub-task + its instance; siblings untouched", () => {
     const s = buildFanoutScenario()
     applyFlagBack({

@@ -37,6 +37,7 @@ import type {
   FailureStage,
   ProcessCommandReceipt,
   ProcessFlag,
+  PhaseOutcome,
   ProcessGraph,
   ProcessPhase,
   ProcessPhaseRun,
@@ -121,6 +122,9 @@ export type RunPhase = (input: {
   phase: ProcessPhase
   attemptId: string
   subtaskPrompt?: string
+  // A one-time correction after a malformed validated outcome: the worker
+  // resumes its own conversation and receives this as the next user message.
+  correction?: string
   // Chained to the run's abort signal by the caller.
   signal: AbortSignal
 }) => Promise<PhaseResult>
@@ -1134,6 +1138,29 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
     return raiseFlagGate(pending[0])
   }
 
+  // True when every failed/cancelled phase is a validated failed/blocked outcome
+  // whose run raised a still-pending flag. Routing that flag resets the flagger
+  // (it is always downstream of its target), so it re-verifies after the rework.
+  // Any other failure keeps wedging the run.
+  const failuresAwaitRework = (): boolean => {
+    const flaggers = new Set(
+      processes
+        .listFlags({ runId: run.id, status: "pending" })
+        .map((f) => f.flaggingPhaseRunId)
+    )
+    return graph.phases.every((p) => {
+      if (!["failed", "cancelled"].includes(statusOf(p.id))) return true
+      const pr = processes.getPhaseRun(runByPhaseId.get(p.id)!.id)
+      return (
+        pr?.status === "failed" &&
+        ["phase_outcome_failed", "phase_outcome_blocked"].includes(
+          pr.failure?.code ?? ""
+        ) &&
+        flaggers.has(pr.id)
+      )
+    })
+  }
+
   // Raise a durable human-confirmation gate for a pending flag (plan 031.2). Near
   // copy of raiseGate/raiseValidatorGate but keyed to the FLAGGING phase-run (so
   // the monitor renders the card on the phase that raised it) and carrying the
@@ -1724,7 +1751,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       const failure = processFailure({
         code,
         stage: "output_validation",
-        message: `${error instanceof Error ? error.message : String(error)}. Resolve the issue, then Restart run.`,
+        message: `${error instanceof Error ? error.message : String(error)}. Restart run to try again; you can add feedback for the agent.`,
         run,
         phase,
         phaseRun: latest,
@@ -1784,6 +1811,10 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       }
     }
     let attempt = 0
+    // One corrective re-prompt per call for a malformed validated outcome: the
+    // agent usually did the work and only got the JSON shape wrong.
+    let correction: string | undefined
+    let corrected = false
     // Chain a child controller so run-level cancel unwinds the phase worker.
     while (true) {
       attempt++
@@ -1798,8 +1829,10 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
           phaseRun,
           phase,
           subtaskPrompt,
+          correction,
           signal: ctx.signal,
         })
+        correction = undefined
         if (result.stopped || ctx.signal.aborted) {
           settleStoppedPhaseRun(phase, phaseRun.id)
           return
@@ -1848,8 +1881,40 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
           return
         }
         if (contract.policy === "validated") {
+          let outcome: PhaseOutcome
           try {
-            const outcome = parsePhaseOutcome(result.content, attemptId)
+            outcome = parsePhaseOutcome(result.content, attemptId)
+          } catch (err) {
+            if (corrected) {
+              failContract(err)
+              return
+            }
+            corrected = true
+            const latest = processes.getPhaseRun(phaseRun.id) ?? phaseRun
+            recordFailedAttempt({
+              run,
+              phase,
+              phaseRun: latest,
+              taskId: ctx.taskId,
+              failure: processFailure({
+                code: "phase_outcome_invalid",
+                stage: "output_validation",
+                message: `${errMessage(err)}. Asked the agent to correct it.`,
+                retryable: true,
+                attempt,
+                run,
+                phase,
+                phaseRun: latest,
+                taskId: ctx.taskId,
+              }),
+            })
+            correction =
+              `${errMessage(err)}.\n\nYour final message must be ONLY the phase ` +
+              `outcome JSON object described in your instructions, using the new ` +
+              `attemptId. Do not redo the work; reply again with the corrected object.`
+            continue
+          }
+          try {
             resultContent = outcome.output
             // Persist the declaration even when a configured file check fails.
             processes.updatePhaseRun(phaseRun.id, {
@@ -2261,6 +2326,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       status,
       parentId: pr?.parentId ?? null,
       failure: pr?.failure ?? null,
+      workerTaskId: pr?.taskId ?? null,
     })
   }
 
@@ -2496,11 +2562,13 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       // point BEFORE concluding — this is the only safe reset point (nothing
       // in-flight). Skipped on a failed run (a failed phase wedges the DAG; a flag
       // targeting a completed upstream can't unwedge it, so let the failure
-      // surface). Autonomous → applyFlag reset each (re-walk); confirm →
-      // raiseFlagGate throws GateBlockedError (run pauses). Not gated on
+      // surface) — UNLESS every failure is a validated failed/blocked outcome
+      // that flagged an upstream defect: the reset re-runs the flagger, so the
+      // rework IS its recovery. Autonomous → applyFlag reset each (re-walk);
+      // confirm → raiseFlagGate throws GateBlockedError (run pauses). Not gated on
       // allTerminal: the dispatch guard leaves the flagging phase's dependents
       // `pending`, so they're intentionally NOT terminal here.
-      if (!anyFailed && routePendingFlags()) continue
+      if ((!anyFailed || failuresAwaitRework()) && routePendingFlags()) continue
       const allTerminal = graph.phases.every((p) =>
         ["completed", "failed", "cancelled", "skipped"].includes(statusOf(p.id))
       )

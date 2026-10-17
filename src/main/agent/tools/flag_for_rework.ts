@@ -29,7 +29,8 @@ export const flagForReworkTool: Tool = {
         "of your briefing). If you are reviewing a single sub-task of a fan-out phase, just name " +
         "that phase's key — the engine knows which sub-task you are working on.\n\n" +
         "Use this sparingly and only for a concrete, upstream-owned defect; prefer completing your " +
-        "own work when the issue is yours to fix.",
+        "own work when the issue is yours to fix. Never call it to report that no rework is " +
+        "needed: every call re-runs the target and spends one of the run's limited flags.",
       parameters: {
         type: "object",
         properties: {
@@ -84,7 +85,7 @@ export const flagForReworkTool: Tool = {
     if (raised.length >= MAX_FLAGS_PER_RUN)
       return toolError(
         "flag_budget",
-        `this run has already raised ${raised.length} rework flags (the limit); finish your own work instead.`
+        `this run has already raised ${raised.length} rework flags (the limit). Finish your own work; if a real upstream defect remains, report it as unresolved (blocked or failed), not as completed.`
       )
 
     // Parse an optional `key#N` sub-task index off the target.

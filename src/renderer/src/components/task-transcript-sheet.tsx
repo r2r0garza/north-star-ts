@@ -58,10 +58,14 @@ export function TaskTranscriptSheet({
   task,
   open,
   onOpenChange,
+  live = false,
 }: {
   task: Task | null
   open: boolean
   onOpenChange: (open: boolean) => void
+  // The task's turn is still running: keep in-flight calls spinning and
+  // refresh until it settles.
+  live?: boolean
 }) {
   const [items, setItems] = React.useState<ReturnType<typeof buildTimeline>>([])
 
@@ -75,13 +79,17 @@ export function TaskTranscriptSheet({
       setItems([])
       return
     }
-    window.cowork.db.messages.list(task.conversationId).then((rows) => {
-      if (!cancelled) setItems(buildTimeline(rows))
-    })
+    const load = () =>
+      window.cowork.db.messages.list(task.conversationId).then((rows) => {
+        if (!cancelled) setItems(buildTimeline(rows, { live }))
+      })
+    void load()
+    const timer = live ? setInterval(load, 2000) : undefined
     return () => {
       cancelled = true
+      clearInterval(timer)
     }
-  }, [open, task, inlineTodos])
+  }, [open, task, inlineTodos, live])
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>

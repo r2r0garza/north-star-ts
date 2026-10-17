@@ -37,6 +37,7 @@ import type {
   ProcessEdge,
   ProcessRun,
   ProcessPhaseAttempt,
+  ProcessFlag,
   ProcessPhaseRun,
   ProcessRuntimeConfig,
   ProcessCommandConfig,
@@ -668,8 +669,13 @@ const api = {
       ipcRenderer.invoke("process:pause", processRunId) as Promise<void>,
     // Retry a FAILED run from its failure frontier: resets the failed phases and
     // re-drives the same backing task; completed phases are not re-run.
-    restart: (processRunId: string) =>
-      ipcRenderer.invoke("process:restart", processRunId) as Promise<
+    // `opts` carries the Restart dialog's choices: feedback for the re-run
+    // phases, and whether pending rework flags are sent back or dismissed.
+    restart: (
+      processRunId: string,
+      opts?: { feedback?: string; sendBackFlags?: boolean }
+    ) =>
+      ipcRenderer.invoke("process:restart", processRunId, opts) as Promise<
         ProcessRun | undefined
       >,
     // Approve a phase gate: settles the durable approval and resumes the run,
@@ -2262,6 +2268,7 @@ const api = {
           processId: string
           key: string
           name: string
+          instructions?: string | null
           routing?: PhaseRouting
           gatePolicy?: PhaseGatePolicy
           fanOut?: boolean
@@ -2290,6 +2297,7 @@ const api = {
           patch: {
             key?: string
             name?: string
+            instructions?: string | null
             routing?: PhaseRouting
             gatePolicy?: PhaseGatePolicy
             fanOut?: boolean
@@ -2395,6 +2403,12 @@ const api = {
             "db:processes:phaseAttempts:list",
             opts
           ) as Promise<ProcessPhaseAttempt[]>,
+      },
+      flags: {
+        list: (opts: { runId: string; status?: ProcessFlag["status"] }) =>
+          ipcRenderer.invoke("db:processes:flags:list", opts) as Promise<
+            ProcessFlag[]
+          >,
       },
     },
 
@@ -2961,6 +2975,7 @@ export type {
   ProcessEdge,
   ProcessRun,
   ProcessPhaseAttempt,
+  ProcessFlag,
   ProcessPhaseRun,
   ProcessRuntimeConfig,
   ProcessCommandConfig,

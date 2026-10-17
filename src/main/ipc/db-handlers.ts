@@ -24,6 +24,7 @@ import type {
   PhaseRouting,
   PhaseContextScope,
   ProcessCommandConfig,
+  ProcessFlagStatus,
   ProcessPhaseKind,
   WorkspaceChecks,
   ProcessRunStatus,
@@ -383,6 +384,7 @@ export function registerDbHandlers(
         processId: string
         key: string
         name: string
+        instructions?: string | null
         routing?: PhaseRouting
         gatePolicy?: PhaseGatePolicy
         fanOut?: boolean
@@ -411,6 +413,7 @@ export function registerDbHandlers(
       patch: {
         key?: string
         name?: string
+        instructions?: string | null
         routing?: PhaseRouting
         gatePolicy?: PhaseGatePolicy
         fanOut?: boolean
@@ -504,6 +507,11 @@ export function registerDbHandlers(
     "db:processes:phaseAttempts:list",
     (_e, opts: { runId?: string; phaseRunId?: string }) =>
       processes.listPhaseAttempts(opts)
+  )
+  ipcMain.handle(
+    "db:processes:flags:list",
+    (_e, opts: { runId: string; status?: ProcessFlagStatus }) =>
+      processes.listFlags(opts)
   )
 
   // Live dashboards (plan 033). Structured CRUD the dashboards view + the

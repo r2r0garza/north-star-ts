@@ -27,6 +27,23 @@ function flagForReworkSection(upstream: UpstreamResult[]): string {
       "The engine will re-run that phase (and everything built on it). Prefer completing " +
       "your own work when the issue is yours to fix."
   )
+  lines.push(
+    "Problems with your own setup are yours, not a defect to flag: your test harness " +
+      "and test config, ports, timeouts, a run that was killed or never finished. Fix " +
+      "them within your own lane. Flag only with concrete evidence about the earlier " +
+      "phase's output: the check you ran and what it observed."
+  )
+  lines.push(
+    "Work your own phase owns is never a flag either: writing or extending tests, " +
+      "and correcting your own report or verification notes. Do it yourself."
+  )
+  lines.push(
+    "Call `flag_for_rework` only to ask for a specific change. If you conclude " +
+      "that no rework is needed, do not call it: every flag re-runs that phase and " +
+      "everything after it, and a run may raise only a limited number of flags. " +
+      "If a flag is refused because that limit is reached and a real defect " +
+      "remains, report it as unresolved; do not report your phase as complete."
+  )
   for (const u of upstream) lines.push(`- \`${u.phaseKey}\` — ${u.phaseName}`)
   return lines.join("\n")
 }
@@ -42,6 +59,12 @@ export const UNATTENDED_WORK_NOTE =
   "read as a conversation. Do not ask questions or offer optional follow-ups " +
   "(\"should I…?\", \"say the word and I'll…\"). Make reasonable decisions, do " +
   "everything your task asks, and state any assumptions in your final summary."
+
+// The phase's own instructions (when set), the richer task text behind its name.
+function phaseInstructionLines(phase: ProcessPhase): string[] {
+  const text = phase.instructions?.trim()
+  return text ? [text, ""] : []
+}
 
 export function kickoffPrompt(input: {
   phase: ProcessPhase
@@ -79,6 +102,7 @@ export function kickoffPrompt(input: {
     lines.push("")
   }
   lines.push("## Your task")
+  lines.push(...phaseInstructionLines(phase))
   lines.push(
     `Carry out the "${phase.name}" phase toward the overall objective. When done, ` +
       `summarize what you produced so the next phase can build on it.`
@@ -146,6 +170,7 @@ export function eachSubtaskKickoffPrompt(input: {
   lines.push(subtaskContent?.trim() || "(no textual output)")
   lines.push("")
   lines.push("## Your task")
+  lines.push(...phaseInstructionLines(phase))
   lines.push(
     `Carry out the "${phase.name}" phase for this one sub-task toward the overall ` +
       `objective. When done, summarize what you produced.`
@@ -212,13 +237,16 @@ export function fanOutDecomposePrompt(input: {
     lines.push(
       "This fan-out phase is being decomposed again because prior work was sent " +
         "back or upstream input changed. Use this feedback when planning the " +
-        "replacement sub-tasks:"
+        "replacement sub-tasks. Assign every item in it to at least one sub-task; " +
+        "do not drop any part. Each sub-task worker also receives this feedback " +
+        "verbatim with its briefing:"
     )
     lines.push("")
     lines.push(reworkNote.trim())
     lines.push("")
   }
   lines.push("## Your task")
+  lines.push(...phaseInstructionLines(phase))
   lines.push(
     `Decompose the "${phase.name}" phase into independent sub-tasks — one per ` +
       `distinct piece of work that can proceed on its own. You may inspect the ` +
@@ -341,6 +369,38 @@ function briefingsFromCandidate(candidate: string): string[] {
 // and accepting arrays of objects (pulling a briefing field) as well as plain
 // strings. Trims, drops empties, caps at MAX_FAN_OUT. Returns [] on a genuine
 // miss — the caller treats an empty result as a decomposition failure.
+// A fan-out sub-task's briefing plus the run's objective. The planner's
+// briefing can leave out exact requirements (allowed values, field names), and
+// the worker cannot see the planning conversation.
+export function withObjective(briefing: string, objective: string): string {
+  if (!objective.trim() || briefing.includes("## Overall objective"))
+    return briefing
+  return (
+    `${briefing}\n\n## Overall objective\n` +
+    "Your briefing above is your assignment; do only that share. The full " +
+    "objective is below for reference: use its exact requirements (names, " +
+    "allowed values, rules) wherever your briefing is silent or differs.\n\n" +
+    objective.trim()
+  )
+}
+
+// A re-decomposed sub-task's briefing plus the feedback that sent the phase
+// back, verbatim: the planner's rewrite of it can drop items, and the worker
+// cannot see the planning conversation.
+export function withReworkFeedback(
+  briefing: string,
+  reworkNote: string | undefined
+): string {
+  if (!reworkNote?.trim()) return briefing
+  return (
+    `${briefing}\n\n## Why this work is being redone\n` +
+    "This phase was sent back for rework. The full feedback is below; your " +
+    "briefing above is your share of it. Make sure your part is addressed, and " +
+    "say in your summary which items you fixed.\n\n" +
+    reworkNote.trim()
+  )
+}
+
 export function parseDecomposition(text: string): string[] {
   if (!text) return []
   // Candidates in priority order: each fenced block's body (a model may open with
@@ -394,6 +454,11 @@ export function validatorPrompt(input: {
       lines.push(u.content?.trim() || "(no textual output)")
       lines.push("")
     }
+  }
+  const instructions = phaseInstructionLines(phase)
+  if (instructions.length > 0) {
+    lines.push("## Phase instructions")
+    lines.push(...instructions)
   }
   lines.push(`## What the "${phase.name}" phase reported`)
   lines.push(phaseOutput?.trim() || "(no textual output)")

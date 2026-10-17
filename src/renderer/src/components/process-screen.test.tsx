@@ -585,6 +585,7 @@ describe("completion policy rollout", () => {
     expect(container.textContent).toContain("Work: Validated v1")
     expect(container.textContent).toContain("report.txt")
     expect(container.textContent).toContain("blocked")
+    expect(container.textContent).toContain("Reason: Missing input")
     expect(container.textContent).toContain("Supply input")
     act(() => {
       root.render(

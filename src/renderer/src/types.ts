@@ -160,6 +160,7 @@ export type {
   ProcessEdge,
   ProcessRun,
   ProcessPhaseAttempt,
+  ProcessFlag,
   ProcessPhaseRun,
   ProcessRuntimeConfig,
   ProcessCommandConfig,

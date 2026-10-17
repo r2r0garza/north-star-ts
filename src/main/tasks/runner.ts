@@ -97,6 +97,9 @@ export type RunnerLifecycleEvent =
       // non-gate events. Lets the monitor route the requestId to the right card.
       gateKind?: "phase" | "validator" | "flag"
       failure?: FailureContext | null
+      // The worker task (its conversation is the round's transcript). Kept on
+      // the append-only event log because rework resets/deletes phase-run rows.
+      workerTaskId?: string | null
     }
   // A command phase's output advanced (plan 104). Ephemeral (live tail only):
   // the bounded receipt is on the phase-run row, so the monitor re-reads it.
@@ -694,7 +697,15 @@ export class TaskRunner {
       return
     }
     const task = getTask(taskId)
-    if (task && (task.status === "queued" || task.status === "interrupted")) {
+    if (
+      task &&
+      (task.status === "queued" ||
+        task.status === "interrupted" ||
+        task.status === "paused")
+    ) {
+      // A paused task may be parked on a gate: deny its pending approval so the
+      // card doesn't outlive the cancelled task.
+      this.settleApprovals(taskId, "denied", { superseded: "cancelled" })
       updateTask(taskId, { status: "cancelled" })
       this.emit(taskId, {
         type: "status_change",

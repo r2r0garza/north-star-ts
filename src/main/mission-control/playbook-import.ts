@@ -26,6 +26,7 @@ import { collectSeatRoles, SeatResolutionError } from "./seat-resolver"
 // definition: deleting the playbook leaves the Process in place. Idempotent —
 // a Process already imported returns its playbook.
 export function importProcessAsPlaybook(processId: string): PlaybookWithHooks {
+  processes.assertProcessDefinitionAvailable(processId)
   const definition = processes.getProcessDefinition(processId)
   if (!definition) throw new Error(`Process definition not found: ${processId}`)
   const existing = playbooks
@@ -282,11 +283,6 @@ export interface ProcessRunHistoryEntry {
 // Top-level Process runs, newest first — legacy runs, Quick runs, and Mission
 // Control hook runs alike — for Mission Control's Playbooks → History.
 export function listProcessRunHistory(limit = 200): ProcessRunHistoryEntry[] {
-  const names = new Map(
-    processes
-      .listProcessDefinitions()
-      .map((definition) => [definition.id, definition.name])
-  )
   return processes
     .listProcessRuns()
     .filter((run) => !run.parentPhaseRunId)
@@ -295,7 +291,9 @@ export function listProcessRunHistory(limit = 200): ProcessRunHistoryEntry[] {
       const link = run.missionControl
       return {
         run,
-        processName: run.processId ? (names.get(run.processId) ?? null) : null,
+        processName: run.processId
+          ? (processes.getProcessDefinition(run.processId)?.name ?? null)
+          : null,
         featureName: link
           ? (features.getFeature(link.featureId)?.name ?? null)
           : null,

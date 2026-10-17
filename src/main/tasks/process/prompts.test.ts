@@ -4,6 +4,8 @@ import {
   MAX_FAN_OUT,
   decompositionRetryNote,
   fanOutDecomposePrompt,
+  withObjective,
+  withReworkFeedback,
   kickoffPrompt,
   eachSubtaskKickoffPrompt,
   UNATTENDED_WORK_NOTE,
@@ -148,6 +150,38 @@ describe("kickoffPrompt — rework note (plan 029)", () => {
   })
 })
 
+describe("withObjective", () => {
+  it("appends the objective after the briefing", () => {
+    const b = withObjective("Build the frontend", "Priorities: P1, P2, P3, P4")
+    expect(b.startsWith("Build the frontend")).toBe(true)
+    expect(b).toContain("## Overall objective")
+    expect(b).toContain("Priorities: P1, P2, P3, P4")
+  })
+
+  it("does not repeat an objective the briefing already carries", () => {
+    const b = "Task\n\n## Overall objective\nspec"
+    expect(withObjective(b, "spec")).toBe(b)
+    expect(withObjective("Task", "  ")).toBe("Task")
+  })
+})
+
+describe("withReworkFeedback", () => {
+  it("appends the feedback verbatim after the briefing", () => {
+    const b = withReworkFeedback(
+      "Add the form fields",
+      "fields missing in App.tsx"
+    )
+    expect(b.startsWith("Add the form fields")).toBe(true)
+    expect(b).toContain("## Why this work is being redone")
+    expect(b).toContain("fields missing in App.tsx")
+  })
+
+  it("leaves a first-run briefing unchanged", () => {
+    expect(withReworkFeedback("Build it", undefined)).toBe("Build it")
+    expect(withReworkFeedback("Build it", "  ")).toBe("Build it")
+  })
+})
+
 describe("fanOutDecomposePrompt — rework note", () => {
   it("omits the Requested changes section on a first run", () => {
     const p = fanOutDecomposePrompt({
@@ -169,6 +203,7 @@ describe("fanOutDecomposePrompt — rework note", () => {
     })
     expect(p).toContain("## Requested changes")
     expect(p).toContain("split the work by platform")
+    expect(p).toContain("Assign every item in it to at least one sub-task")
     expect(p.indexOf("## Requested changes")).toBeLessThan(
       p.indexOf("## Your task")
     )
@@ -229,6 +264,30 @@ describe("kickoffPrompt — flag-for-rework section (plan 031.2)", () => {
     expect(p).toContain("`design`")
     expect(p).toContain("`plan`")
     expect(p).toContain("flag_for_rework")
+  })
+
+  it("keeps harness problems in the worker's own lane", () => {
+    const p = kickoffPrompt({
+      phase,
+      objective: "ship it",
+      upstream: [{ phaseName: "Build", phaseKey: "build", content: "built" }],
+    })
+    expect(p).toContain("Problems with your own setup are yours")
+    expect(p).toContain("a run that was killed or never finished")
+    expect(p).toContain("Flag only with concrete evidence")
+  })
+
+  it("keeps tests and reports in the worker's lane and forbids no-op flags", () => {
+    const p = kickoffPrompt({
+      phase,
+      objective: "ship it",
+      upstream: [{ phaseName: "Build", phaseKey: "build", content: "built" }],
+    })
+    expect(p).toContain("writing or extending tests")
+    expect(p).toContain(
+      "If you conclude that no rework is needed, do not call it"
+    )
+    expect(p).toContain("do not report your phase as complete")
   })
 
   it("omits the section when there is nothing upstream", () => {
@@ -315,9 +374,9 @@ describe("parseVerdict (plan 031.1)", () => {
 
 describe("unattended workers", () => {
   it("tells every kickoff that nobody will answer questions", () => {
-    expect(kickoffPrompt({ phase, objective: "ship it", upstream: [] })).toContain(
-      UNATTENDED_WORK_NOTE
-    )
+    expect(
+      kickoffPrompt({ phase, objective: "ship it", upstream: [] })
+    ).toContain(UNATTENDED_WORK_NOTE)
     expect(
       eachSubtaskKickoffPrompt({
         phase,
@@ -326,5 +385,44 @@ describe("unattended workers", () => {
         subtaskContent: "part one",
       })
     ).toContain(UNATTENDED_WORK_NOTE)
+  })
+})
+
+describe("phase instructions", () => {
+  const withInstructions: ProcessPhase = {
+    ...phase,
+    instructions: "Create the manifests and install deps.",
+  }
+
+  it("sends instructions to the phase worker, decomposer, sub-task worker, and reviewer", () => {
+    const prompts = [
+      kickoffPrompt({ phase: withInstructions, objective: "o", upstream: [] }),
+      fanOutDecomposePrompt({
+        phase: withInstructions,
+        objective: "o",
+        upstream: [],
+      }),
+      eachSubtaskKickoffPrompt({
+        phase: withInstructions,
+        objective: "o",
+        sourcePhaseName: "Plan",
+        subtaskContent: "x",
+      }),
+      validatorPrompt({
+        phase: withInstructions,
+        objective: "o",
+        upstream: [],
+        phaseOutput: "done",
+      }),
+    ]
+    for (const p of prompts)
+      expect(p).toContain("Create the manifests and install deps.")
+  })
+
+  it("leaves the prompt unchanged without instructions", () => {
+    const input = { objective: "o", upstream: [] }
+    expect(
+      kickoffPrompt({ phase: { ...phase, instructions: "  " }, ...input })
+    ).toBe(kickoffPrompt({ phase, ...input }))
   })
 })

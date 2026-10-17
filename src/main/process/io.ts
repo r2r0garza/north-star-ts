@@ -105,6 +105,7 @@ export interface ProcessExportPhase {
   command?: ProcessCommandConfig | null
   key: string
   name: string
+  instructions?: string | null
   routing: PhaseRouting
   gatePolicy: PhaseGatePolicy
   fanOut: boolean
@@ -318,6 +319,7 @@ export function buildProcessExport(graph: ProcessGraph): ProcessExport {
           command: kind === "command" ? (phase.commandConfig ?? null) : null,
           key: phase.key,
           name: phase.name,
+          instructions: phase.instructions ?? null,
           routing: phase.routing,
           gatePolicy: phase.gatePolicy,
           fanOut: phase.fanOut,
@@ -433,6 +435,7 @@ export function importProcessExport(input: unknown): ProcessImportResult {
         commandConfig: kind === "command" ? phase.command : null,
         key: phase.key,
         name: phase.name,
+        instructions: phase.instructions ?? null,
         routing: phase.routing,
         gatePolicy: phase.gatePolicy,
         fanOut: phase.fanOut,
@@ -686,6 +689,10 @@ function validateProcessExport(input: unknown): ProcessExport {
       command,
       key,
       name: nonEmptyString(phase.name, `phases[${index}].name`),
+      instructions:
+        phase.instructions == null
+          ? null
+          : stringValue(phase.instructions, `phases[${index}].instructions`),
       routing: enumValue(phase.routing, ROUTINGS, `phases[${index}].routing`),
       gatePolicy: enumValue(
         phase.gatePolicy,

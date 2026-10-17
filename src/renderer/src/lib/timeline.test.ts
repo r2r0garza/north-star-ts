@@ -56,6 +56,24 @@ describe("buildTimeline", () => {
     })
   })
 
+  it("marks a call without a result interrupted unless the turn is live", () => {
+    const call = message("assistant", "assistant", "")
+    call.toolCalls = [
+      {
+        id: "call",
+        name: "exec_command",
+        arguments: '{"command":"npx playwright test"}',
+      },
+    ]
+    const status = (live?: boolean) => {
+      const [group] = buildTimeline([call], { live })
+      if (group.kind !== "tools") throw new Error("Expected tool group")
+      return group.calls[0].status
+    }
+    expect(status()).toBe("interrupted")
+    expect(status(true)).toBe("running")
+  })
+
   it("hides persisted background command completion runtime events", () => {
     const content =
       'Runtime event: background command completion(s).\n\n[context provenance: trust=untrusted_data channel=command source="background_command_completion"]\n' +

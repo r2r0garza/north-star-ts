@@ -66,7 +66,7 @@ describe.skipIf(!sqliteLoads)("v15 migration", () => {
   })
 
   it("reaches the latest user_version", () => {
-    expect(db.pragma("user_version", { simple: true })).toBe(69)
+    expect(db.pragma("user_version", { simple: true })).toBe(71)
   })
 
   it("adds the v24 subprocess_id column to process_phases", () => {
@@ -74,6 +74,13 @@ describe.skipIf(!sqliteLoads)("v15 migration", () => {
       db.pragma("table_info(process_phases)") as Array<{ name: string }>
     ).map((c) => c.name)
     expect(cols).toContain("subprocess_id")
+  })
+
+  it("adds the v71 instructions column to process_phases", () => {
+    const cols = (
+      db.pragma("table_info(process_phases)") as Array<{ name: string }>
+    ).map((c) => c.name)
+    expect(cols).toContain("instructions")
   })
 
   it("adds the v24 parent_phase_run_id column to process_runs", () => {
@@ -169,6 +176,22 @@ describe.skipIf(!sqliteLoads)("phases + agents", () => {
     expect(phases[0].routing).toBe("dispatch")
     expect(phases[0].gatePolicy).toBe("approve")
     expect(phases[0].fanOut).toBe(true)
+  })
+
+  it("stores, trims, and clears phase instructions", () => {
+    const def = createProcessDefinition({ name: "P" })
+    const p = createPhase({
+      processId: def.id,
+      key: "setup",
+      name: "Setup",
+      instructions: "  Create the virtualenv.  ",
+      position: 0,
+    })
+    expect(p.instructions).toBe("Create the virtualenv.")
+    expect(
+      updatePhase(p.id, { instructions: "Install deps" }).instructions
+    ).toBe("Install deps")
+    expect(updatePhase(p.id, { instructions: "   " }).instructions).toBeNull()
   })
 
   it("updatePhaseAgent sets and clears the runtime override without touching other fields", () => {
@@ -382,14 +405,64 @@ describe.skipIf(!sqliteLoads)("runs + phase runs", () => {
     expect(listPhaseRuns({ runId: run.id })).toHaveLength(0)
   })
 
-  it("run.process_id is SET NULL when the definition is deleted", () => {
+  it("removes a used definition from the list without losing its graph or history", () => {
     const def = createProcessDefinition({ name: "P" })
+    const phase = createPhase({
+      processId: def.id,
+      key: "a",
+      name: "A",
+      position: 0,
+    })
     const run = createProcessRun({
       processId: def.id,
       sourceConversationId: null,
+      status: "completed",
+    })
+    const phaseRun = createPhaseRun({
+      runId: run.id,
+      phaseId: phase.id,
+      status: "completed",
     })
     deleteProcessDefinition(def.id)
-    expect(getProcessRun(run.id)!.processId).toBeNull()
+    deleteProcessDefinition(def.id)
+    expect(listProcessDefinitions()).toHaveLength(0)
+    expect(getProcessGraph(def.id)?.phases).toEqual([phase])
+    expect(getProcessRun(run.id)!.processId).toBe(def.id)
+    expect(getPhaseRun(phaseRun.id)).toBeDefined()
+    expect(db.pragma("foreign_key_check")).toEqual([])
+    expect(() =>
+      createProcessRun({ processId: def.id, sourceConversationId: null })
+    ).toThrow(/deleted/)
+  })
+
+  it.each(["queued", "running", "waiting_for_approval", "paused"] as const)(
+    "protects a definition with a %s run",
+    (status) => {
+      const def = createProcessDefinition({ name: "P" })
+      createProcessRun({
+        processId: def.id,
+        sourceConversationId: null,
+        status,
+      })
+      expect(() => deleteProcessDefinition(def.id)).toThrow(/unfinished run/)
+      expect(listProcessDefinitions()).toHaveLength(1)
+    }
+  )
+
+  it("protects a sub-process used by another process", () => {
+    const parent = createProcessDefinition({ name: "Parent" })
+    const child = createProcessDefinition({ name: "Child" })
+    createPhase({
+      processId: parent.id,
+      key: "a",
+      name: "A",
+      position: 0,
+      subprocessId: child.id,
+    })
+    expect(() => deleteProcessDefinition(child.id)).toThrow(
+      /Parent.*sub-process/
+    )
+    expect(getProcessDefinition(child.id)).toBeDefined()
   })
 })
 

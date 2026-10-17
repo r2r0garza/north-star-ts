@@ -50,6 +50,38 @@ describe("phase completion boundary", () => {
   ])("rejects missing, malformed or stale outcomes: %s", (content) => {
     expect(() => parsePhaseOutcome(content, "current")).toThrow()
   })
+  it.each([
+    ["done", "not a single JSON object"],
+    [
+      JSON.stringify({ ...outcome, attemptId: "old" }),
+      '`attemptId` is stale or missing (expected "current")',
+    ],
+    [
+      JSON.stringify({ ...outcome, evidence: "" }),
+      "`evidence` is missing or empty",
+    ],
+    [
+      JSON.stringify({ ...outcome, status: "blocked" }),
+      "`status: blocked` also needs `reason` and `nextAction`",
+    ],
+    [
+      JSON.stringify({ ...outcome, status: "done" }),
+      "`status` must be completed, blocked, or failed",
+    ],
+  ])("names the problem in %s", (content, problem) => {
+    expect(() => parsePhaseOutcome(content, "current")).toThrow(problem)
+  })
+  it("lists every problem at once", () => {
+    const content = JSON.stringify({
+      version: 1,
+      attemptId: "current",
+      status: "blocked",
+      output: "x",
+    })
+    expect(() => parsePhaseOutcome(content, "current")).toThrow(
+      "Invalid phase outcome: `evidence` is missing or empty; `status: blocked` also needs `reason` and `nextAction`"
+    )
+  })
   it("accepts a recovered outcome without scanning failure phrases", () => {
     const value = {
       ...outcome,

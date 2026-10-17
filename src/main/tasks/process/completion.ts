@@ -43,29 +43,42 @@ export function parsePhaseOutcome(
   try {
     value = JSON.parse(content ?? "")
   } catch {
-    throw new Error("Expected a phase outcome JSON object")
+    value = undefined
   }
   if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new Error("Expected a phase outcome JSON object")
+    throw new Error(
+      "Invalid phase outcome: the final message is not a single JSON object"
+    )
   const o = value as Record<string, unknown>
   const nonempty = (v: unknown): v is string =>
     typeof v === "string" && v.trim().length > 0
+  // Name every problem: the user (and the corrective retry) need to know
+  // exactly what to fix, not that "something" was missing.
+  const problems: string[] = []
+  if (o.version !== 1) problems.push("`version` must be 1")
+  if (o.attemptId !== attemptId)
+    problems.push(
+      `\`attemptId\` is stale or missing (expected ${JSON.stringify(attemptId)})`
+    )
+  if (!["completed", "blocked", "failed"].includes(o.status as string))
+    problems.push("`status` must be completed, blocked, or failed")
+  if (!nonempty(o.output)) problems.push("`output` is missing or empty")
+  if (!nonempty(o.evidence)) problems.push("`evidence` is missing or empty")
   if (
-    o.version !== 1 ||
-    o.attemptId !== attemptId ||
-    !["completed", "blocked", "failed"].includes(o.status as string) ||
-    !nonempty(o.output) ||
-    !nonempty(o.evidence) ||
-    (o.status !== "completed" &&
-      (!nonempty(o.reason) || !nonempty(o.nextAction)))
+    (o.status === "blocked" || o.status === "failed") &&
+    (!nonempty(o.reason) || !nonempty(o.nextAction))
   )
-    throw new Error("Missing, invalid, or stale phase outcome data")
+    problems.push(
+      `\`status: ${o.status}\` also needs \`reason\` and \`nextAction\``
+    )
+  if (problems.length > 0)
+    throw new Error(`Invalid phase outcome: ${problems.join("; ")}`)
   return {
     version: 1,
     attemptId,
     status: o.status as PhaseOutcome["status"],
-    output: o.output,
-    evidence: o.evidence,
+    output: o.output as string,
+    evidence: o.evidence as string,
     ...(nonempty(o.reason) ? { reason: o.reason } : {}),
     ...(nonempty(o.nextAction) ? { nextAction: o.nextAction } : {}),
   }

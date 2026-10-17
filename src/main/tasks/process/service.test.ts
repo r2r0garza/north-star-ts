@@ -729,6 +729,112 @@ describe.skipIf(!sqliteLoads)("ProcessService restartRun", () => {
     expect(restarted).toEqual([taskId])
   })
 
+  // a → b, a completed, b failed with a blocked validated outcome and a
+  // pending flag against a.
+  function seedBlockedRun() {
+    const def = processes.createProcessDefinition({ name: "T" })
+    const a = processes.createPhase({
+      processId: def.id,
+      key: "a",
+      name: "A",
+      position: 0,
+    })
+    const b = processes.createPhase({
+      processId: def.id,
+      key: "b",
+      name: "B",
+      position: 1,
+    })
+    processes.createEdge({
+      processId: def.id,
+      fromPhaseId: a.id,
+      toPhaseId: b.id,
+    })
+    const { taskId } = seedTaskRow()
+    db.prepare("UPDATE tasks SET status = 'failed' WHERE id = ?").run(taskId)
+    const run = processes.createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      taskId,
+      objective: "do it",
+      status: "failed",
+    })
+    const arun = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: a.id,
+      status: "completed",
+    })
+    const brun = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: b.id,
+      status: "failed",
+    })
+    processes.updatePhaseRun(brun.id, {
+      error: "blocked",
+      completionReceipt: {
+        outcome: {
+          version: 1,
+          attemptId: "x",
+          status: "blocked",
+          output: "report",
+          evidence: "ran",
+          reason: "No test database configured",
+          nextAction: "Set TEST_DATABASE_URL",
+        },
+        checkedArtifacts: [],
+        checkedAt: 1,
+      },
+    })
+    const flag = processes.createFlag({
+      runId: run.id,
+      flaggingPhaseRunId: brun.id,
+      targetPhaseId: a.id,
+      reason: "Make the tests read .env",
+    })
+    const runner = {
+      enqueueKind: () => ({ id: "t" }),
+      restart: () => {},
+    } as never
+    return { run, arun, brun, flag, svc: new ProcessService(runner) }
+  }
+
+  it("stamps user feedback and the previous outcome on the re-run phase", () => {
+    const { run, brun, flag, svc } = seedBlockedRun()
+    svc.restartRun(run.id, {
+      feedback: "It's DB_2_TEST in .env",
+      sendBackFlags: false,
+    })
+    const note = processes.getPhaseRun(brun.id)!.reworkNote!
+    expect(note).toContain("Message from the user:\nIt's DB_2_TEST in .env")
+    expect(note).toContain(
+      "Your previous outcome was blocked: No test database configured Next action: Set TEST_DATABASE_URL"
+    )
+    expect(processes.getFlag(flag.id)!.status).toBe("dismissed")
+  })
+
+  it("sends pending flags back with the feedback when asked", () => {
+    const { run, arun, brun, flag, svc } = seedBlockedRun()
+    svc.restartRun(run.id, { feedback: "Use DB_2_TEST", sendBackFlags: true })
+    expect(processes.getFlag(flag.id)!.status).toBe("applied")
+    const a = processes.getPhaseRun(arun.id)!
+    expect(a.status).toBe("pending")
+    expect(a.reworkNote).toContain("Use DB_2_TEST")
+    expect(a.reworkNote).toContain("Make the tests read .env")
+    const b = processes.getPhaseRun(brun.id)!
+    expect(b.status).toBe("pending")
+    expect(b.reworkNote).toContain("Use DB_2_TEST")
+    expect(b.reworkNote).toContain("You flagged an upstream phase")
+    expect(b.reworkNote).toContain("No test database configured")
+  })
+
+  it("leaves flags and notes alone without restart options", () => {
+    const { run, brun, flag, svc } = seedBlockedRun()
+    svc.restartRun(run.id)
+    expect(processes.getFlag(flag.id)!.status).toBe("pending")
+    expect(processes.getPhaseRun(brun.id)!.reworkNote).toBeNull()
+    expect(processes.getPhaseRun(brun.id)!.status).toBe("pending")
+  })
+
   it("is a no-op unless the run is failed", async () => {
     const def = processes.createProcessDefinition({ name: "T" })
     const { taskId } = seedTaskRow()
@@ -1284,6 +1390,86 @@ describe.skipIf(!sqliteLoads)(
       })
       expect("stopped" in result && result.stopped).toBe(true)
       expect(processes.getProcessRun(run.id)!.status).toBe("cancelled")
+    })
+
+    it("shows a user Pause as paused, and a shutdown stays running", async () => {
+      for (const [reason, expected] of [
+        [PAUSE_ABORT_REASON, "paused"],
+        [SHUTDOWN_ABORT_REASON, "running"],
+      ] as const) {
+        const { parentId } = buildParentWithSub()
+        const { taskId } = seedTaskRow()
+        const run = processes.createProcessRun({
+          processId: parentId,
+          sourceConversationId: null,
+          taskId,
+          objective: "obj",
+          status: "running",
+        })
+        runAbort = new AbortController()
+        abortOnMessage.push({ match: "Inner", reason })
+        const svc = new ProcessService(fakeRunner)
+        const result = await svc.execute({
+          task: { id: taskId, input: { processRunId: run.id } } as never,
+          signal: runAbort.signal,
+          emit: () => {},
+          workspace: undefined,
+        })
+        expect("paused" in result && result.paused).toBe(true)
+        expect(processes.getProcessRun(run.id)!.status).toBe(expected)
+      }
+    })
+
+    it("cancels a paused run and settles its unfinished phases", () => {
+      const def = processes.createProcessDefinition({ name: "T" })
+      const a = processes.createPhase({
+        processId: def.id,
+        key: "a",
+        name: "A",
+        position: 0,
+      })
+      const b = processes.createPhase({
+        processId: def.id,
+        key: "b",
+        name: "B",
+        position: 1,
+      })
+      const { taskId } = seedTaskRow()
+      db.prepare("UPDATE tasks SET status = 'paused' WHERE id = ?").run(taskId)
+      const run = processes.createProcessRun({
+        processId: def.id,
+        sourceConversationId: null,
+        taskId,
+        objective: "obj",
+        status: "paused",
+      })
+      const done = processes.createPhaseRun({
+        runId: run.id,
+        phaseId: a.id,
+        status: "completed",
+      })
+      const live = processes.createPhaseRun({
+        runId: run.id,
+        phaseId: b.id,
+        status: "running",
+      })
+      const runner = {
+        cancel: (id: string) =>
+          db
+            .prepare("UPDATE tasks SET status = 'cancelled' WHERE id = ?")
+            .run(id),
+      } as never
+      const svc = new ProcessService(runner)
+      const settled: string[] = []
+      svc.onRunSettled((id) => settled.push(id))
+
+      svc.cancelRun(run.id)
+
+      expect(processes.getProcessRun(run.id)!.status).toBe("cancelled")
+      expect(processes.getProcessRun(run.id)!.finishedAt).not.toBeNull()
+      expect(processes.getPhaseRun(live.id)!.status).toBe("cancelled")
+      expect(processes.getPhaseRun(done.id)!.status).toBe("completed")
+      expect(settled).toEqual([run.id])
     })
   }
 )
@@ -2245,6 +2431,58 @@ describe.skipIf(!sqliteLoads)(
       )
     })
 
+    it("gives every re-decomposed sub-task the rework feedback verbatim", async () => {
+      const def = processes.createProcessDefinition({ name: "T" })
+      const impl = processes.createPhase({
+        processId: def.id,
+        key: "impl",
+        name: "Implement",
+        fanOut: true,
+        position: 0,
+      })
+      decomposeReplies.push(JSON.stringify(["backend part", "frontend part"]))
+      const { taskId } = seedTaskRow()
+      const run = processes.createProcessRun({
+        processId: def.id,
+        sourceConversationId: null,
+        taskId,
+        objective: "ship it",
+        status: "running",
+      })
+      const implRun = processes.createPhaseRun({
+        runId: run.id,
+        phaseId: impl.id,
+        status: "pending",
+      })
+      processes.updatePhaseRun(implRun.id, {
+        reworkNote: "the defect form omits the three reproduction fields",
+      })
+
+      const svc = new ProcessService(fakeRunner)
+      await svc.execute({
+        task: { id: taskId, input: { processRunId: run.id } } as never,
+        signal: new AbortController().signal,
+        emit: () => {},
+        workspace: undefined,
+      })
+
+      const briefings = loopCalls
+        .map((c) => c.userMessage ?? "")
+        .filter(
+          (m) => m.startsWith("backend part") || m.startsWith("frontend part")
+        )
+      expect(briefings).toHaveLength(2)
+      for (const b of briefings) {
+        expect(b).toContain("## Why this work is being redone")
+        expect(b).toContain(
+          "the defect form omits the three reproduction fields"
+        )
+        // The worker also sees the run's full objective, not only its share.
+        expect(b).toContain("## Overall objective")
+        expect(b).toContain("ship it")
+      }
+    })
+
     it("dismissFlag leaves the target intact, marks the flag dismissed, resumes", () => {
       const { run, aRun, flag, requestId, approvalId } = seedFlag()
       const { runner, resumed } = makeRunner()
@@ -2332,6 +2570,26 @@ describe.skipIf(!sqliteLoads)("ProcessService validated completion", () => {
       processes.getPhaseRun(row.id)?.completionReceipt?.outcome.status
     ).toBe("completed")
     expect(processes.getPhaseRun(row.id)?.taskId).toBe(worker.taskId)
+  })
+  it("re-prompts a malformed outcome in the same worker conversation", async () => {
+    const { run, execute } = setup()
+    outcomeReplies.push(
+      (instruction) =>
+        JSON.stringify({
+          version: 1,
+          attemptId: instruction.match(/attemptId: "([^"]+)"/)?.[1],
+          status: "completed",
+          output: "Finished",
+        }),
+      reply
+    )
+    await execute()
+    const calls = loopCalls.filter((c) => c.processCompletionInstruction)
+    expect(calls).toHaveLength(2)
+    expect(calls[1].conversationId).toBe(calls[0].conversationId)
+    expect(calls[1].userMessage).toContain("`evidence` is missing or empty")
+    const row = processes.listPhaseRuns({ runId: run.id })[0]
+    expect(row.status).toBe("completed")
   })
   it("retains the receipt on review-only retry and clears it for semantic rework", async () => {
     const { run, taskId, svc, execute } = setup(true)

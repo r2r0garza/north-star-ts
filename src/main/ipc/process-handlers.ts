@@ -168,10 +168,9 @@ export function registerProcessHandlers(
 
   // Cancel a run: abort its backing task (running phases observe the signal and
   // unwind). No-op if the run has no backing task (already settled).
-  ipcMain.handle("process:cancel", (_e, processRunId: string) => {
-    const run = getProcessRun(processRunId)
-    if (run?.taskId) runner.cancel(run.taskId)
-  })
+  ipcMain.handle("process:cancel", (_e, processRunId: string) =>
+    processService.cancelRun(processRunId)
+  )
 
   // Pause a run: pause its backing task (a durable resume state).
   ipcMain.handle("process:pause", (_e, processRunId: string) => {
@@ -182,8 +181,13 @@ export function registerProcessHandlers(
   // Retry a FAILED run from its failure frontier. Delegated to the service (it
   // needs the graph to reset the failed phase-runs correctly), which resets the
   // frontier and re-drives the same backing task.
-  ipcMain.handle("process:restart", (_e, processRunId: string) =>
-    processService.restartRun(processRunId)
+  ipcMain.handle(
+    "process:restart",
+    (
+      _e,
+      processRunId: string,
+      opts?: { feedback?: string; sendBackFlags?: boolean }
+    ) => processService.restartRun(processRunId, opts)
   )
 
   // Approve a process gate. The service keeps normal phase approval and

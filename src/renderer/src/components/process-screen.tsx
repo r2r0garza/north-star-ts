@@ -161,6 +161,7 @@ import type {
   ProcessPhase,
   ProcessPhaseAgent,
   ProcessPhaseAttempt,
+  ProcessFlag,
   ProcessPhaseKind,
   ProcessPhaseRun,
   ProcessCommandConfig,
@@ -1023,8 +1024,7 @@ export function ProcessScreen({
         </div>
       )}
 
-      {/* Confirmation before deleting a definition — deletion is irreversible and
-          cascades to phases / agents / edges (but not past runs). */}
+      {/* Past runs retain their graph when a definition is removed. */}
       <AlertDialog
         open={pendingDelete !== null}
         onOpenChange={(o) => {
@@ -1035,8 +1035,8 @@ export function ProcessScreen({
           <AlertDialogHeader>
             <AlertDialogTitle>Delete this process?</AlertDialogTitle>
             <AlertDialogDescription>
-              “{pendingDelete?.name}” and its phases, agent pools, and edges
-              will be permanently deleted. This can’t be undone.
+              “{pendingDelete?.name}” will be removed from Processes. Past runs
+              and their details will be preserved. This can’t be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -1643,6 +1643,7 @@ function PhaseCard({
     kind?: ProcessPhaseKind
     commandConfig?: ProcessCommandConfig | null
     name?: string
+    instructions?: string | null
     key?: string
     routing?: PhaseRouting
     gatePolicy?: PhaseGatePolicy
@@ -1941,6 +1942,25 @@ function PhaseCard({
               </TooltipContent>
             </Tooltip>
           </div>
+
+          {!phase.subprocessId && shownKind !== "command" && (
+            <div className="flex flex-col gap-1">
+              <label className="text-xs font-medium text-muted-foreground">
+                Instructions
+              </label>
+              <Textarea
+                defaultValue={phase.instructions ?? ""}
+                placeholder="What the agent should do in this phase…"
+                aria-label="Phase instructions"
+                className="min-h-16 resize-y text-xs"
+                onBlur={(e) => {
+                  const v = e.target.value.trim()
+                  if (v !== (phase.instructions ?? ""))
+                    void patchPhase({ instructions: v || null })
+                }}
+              />
+            </div>
+          )}
 
           <PhaseKindControl
             value={shownKind}
@@ -2788,6 +2808,8 @@ export function RunMonitor({
   const [refreshTick, setRefreshTick] = useState(0)
   // The New Run modal (objective + required folder).
   const [newRunOpen, setNewRunOpen] = useState(false)
+  // The Restart dialog: what blocked the run, pending flags, feedback.
+  const [restartOpen, setRestartOpen] = useState(false)
   // The phase-run whose worker transcript is open (null = closed). Resolved from
   // the phase-run's taskId → the worker Task the read-only sheet renders.
   const [viewingTask, setViewingTask] = useState<Task | null>(null)
@@ -3284,16 +3306,32 @@ export function RunMonitor({
         {run && <RunStatusBadge status={run.status} />}
         {run && runActive && (
           <>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={() => window.cowork.process.pause(run.id)}
-              disabled={run.status === "paused"}
-            >
-              <Pause className="size-3.5" />
-              Pause
-            </Button>
+            {run.status === "paused" && run.taskId ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() =>
+                  window.cowork.tasks
+                    .resume(run.taskId!)
+                    .catch((err) => toast.error(`Could not resume: ${err}`))
+                }
+              >
+                <Play className="size-3.5" />
+                Resume
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => window.cowork.process.pause(run.id)}
+                disabled={run.status === "paused"}
+              >
+                <Pause className="size-3.5" />
+                Pause
+              </Button>
+            )}
             {!embedded && (
               <Button
                 type="button"
@@ -3324,7 +3362,7 @@ export function RunMonitor({
                 type="button"
                 size="sm"
                 variant="outline"
-                onClick={() => window.cowork.process.restart(run.id)}
+                onClick={() => setRestartOpen(true)}
               >
                 <RotateCcw className="size-3.5" />
                 Restart run
@@ -3333,6 +3371,16 @@ export function RunMonitor({
           </>
         )}
       </div>
+
+      {run && (
+        <RestartRunDialog
+          open={restartOpen}
+          onOpenChange={setRestartOpen}
+          run={run}
+          phaseRuns={phaseRuns}
+          phaseName={phaseName}
+        />
+      )}
 
       <NewRunModal
         processId={definition.id}
@@ -3416,6 +3464,12 @@ export function RunMonitor({
       <TaskTranscriptSheet
         task={viewingTask}
         open={viewingTask !== null}
+        live={
+          run?.status === "running" &&
+          phaseRuns.some(
+            (pr) => pr.taskId === viewingTask?.id && pr.status === "running"
+          )
+        }
         onOpenChange={(o) => {
           if (!o) setViewingTask(null)
         }}
@@ -3845,6 +3899,7 @@ export function PhaseCompletionEvidence({
           <p className="whitespace-pre-wrap">
             Evidence: {receipt.outcome.evidence}
           </p>
+          {receipt.outcome.reason && <p>Reason: {receipt.outcome.reason}</p>}
           {receipt.outcome.nextAction && (
             <p>Next action: {receipt.outcome.nextAction}</p>
           )}
@@ -5105,6 +5160,151 @@ function FlagCard({
 // A centered modal (sibling Dialog, not the takeover primitive) to start a run:
 // an objective + a REQUIRED working directory (a run's phase workers fail closed
 // without a cwd — plan 026). Mirrors project-dialog.tsx's folder-picker pattern.
+// Restart a failed run (plan: retry with feedback). Shows what each failed
+// phase reported, any rework flags still pending, and takes optional feedback
+// that every re-run phase sees under "Requested changes".
+function RestartRunDialog({
+  open,
+  onOpenChange,
+  run,
+  phaseRuns,
+  phaseName,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  run: ProcessRun
+  phaseRuns: ProcessPhaseRun[]
+  phaseName: (phaseId: string) => string
+}) {
+  const [flags, setFlags] = useState<ProcessFlag[]>([])
+  const [sendBackFlags, setSendBackFlags] = useState(true)
+  const [feedback, setFeedback] = useState("")
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    window.cowork.db.processes.flags
+      .list({ runId: run.id, status: "pending" })
+      .then((f) => !cancelled && setFlags(f))
+      .catch(() => !cancelled && setFlags([]))
+    return () => {
+      cancelled = true
+    }
+  }, [open, run.id])
+  const failed = phaseRuns.filter(
+    (pr) => pr.parentId === null && pr.status === "failed"
+  )
+
+  async function restart() {
+    setBusy(true)
+    try {
+      await window.cowork.process.restart(run.id, {
+        feedback: feedback.trim() || undefined,
+        sendBackFlags,
+      })
+      setFeedback("")
+      onOpenChange(false)
+    } catch (err) {
+      toast.error(`Could not restart run: ${err}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[calc(100vh-3rem)] overflow-y-auto sm:max-w-xl">
+        <DialogHeader>
+          <DialogTitle>Restart run</DialogTitle>
+          <DialogDescription>
+            Failed phases re-run; completed phases are kept.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3 text-xs">
+          {failed.map((pr) => {
+            const outcome = pr.completionReceipt?.outcome
+            return (
+              <div key={pr.id} className="space-y-1 rounded-md border p-2">
+                <div className="font-medium">{phaseName(pr.phaseId)}</div>
+                <p className="whitespace-pre-wrap text-destructive">
+                  {pr.failure?.message ?? pr.error}
+                </p>
+                {outcome && outcome.status !== "completed" && (
+                  <>
+                    {outcome.reason && (
+                      <p className="whitespace-pre-wrap">
+                        Reason: {outcome.reason}
+                      </p>
+                    )}
+                    {outcome.nextAction && (
+                      <p className="whitespace-pre-wrap">
+                        Next action: {outcome.nextAction}
+                      </p>
+                    )}
+                  </>
+                )}
+              </div>
+            )
+          })}
+          {flags.length > 0 && (
+            <div className="space-y-2 rounded-md border p-2">
+              <div className="font-medium">Pending rework requests</div>
+              {flags.map((f) => (
+                <p key={f.id} className="whitespace-pre-wrap">
+                  <span className="font-medium">
+                    {phaseName(f.targetPhaseId)}:
+                  </span>{" "}
+                  {f.reason}
+                </p>
+              ))}
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="restart-send-back"
+                  checked={sendBackFlags}
+                  onCheckedChange={(v) => setSendBackFlags(v === true)}
+                />
+                <label htmlFor="restart-send-back" className="cursor-pointer">
+                  Send the work back to{" "}
+                  {[
+                    ...new Set(flags.map((f) => phaseName(f.targetPhaseId))),
+                  ].join(", ")}{" "}
+                  first
+                </label>
+              </div>
+            </div>
+          )}
+          <label className="block space-y-1">
+            <span className="text-muted-foreground">
+              Feedback for the agent (optional)
+            </span>
+            <Textarea
+              rows={10}
+              value={feedback}
+              onChange={(e) => setFeedback(e.target.value)}
+              placeholder="e.g. The test database URL is TEST_DATABASE_URL in .env"
+              // Fixed at 10 lines; longer feedback scrolls instead of growing.
+              className="field-sizing-fixed resize-none overflow-y-auto text-xs"
+            />
+          </label>
+        </div>
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => onOpenChange(false)}
+          >
+            Cancel
+          </Button>
+          <Button type="button" disabled={busy} onClick={restart}>
+            <RotateCcw className="size-3.5" />
+            Restart run
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function NewRunModal({
   processId,
   open,

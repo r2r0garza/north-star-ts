@@ -1076,6 +1076,27 @@ describe.skipIf(!sqliteLoads)(
       await runner.stop()
     })
 
+    it("cancels a paused task and denies its parked gate", () => {
+      const conv = createConversation({ mode: "chat" })
+      const task = createTask({ conversationId: conv.id, status: "paused" })
+      createApproval({ taskId: task.id, request: { requestId: "req-1" } })
+      const runner = new TaskRunner()
+      const events: string[] = []
+      runner.subscribe((id, e) => {
+        if (id === task.id && e.type === "status_change") events.push(e.to)
+      })
+
+      runner.cancel(task.id)
+
+      expect(getTask(task.id)?.status).toBe("cancelled")
+      expect(events).toEqual(["cancelled"])
+      const [row] = listApprovals({ taskId: task.id })
+      expect(row.status).toBe("denied")
+      expect((row.decision as { superseded: string }).superseded).toBe(
+        "cancelled"
+      )
+    })
+
     it("stop during backoff prevents a re-run", async () => {
       const conv = createConversation({ mode: "chat" })
       loopImpl = async () => ({ error: "502", retryable: true })

@@ -70,6 +70,8 @@ import type {
 } from "../../db/types"
 import {
   decompositionRetryNote,
+  withObjective,
+  withReworkFeedback,
   eachSubtaskKickoffPrompt,
   fanOutDecomposePrompt,
   kickoffPrompt,
@@ -94,6 +96,8 @@ import {
 } from "./scheduler"
 import {
   applyFlagBack,
+  isContainer,
+  previousOutcomeSummary,
   resetRunRecursive,
   resetSubProcessChild,
 } from "./flagback"
@@ -157,6 +161,12 @@ function isResumableAbort(signal: AbortSignal): boolean {
 }
 
 function settleAbortedRun(runId: string, signal: AbortSignal): void {
+  // A user Pause is visible as `paused` (execute() flips it back to running on
+  // resume); a SHUTDOWN stays `running` for the next boot's reconcile.
+  if (signal.reason === PAUSE_ABORT_REASON) {
+    processes.updateProcessRun(runId, { status: "paused" })
+    return
+  }
   if (isResumableAbort(signal)) return
   processes.updateProcessRun(runId, {
     status: "cancelled",
@@ -489,7 +499,16 @@ export class ProcessService {
   // sub-process phase-run's CHILD run (linked by parent_phase_run_id) and resets ITS
   // failed frontier too, transitively — 038.1 re-attached to the child but never
   // reset it, so a run that failed INSIDE a sub-process re-failed on every retry.
-  restartRun(runId: string): ProcessRun | undefined {
+  //
+  // `opts` (the Restart dialog): `sendBackFlags` applies (true) or dismisses
+  // (false) the run's still-pending rework flags — the user's choice stands in
+  // for the flag gate. `feedback` is stamped as the reworkNote of every phase
+  // this restart re-runs, ahead of what that phase last reported, so the user
+  // can answer what blocked it ("the test DB URL is in .env as ...").
+  restartRun(
+    runId: string,
+    opts?: { feedback?: string; sendBackFlags?: boolean }
+  ): ProcessRun | undefined {
     const run = processes.getProcessRun(runId)
     if (!run || run.status !== "failed" || !run.taskId || !run.processId)
       return run
@@ -504,7 +523,44 @@ export class ProcessService {
     this.assertNoUnknownProcessWorkerOutcomes(run)
 
     const tx = getDb().transaction(() => {
+      const before = processes.listPhaseRuns({ runId, parentId: null })
+      // Flags first, while the flagger still carries its failure for its note.
+      if (opts)
+        for (const flag of processes.listFlags({ runId, status: "pending" })) {
+          if (opts.sendBackFlags)
+            applyFlagBack({
+              taskId: run.taskId!,
+              runId,
+              graph,
+              target: {
+                targetPhaseId: flag.targetPhaseId,
+                targetChildRunId: flag.targetChildRunId ?? undefined,
+              },
+              reason: flag.reason,
+              flaggingPhaseRunId: flag.flaggingPhaseRunId,
+            })
+          processes.updateFlagStatus(
+            flag.id,
+            opts.sendBackFlags ? "applied" : "dismissed"
+          )
+        }
       resetRunRecursive({ taskId: run.taskId!, run, graph, mode: "frontier" })
+      const feedback = opts?.feedback?.trim()
+      if (feedback)
+        for (const pre of before) {
+          const post = processes.getPhaseRun(pre.id)
+          if (!post || pre.status === "pending" || post.status !== "pending")
+            continue
+          const base =
+            post.reworkRound > pre.reworkRound
+              ? post.reworkNote
+              : previousOutcomeSummary(pre)
+          processes.updatePhaseRun(pre.id, {
+            reworkNote: [`Message from the user:\n${feedback}`, base]
+              .filter(Boolean)
+              .join("\n\n"),
+          })
+        }
       // Re-resolve workspace checks on Retry (plan 104), so fixing a check's
       // command is enough to retry; completed command phases don't re-run.
       this.clearCommandSnapshots(run)
@@ -517,6 +573,44 @@ export class ProcessService {
     })
     this.runner.restart(run.taskId)
     return updated
+  }
+
+  // Cancel a run from the Process screen. A running task unwinds through the
+  // scheduler (settleAbortedRun). A paused or gate-parked task has no scheduler
+  // left to observe the cancel, so settle the run and its phase-runs here.
+  cancelRun(runId: string): void {
+    const run = processes.getProcessRun(runId)
+    if (!run?.taskId) return
+    this.runner.cancel(run.taskId)
+    if (getTask(run.taskId)?.status !== "cancelled") return
+    const settle = (r: ProcessRun) => {
+      if (["completed", "failed", "cancelled"].includes(r.status)) return
+      const graph = r.processId
+        ? processes.getProcessGraph(r.processId)
+        : undefined
+      for (const pr of processes.listPhaseRuns({ runId: r.id })) {
+        // Same rows the scheduler's cancel branch settles, plus a gate-parked one.
+        const container =
+          pr.parentId === null && !!graph && isContainer(graph, pr.phaseId)
+        if (
+          pr.status === "running" ||
+          pr.status === "waiting_for_approval" ||
+          (pr.status === "pending" && container)
+        )
+          processes.updatePhaseRun(pr.id, {
+            status: "cancelled",
+            finishedAt: Date.now(),
+          })
+        const child = processes.getProcessRunByParentPhaseRunId(pr.id)
+        if (child) settle(child)
+      }
+      processes.updateProcessRun(r.id, {
+        status: "cancelled",
+        finishedAt: Date.now(),
+      })
+    }
+    settle(run)
+    this.notifySettled(runId)
   }
 
   // Approve a pending process gate. A validator gate approval is explicitly a
@@ -826,6 +920,7 @@ export class ProcessService {
           targetChildRunId: flag.targetChildRunId ?? undefined,
         },
         reason: flag.reason,
+        flaggingPhaseRunId: flag.flaggingPhaseRunId,
       })
       processes.updateFlagStatus(flag.id, "applied")
       this.flipRunningToTop(owningRun)
@@ -994,6 +1089,7 @@ export class ProcessService {
               targetChildRunId: flag.targetChildRunId ?? undefined,
             },
             reason: flag.reason,
+            flaggingPhaseRunId: flag.flaggingPhaseRunId,
           }),
       })
       // The scheduler RETURNS on abort (it stops walking), so a clean return under an
@@ -1091,6 +1187,11 @@ export class ProcessService {
             parentPhaseRunId: phaseRun.id,
             childRunId: childRun.id,
           } satisfies SubprocessCheckpointState,
+        })
+      } else if (childRun.status === "paused") {
+        // Re-attaching after a user Pause: the nested run is live again.
+        childRun = processes.updateProcessRun(childRun.id, {
+          status: "running",
         })
       }
 
@@ -1207,7 +1308,14 @@ export class ProcessService {
   // precedent), and return the outcome. Phases run in AUTO mode — the phase's
   // gate_policy is the human-in-the-loop control point, not per-tool prompts.
   private makeRunPhase(run: ProcessRun): RunPhase {
-    return async ({ phase, phaseRun, subtaskPrompt, attemptId, signal }) => {
+    return async ({
+      phase,
+      phaseRun,
+      subtaskPrompt,
+      attemptId,
+      correction,
+      signal,
+    }) => {
       const source = run.sourceConversationId
         ? getConversation(run.sourceConversationId)
         : undefined
@@ -1219,11 +1327,14 @@ export class ProcessService {
       // A fan-out CHILD runs its decomposed sub-task briefing verbatim; a normal
       // phase gets the generic self-contained kickoff (plan 025.1).
       // A fan-out child runs its decomposed briefing verbatim, which says
-      // nothing about running headless; add the note unless it is present.
+      // nothing about running headless or the full spec; add the objective and
+      // the note unless they are present.
+      const withSpec =
+        subtaskPrompt && withObjective(subtaskPrompt, run.objective ?? "")
       const briefing =
-        subtaskPrompt && !subtaskPrompt.includes(UNATTENDED_WORK_NOTE)
-          ? `${subtaskPrompt}\n\n${UNATTENDED_WORK_NOTE}`
-          : subtaskPrompt
+        withSpec && !withSpec.includes(UNATTENDED_WORK_NOTE)
+          ? `${withSpec}\n\n${UNATTENDED_WORK_NOTE}`
+          : withSpec
       const basePrompt =
         briefing ??
         kickoffPrompt({
@@ -1253,8 +1364,16 @@ export class ProcessService {
         phase,
         slot: "router",
       })
-      const existingWorkerTask =
-        !reworkNote && phaseRun.taskId ? getTask(phaseRun.taskId) : undefined
+      // A correction continues the worker that produced the malformed outcome
+      // (read fresh: the scheduler's phaseRun predates this attempt's worker).
+      const resumeTaskId = correction
+        ? processes.getPhaseRun(phaseRun.id)?.taskId
+        : !reworkNote
+          ? phaseRun.taskId
+          : null
+      const existingWorkerTask = resumeTaskId
+        ? getTask(resumeTaskId)
+        : undefined
       const existingWorker = existingWorkerTask
         ? getConversation(existingWorkerTask.conversationId)
         : undefined
@@ -1448,7 +1567,7 @@ export class ProcessService {
           conversationId: worker.id,
           workspace,
           agentDir: workspace,
-          userMessage: resumingWorker ? undefined : prompt,
+          userMessage: resumingWorker ? correction : prompt,
           abort: childAbort,
           taskId: workerTaskId ?? undefined,
           // Phases are autonomous; the phase gate is the HITL point.
@@ -1769,7 +1888,9 @@ export class ProcessService {
             },
             retryable: true,
           }
-        return { subtasks } satisfies DecomposeResult
+        return {
+          subtasks: subtasks.map((s) => withReworkFeedback(s, reworkNote)),
+        } satisfies DecomposeResult
       } catch (err) {
         return {
           error: err instanceof Error ? err.message : String(err),
