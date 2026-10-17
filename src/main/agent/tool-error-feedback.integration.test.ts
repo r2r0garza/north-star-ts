@@ -2187,6 +2187,15 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
               })
         )
       })
+      // A malformed outcome gets one correction turn in the same worker;
+      // a second malformed reply fails the phase.
+      if (outcomeStatus === "invalid")
+        scriptedCompletions.push((request) => {
+          expect(lastMessage(request, "user")?.content).toContain(
+            "reply again with the corrected object"
+          )
+          return streamText("still not an outcome")
+        })
 
       const svc = new ProcessService({ enqueueKind: vi.fn() } as never)
       const events: TaskEventPayload[] = []
@@ -2225,7 +2234,9 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
       expect(workerResults.get("process_corrected")).toContain(
         "corrected content"
       )
-      expect(completionRequests).toHaveLength(3)
+      expect(completionRequests).toHaveLength(
+        outcomeStatus === "invalid" ? 4 : 3
+      )
     }
   )
 

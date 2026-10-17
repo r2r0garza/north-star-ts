@@ -1374,6 +1374,10 @@ describe.skipIf(!sqliteLoads)("scheduler — failed phase", () => {
   })
 })
 
+// Planned fan-out children with no assigned agent.
+const planned = (...prompts: string[]) =>
+  prompts.map((prompt) => ({ prompt, agentName: null }))
+
 describe.skipIf(!sqliteLoads)("scheduler — fan-out", () => {
   it("spawns N children and completes the parent only when all terminal", async () => {
     const pid = buildProcess({
@@ -1381,17 +1385,30 @@ describe.skipIf(!sqliteLoads)("scheduler — fan-out", () => {
       edges: [["c", "d"]],
     })
     const decompose: Decompose = async () => ({
-      subtasks: ["piece 1", "piece 2", "piece 3"],
+      subtasks: [
+        { prompt: "piece 1", agentName: "frontend" },
+        { prompt: "piece 2", agentName: "backend" },
+        { prompt: "piece 3", agentName: null },
+      ],
     })
     const ranPrompts: string[] = []
-    const runPhase: RunPhase = async ({ phase, subtaskPrompt }) => {
-      if (phase.key === "c") ranPrompts.push(subtaskPrompt ?? "(none)")
+    const assigned: Record<string, string | undefined> = {}
+    const runPhase: RunPhase = async ({ phase, subtaskPrompt, assignedAgent }) => {
+      if (phase.key === "c") {
+        ranPrompts.push(subtaskPrompt ?? "(none)")
+        assigned[subtaskPrompt ?? ""] = assignedAgent
+      }
       return { content: phase.key }
     }
     const { ctx, runId } = makeCtx(pid, runPhase, { decompose })
     await runScheduler(ctx)
-    // Three children ran, each with its own sub-task prompt.
+    // Three children ran, each with its own sub-task prompt and planned agent.
     expect(ranPrompts.sort()).toEqual(["piece 1", "piece 2", "piece 3"])
+    expect(assigned).toEqual({
+      "piece 1": "frontend",
+      "piece 2": "backend",
+      "piece 3": undefined,
+    })
     const cRuns = runsForKey(runId, pid, "c")
     const children = cRuns.filter((r) => r.parentId !== null)
     const parent = cRuns.find((r) => r.parentId === null)!
@@ -1413,7 +1430,7 @@ describe.skipIf(!sqliteLoads)("scheduler — fan-out", () => {
     const pid = buildProcess({
       phases: [{ key: "c", fanOut: true }],
     })
-    const decompose: Decompose = async () => ({ subtasks: ["ok", "boom"] })
+    const decompose: Decompose = async () => ({ subtasks: planned("ok", "boom") })
     const runPhase: RunPhase = async ({ subtaskPrompt }) => {
       if (subtaskPrompt === "boom")
         return { error: "child blew up", retryable: false }
@@ -1455,7 +1472,7 @@ describe.skipIf(!sqliteLoads)("scheduler — fan-out", () => {
       attempts.push(attempt)
       if (attempt === 1)
         return { subtasks: [], error: "unparseable", retryable: true }
-      return { subtasks: ["p1"] }
+      return { subtasks: planned("p1") }
     }
     const runPhase: RunPhase = async ({ phase }) => ({ content: phase.key })
     const { ctx } = makeCtx(pid, runPhase, { decompose })
@@ -1482,7 +1499,7 @@ describe.skipIf(!sqliteLoads)("scheduler — fan-out", () => {
         }, 5)
       })
       void releaseDecompose
-      return { subtasks: ["x"] }
+      return { subtasks: planned("x") }
     }
     const runPhase: RunPhase = async ({ phase }) => ({ content: phase.key })
     const { ctx, runId } = makeCtx(pid, runPhase, { decompose })
@@ -1499,7 +1516,7 @@ describe.skipIf(!sqliteLoads)("scheduler — fan-out", () => {
       edges: [["c", "d"]],
     })
     const abort = new AbortController()
-    const decompose: Decompose = async () => ({ subtasks: ["p1", "p2"] })
+    const decompose: Decompose = async () => ({ subtasks: planned("p1", "p2") })
     const runPhase: RunPhase = async ({ subtaskPrompt, signal }) => {
       // The first child aborts the run; both children observe the signal.
       abort.abort()
@@ -1556,7 +1573,8 @@ describe.skipIf(!sqliteLoads)("scheduler — fan-out", () => {
       state: {
         parentPhaseRunId: parent.id,
         subtasks: [
-          { phaseRunId: child1.id, prompt: "resumed 1" },
+          { phaseRunId: child1.id, prompt: "resumed 1", agentName: "frontend" },
+          // A row from before planner assignments: no agentName.
           { phaseRunId: child2.id, prompt: "resumed 2" },
         ],
       },
@@ -1565,11 +1583,13 @@ describe.skipIf(!sqliteLoads)("scheduler — fan-out", () => {
     let decomposeCalls = 0
     const decompose: Decompose = async () => {
       decomposeCalls++
-      return { subtasks: ["should-not-happen"] }
+      return { subtasks: planned("should-not-happen") }
     }
     const ranPrompts: string[] = []
-    const runPhase: RunPhase = async ({ subtaskPrompt }) => {
+    const assigned = new Map<string, string | undefined>()
+    const runPhase: RunPhase = async ({ subtaskPrompt, assignedAgent }) => {
       ranPrompts.push(subtaskPrompt ?? "(none)")
+      assigned.set(subtaskPrompt ?? "", assignedAgent)
       return { content: "done" }
     }
 
@@ -1585,6 +1605,8 @@ describe.skipIf(!sqliteLoads)("scheduler — fan-out", () => {
 
     expect(decomposeCalls).toBe(0) // never re-decomposed
     expect(ranPrompts.sort()).toEqual(["resumed 1", "resumed 2"]) // resumed prompts
+    expect(assigned.get("resumed 1")).toBe("frontend")
+    expect(assigned.get("resumed 2")).toBeUndefined()
     expect(processes.getPhaseRun(parent.id)!.status).toBe("completed")
   })
 })
@@ -1601,7 +1623,7 @@ describe.skipIf(!sqliteLoads)("scheduler — on_each_subtask (025.2)", () => {
       edges: [["c", "v", "on_each_subtask"]],
     })
     const decompose: Decompose = async () => ({
-      subtasks: ["p1", "p2", "p3"],
+      subtasks: planned("p1", "p2", "p3"),
     })
     let cParentSettled = false
     const vStartedWhileCRunning: boolean[] = []
@@ -1655,7 +1677,7 @@ describe.skipIf(!sqliteLoads)("scheduler — on_each_subtask (025.2)", () => {
       phases: [{ key: "c", fanOut: true }, { key: "v" }],
       edges: [["c", "v", "on_each_subtask"]],
     })
-    const decompose: Decompose = async () => ({ subtasks: ["p1", "p2", "p3"] })
+    const decompose: Decompose = async () => ({ subtasks: planned("p1", "p2", "p3") })
     let vContainerStatusesSeen: string[] = []
     const runPhase: RunPhase = async ({ phase }) => {
       if (phase.key === "v") {
@@ -1684,7 +1706,7 @@ describe.skipIf(!sqliteLoads)("scheduler — on_each_subtask (025.2)", () => {
       phases: [{ key: "c", fanOut: true }, { key: "v" }],
       edges: [["c", "v", "on_each_subtask"]],
     })
-    const decompose: Decompose = async () => ({ subtasks: ["p1", "p2"] })
+    const decompose: Decompose = async () => ({ subtasks: planned("p1", "p2") })
     const runPhase: RunPhase = async ({ phase, subtaskPrompt }) => {
       if (phase.key === "c" && subtaskPrompt !== undefined)
         return { error: "child failed", retryable: false }
@@ -1706,7 +1728,7 @@ describe.skipIf(!sqliteLoads)("scheduler — on_each_subtask (025.2)", () => {
       phases: [{ key: "c", fanOut: true }, { key: "v" }],
       edges: [["c", "v", "on_each_subtask"]],
     })
-    const decompose: Decompose = async () => ({ subtasks: ["p1", "p2"] })
+    const decompose: Decompose = async () => ({ subtasks: planned("p1", "p2") })
     const runPhase: RunPhase = async ({ phase, subtaskPrompt }) => {
       // The v instance triggered by the 2nd child fails.
       if (phase.key === "v" && subtaskPrompt?.length)
@@ -1726,7 +1748,7 @@ describe.skipIf(!sqliteLoads)("scheduler — on_each_subtask (025.2)", () => {
       phases: [{ key: "c", fanOut: true }, { key: "v" }],
       edges: [["c", "v", "on_each_subtask"]],
     })
-    const decompose: Decompose = async () => ({ subtasks: ["p1", "p2"] })
+    const decompose: Decompose = async () => ({ subtasks: planned("p1", "p2") })
     const vPrompts: string[] = []
     const runPhase: RunPhase = async ({ phase, subtaskPrompt }) => {
       if (phase.key === "v") vPrompts.push(subtaskPrompt ?? "(none)")
@@ -1836,7 +1858,7 @@ describe.skipIf(!sqliteLoads)("scheduler — on_each_subtask (025.2)", () => {
       edges: [["c", "v", "on_each_subtask"]],
     })
     const abort = new AbortController()
-    const decompose: Decompose = async () => ({ subtasks: ["p1", "p2"] })
+    const decompose: Decompose = async () => ({ subtasks: planned("p1", "p2") })
     const runPhase: RunPhase = async ({ phase, signal }) => {
       // The first v instance aborts the run.
       if (phase.key === "v") {
@@ -2727,7 +2749,7 @@ describe.skipIf(!sqliteLoads)(
     it("decomposes then runs the sub-process per child (never a worker)", async () => {
       const { pid } = buildCombined()
       const decompose: Decompose = async () => ({
-        subtasks: ["piece 1", "piece 2", "piece 3"],
+        subtasks: planned("piece 1", "piece 2", "piece 3"),
       })
       const ranWorker: string[] = []
       const ranSubPrompts: string[] = []
@@ -2759,7 +2781,7 @@ describe.skipIf(!sqliteLoads)(
 
     it("fails the parent when a per-child sub-process fails", async () => {
       const { pid } = buildCombined()
-      const decompose: Decompose = async () => ({ subtasks: ["ok", "boom"] })
+      const decompose: Decompose = async () => ({ subtasks: planned("ok", "boom") })
       const runPhase: RunPhase = async ({ phase }) => ({ content: phase.key })
       const runSubProcess: RunSubProcess = async ({ subtaskPrompt }) => {
         if (subtaskPrompt === "boom")
@@ -2826,7 +2848,7 @@ describe.skipIf(!sqliteLoads)(
       let decomposeCalls = 0
       const decompose: Decompose = async () => {
         decomposeCalls++
-        return { subtasks: ["should-not-happen"] }
+        return { subtasks: planned("should-not-happen") }
       }
       const ranWorker: string[] = []
       const runPhase: RunPhase = async ({ phase }) => {
@@ -3107,7 +3129,7 @@ describe.skipIf(!sqliteLoads)("recorded phase completion contracts", () => {
     })
     const worker = vi.fn<RunPhase>(async () => ({ content: "done" }))
     const { ctx, runId } = makeCtx(id, worker, {
-      decompose: async () => ({ subtasks: ["one"] }),
+      decompose: async () => ({ subtasks: planned("one") }),
     })
     await expect(runScheduler(ctx)).rejects.toThrow()
     // The child's malformed outcome gets its one correction, then fails.

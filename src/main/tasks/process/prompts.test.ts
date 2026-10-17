@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest"
 import {
-  parseDecomposition,
+  parsePlan,
+  validatePlan,
+  assignmentBriefing,
+  type FanOutPlan,
   MAX_FAN_OUT,
   decompositionRetryNote,
   fanOutDecomposePrompt,
@@ -31,89 +34,178 @@ const phase: ProcessPhase = {
   position: 0,
 }
 
-// parseDecomposition is deliberately tolerant of real-world LLM output. These
-// cases pin the accepted vs rejected input formats (previously uncovered — a
-// brittle first-`[`/last-`]` + first-fence heuristic caused a real run to fail
-// with "decomposition produced no parseable sub-tasks").
-describe("parseDecomposition", () => {
-  it("parses a bare JSON array of strings", () => {
-    expect(parseDecomposition('["a", "b", "c"]')).toEqual(["a", "b", "c"])
-  })
+// The acceptance case from the defect-lab-v5 audit: three defects across
+// frontend, backend and docs must each be assigned exactly once with no
+// overlapping write scopes.
+const AGENTS = ["frontend-dev", "backend-dev", "docs-writer"]
+const threeDefectPlan = (): FanOutPlan => ({
+  findings: [
+    { id: "F1", summary: "Login form rejects valid emails" },
+    { id: "F2", summary: "/session returns 500 on expired tokens" },
+    { id: "F3", summary: "README documents the wrong port" },
+  ],
+  assignments: [
+    {
+      agent: "frontend-dev",
+      task: "Fix email validation in the login form",
+      findings: ["F1"],
+      writes: ["src/renderer/login-form.tsx"],
+    },
+    {
+      agent: "backend-dev",
+      task: "Handle expired tokens in the session route",
+      findings: ["F2"],
+      writes: ["src/main/session/"],
+    },
+    {
+      agent: "docs-writer",
+      task: "Correct the port in the README",
+      findings: ["F3"],
+      writes: ["./README.md"],
+    },
+  ],
+})
 
-  it("trims strings and drops empty ones", () => {
-    expect(parseDecomposition('["  a  ", "", "   ", "b"]')).toEqual(["a", "b"])
-  })
-
-  it("parses an array inside a ```json fence", () => {
-    const text = 'Here is the split:\n```json\n["one", "two"]\n```'
-    expect(parseDecomposition(text)).toEqual(["one", "two"])
-  })
-
-  it("parses an array inside a bare ``` fence", () => {
-    expect(parseDecomposition('```\n["x", "y"]\n```')).toEqual(["x", "y"])
-  })
-
-  it("finds the JSON array after a LEADING non-JSON fence", () => {
-    // A model may open with an explanatory/code fence before the real array.
+describe("parsePlan", () => {
+  it("parses the plan object out of a fence with prose around it", () => {
     const text =
-      "Plan:\n```text\nfirst do X, then Y\n```\nSub-tasks:\n" +
-      '```json\n["Do X", "Do Y"]\n```'
-    expect(parseDecomposition(text)).toEqual(["Do X", "Do Y"])
+      "Here is my plan:\n```json\n" +
+      JSON.stringify(threeDefectPlan()) +
+      "\n```\nDone."
+    expect(parsePlan(text)).toEqual(threeDefectPlan())
   })
 
-  it("ignores prose brackets and finds the real array", () => {
-    // The old first-`[`…last-`]` span would grab "[see below]…]" and fail.
-    const text = 'As noted [see below], here they are: ["a", "b"]'
-    expect(parseDecomposition(text)).toEqual(["a", "b"])
-  })
-
-  it("accepts an array of objects, pulling a briefing field", () => {
-    const text = '[{"task": "Build the form"}, {"briefing": "Add the route"}]'
-    expect(parseDecomposition(text)).toEqual([
-      "Build the form",
-      "Add the route",
-    ])
-  })
-
-  it("accepts objects with a sole string value when no known key matches", () => {
-    expect(parseDecomposition('[{"foo": "only value"}]')).toEqual([
-      "only value",
-    ])
-  })
-
-  it("caps at MAX_FAN_OUT", () => {
-    const many = JSON.stringify(
-      Array.from({ length: MAX_FAN_OUT + 5 }, (_, i) => `t${i}`)
+  it("trims fields and treats a missing agent as null", () => {
+    const plan = parsePlan(
+      '{"findings": [{"id": " F1 ", "summary": " s "}], "assignments": ' +
+        '[{"task": " do it ", "findings": [" F1 ", ""], "writes": []}]}'
     )
-    expect(parseDecomposition(many)).toHaveLength(MAX_FAN_OUT)
+    expect(plan).toEqual({
+      findings: [{ id: "F1", summary: "s" }],
+      assignments: [
+        { agent: null, task: "do it", findings: ["F1"], writes: [] },
+      ],
+    })
   })
 
-  it("returns [] for empty / whitespace input", () => {
-    expect(parseDecomposition("")).toEqual([])
-    expect(parseDecomposition("   \n  ")).toEqual([])
+  it("returns null without a plan-shaped object", () => {
+    expect(parsePlan("")).toBeNull()
+    expect(parsePlan('["a", "b"]')).toBeNull()
+    expect(parsePlan('{"assignments": []}')).toBeNull()
+    expect(parsePlan("I could not plan this phase.")).toBeNull()
+  })
+})
+
+describe("validatePlan", () => {
+  it("accepts three defects each assigned exactly once with disjoint writes", () => {
+    const plan = threeDefectPlan()
+    expect(validatePlan(plan, AGENTS)).toBeNull()
+    const assigned = plan.assignments.flatMap((a) => a.findings)
+    expect(assigned.sort()).toEqual(["F1", "F2", "F3"])
   })
 
-  it("returns [] when there is no array at all", () => {
-    expect(parseDecomposition("I could not decompose this phase.")).toEqual([])
+  it("accepts a single assignment holding every item", () => {
+    const plan = threeDefectPlan()
+    plan.assignments = [
+      {
+        agent: "backend-dev",
+        task: "Fix all three",
+        findings: ["F1", "F2", "F3"],
+        writes: ["src/", "README.md"],
+      },
+    ]
+    expect(validatePlan(plan, AGENTS)).toBeNull()
   })
 
-  it("digs a nested array out of a wrapping object", () => {
-    // A model that wraps the array (`{"tasks": [...]}`) still works — the parser
-    // scans for the first bracketed run that yields briefings.
-    expect(parseDecomposition('{"tasks": ["a", "b"]}')).toEqual(["a", "b"])
+  it("applies the same checks to a first-round requirements plan", () => {
+    const plan: FanOutPlan = {
+      findings: [
+        { id: "F1", summary: "Login form component" },
+        { id: "F2", summary: "/session API route" },
+      ],
+      assignments: [
+        { agent: null, task: "Build the form", findings: ["F1"], writes: ["src/ui"] },
+        { agent: null, task: "Add the route", findings: ["F1", "F2"], writes: ["src/api"] },
+      ],
+    }
+    expect(validatePlan(plan, [])).toMatch(/"F1" is assigned to both/)
+    plan.assignments[1].findings = ["F2"]
+    expect(validatePlan(plan, [])).toBeNull()
   })
 
-  it("returns [] for a scalar / object with no array", () => {
-    expect(parseDecomposition('{"note": "no tasks here"}')).toEqual([])
-    expect(parseDecomposition('"just a string"')).toEqual([])
+  it("rejects an empty work-item inventory", () => {
+    const plan = threeDefectPlan()
+    plan.findings = []
+    expect(validatePlan(plan, AGENTS)).toMatch(/no work items/)
   })
 
-  it("returns [] for an array of only empty strings", () => {
-    expect(parseDecomposition('["", "   "]')).toEqual([])
+  it("rejects a dropped item", () => {
+    const plan = threeDefectPlan()
+    plan.assignments.pop()
+    expect(validatePlan(plan, AGENTS)).toMatch(/not assigned.*F3/)
   })
 
-  it("returns [] for an array of objects with no string field", () => {
-    expect(parseDecomposition('[{"n": 1}, {"n": 2}]')).toEqual([])
+  it("rejects an item assigned twice", () => {
+    const plan = threeDefectPlan()
+    plan.assignments[1].findings.push("F1")
+    expect(validatePlan(plan, AGENTS)).toMatch(/"F1" is assigned to both/)
+  })
+
+  it("rejects an unknown item id", () => {
+    const plan = threeDefectPlan()
+    plan.assignments[0].findings.push("F9")
+    expect(validatePlan(plan, AGENTS)).toMatch(/"F9", which is not in findings/)
+  })
+
+  it("rejects an assignment with no items", () => {
+    const plan = threeDefectPlan()
+    plan.assignments[2].findings = []
+    expect(validatePlan(plan, AGENTS)).toMatch(/assignment 3 covers no work items/)
+  })
+
+  it("rejects overlapping write scopes", () => {
+    const plan = threeDefectPlan()
+    plan.assignments[0].writes = ["src/"]
+    plan.assignments[1].writes = ["src/main/x.ts"]
+    expect(validatePlan(plan, AGENTS)).toMatch(/assignments 1 and 2 both write/)
+    plan.assignments[0].writes = ["docs/*.md"]
+    plan.assignments[1].writes = ["docs/guide.md"]
+    expect(validatePlan(plan, AGENTS)).toMatch(/assignments 1 and 2/)
+    plan.assignments[0].writes = ["src/main"]
+    plan.assignments[1].writes = ["src/main-window.ts"]
+    expect(validatePlan(plan, AGENTS)).toBeNull()
+  })
+
+  it("rejects an agent outside the pool, but ignores agents without a pool", () => {
+    const plan = threeDefectPlan()
+    plan.assignments[0].agent = "designer"
+    expect(validatePlan(plan, AGENTS)).toMatch(/agent "designer"/)
+    expect(validatePlan(plan, [])).toBeNull()
+  })
+
+  it("rejects more than MAX_FAN_OUT assignments instead of truncating", () => {
+    const n = MAX_FAN_OUT + 1
+    const plan: FanOutPlan = {
+      findings: Array.from({ length: n }, (_, i) => ({ id: `F${i}`, summary: "" })),
+      assignments: Array.from({ length: n }, (_, i) => ({
+        agent: null,
+        task: `t${i}`,
+        findings: [`F${i}`],
+        writes: [`f${i}.ts`],
+      })),
+    }
+    expect(validatePlan(plan, [])).toMatch(/limit is 8/)
+  })
+})
+
+describe("assignmentBriefing", () => {
+  it("lists the owned work items and files", () => {
+    const plan = threeDefectPlan()
+    const b = assignmentBriefing(plan, plan.assignments[1])
+    expect(b).toContain("Handle expired tokens in the session route")
+    expect(b).toContain("- F2: /session returns 500 on expired tokens")
+    expect(b).toContain("- `src/main/session/`")
+    expect(b).not.toContain("F1")
   })
 })
 
@@ -137,6 +229,32 @@ describe("kickoffPrompt — rework note (plan 029)", () => {
     expect(p.indexOf("## Requested changes")).toBeLessThan(
       p.indexOf("## Your task")
     )
+  })
+
+  it("frames a flag's target as a downstream finding", () => {
+    const p = kickoffPrompt({
+      phase,
+      objective: "ship it",
+      upstream: [],
+      reworkNote: "login form crashes",
+      reworkSource: "flagged",
+    })
+    expect(p).toContain("A downstream phase identified defects")
+    expect(p).not.toContain("A reviewer looked")
+  })
+
+  it("frames the flagger's own finding as a re-evaluation", () => {
+    const p = kickoffPrompt({
+      phase,
+      objective: "ship it",
+      upstream: [],
+      reworkNote: "You flagged an upstream phase for rework: login form crashes",
+      reworkSource: "flagger",
+    })
+    expect(p).toContain("## Your earlier rework request")
+    expect(p).toContain("Do not request rework for findings that have been resolved")
+    expect(p).not.toContain("## Requested changes")
+    expect(p).not.toContain("A reviewer looked")
   })
 
   it("ignores a blank/whitespace note", () => {
@@ -182,54 +300,62 @@ describe("withReworkFeedback", () => {
   })
 })
 
-describe("fanOutDecomposePrompt — rework note", () => {
-  it("omits the Requested changes section on a first run", () => {
+describe("fanOutDecomposePrompt", () => {
+  const agents = [
+    { name: "frontend-dev", description: "React UI work" },
+    { name: "backend-dev", description: "" },
+  ]
+
+  it("asks for a requirements inventory on a first run", () => {
     const p = fanOutDecomposePrompt({
       phase: { ...phase, fanOut: true },
       objective: "ship it",
       upstream: [],
+      agents,
     })
     expect(p).not.toContain("## Requested changes")
-    expect(p).toContain("## Your task")
-    expect(p).toContain("ONLY a JSON array of strings")
+    expect(p).toContain("work items (requirements)")
+    expect(p).toContain("EXACTLY ONE")
+    expect(p).toContain("a SINGLE assignment")
+    expect(p).toContain("- `frontend-dev` — React UI work")
+    expect(p).toContain("- `backend-dev`")
+    expect(p).toContain('"agent": "frontend-dev"')
   })
 
-  it("injects the note before the decomposition task when present", () => {
+  it("asks for a defect inventory, before the task, on a rework run", () => {
     const p = fanOutDecomposePrompt({
       phase: { ...phase, fanOut: true },
       objective: "ship it",
       upstream: [],
+      agents,
       reworkNote: "split the work by platform",
     })
     expect(p).toContain("## Requested changes")
     expect(p).toContain("split the work by platform")
-    expect(p).toContain("Assign every item in it to at least one sub-task")
+    expect(p).toContain("work items (reported defects)")
     expect(p.indexOf("## Requested changes")).toBeLessThan(
       p.indexOf("## Your task")
     )
-    expect(p).toContain("ONLY a JSON array of strings")
   })
 
-  it("ignores a blank/whitespace note", () => {
+  it("ignores a blank note and handles an empty pool", () => {
     const p = fanOutDecomposePrompt({
       phase: { ...phase, fanOut: true },
       objective: "ship it",
       upstream: [],
+      agents: [],
       reworkNote: "   ",
     })
     expect(p).not.toContain("## Requested changes")
+    expect(p).not.toContain("## Available agents")
+    expect(p).toContain('"agent" to null')
   })
 
-  it("retains requested changes when the retry coda is appended", () => {
-    const p =
-      fanOutDecomposePrompt({
-        phase: { ...phase, fanOut: true },
-        objective: "ship it",
-        upstream: [],
-        reworkNote: "make each briefing self-contained",
-      }) + decompositionRetryNote
-    expect(p).toContain("make each briefing self-contained")
-    expect(p).toContain("Your previous reply could not be parsed")
+  it("names the previous problem in the retry coda", () => {
+    expect(decompositionRetryNote("work items not assigned: F3")).toContain(
+      "rejected: work items not assigned: F3"
+    )
+    expect(decompositionRetryNote(null)).toContain("rejected.")
   })
 })
 
@@ -401,6 +527,7 @@ describe("phase instructions", () => {
         phase: withInstructions,
         objective: "o",
         upstream: [],
+        agents: [],
       }),
       eachSubtaskKickoffPrompt({
         phase: withInstructions,

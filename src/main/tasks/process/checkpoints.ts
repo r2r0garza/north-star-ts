@@ -28,7 +28,8 @@ export const SUBPROCESS_CHECKPOINT_LABEL = (parentPhaseRunId: string): string =>
 // The state persisted in a fan-out parent's checkpoint (plan 025.1).
 export interface FanoutCheckpointState {
   parentPhaseRunId: string
-  subtasks: Array<{ phaseRunId: string; prompt: string }>
+  // agentName: the planner's assignment (absent on rows from before it).
+  subtasks: Array<{ phaseRunId: string; prompt: string; agentName?: string | null }>
 }
 
 // The state persisted for a sub-process phase-run's nested run (plan 038.3).

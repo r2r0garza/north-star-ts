@@ -3,9 +3,11 @@ import { describe, expect, it, vi } from "vitest"
 
 // Exercise the registration without booting Electron or the application services.
 const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8")
+const start = source.indexOf('ipcMain.handle(\n  "media:read-message"')
+// Up to the next registration only, so handlers added after it aren't evaluated.
 const registration = source.slice(
-  source.indexOf('ipcMain.handle(\n  "media:read-message"'),
-  source.indexOf('ipcMain.handle("chat",')
+  start,
+  source.indexOf("ipcMain.handle(", start + 1)
 )
 function setup() {
   const contents = { mainFrame: {} }

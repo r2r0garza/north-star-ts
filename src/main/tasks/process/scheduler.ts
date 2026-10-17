@@ -122,6 +122,8 @@ export type RunPhase = (input: {
   phase: ProcessPhase
   attemptId: string
   subtaskPrompt?: string
+  // A fan-out CHILD's agent from the planner's assignment, when it named one.
+  assignedAgent?: string
   // A one-time correction after a malformed validated outcome: the worker
   // resumes its own conversation and receives this as the next user message.
   correction?: string
@@ -176,10 +178,17 @@ export type RunCommand = (input: {
   onProgress: (receipt: ProcessCommandReceipt) => void
 }) => Promise<CommandPhaseResult>
 
-// The outcome of a fan-out phase's decomposition pass: a list of sub-task
-// briefings, or an error/stop like a normal phase (plan 025.1).
+// One planned fan-out child: its briefing and the agent it was assigned (null
+// lets the child resolve its agent as a normal phase would).
+export interface DecomposedSubtask {
+  prompt: string
+  agentName: string | null
+}
+
+// The outcome of a fan-out phase's decomposition pass: the planned children,
+// or an error/stop like a normal phase (plan 025.1).
 export interface DecomposeResult {
-  subtasks?: string[]
+  subtasks?: DecomposedSubtask[]
   error?: string
   failure?: FailureContext
   stopped?: boolean
@@ -788,6 +797,8 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
   // createCheckpoint only ever INSERTs, so a re-decomposed parent can have >1 row
   // per label — take the LATEST (listCheckpoints returns created_at ASC).
   const childPrompts = new Map<string, string>() // childRunId → sub-task prompt
+  // childRunId → the agent the fan-out planner assigned it.
+  const childAgents = new Map<string, string>()
   const decomposedParents = new Set<string>() // parent phase-run ids seen fanned
   // parentPhaseRunId → nested childRunId (plan 038.3). An ACCELERATOR for resume:
   // makeRunSubProcess consults this to skip the getProcessRunByParentPhaseRunId FK
@@ -806,8 +817,10 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       if (!state?.parentPhaseRunId) continue
       decomposedParents.add(state.parentPhaseRunId)
       // Later rows overwrite earlier ones for the same child (ASC → latest wins).
-      for (const st of state.subtasks ?? [])
+      for (const st of state.subtasks ?? []) {
         childPrompts.set(st.phaseRunId, st.prompt)
+        if (st.agentName) childAgents.set(st.phaseRunId, st.agentName)
+      }
     } else if (cp.label?.startsWith("eachsubtask:")) {
       // Append-only: one row per instance — UNION all rows (do NOT latest-wins).
       const state = cp.state as EachSubtaskCheckpointState
@@ -1348,11 +1361,11 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
   // in-memory childPrompts map only AFTER the transaction commits.
   const createChildrenAtomic = (
     parentRun: ProcessPhaseRun,
-    subtasks: string[]
+    subtasks: DecomposedSubtask[]
   ): void => {
-    let created: Array<{ phaseRunId: string; prompt: string }> = []
+    let created: FanoutCheckpointState["subtasks"] = []
     const tx = getDb().transaction(() => {
-      created = subtasks.map((prompt) => {
+      created = subtasks.map(({ prompt, agentName }) => {
         const child = processes.createPhaseRun({
           runId: run.id,
           phaseId: parentRun.phaseId,
@@ -1360,7 +1373,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
           status: "pending",
           title: subtaskTitle(prompt),
         })
-        return { phaseRunId: child.id, prompt }
+        return { phaseRunId: child.id, prompt, agentName }
       })
       createCheckpoint({
         taskId: ctx.taskId,
@@ -1372,7 +1385,10 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       })
     })
     tx()
-    for (const c of created) childPrompts.set(c.phaseRunId, c.prompt)
+    for (const c of created) {
+      childPrompts.set(c.phaseRunId, c.prompt)
+      if (c.agentName) childAgents.set(c.phaseRunId, c.agentName)
+    }
   }
 
   // The `on_each_subtask` fan-in trigger (plan 025.2). For every on_each_subtask
@@ -1829,6 +1845,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
           phaseRun,
           phase,
           subtaskPrompt,
+          assignedAgent: childAgents.get(phaseRun.id),
           correction,
           signal: ctx.signal,
         })

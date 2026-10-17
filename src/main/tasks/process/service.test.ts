@@ -29,6 +29,7 @@ const loopCalls: {
   conversationSubagentsEnabled?: boolean
   accountId?: string | null
   modelId?: string | null
+  agentOverrideName?: string
 }[] = []
 // A validator reviewer's scripted replies (plan 031.1): each call to a REVIEW
 // prompt (validatorPrompt begins "# Review the") shifts one reply off this queue;
@@ -44,6 +45,18 @@ const failOnce: string[] = []
 // A fan-out decompose worker's scripted replies (plan 025.1/038.3): each JSON-array
 // string is one decomposition. Empty → the mock's default two-sub-task split.
 const decomposeReplies: string[] = []
+// A valid planner reply: one work item, no agent and its own file per task.
+function planReply(...tasks: string[]): string {
+  return JSON.stringify({
+    findings: tasks.map((_, i) => ({ id: `F${i + 1}`, summary: `item ${i + 1}` })),
+    assignments: tasks.map((task, i) => ({
+      agent: null,
+      task,
+      findings: [`F${i + 1}`],
+      writes: [`file-${i + 1}.ts`],
+    })),
+  })
+}
 // Substrings that, when seen in a worker's userMessage, abort the shared run signal
 // (plan 038.3) — simulates a quit/cancel mid-run. Each entry carries the reason so a
 // test can exercise the resumable (shutdown) vs terminal (cancel) branches.
@@ -76,8 +89,10 @@ vi.mock("../../agent", () => ({
     processCompletionInstruction?: string
     suppressUserQuestions?: boolean
     conversationSubagentsEnabled?: boolean
+    agentOverride?: { name: string } | null
   }) => {
     loopCalls.push({
+      agentOverrideName: input.agentOverride?.name,
       conversationId: input.conversationId,
       userMessage: input.userMessage,
       processCompletionInstruction: input.processCompletionInstruction,
@@ -121,7 +136,7 @@ vi.mock("../../agent", () => ({
     const content =
       isDecompose || isResumedDecompose
         ? (decomposeReplies.shift() ??
-          JSON.stringify(["sub-task 1", "sub-task 2"]))
+          planReply("sub-task 1", "sub-task 2"))
         : (isReview || isResumedReview) && reviewReplies.length
           ? reviewReplies.shift()!
           : outcomeReplies.length && input.processCompletionInstruction
@@ -174,6 +189,7 @@ import {
   recordToolCallIntents,
 } from "../../db/repositories/tool-call-lifecycle"
 import { ProcessService, withResolvedDefault } from "./service"
+import { reworkSource } from "./flagback"
 import * as settingsService from "../../settings/service"
 import type { TaskEventPayload } from "../runner"
 
@@ -827,6 +843,19 @@ describe.skipIf(!sqliteLoads)("ProcessService restartRun", () => {
     expect(b.reworkNote).toContain("No test database configured")
   })
 
+  it("tells the flagged phase and the flagger apart on the re-run", () => {
+    const { run, arun, brun, svc } = seedBlockedRun()
+    svc.restartRun(run.id, { sendBackFlags: true })
+    const a = processes.getPhaseRun(arun.id)!
+    const b = processes.getPhaseRun(brun.id)!
+    expect(reworkSource(run.id, a, a.phaseId)).toBe("flagged")
+    expect(reworkSource(run.id, b, b.phaseId)).toBe("flagger")
+    // A later note unrelated to the flag (e.g. a validator) isn't relabelled.
+    processes.updatePhaseRun(brun.id, { reworkNote: "Tighten the report" })
+    const b2 = processes.getPhaseRun(brun.id)!
+    expect(reworkSource(run.id, b2, b2.phaseId)).toBeUndefined()
+  })
+
   it("leaves flags and notes alone without restart options", () => {
     const { run, brun, flag, svc } = seedBlockedRun()
     svc.restartRun(run.id)
@@ -1290,7 +1319,7 @@ describe.skipIf(!sqliteLoads)(
         fromPhaseId: impl.id,
         toPhaseId: ship.id,
       })
-      decomposeReplies.push(JSON.stringify(["build the api", "build the ui"]))
+      decomposeReplies.push(planReply("build the api", "build the ui"))
 
       const { taskId } = seedTaskRow()
       const run = processes.createProcessRun({
@@ -1331,7 +1360,10 @@ describe.skipIf(!sqliteLoads)(
       const objectives = children
         .map((c) => processes.getProcessRunByParentPhaseRunId(c.id)!.objective)
         .sort()
-      expect(objectives).toEqual(["build the api", "build the ui"])
+      expect(objectives.map((o) => o?.split("\n")[0])).toEqual([
+        "build the api",
+        "build the ui",
+      ])
       // The whole run completed (ship ran after impl's children all finished).
       expect(processes.getProcessRun(run.id)!.status).toBe("completed")
       // ship's kickoff digested the Implement phase (its per-child aggregate).
@@ -1552,7 +1584,7 @@ describe.skipIf(!sqliteLoads)("ProcessService worker resume", () => {
     })
     const existingWorker = seedTaskRow()
     processes.updatePhaseRun(phaseRun.id, { taskId: existingWorker.taskId })
-    decomposeReplies.push(JSON.stringify(["resumed sub-task"]))
+    decomposeReplies.push(planReply("resumed sub-task"))
 
     const svc = new ProcessService(fakeRunner)
     await svc.execute({
@@ -2312,8 +2344,8 @@ describe.skipIf(!sqliteLoads)(
         toPhaseId: verify.id,
       })
       decomposeReplies.push(
-        JSON.stringify(["old api split", "old ui split"]),
-        JSON.stringify(["replacement api split", "replacement ui split"])
+        planReply("old api split", "old ui split"),
+        planReply("replacement api split", "replacement ui split")
       )
 
       const { taskId } = seedTaskRow()
@@ -2378,7 +2410,7 @@ describe.skipIf(!sqliteLoads)(
       )?.userMessage
       expect(decomposePrompt).toContain("## Requested changes")
       expect(decomposePrompt).toContain(reason)
-      expect(decomposePrompt).toContain("ONLY a JSON array of strings")
+      expect(decomposePrompt).toContain("ONLY one JSON object")
     })
 
     it("keeps fan-out rework feedback on decomposition parse retry", async () => {
@@ -2390,7 +2422,7 @@ describe.skipIf(!sqliteLoads)(
         fanOut: true,
         position: 0,
       })
-      decomposeReplies.push("not json", JSON.stringify(["fixed split"]))
+      decomposeReplies.push("not json", planReply("fixed split"))
 
       const { taskId } = seedTaskRow()
       const run = processes.createProcessRun({
@@ -2423,11 +2455,11 @@ describe.skipIf(!sqliteLoads)(
       expect(decomposePrompts).toHaveLength(2)
       expect(decomposePrompts[0]).toContain("use smaller independent briefings")
       expect(decomposePrompts[0]).not.toContain(
-        "Your previous reply could not be parsed"
+        "Your previous plan was rejected"
       )
       expect(decomposePrompts[1]).toContain("use smaller independent briefings")
       expect(decomposePrompts[1]).toContain(
-        "Your previous reply could not be parsed"
+        "Your previous plan was rejected"
       )
     })
 
@@ -2440,7 +2472,7 @@ describe.skipIf(!sqliteLoads)(
         fanOut: true,
         position: 0,
       })
-      decomposeReplies.push(JSON.stringify(["backend part", "frontend part"]))
+      decomposeReplies.push(planReply("backend part", "frontend part"))
       const { taskId } = seedTaskRow()
       const run = processes.createProcessRun({
         processId: def.id,
@@ -2481,6 +2513,86 @@ describe.skipIf(!sqliteLoads)(
         expect(b).toContain("## Overall objective")
         expect(b).toContain("ship it")
       }
+    })
+
+    it("plans fan-out with the built-in planner and runs children on their assigned agents", async () => {
+      const def = processes.createProcessDefinition({ name: "T" })
+      const impl = processes.createPhase({
+        processId: def.id,
+        key: "impl",
+        name: "Implement",
+        fanOut: true,
+        position: 0,
+      })
+      for (const [i, agentName] of ["frontend", "backend"].entries())
+        processes.createPhaseAgent({ phaseId: impl.id, agentName, position: i })
+      descriptions["frontend"] = "React/CSS UI work"
+      descriptions["backend"] = "APIs and databases"
+      const plan = (writes: [string, string]) =>
+        JSON.stringify({
+          findings: [
+            { id: "F1", summary: "form bug" },
+            { id: "F2", summary: "route bug" },
+          ],
+          assignments: [
+            { agent: "frontend", task: "fix the form", findings: ["F1"], writes: [writes[0]] },
+            { agent: "backend", task: "fix the route", findings: ["F2"], writes: [writes[1]] },
+          ],
+        })
+      // The first plan gives both workers src/; the retry splits it.
+      decomposeReplies.push(
+        plan(["src/", "src/main/route.ts"]),
+        plan(["src/renderer/form.tsx", "src/main/route.ts"])
+      )
+      const { taskId } = seedTaskRow()
+      const run = processes.createProcessRun({
+        processId: def.id,
+        sourceConversationId: null,
+        taskId,
+        objective: "fix both bugs",
+        status: "running",
+      })
+
+      const svc = new ProcessService(fakeRunner)
+      await svc.execute({
+        task: { id: taskId, input: { processRunId: run.id } } as never,
+        signal: new AbortController().signal,
+        emit: () => {},
+        workspace: undefined,
+      })
+
+      const planCalls = loopCalls.filter((c) =>
+        c.userMessage?.startsWith("# Process phase (fan-out): Implement")
+      )
+      expect(planCalls).toHaveLength(2)
+      for (const c of planCalls) {
+        expect(c.agentOverrideName).toBe("process-planner")
+        expect(c.userMessage).toContain("- `frontend` — React/CSS UI work")
+        expect(c.userMessage).toContain("- `backend` — APIs and databases")
+      }
+      expect(planCalls[1].userMessage).toContain(
+        "rejected: invalid fan-out plan: assignments 1 and 2 both write"
+      )
+      const parent = processes
+        .listPhaseRuns({ runId: run.id, parentId: null })
+        .find((pr) => pr.phaseId === impl.id)!
+      expect(parent.status).toBe("completed")
+      const children = processes.listPhaseRuns({
+        runId: run.id,
+        parentId: parent.id,
+      })
+      const agentByTask = Object.fromEntries(
+        children.map((c) => [c.title, c.agentName])
+      )
+      expect(agentByTask).toEqual({
+        "fix the form": "frontend",
+        "fix the route": "backend",
+      })
+      const formBriefing = loopCalls.find((c) =>
+        c.userMessage?.startsWith("fix the form")
+      )?.userMessage
+      expect(formBriefing).toContain("- F1: form bug")
+      expect(formBriefing).toContain("- `src/renderer/form.tsx`")
     })
 
     it("dismissFlag leaves the target intact, marks the flag dismissed, resumes", () => {

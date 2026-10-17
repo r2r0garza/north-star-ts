@@ -73,8 +73,11 @@ export function kickoffPrompt(input: {
   // A reviewer's "Request changes" feedback (plan 029): when this phase was
   // gated and sent back, the note is surfaced so the re-run addresses it.
   reworkNote?: string
+  // Set when reworkNote came from a flag: this phase raised it ("flagger") or
+  // was its target ("flagged"). Unset keeps the reviewer framing.
+  reworkSource?: "flagger" | "flagged"
 }): string {
-  const { phase, objective, upstream, reworkNote } = input
+  const { phase, objective, upstream, reworkNote, reworkSource } = input
   const lines: string[] = []
   lines.push(`# Process phase: ${phase.name}`)
   lines.push("")
@@ -92,11 +95,26 @@ export function kickoffPrompt(input: {
     }
   }
   if (reworkNote?.trim()) {
-    lines.push("## Requested changes")
-    lines.push(
-      "A reviewer looked at your previous attempt at this phase and asked for " +
-        "changes. Address this feedback before you finish:"
-    )
+    if (reworkSource === "flagger") {
+      lines.push("## Your earlier rework request")
+      lines.push(
+        "You previously identified these defects and requested upstream rework. " +
+          "Re-evaluate the current implementation. Do not request rework for " +
+          "findings that have been resolved."
+      )
+    } else if (reworkSource === "flagged") {
+      lines.push("## Requested changes")
+      lines.push(
+        "A downstream phase identified defects in your previous work. Address " +
+          "the following findings."
+      )
+    } else {
+      lines.push("## Requested changes")
+      lines.push(
+        "A reviewer looked at your previous attempt at this phase and asked for " +
+          "changes. Address this feedback before you finish:"
+      )
+    }
     lines.push("")
     lines.push(reworkNote.trim())
     lines.push("")
@@ -194,31 +212,40 @@ export function eachSubtaskKickoffPrompt(input: {
 }
 
 // Upper bound on the number of sub-tasks a fan-out phase may spawn (plan 025.1,
-// Open Q #3 — agent-decided but bounded, to prevent runaway spawning). A
-// decomposition yielding more is truncated to this cap.
+// Open Q #3 — agent-decided but bounded, to prevent runaway spawning). A plan
+// with more assignments is rejected, not truncated: truncating drops work.
 export const MAX_FAN_OUT = 8
 
-// The kickoff for a FAN-OUT phase's decomposition pass (plan 025.1). The phase's
-// worker is asked to split the phase's work into N independent sub-tasks and emit
-// ONLY a JSON array of sub-task briefings as its final message — each becomes a
-// child phase-run with its own worker. Deliberately self-contained like
-// kickoffPrompt (the worker can't see the orchestrator conversation).
+// An agent the fan-out planner may assign work to: a pool agent or a seat.
+export interface PlannerAgentOption {
+  name: string
+  description: string
+}
+
+// The kickoff for a FAN-OUT phase's planning pass (plan 025.1). The built-in
+// planner lists every work item of the round, then assigns each to exactly one
+// worker with an agent and the files it owns, as ONE JSON object (parsePlan /
+// validatePlan). Each assignment becomes a child phase-run with its own worker.
+// Self-contained like kickoffPrompt (the planner can't see the orchestrator).
 export function fanOutDecomposePrompt(input: {
   phase: ProcessPhase
   objective: string
   upstream: UpstreamResult[]
+  // The agents assignments may name; empty when the phase has no agent pool.
+  agents: PlannerAgentOption[]
   // A direct flag_for_rework reason, reviewer note, or generic downstream
   // re-check note stamped on the container phase-run before re-decomposition.
   reworkNote?: string
 }): string {
-  const { phase, objective, upstream, reworkNote } = input
+  const { phase, objective, upstream, agents, reworkNote } = input
+  const rework = !!reworkNote?.trim()
   const lines: string[] = []
   lines.push(`# Process phase (fan-out): ${phase.name}`)
   lines.push("")
   lines.push(
     "You are planning one phase of a larger multi-phase process. This phase " +
-      "FANS OUT: instead of doing the work yourself, split it into independent " +
-      "sub-tasks that will each run in parallel in their own worker."
+      "FANS OUT: instead of doing the work yourself, split it into assignments " +
+      "that will each run in parallel in their own worker."
   )
   lines.push("")
   lines.push("## Overall objective")
@@ -232,143 +259,248 @@ export function fanOutDecomposePrompt(input: {
       lines.push("")
     }
   }
-  if (reworkNote?.trim()) {
+  if (rework) {
     lines.push("## Requested changes")
     lines.push(
-      "This fan-out phase is being decomposed again because prior work was sent " +
-        "back or upstream input changed. Use this feedback when planning the " +
-        "replacement sub-tasks. Assign every item in it to at least one sub-task; " +
-        "do not drop any part. Each sub-task worker also receives this feedback " +
-        "verbatim with its briefing:"
+      "This fan-out phase is being planned again because prior work was sent " +
+        "back or upstream input changed. Each sub-task worker also receives this " +
+        "feedback verbatim with its briefing:"
     )
     lines.push("")
-    lines.push(reworkNote.trim())
+    lines.push(reworkNote!.trim())
+    lines.push("")
+  }
+  if (agents.length > 0) {
+    lines.push("## Available agents")
+    for (const a of agents)
+      lines.push(`- \`${a.name}\`${a.description ? ` — ${a.description}` : ""}`)
     lines.push("")
   }
   lines.push("## Your task")
   lines.push(...phaseInstructionLines(phase))
   lines.push(
-    `Decompose the "${phase.name}" phase into independent sub-tasks — one per ` +
-      `distinct piece of work that can proceed on its own. You may inspect the ` +
-      `workspace first to decide the split. Aim for at most ${MAX_FAN_OUT} ` +
-      `sub-tasks; fewer is fine.`
+    `Plan the "${phase.name}" phase. You may inspect the workspace first to ` +
+      "decide the split."
   )
   lines.push("")
   lines.push(
-    "When you are done deciding, reply with ONLY a JSON array of strings — each " +
-      "string a complete, self-contained briefing for one sub-task worker (it " +
-      "cannot see this message or the other sub-tasks)."
+    rework
+      ? "1. List the work items (reported defects) for this round: every defect " +
+          "or requested change in the feedback above, plus any earlier requirement " +
+          "it touches. Give each a short id (F1, F2, …) and a one-line summary."
+      : "1. List the work items (requirements) for this round: every distinct " +
+          "requirement or deliverable in the objective, the phase instructions and " +
+          "the earlier phases' output. Give each a short id (F1, F2, …) and a " +
+          "one-line summary."
   )
   lines.push(
-    "Strict format: a plain JSON array of double-quoted strings. NOT an array of " +
-      "objects. No trailing commas. No markdown code fences. No prose before or " +
-      "after the array — the array must be your entire reply."
+    "2. Group the items into assignments. Each item goes to EXACTLY ONE " +
+      "assignment: never drop an item, never give one item to two assignments."
+  )
+  lines.push(
+    "3. Give each assignment the files and directories it will write (plain " +
+      "workspace-relative paths, no globs). Two assignments must never write the " +
+      "same file or anything inside a directory the other owns."
+  )
+  lines.push(
+    agents.length > 0
+      ? "4. Give each assignment the name of one available agent, chosen by its description."
+      : '4. Set each assignment\'s "agent" to null (this phase has no agent pool).'
+  )
+  lines.push(
+    "If the work cannot be split without workers writing the same files, return " +
+      `a SINGLE assignment holding every item. Use at most ${MAX_FAN_OUT} assignments.`
   )
   lines.push("")
   lines.push(
-    'Example: ["Implement the login form component", "Add the /session API route"]'
+    "Each assignment's \"task\" is a complete, self-contained briefing for its " +
+      "worker (it cannot see this message or the other assignments)."
+  )
+  lines.push(
+    "When you are done, reply with ONLY one JSON object in this shape. No " +
+      "markdown code fences, no prose before or after it:"
+  )
+  lines.push("")
+  lines.push(
+    '{"findings": [{"id": "F1", "summary": "Login form rejects valid emails"}], ' +
+      '"assignments": [{"agent": ' +
+      (agents.length > 0 ? `"${agents[0].name}"` : "null") +
+      ', "task": "Fix the email validation in the login form…", ' +
+      '"findings": ["F1"], "writes": ["src/renderer/login-form.tsx"]}]}'
   )
   return lines.join("\n")
 }
 
-// Corrective coda appended to the decomposition prompt on a retry (plan: fan-out
-// robustness), after a previous attempt's reply failed to parse. Nudges the model
-// back to the strict contract parseDecomposition expects.
-export const decompositionRetryNote =
-  "\n\n## Important\nYour previous reply could not be parsed as a JSON array of " +
-  "strings. Reply with ONLY that array — a plain JSON array of double-quoted " +
-  "strings, no objects, no code fences, no prose."
+// Corrective coda appended to the planning prompt on a retry (plan: fan-out
+// robustness), after a previous attempt's reply failed to parse or validate.
+// Names the exact problem so the planner can fix it.
+export function decompositionRetryNote(reason: string | null): string {
+  return (
+    "\n\n## Important\nYour previous plan was rejected" +
+    (reason?.trim() ? `: ${reason.trim()}` : ".") +
+    " Reply with ONLY the JSON object described above, with every work item " +
+    "assigned exactly once and no overlapping write scopes."
+  )
+}
 
-// String fields we'll accept off an object element, in preference order, when a
-// model "enriches" the array as `[{ "briefing": "…" }]` instead of plain strings.
-const BRIEFING_KEYS = [
-  "briefing",
-  "task",
-  "prompt",
-  "subtask",
-  "description",
-  "text",
-]
+// One work item the planner listed for the round: a requirement on the first
+// round, a reported defect on a rework round.
+export interface PlanFinding {
+  id: string
+  summary: string
+}
 
-// Coerce one array element to a sub-task briefing string, or null if it carries
-// none. Accepts a plain string, or an object with one of BRIEFING_KEYS (else its
-// sole string value).
-function elementToBriefing(el: unknown): string | null {
-  if (typeof el === "string") return el.trim() || null
-  if (el && typeof el === "object") {
-    const obj = el as Record<string, unknown>
-    for (const key of BRIEFING_KEYS) {
-      if (typeof obj[key] === "string" && obj[key].trim())
-        return (obj[key] as string).trim()
-    }
-    // Fall back to the sole string value, if the object has exactly one.
-    const strings = Object.values(obj).filter(
-      (v): v is string => typeof v === "string" && v.trim().length > 0
-    )
-    if (strings.length === 1) return strings[0].trim()
+export interface PlanAssignment {
+  agent: string | null
+  task: string
+  // Ids into FanOutPlan.findings.
+  findings: string[]
+  // Workspace-relative files/directories this assignment owns.
+  writes: string[]
+}
+
+export interface FanOutPlan {
+  findings: PlanFinding[]
+  assignments: PlanAssignment[]
+}
+
+const strings = (v: unknown): string[] =>
+  Array.isArray(v)
+    ? v
+        .filter((s): s is string => typeof s === "string")
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : []
+
+// Coerce one parsed candidate into a plan, or null if it isn't plan-shaped.
+function objectToPlan(parsed: unknown): FanOutPlan | null {
+  if (!parsed || typeof parsed !== "object") return null
+  const obj = parsed as Record<string, unknown>
+  if (!Array.isArray(obj.assignments) || !Array.isArray(obj.findings))
+    return null
+  const findings = obj.findings.flatMap((f): PlanFinding[] => {
+    if (!f || typeof f !== "object") return []
+    const { id, summary } = f as Record<string, unknown>
+    return typeof id === "string" && id.trim()
+      ? [
+          {
+            id: id.trim(),
+            summary: typeof summary === "string" ? summary.trim() : "",
+          },
+        ]
+      : []
+  })
+  const assignments = obj.assignments.flatMap((a): PlanAssignment[] => {
+    if (!a || typeof a !== "object") return []
+    const r = a as Record<string, unknown>
+    return [
+      {
+        agent:
+          typeof r.agent === "string" && r.agent.trim() ? r.agent.trim() : null,
+        task: typeof r.task === "string" ? r.task.trim() : "",
+        findings: strings(r.findings),
+        writes: strings(r.writes),
+      },
+    ]
+  })
+  return { findings, assignments }
+}
+
+// Extract the plan object from the planner's final message, tolerant of a
+// fence or prose around it (same scan as parseVerdict). Null on a miss.
+export function parsePlan(text: string): FanOutPlan | null {
+  return scanJsonObjects(text, objectToPlan)
+}
+
+// Workspace-relative path normalised for overlap checks.
+// shortcut: anything from the first glob char is cut, so a glob is treated as
+// its directory prefix (conservative); upgrade if planners need real globs.
+function normalizeScope(p: string): string {
+  return p
+    .replace(/[*?[{].*$/, "")
+    .replace(/\\/g, "/")
+    .replace(/^(\.\/)+/, "")
+    .replace(/\/+$/, "")
+}
+
+function scopesOverlap(a: string, b: string): boolean {
+  if (a === "" || b === "") return true // the workspace root owns everything
+  return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`)
+}
+
+// Checks a parsed plan before any child is created. Returns the problem as a
+// message the planner can act on, or null when the plan is sound: every work
+// item assigned exactly once, known agents, and no two assignments writing
+// overlapping paths. `agentNames` empty means the phase has no pool.
+export function validatePlan(
+  plan: FanOutPlan,
+  agentNames: string[]
+): string | null {
+  const { findings, assignments } = plan
+  if (findings.length === 0) return "the plan lists no work items (findings)"
+  if (assignments.length === 0) return "the plan has no assignments"
+  if (assignments.length > MAX_FAN_OUT)
+    return `the plan has ${assignments.length} assignments; the limit is ${MAX_FAN_OUT}`
+  const ids = new Set<string>()
+  for (const f of findings) {
+    if (ids.has(f.id)) return `work item id "${f.id}" is listed twice`
+    ids.add(f.id)
   }
+  const owner = new Map<string, number>()
+  for (const [i, a] of assignments.entries()) {
+    const n = i + 1
+    if (!a.task) return `assignment ${n} has no task`
+    if (a.findings.length === 0) return `assignment ${n} covers no work items`
+    if (agentNames.length > 0 && !(a.agent && agentNames.includes(a.agent)))
+      return `assignment ${n} names agent "${a.agent ?? ""}", which is not one of: ${agentNames.join(", ")}`
+    for (const id of a.findings) {
+      if (!ids.has(id))
+        return `assignment ${n} references work item "${id}", which is not in findings`
+      const prev = owner.get(id)
+      if (prev !== undefined)
+        return `work item "${id}" is assigned to both assignment ${prev} and assignment ${n}`
+      owner.set(id, n)
+    }
+  }
+  const missing = findings.filter((f) => !owner.has(f.id)).map((f) => f.id)
+  if (missing.length > 0)
+    return `work items not assigned to any assignment: ${missing.join(", ")}`
+  for (let i = 0; i < assignments.length; i++)
+    for (let j = i + 1; j < assignments.length; j++)
+      for (const a of assignments[i].writes)
+        for (const b of assignments[j].writes)
+          if (scopesOverlap(normalizeScope(a), normalizeScope(b)))
+            return `assignments ${i + 1} and ${j + 1} both write "${a}"${a === b ? "" : ` / "${b}"`}`
   return null
 }
 
-// From `text` starting at `from`, find the balanced `]` matching the `[` at
-// `from`, tracking string literals so brackets inside strings don't miscount.
-// Returns the index of the closing `]`, or -1 if unbalanced.
-function matchBracket(text: string, from: number): number {
-  let depth = 0
-  let inString = false
-  let escaped = false
-  for (let i = from; i < text.length; i++) {
-    const c = text[i]
-    if (inString) {
-      if (escaped) escaped = false
-      else if (c === "\\") escaped = true
-      else if (c === '"') inString = false
-      continue
-    }
-    if (c === '"') inString = true
-    else if (c === "[") depth++
-    else if (c === "]") {
-      depth--
-      if (depth === 0) return i
-    }
+// One validated assignment as its worker's briefing: the task, the work items it
+// owns, and its write scope.
+export function assignmentBriefing(
+  plan: FanOutPlan,
+  assignment: PlanAssignment
+): string {
+  const byId = new Map(plan.findings.map((f) => [f.id, f.summary]))
+  const lines = [assignment.task, "", "## Work items you own"]
+  for (const id of assignment.findings)
+    lines.push(`- ${id}: ${byId.get(id) || "(no summary)"}`)
+  lines.push("")
+  lines.push("## Files you own")
+  if (assignment.writes.length > 0) {
+    lines.push(
+      "Other workers are changing other files at the same time. Modify only " +
+        "these; if you need to change anything else, say so in your summary instead."
+    )
+    for (const w of assignment.writes) lines.push(`- \`${w}\``)
+  } else {
+    lines.push(
+      "None: this assignment should not modify files. If it needs to, say so in " +
+        "your summary instead."
+    )
   }
-  return -1
+  return lines.join("\n")
 }
 
-// Try to parse a JSON array of briefings out of one candidate string: scan each
-// `[` and match its balanced `]`, JSON.parse the slice, and coerce elements to
-// briefing strings. Returns [] if no bracketed run parses into a non-empty list.
-function briefingsFromCandidate(candidate: string): string[] {
-  for (
-    let start = candidate.indexOf("[");
-    start !== -1;
-    start = candidate.indexOf("[", start + 1)
-  ) {
-    const end = matchBracket(candidate, start)
-    if (end === -1) break
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(candidate.slice(start, end + 1))
-    } catch {
-      continue // this `[` didn't start a valid array — try the next one
-    }
-    if (!Array.isArray(parsed)) continue
-    const briefings = parsed
-      .map(elementToBriefing)
-      .filter((s): s is string => s !== null)
-    if (briefings.length > 0) return briefings
-  }
-  return []
-}
-
-// Tolerant extraction of the sub-task list from a decomposition worker's final
-// assistant message (plan 025.1). Real LLM output varies, so this is deliberately
-// forgiving: it scans every fenced code block AND the raw text for the first
-// bracketed run that JSON-parses into a non-empty array, matching brackets in a
-// string-aware way (so prose brackets / a leading non-JSON fence don't defeat it)
-// and accepting arrays of objects (pulling a briefing field) as well as plain
-// strings. Trims, drops empties, caps at MAX_FAN_OUT. Returns [] on a genuine
-// miss — the caller treats an empty result as a decomposition failure.
 // A fan-out sub-task's briefing plus the run's objective. The planner's
 // briefing can leave out exact requirements (allowed values, field names), and
 // the worker cannot see the planning conversation.
@@ -399,23 +531,6 @@ export function withReworkFeedback(
     "say in your summary which items you fixed.\n\n" +
     reworkNote.trim()
   )
-}
-
-export function parseDecomposition(text: string): string[] {
-  if (!text) return []
-  // Candidates in priority order: each fenced block's body (a model may open with
-  // an explanatory fence before the JSON one), then the whole raw text.
-  const candidates: string[] = []
-  const fence = /```(?:json)?\s*([\s\S]*?)```/gi
-  let m: RegExpExecArray | null
-  while ((m = fence.exec(text)) !== null) candidates.push(m[1])
-  candidates.push(text)
-
-  for (const candidate of candidates) {
-    const briefings = briefingsFromCandidate(candidate)
-    if (briefings.length > 0) return briefings.slice(0, MAX_FAN_OUT)
-  }
-  return []
 }
 
 // ── validator (plan 031.1) ───────────────────────────────────────────────────
@@ -488,8 +603,7 @@ export interface ValidatorVerdict {
 
 // From `text` starting at `from`, find the balanced `}` matching the `{` at
 // `from`, tracking string literals so braces inside strings don't miscount.
-// Returns the index of the closing `}`, or -1 if unbalanced. (Object analog of
-// matchBracket.)
+// Returns the index of the closing `}`, or -1 if unbalanced.
 function matchBrace(text: string, from: number): number {
   let depth = 0
   let inString = false
@@ -536,11 +650,20 @@ function objectToVerdict(parsed: unknown): ValidatorVerdict | null {
 }
 
 // Tolerant extraction of a validator verdict from the reviewer's final message
-// (plan 031.1), mirroring parseDecomposition: scan every fenced block AND the raw
+// (plan 031.1), mirroring parsePlan: scan every fenced block AND the raw
 // text for the first brace-run that JSON-parses into an object carrying an
 // `approved` field. Returns null on a genuine miss; callers must treat that as a
 // failed review boundary, never as approval.
 export function parseVerdict(text: string): ValidatorVerdict | null {
+  return scanJsonObjects(text, objectToVerdict)
+}
+
+// Scan every fenced block AND the raw text for the first brace-run that
+// JSON-parses and that `coerce` accepts. Null on a genuine miss.
+function scanJsonObjects<T>(
+  text: string,
+  coerce: (parsed: unknown) => T | null
+): T | null {
   if (!text) return null
   const candidates: string[] = []
   const fence = /```(?:json)?\s*([\s\S]*?)```/gi
@@ -562,8 +685,8 @@ export function parseVerdict(text: string): ValidatorVerdict | null {
       } catch {
         continue
       }
-      const verdict = objectToVerdict(parsed)
-      if (verdict) return verdict
+      const value = coerce(parsed)
+      if (value) return value
     }
   }
   return null

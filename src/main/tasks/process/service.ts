@@ -69,14 +69,17 @@ import type {
   SeatBindingsSnapshot,
 } from "../../db/types"
 import {
+  assignmentBriefing,
   decompositionRetryNote,
   withObjective,
   withReworkFeedback,
   eachSubtaskKickoffPrompt,
   fanOutDecomposePrompt,
   kickoffPrompt,
-  parseDecomposition,
+  parsePlan,
   parseVerdict,
+  validatePlan,
+  type PlannerAgentOption,
   UNATTENDED_WORK_NOTE,
   validatorPrompt,
   type UpstreamResult,
@@ -99,8 +102,10 @@ import {
   isContainer,
   previousOutcomeSummary,
   resetRunRecursive,
+  reworkSource,
   resetSubProcessChild,
 } from "./flagback"
+import { PROCESS_PLANNER_AGENT } from "./planner-agent"
 import { unknownSideEffectingToolCalls } from "../../agent/repair"
 import { makePolicyEngine } from "../../agent/approval/engine"
 import { productionCommandDeps } from "./command-executor-deps"
@@ -343,6 +348,10 @@ interface ResolvedWorker {
 }
 
 type AgentDefinition = NonNullable<Awaited<ReturnType<typeof loadAgent>>>
+
+type WorkerCandidate =
+  | { kind: "seat"; name: string; seat: SeatBinding; row: ProcessPhaseAgent }
+  | { kind: "agent"; name: string; row: ProcessPhaseAgent }
 
 // Where a run's workers work (plan 026): the run's own workspace — for a
 // Mission Control user story, its worktree of that workspace — falling back to
@@ -1312,6 +1321,7 @@ export class ProcessService {
       phase,
       phaseRun,
       subtaskPrompt,
+      assignedAgent,
       attemptId,
       correction,
       signal,
@@ -1321,8 +1331,8 @@ export class ProcessService {
         : undefined
 
       const { workspaceId, workingDirectory, workspace } = runPlace(run, source)
-      const reworkNote =
-        processes.getPhaseRun(phaseRun.id)?.reworkNote ?? undefined
+      const freshPhaseRun = processes.getPhaseRun(phaseRun.id)
+      const reworkNote = freshPhaseRun?.reworkNote ?? undefined
 
       // A fan-out CHILD runs its decomposed sub-task briefing verbatim; a normal
       // phase gets the generic self-contained kickoff (plan 025.1).
@@ -1348,6 +1358,9 @@ export class ProcessService {
           // note each round, so the passed-in phaseRun object is stale. Null for a
           // first run.
           reworkNote,
+          reworkSource: freshPhaseRun
+            ? reworkSource(run.id, freshPhaseRun, phase.id)
+            : undefined,
         })
       const prompt =
         phase.proofStep &&
@@ -1391,6 +1404,7 @@ export class ProcessService {
           // A resumed worker keeps the seat it started with rather than
           // re-routing mid-conversation.
           preferSeat: resumingWorker ? phaseRun.seatAddress : null,
+          assignedAgent,
           workspace,
         })
       } catch (err) {
@@ -1751,21 +1765,22 @@ export class ProcessService {
       const source = run.sourceConversationId
         ? getConversation(run.sourceConversationId)
         : undefined
-      // The decomposition (planning) pass runs on pool[0]; each resulting CHILD
-      // routes independently over the pool in makeRunPhase (plan 025.3).
-      let resolved: ResolvedWorker
+      // The planning pass runs the built-in planner, not a pool agent; it is
+      // told the pool's agents and each child runs on the one it assigns.
+      const agentName = PROCESS_PLANNER_AGENT.name
+      const { workspaceId, workingDirectory, workspace } = runPlace(run, source)
+      let agents: PlannerAgentOption[]
       try {
-        resolved = await this.resolveWorker(run, phase, {
-          preferSeat: phaseRun.seatAddress,
-          workspace: runPlace(run, source).workspace,
-        })
+        agents = await this.describeCandidates(
+          this.phaseCandidates(run, phase),
+          workspace
+        )
       } catch (err) {
         return {
           error: err instanceof Error ? err.message : String(err),
           retryable: false,
         }
       }
-      const { agentName } = resolved
       const decomposerRuntime = resolveRuntime({
         run,
         source,
@@ -1773,7 +1788,6 @@ export class ProcessService {
         slot: "decomposer",
       })
 
-      const { workspaceId, workingDirectory, workspace } = runPlace(run, source)
       const reworkNote =
         processes.getPhaseRun(phaseRun.id)?.reworkNote ?? undefined
 
@@ -1791,8 +1805,9 @@ export class ProcessService {
           workingDirectory,
           accountId: decomposerRuntime.selection.accountId,
           modelId: decomposerRuntime.selection.modelId,
-          agentName,
-          title: `${phase.name} (decompose)${resolved.seat ? `: ${resolved.seat.address}` : agentName ? `: ${agentName}` : ""}`,
+          // Not loadable from disk; the loop gets it as agentOverride below.
+          agentName: null,
+          title: `${phase.name} (plan)`,
         })
       let workerTaskId = existingWorkerTask?.id ?? null
       if (!resumingWorker) {
@@ -1809,11 +1824,7 @@ export class ProcessService {
           },
         })
         workerTaskId = workerTask.id
-        processes.updatePhaseRun(phaseRun.id, {
-          taskId: workerTask.id,
-          agentName,
-          seatAddress: resolved.seat?.address ?? null,
-        })
+        processes.updatePhaseRun(phaseRun.id, { taskId: workerTask.id })
       }
       snapshotRuntime(phaseRun, "decomposer", decomposerRuntime)
 
@@ -1837,7 +1848,13 @@ export class ProcessService {
           // Re-read it per attempt so retries and post-reset resumes do not use a
           // stale phaseRun object.
           reworkNote,
-        }) + (attempt > 1 ? decompositionRetryNote : "")
+          agents,
+        }) +
+        (attempt > 1
+          ? decompositionRetryNote(
+              processes.getPhaseRun(phaseRun.id)?.error ?? null
+            )
+          : "")
 
       try {
         const result = await runAgentLoop({
@@ -1848,10 +1865,7 @@ export class ProcessService {
           abort: childAbort,
           taskId: workerTaskId ?? undefined,
           autoMode: true,
-          ...(resolved.agentOverride
-            ? { agentOverride: resolved.agentOverride }
-            : {}),
-          extraContextSections: resolved.contextSections,
+          agentOverride: PROCESS_PLANNER_AGENT,
           // Headless worker — no user to answer a clarifying question.
           suppressUserQuestions: true,
           onEvent: () => {},
@@ -1864,17 +1878,22 @@ export class ProcessService {
             retryable: result.retryable,
             failure: result.failure,
           }
-        const subtasks = parseDecomposition(result.content ?? "")
-        if (subtasks.length === 0)
-          // A parse miss is deterministic given the same transcript — a retry
-          // re-runs the whole worker, which MAY produce parseable output, so
-          // mark it retryable (bounded by MAX_PHASE_ATTEMPTS in the scheduler).
+        const plan = parsePlan(result.content ?? "")
+        const problem = plan
+          ? validatePlan(
+              plan,
+              agents.map((a) => a.name)
+            )
+          : "the reply is not a JSON plan object"
+        if (!plan || problem)
+          // A rejected plan may pass on a fresh attempt (the retry note names
+          // the problem), so mark it retryable (bounded by MAX_PHASE_ATTEMPTS).
           return {
-            error: "decomposition produced no parseable sub-tasks",
+            error: `invalid fan-out plan: ${problem}`,
             failure: {
-              code: "decomposition_unparseable",
+              code: plan ? "decomposition_invalid" : "decomposition_unparseable",
               stage: "output_validation",
-              message: "decomposition produced no parseable sub-tasks",
+              message: `invalid fan-out plan: ${problem}`,
               retryable: true,
               attempt,
               maxAttempts: null,
@@ -1889,7 +1908,10 @@ export class ProcessService {
             retryable: true,
           }
         return {
-          subtasks: subtasks.map((s) => withReworkFeedback(s, reworkNote)),
+          subtasks: plan.assignments.map((a) => ({
+            prompt: withReworkFeedback(assignmentBriefing(plan, a), reworkNote),
+            agentName: agents.length > 0 ? a.agent : null,
+          })),
         } satisfies DecomposeResult
       } catch (err) {
         return {
@@ -2158,13 +2180,21 @@ export class ProcessService {
         signal: AbortSignal
       }
       preferSeat?: string | null
+      // A fan-out child's agent from the planner's assignment (an agent name
+      // or seat address). When it matches the pool it wins without routing.
+      assignedAgent?: string | null
       workspace?: string
     }
   ): Promise<ResolvedWorker> {
     const pool = processes.listPhaseAgents(phase.id)
     if (pool.length === 0) return { agentName: null, seat: null }
     if (!pool.some((agent) => agent.seatRole)) {
-      const agentName = await this.resolveAgent(phase, pool, options.routing)
+      const assigned = pool.find(
+        (agent) => agent.agentName && agent.agentName === options.assignedAgent
+      )
+      const agentName =
+        assigned?.agentName ??
+        (await this.resolveAgent(phase, pool, options.routing))
       return {
         agentName,
         phaseAgent: pool.find((agent) => agent.agentName === agentName),
@@ -2173,15 +2203,55 @@ export class ProcessService {
     }
 
     const bindings = this.missionControlRoot(run)?.seatBindings
-    type Candidate =
-      | {
-          kind: "seat"
-          name: string
-          seat: SeatBinding
-          row: ProcessPhaseAgent
-        }
-      | { kind: "agent"; name: string; row: ProcessPhaseAgent }
-    const candidates: Candidate[] = []
+    const candidates = this.phaseCandidates(run, phase, pool)
+    if (!candidates.length) return { agentName: null, seat: null }
+
+    const prefer = options.preferSeat || options.assignedAgent
+    let chosen = (prefer && candidates.find((c) => c.name === prefer)) || null
+    if (
+      !prefer &&
+      phase.routing === "dispatch" &&
+      options.routing &&
+      candidates.length > 1
+    ) {
+      const descriptions = await this.describeCandidates(
+        candidates,
+        options.routing.workspace
+      )
+      const picked = await routeCandidates({
+        candidates: descriptions,
+        taskPrompt: options.routing.taskPrompt,
+        selection: options.routing.selection,
+        signal: options.routing.signal,
+      })
+      chosen = candidates.find((c) => c.name === picked) ?? null
+    }
+    chosen ??= candidates[0]
+
+    if (chosen.kind === "agent")
+      return { agentName: chosen.name, phaseAgent: chosen.row, seat: null }
+    const agent = await loadAgent(chosen.seat.agentName, options.workspace)
+    if (!agent)
+      throw new Error(
+        `Seat ${chosen.seat.address}'s agent (${chosen.seat.agentLabel}) is no longer available.`
+      )
+    return {
+      agentName: chosen.seat.agentName,
+      seat: chosen.seat,
+      agentOverride: narrowedSeatAgent(agent, chosen.seat),
+      contextSections: [seatContextSection(bindings!, chosen.seat)],
+    }
+  }
+
+  // The phase pool expanded to concrete candidates: agent rows as-is, seat-role
+  // rows to the seats frozen on the run's Mission Control snapshot.
+  private phaseCandidates(
+    run: ProcessRun,
+    phase: ProcessPhase,
+    pool: ProcessPhaseAgent[] = processes.listPhaseAgents(phase.id)
+  ): WorkerCandidate[] {
+    const bindings = this.missionControlRoot(run)?.seatBindings
+    const candidates: WorkerCandidate[] = []
     for (const row of pool) {
       if (row.agentName) {
         candidates.push({ kind: "agent", name: row.agentName, row })
@@ -2202,56 +2272,25 @@ export class ProcessService {
         if (seat) candidates.push({ kind: "seat", name: address, seat, row })
       }
     }
-    if (!candidates.length) return { agentName: null, seat: null }
+    return candidates
+  }
 
-    let chosen =
-      (options.preferSeat &&
-        candidates.find(
-          (c) => c.kind === "seat" && c.name === options.preferSeat
-        )) ||
-      candidates[0]
-    if (
-      !options.preferSeat &&
-      phase.routing === "dispatch" &&
-      options.routing &&
-      candidates.length > 1
-    ) {
-      const descriptions = await Promise.all(
-        candidates.map(async (c) =>
+  // Name + capability line per candidate: a seat's charter/label, else the
+  // agent's own description. Shared by dispatch routing and the fan-out planner.
+  private describeCandidates(
+    candidates: WorkerCandidate[],
+    workspace?: string
+  ): Promise<PlannerAgentOption[]> {
+    return Promise.all(
+      candidates.map(async (c) => ({
+        name: c.name,
+        description:
           c.kind === "seat"
             ? [c.seat.charter, c.seat.agentLabel].filter(Boolean).join(" — ")
-            : ((
-                await loadAgent(c.name, options.routing!.workspace).catch(
-                  () => null
-                )
-              )?.description ?? "")
-        )
-      )
-      const picked = await routeCandidates({
-        candidates: candidates.map((c, i) => ({
-          name: c.name,
-          description: descriptions[i],
-        })),
-        taskPrompt: options.routing.taskPrompt,
-        selection: options.routing.selection,
-        signal: options.routing.signal,
-      })
-      chosen = candidates.find((c) => c.name === picked) ?? candidates[0]
-    }
-
-    if (chosen.kind === "agent")
-      return { agentName: chosen.name, phaseAgent: chosen.row, seat: null }
-    const agent = await loadAgent(chosen.seat.agentName, options.workspace)
-    if (!agent)
-      throw new Error(
-        `Seat ${chosen.seat.address}'s agent (${chosen.seat.agentLabel}) is no longer available.`
-      )
-    return {
-      agentName: chosen.seat.agentName,
-      seat: chosen.seat,
-      agentOverride: narrowedSeatAgent(agent, chosen.seat),
-      contextSections: [seatContextSection(bindings!, chosen.seat)],
-    }
+            : ((await loadAgent(c.name, workspace).catch(() => null))
+                ?.description ?? ""),
+      }))
+    )
   }
 
   private async resolveAgent(

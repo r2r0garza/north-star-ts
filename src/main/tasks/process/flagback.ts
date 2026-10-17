@@ -358,6 +358,26 @@ export function previousOutcomeSummary(
   return failure ? `Your previous attempt failed: ${failure}` : null
 }
 
+// Whether a phase-run's pending rework note came from a flag it raised
+// ("flagger") or one aimed at it ("flagged"). Matches the latest applied flag
+// whose reason is in the note, so a later validator/user note isn't relabelled.
+export function reworkSource(
+  runId: string,
+  phaseRun: ProcessPhaseRun,
+  phaseId: string
+): "flagger" | "flagged" | undefined {
+  const note = phaseRun.reworkNote
+  if (!note) return undefined
+  const flag = processes
+    .listFlags({ runId, status: "applied" })
+    .filter((f) => note.includes(f.reason))
+    .at(-1)
+  if (!flag) return undefined
+  if (flag.flaggingPhaseRunId === phaseRun.id) return "flagger"
+  if (flag.targetPhaseId === phaseId) return "flagged"
+  return undefined
+}
+
 // Apply a resolved flag: reset the target (+ downstream) to pending in ONE
 // transaction. The scheduler re-walks after this commits.
 export function applyFlagBack(input: ApplyFlagBackInput): void {
