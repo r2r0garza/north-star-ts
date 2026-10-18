@@ -35,6 +35,7 @@ import {
   GateBlockedError,
   FailurePersistenceError,
   MAX_PROCESS_DEPTH,
+  MAX_OUTCOME_CORRECTIONS,
   type BuildEachSubtaskPrompt,
   type Decompose,
   type RunPhase,
@@ -1393,7 +1394,11 @@ describe.skipIf(!sqliteLoads)("scheduler — fan-out", () => {
     })
     const ranPrompts: string[] = []
     const assigned: Record<string, string | undefined> = {}
-    const runPhase: RunPhase = async ({ phase, subtaskPrompt, assignedAgent }) => {
+    const runPhase: RunPhase = async ({
+      phase,
+      subtaskPrompt,
+      assignedAgent,
+    }) => {
       if (phase.key === "c") {
         ranPrompts.push(subtaskPrompt ?? "(none)")
         assigned[subtaskPrompt ?? ""] = assignedAgent
@@ -1430,7 +1435,9 @@ describe.skipIf(!sqliteLoads)("scheduler — fan-out", () => {
     const pid = buildProcess({
       phases: [{ key: "c", fanOut: true }],
     })
-    const decompose: Decompose = async () => ({ subtasks: planned("ok", "boom") })
+    const decompose: Decompose = async () => ({
+      subtasks: planned("ok", "boom"),
+    })
     const runPhase: RunPhase = async ({ subtaskPrompt }) => {
       if (subtaskPrompt === "boom")
         return { error: "child blew up", retryable: false }
@@ -1677,7 +1684,9 @@ describe.skipIf(!sqliteLoads)("scheduler — on_each_subtask (025.2)", () => {
       phases: [{ key: "c", fanOut: true }, { key: "v" }],
       edges: [["c", "v", "on_each_subtask"]],
     })
-    const decompose: Decompose = async () => ({ subtasks: planned("p1", "p2", "p3") })
+    const decompose: Decompose = async () => ({
+      subtasks: planned("p1", "p2", "p3"),
+    })
     let vContainerStatusesSeen: string[] = []
     const runPhase: RunPhase = async ({ phase }) => {
       if (phase.key === "v") {
@@ -2781,7 +2790,9 @@ describe.skipIf(!sqliteLoads)(
 
     it("fails the parent when a per-child sub-process fails", async () => {
       const { pid } = buildCombined()
-      const decompose: Decompose = async () => ({ subtasks: planned("ok", "boom") })
+      const decompose: Decompose = async () => ({
+        subtasks: planned("ok", "boom"),
+      })
       const runPhase: RunPhase = async ({ phase }) => ({ content: phase.key })
       const runSubProcess: RunSubProcess = async ({ subtaskPrompt }) => {
         if (subtaskPrompt === "boom")
@@ -2962,7 +2973,9 @@ describe.skipIf(!sqliteLoads)("recorded phase completion contracts", () => {
       // A malformed outcome gets one corrective re-prompt; a declared
       // blocked/failed outcome is final.
       expect(worker).toHaveBeenCalledTimes(
-        status === "missing" || status === "invalid" ? 2 : 1
+        status === "missing" || status === "invalid"
+          ? 1 + MAX_OUTCOME_CORRECTIONS
+          : 1
       )
       const rows = processes.listPhaseRuns({ runId })
       expect(rows.find((r) => r.status === "failed")?.failure?.stage).toBe(
@@ -2975,9 +2988,11 @@ describe.skipIf(!sqliteLoads)("recorded phase completion contracts", () => {
   it("re-prompts once after a malformed outcome, then accepts the correction", async () => {
     const { id } = validatedProcess()
     const corrections: Array<string | undefined> = []
+    const ids: string[] = []
     const worker = vi.fn<RunPhase>(async ({ attemptId, correction, phase }) => {
       if (phase.key !== "work") return { content: "after" }
       corrections.push(correction)
+      ids.push(attemptId)
       return corrections.length === 1
         ? {
             content: JSON.stringify({
@@ -2995,11 +3010,76 @@ describe.skipIf(!sqliteLoads)("recorded phase completion contracts", () => {
     expect(corrections[0]).toBeUndefined()
     expect(corrections[1]).toContain("`evidence` is missing or empty")
     expect(corrections[1]).toContain("`reason` and `nextAction`")
+    // The correction re-asks for the same attempt and names its id.
+    expect(ids[1]).toBe(ids[0])
+    expect(corrections[1]).toContain(`attemptId ${JSON.stringify(ids[0])}`)
     const rows = processes.listPhaseRuns({ runId })
     expect(rows.every((r) => r.status === "completed")).toBe(true)
     const ledger = processes.listPhaseAttempts({ runId })
     expect(ledger).toHaveLength(1)
     expect(ledger[0].failure.code).toBe("phase_outcome_invalid")
+  })
+
+  it("accepts a split-object outcome without asking for a correction", async () => {
+    const { id } = validatedProcess()
+    const worker = vi.fn<RunPhase>(async ({ attemptId, phase }) => {
+      if (phase.key !== "work") return { content: "after" }
+      const full = JSON.parse(completed(attemptId)) as Record<string, unknown>
+      const { evidence, ...head } = full
+      return {
+        content: `${JSON.stringify(head)},"evidence":${JSON.stringify(evidence)}}`,
+      }
+    })
+    const { ctx, runId } = makeCtx(id, worker)
+    await runScheduler(ctx)
+    expect(
+      worker.mock.calls.filter(([c]) => c.phase.key === "work")
+    ).toHaveLength(1)
+    expect(processes.listPhaseAttempts({ runId })).toHaveLength(0)
+  })
+
+  it("merges a partial correction with the fields already received", async () => {
+    const { id } = validatedProcess()
+    const corrections: Array<string | undefined> = []
+    const worker = vi.fn<RunPhase>(async ({ attemptId, correction, phase }) => {
+      if (phase.key !== "work") return { content: "after" }
+      corrections.push(correction)
+      // The real run: first reply lacks reason/nextAction; the correction adds
+      // them but drops evidence.
+      return corrections.length === 1
+        ? {
+            content: JSON.stringify({
+              version: 1,
+              attemptId,
+              status: "blocked",
+              output: "UI defect found",
+              evidence: "Playwright AC-3 failed",
+            }),
+          }
+        : {
+            content: JSON.stringify({
+              attemptId,
+              reason: "defect form throws on submit",
+              nextAction: "fix App.tsx",
+            }),
+          }
+    })
+    const { ctx, runId } = makeCtx(id, worker)
+    await expect(runScheduler(ctx)).rejects.toThrow("a process phase failed")
+    expect(worker).toHaveBeenCalledTimes(2)
+    expect(corrections[1]).toContain("Already received and kept")
+    expect(corrections[1]).toContain("`evidence`")
+    const row = processes
+      .listPhaseRuns({ runId })
+      .find((r) => r.status === "failed")!
+    // Accepted as a valid blocked outcome built from both replies.
+    expect(row.failure?.code).toBe("phase_outcome_blocked")
+    expect(row.completionReceipt?.outcome).toMatchObject({
+      status: "blocked",
+      evidence: "Playwright AC-3 failed",
+      reason: "defect form throws on submit",
+      nextAction: "fix App.tsx",
+    })
   })
 
   it("fails with the named problems when the correction is malformed too", async () => {
@@ -3014,12 +3094,13 @@ describe.skipIf(!sqliteLoads)("recorded phase completion contracts", () => {
     }))
     const { ctx, runId } = makeCtx(id, worker)
     await expect(runScheduler(ctx)).rejects.toThrow("a process phase failed")
-    expect(worker).toHaveBeenCalledTimes(2)
+    expect(worker).toHaveBeenCalledTimes(1 + MAX_OUTCOME_CORRECTIONS)
     const failed = processes
       .listPhaseRuns({ runId })
       .find((r) => r.status === "failed")!
     expect(failed.error).toContain("`evidence` is missing or empty")
     expect(failed.error).toContain("you can add feedback for the agent")
+    expect(failed.failure?.code).toBe("phase_outcome_unparseable")
   })
 
   it("captures freeform and validated phase results explicitly", async () => {
@@ -3132,8 +3213,8 @@ describe.skipIf(!sqliteLoads)("recorded phase completion contracts", () => {
       decompose: async () => ({ subtasks: planned("one") }),
     })
     await expect(runScheduler(ctx)).rejects.toThrow()
-    // The child's malformed outcome gets its one correction, then fails.
-    expect(worker).toHaveBeenCalledTimes(2)
+    // The child's malformed outcome gets its corrections, then fails.
+    expect(worker).toHaveBeenCalledTimes(1 + MAX_OUTCOME_CORRECTIONS)
     expect(
       processes.listPhaseRuns({ runId }).filter((r) => r.status === "failed")
     ).toHaveLength(2)
@@ -3285,6 +3366,59 @@ describe.skipIf(!sqliteLoads)("validated outcomes with flag_for_rework", () => {
       expect(row.completionReceipt?.outcome.status).toBe("completed")
     }
   )
+
+  it("routes a pending flag when the outcome stays malformed after its correction", async () => {
+    const id = verifyProcess()
+    const ran: string[] = []
+    let verifyCalls = 0
+    const { ctx, runId } = withRealApply(
+      id,
+      async ({ phase, phaseRun, attemptId }) => {
+        ran.push(phase.key)
+        if (phase.key !== "verify") return { content: "built" }
+        verifyCalls++
+        if (verifyCalls === 1) {
+          await flag(phaseRun, "defect form throws on submit")
+          // Missing evidence: gets one correction.
+          return {
+            content: JSON.stringify({
+              version: 1,
+              attemptId,
+              status: "blocked",
+              output: "found a UI defect",
+              reason: "defect form throws",
+              nextAction: "fix App.tsx",
+            }),
+          }
+        }
+        // Every correction is still malformed.
+        if (verifyCalls <= 1 + MAX_OUTCOME_CORRECTIONS)
+          return { content: "not json" }
+        return { content: outcome(attemptId, "completed", 2) }
+      }
+    )
+    await runScheduler(ctx)
+    expect(ran).toEqual([
+      "build",
+      ...Array(1 + MAX_OUTCOME_CORRECTIONS).fill("verify"),
+      "build",
+      "verify",
+    ])
+    expect(processes.listFlags({ runId, status: "applied" })).toHaveLength(1)
+    expect(statusByKey(runId, id)).toEqual({
+      build: "completed",
+      verify: "completed",
+    })
+  })
+
+  it("still fails a malformed outcome that raised no flag", async () => {
+    const id = verifyProcess()
+    const { ctx, runId } = withRealApply(id, async ({ phase }) =>
+      phase.key === "verify" ? { content: "not json" } : { content: "built" }
+    )
+    await expect(runScheduler(ctx)).rejects.toThrow("a process phase failed")
+    expect(statusByKey(runId, id).verify).toBe("failed")
+  })
 
   it("repeats rework until verification passes", async () => {
     const id = verifyProcess()

@@ -7,6 +7,8 @@ import { parseCompletionContract } from "../../process/completion-contract"
 import {
   checkPhaseOutcome,
   completionInstruction,
+  mergeOutcomeReply,
+  parseOutcomeObject,
   parsePhaseOutcome,
   runCompletionContract,
 } from "./completion"
@@ -81,6 +83,47 @@ describe("phase completion boundary", () => {
     expect(() => parsePhaseOutcome(content, "current")).toThrow(
       "Invalid phase outcome: `evidence` is missing or empty; `status: blocked` also needs `reason` and `nextAction`"
     )
+  })
+  it("repairs an object closed early and carried on", () => {
+    // The real slip: `}` after output, then `,"evidence":…}`.
+    const { evidence, ...head } = outcome
+    const content = `${JSON.stringify(head)},"evidence":${JSON.stringify(evidence)}}`
+    expect(parsePhaseOutcome(content, "current")).toEqual(outcome)
+  })
+  it("reads an outcome wrapped in a json code fence", () => {
+    const content = "```json\n" + JSON.stringify(outcome) + "\n```"
+    expect(parsePhaseOutcome(content, "current")).toEqual(outcome)
+  })
+  it("names where the JSON broke", () => {
+    expect(() =>
+      parsePhaseOutcome(
+        '{"version":1,"status":"completed" "output":"x"}',
+        "current"
+      )
+    ).toThrow(
+      /not a single JSON object \(invalid JSON at character \d+: .* near "/
+    )
+    expect(parseOutcomeObject("")).toEqual({ error: "the reply is empty" })
+    expect(parseOutcomeObject("[1]")).toEqual({
+      error: "the reply is JSON but not an object",
+    })
+  })
+  it("merges a correction into earlier fields without erasing them", () => {
+    const first = mergeOutcomeReply(
+      undefined,
+      JSON.stringify({ ...outcome, status: "blocked" })
+    )
+    const merged = mergeOutcomeReply(
+      first,
+      JSON.stringify({ reason: "r", nextAction: "n", evidence: "" })
+    )
+    expect(merged).toMatchObject({
+      evidence: "Read the report",
+      reason: "r",
+      nextAction: "n",
+    })
+    expect(mergeOutcomeReply(merged, "not json")).toBe(merged)
+    expect(mergeOutcomeReply(undefined, "[]")).toBeUndefined()
   })
   it("accepts a recovered outcome without scanning failure phrases", () => {
     const value = {

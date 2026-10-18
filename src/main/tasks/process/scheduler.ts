@@ -1,5 +1,7 @@
 import {
   checkPhaseOutcome,
+  mergeOutcomeReply,
+  parseOutcomeObject,
   parsePhaseOutcome,
   runCompletionContract,
 } from "./completion"
@@ -60,6 +62,8 @@ export const PER_RUN_CONCURRENCY = 4
 
 // Bounded retry for a phase whose worker returns a transient (retryable) error.
 const MAX_PHASE_ATTEMPTS = 3
+// Corrective re-prompts for a malformed validated outcome, per attempt.
+export const MAX_OUTCOME_CORRECTIONS = 3
 
 // The max nesting depth for sub-process phases (plan 038.1): a sub-process phase
 // runs another definition inline, which can itself contain sub-process phases.
@@ -1151,10 +1155,11 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
     return raiseFlagGate(pending[0])
   }
 
-  // True when every failed/cancelled phase is a validated failed/blocked outcome
-  // whose run raised a still-pending flag. Routing that flag resets the flagger
-  // (it is always downstream of its target), so it re-verifies after the rework.
-  // Any other failure keeps wedging the run.
+  // True when every failed/cancelled phase is a validated failed/blocked outcome,
+  // or an outcome still malformed after its one correction, whose run raised a
+  // still-pending flag. Routing that flag resets the flagger (it is always
+  // downstream of its target), so it re-verifies after the rework. Any other
+  // failure keeps wedging the run.
   const failuresAwaitRework = (): boolean => {
     const flaggers = new Set(
       processes
@@ -1166,9 +1171,11 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       const pr = processes.getPhaseRun(runByPhaseId.get(p.id)!.id)
       return (
         pr?.status === "failed" &&
-        ["phase_outcome_failed", "phase_outcome_blocked"].includes(
-          pr.failure?.code ?? ""
-        ) &&
+        [
+          "phase_outcome_failed",
+          "phase_outcome_blocked",
+          "phase_outcome_unparseable",
+        ].includes(pr.failure?.code ?? "") &&
         flaggers.has(pr.id)
       )
     })
@@ -1827,15 +1834,26 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       }
     }
     let attempt = 0
-    // One corrective re-prompt per call for a malformed validated outcome: the
-    // agent usually did the work and only got the JSON shape wrong.
+    // Corrective re-prompts for a malformed validated outcome (at most
+    // MAX_OUTCOME_CORRECTIONS per attempt): the agent usually did the work and
+    // only got the JSON shape wrong.
     let correction: string | undefined
-    let corrected = false
+    // A correction re-asks for the SAME attempt's outcome, so it keeps that
+    // attempt's id; a fresh id the agent was never told cannot be echoed back.
+    let correctionAttemptId: string | undefined
+    let corrections = 0
+    // Outcome fields received so far in this attempt; each correction only has
+    // to supply what is still missing.
+    let received: Record<string, unknown> | undefined
     // Chain a child controller so run-level cancel unwinds the phase worker.
     while (true) {
       attempt++
       if (!reviewOnlyRetry || attempt > 1) {
-        const attemptId = randomUUID()
+        const attemptId = correctionAttemptId ?? randomUUID()
+        if (correctionAttemptId === undefined) {
+          corrections = 0
+          received = undefined
+        }
         processes.updatePhaseRun(phaseRun.id, {
           completionReceipt: null,
           outputIdentity: null,
@@ -1850,6 +1868,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
           signal: ctx.signal,
         })
         correction = undefined
+        correctionAttemptId = undefined
         if (result.stopped || ctx.signal.aborted) {
           settleStoppedPhaseRun(phase, phaseRun.id)
           return
@@ -1899,14 +1918,29 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
         }
         if (contract.policy === "validated") {
           let outcome: PhaseOutcome
+          const reply = parseOutcomeObject(result.content)
           try {
-            outcome = parsePhaseOutcome(result.content, attemptId)
-          } catch (err) {
-            if (corrected) {
-              failContract(err)
+            received = mergeOutcomeReply(received, result.content)
+            outcome = parsePhaseOutcome(
+              received ? JSON.stringify(received) : result.content,
+              attemptId
+            )
+          } catch (parseErr) {
+            // Fields kept from earlier replies hide a broken latest reply;
+            // say where its JSON broke too.
+            const err =
+              "error" in reply && received
+                ? new Error(
+                    `${errMessage(parseErr)}. Your last reply was not used: it is not a single JSON object (${reply.error})`
+                  )
+                : parseErr
+            if (corrections >= MAX_OUTCOME_CORRECTIONS) {
+              // Still malformed after every correction. A distinct code lets a
+              // pending rework flag from this attempt route (failuresAwaitRework).
+              failContract(err, "phase_outcome_unparseable")
               return
             }
-            corrected = true
+            corrections++
             const latest = processes.getPhaseRun(phaseRun.id) ?? phaseRun
             recordFailedAttempt({
               run,
@@ -1925,10 +1959,18 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
                 taskId: ctx.taskId,
               }),
             })
+            correctionAttemptId = attemptId
+            const kept = Object.keys(received ?? {}).filter(
+              (k) => k !== "attemptId"
+            )
             correction =
-              `${errMessage(err)}.\n\nYour final message must be ONLY the phase ` +
-              `outcome JSON object described in your instructions, using the new ` +
-              `attemptId. Do not redo the work; reply again with the corrected object.`
+              `${errMessage(err)}.\n\nReply with ONLY a JSON object that supplies ` +
+              `the missing or invalid fields, with attemptId ` +
+              `${JSON.stringify(attemptId)}.` +
+              (kept.length > 0
+                ? ` Already received and kept: ${kept.map((k) => `\`${k}\``).join(", ")}; you don't need to repeat them.`
+                : "") +
+              ` Do not redo the work.`
             continue
           }
           try {
