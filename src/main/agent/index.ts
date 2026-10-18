@@ -95,32 +95,12 @@ import {
   type WriterWorktree,
 } from "./subagents/worktrees"
 import { containerNameForConversation } from "./env/container"
-import { flagForReworkTool } from "./tools/flag_for_rework"
-import { recordProofTool } from "./tools/record_proof"
-import { seatCommsTools } from "./tools/seat_comms_tools"
-import { mapTools } from "./tools/map_tools"
-import { isLeadSeat } from "../mission-control/map-tools"
-import { allowedForSeatProfile } from "./seat-tool-profile"
-import { deliverQueued } from "../mission-control/inbox"
-import type { SeatTurnIdentity } from "../mission-control/seat-turns"
 import { dashboardWriteTool } from "./tools/dashboard_write"
 import { dashboardReadTool } from "./tools/dashboard_read"
 import { loadSystemPrompt } from "./system-prompt"
 import { logSystemPrompt } from "./prompt-log"
 import { buildIndexSummary } from "../index/summary"
 import { takeConversationNotes } from "../db/repositories/conversation-notes"
-import {
-  afterSeatTurn,
-  parseRefocusTrigger,
-  recordRefocusDelivered,
-  refocusInterval,
-  renderRefocusEvent,
-  REFOCUS_NOTE_SOURCE,
-} from "../mission-control/refocus"
-import {
-  recordSeatLessons,
-  seatMemorySection,
-} from "../mission-control/seat-memory"
 import { indexedWorkspaceFor } from "../index/indexed-workspace"
 import {
   contextBuilder,
@@ -170,7 +150,7 @@ import {
 import { contextUsageLog, type ContextUsageOutcome } from "./context/usage-log"
 import { generateTitle } from "./title"
 export { generateTitle } from "./title"
-import { sanitizeFailureContext } from "../tasks/process/failure-sanitizer"
+import { sanitizeFailureContext } from "../tasks/failure-sanitizer"
 import { replayToolMedia } from "../media/tool-media"
 import {
   appendMessage,
@@ -526,8 +506,6 @@ function agentFailure(input: {
   message: string
   retryable?: boolean
   taskId?: string
-  processRunId?: string
-  processPhaseRunId?: string
   cause?: string | null
   toolCallId?: string
 }): FailureContext {
@@ -538,8 +516,8 @@ function agentFailure(input: {
     retryable: input.retryable === true,
     attempt: null,
     maxAttempts: null,
-    runId: input.processRunId ?? null,
-    phaseRunId: input.processPhaseRunId ?? null,
+    runId: null,
+    phaseRunId: null,
     phaseId: null,
     taskId: input.taskId ?? null,
     workerTaskId: input.taskId ?? null,
@@ -904,8 +882,7 @@ export interface RunAgentLoopOptions {
   taskId?: string
   // Interactive chat (runChat) and the subagents it spawns, at any depth: put
   // the app's Python venv first on PATH for this turn's local commands, unless
-  // the workspace has its own Python environment. Every other caller (Mission
-  // Control, Playbooks, background tasks) leaves it off, and so do subagents
+  // the workspace has its own Python environment. Other background callers leaves it off, and so do subagents
   // spawned from them, since they inherit the parent's value.
   chatPythonVenv?: boolean
   // Start this turn in plan mode: the agent may read/search and write only its
@@ -923,7 +900,7 @@ export interface RunAgentLoopOptions {
   autoMode?: boolean
   // Whether this run may receive conversation delegation tools. `runChat` passes
   // the default-off user preference as a turn-start snapshot. Omitted means
-  // enabled so independent Process/Mission Control callers preserve their semantics.
+  // enabled so independent callers preserve their semantics.
   conversationSubagentsEnabled?: boolean
   // Subagent-tree depth of this run: 0 for a top-level (user- or task-driven)
   // turn, incremented each time an agent spawns a child via spawn_subagent.
@@ -940,33 +917,13 @@ export interface RunAgentLoopOptions {
   // directory as its parent (a Chat worker inherits neither a confinement
   // workspace nor the project link). Absent on top-level turns, which derive it.
   agentDir?: string
-  // Process phase context (plan 031.2): set only when this turn is a Process phase
-  // worker (makeRunPhase). Threaded into ToolContext so flag_for_rework can reach
-  // the run's graph + record a durable cross-phase rework flag. Absent otherwise.
-  processRunId?: string
-  processPhaseRunId?: string
-  // Process-only format instruction, refreshed even when resuming a transcript.
-  processCompletionInstruction?: string
   completionInstruction?: string
   reportOnly?: boolean
-  // Mission Control (plan 106.3): this worker runs a playbook's proof step, so
-  // it is offered record_proof. The tool re-derives the user story, criteria, and
-  // seats from the run itself; this flag only controls the offer.
-  processProofStep?: boolean
-  // Mission Control seat turn (plan 106.4): who is speaking on the rig and
-  // what the turn may do. Offers the Comms tools (except answer-only), delivers
-  // the seat's queued mail at each tool-round boundary, and — for a turn woken
-  // by mail (consult / answer_only) — narrows the toolset to read/search tools
-  // so a message can never cause a side effect.
-  missionControlSeat?: SeatTurnIdentity
-  // Extra system-block context sections supplied by the caller — e.g. the
-  // Mission Control seat context (charter, cultures, intent chain). Budgeted
-  // by the ContextBuilder like every other section.
+  // Additional caller-provided context, budgeted like other sections.
   extraContextSections?: ContextSection[]
   // Withhold the ask_user_question tool: this turn has NO interactive user to
   // answer a clarifying question, so offering the tool only lets the worker stall
-  // until it's interrupted. Set by every Process worker fork (phase / decompose /
-  // validate) — they run headless with a swallowed onEvent, unlike a durable task,
+  // until it's interrupted. Headless workers have no interactive event sink, unlike a durable task,
   // which surfaces the question in the activity panel. The worker proceeds on
   // reasonable assumptions instead (its kickoff frames the work as self-contained).
   suppressUserQuestions?: boolean
@@ -1045,8 +1002,6 @@ export async function runAgentLoop(
           stage: "agent_setup",
           message,
           taskId,
-          processRunId: opts.processRunId,
-          processPhaseRunId: opts.processPhaseRunId,
         }),
       }
     }
@@ -1061,8 +1016,6 @@ export async function runAgentLoop(
             stage: "agent_setup",
             message,
             taskId,
-            processRunId: opts.processRunId,
-            processPhaseRunId: opts.processPhaseRunId,
           }),
         }
       }
@@ -1075,8 +1028,6 @@ export async function runAgentLoop(
           stage: "agent_setup",
           message,
           taskId,
-          processRunId: opts.processRunId,
-          processPhaseRunId: opts.processPhaseRunId,
         }),
       }
     }
@@ -1291,7 +1242,7 @@ export async function runAgentLoop(
   )
 
   // Subagent spawning. Live conversations and chat-originated background tasks
-  // pass an explicit snapshot; independent Process/Mission Control callers omit
+  // pass an explicit snapshot; independent callers omit
   // the flag and retain their authored delegation behavior. The remaining agent
   // policy and depth gates only narrow that capability further.
   const delegationEnabled = opts.conversationSubagentsEnabled !== false
@@ -1392,37 +1343,7 @@ export async function runAgentLoop(
       ? agentFiltered.filter((d) => opts.allowedToolNames!.has(d.function.name))
       : agentFiltered
   }
-  // A seat turn woken by mail may read and search but never mutate, execute,
-  // delegate, or reach out (plan 106.4 decision 4): keep only local read-only
-  // tools. MCP tools have no declared effects, so they are dropped too.
-  const seatProfile = opts.missionControlSeat?.profile
-  const readOnlyExtras = new Set([readSkillTool.definition.function.name])
-  const buildTools = () => {
-    const offered = buildBaseTools()
-    return (
-      seatProfile
-        ? offered.filter((d) =>
-            allowedForSeatProfile(d.function.name, seatProfile, readOnlyExtras)
-          )
-        : offered
-    ).concat(
-      // Comms (plan 106.4): process-structural like record_proof, so no agent
-      // or seat narrowing removes it. An answer-only wake answers in its final
-      // message instead.
-      seatProfile && seatProfile !== "answer_only" && !planMode
-        ? seatCommsTools.map((tool) => tool.definition)
-        : [],
-      // Map tools (plan 106.6): pod leads only. Rights are enforced when the
-      // tool runs, so a lead without a right still sees why it was refused.
-      seatProfile &&
-        seatProfile !== "answer_only" &&
-        !planMode &&
-        isLeadSeat(opts.missionControlSeat!)
-        ? mapTools.map((tool) => tool.definition)
-        : []
-    )
-  }
-  const buildBaseTools = () =>
+  const buildTools = () =>
     applyAgentTools([
       ...(hasWorkspace
         ? planMode
@@ -1466,11 +1387,6 @@ export async function runAgentLoop(
       // already required the `agent` category.
       ...(offerSpawn && !planMode ? [spawnSubagentTool.definition] : []),
       ...(offerSpawnBatch && !planMode ? [spawnSubagentsTool.definition] : []),
-      // flag_for_rework: offered only to a Process phase worker (plan 031.2 — when
-      // this run carries process context). Lets the worker send a defect back to an
-      // upstream phase instead of fixing out of lane. Not gated by the agent
-      // allowlist (it's a process-structural capability, like spawn).
-      ...(opts.processRunId && !planMode ? [flagForReworkTool.definition] : []),
       // dashboard_write (plan 033.2): offered in interactive modes (like
       // todo_write), withheld in plan mode as a side-effecting save. Subject to
       // the agent tool allowlist via its `dashboard` category.
@@ -1492,26 +1408,16 @@ export async function runAgentLoop(
       // which have no conversationId path into a plan file anyway).
       ...(showTodos ? [readPlanTool.definition] : []),
       // ask_user_question is offered in every mode — clarification is universal —
-      // EXCEPT a headless worker with no interactive user to answer (a Process
-      // phase/decompose/validate worker), where it can only stall until interrupted.
+      // EXCEPT a headless worker with no interactive user to answer.
       ...(opts.suppressUserQuestions ? [] : [askUserQuestionTool.definition]),
       readSkillTool.definition,
-    ])
-      .concat(
-        // MCP tools bypass the built-in-category allowlist (applyAgentTools): MCP
-        // access is governed by the agent's separate `mcpServers` field, already
-        // resolved into `mcpTools`. Withheld in plan mode like spawn (a remote call
-        // is a side effect); regained the moment a plan is approved.
-        planMode ? [] : mcpTools
-      )
-      .concat(
-        // record_proof (plan 106.3): process-structural like flag_for_rework, and
-        // offered only to a Mission Control proof step, so no agent or seat tool
-        // narrowing may remove it.
-        opts.processProofStep && opts.processRunId && !planMode
-          ? [recordProofTool.definition]
-          : []
-      )
+    ]).concat(
+      // MCP tools bypass the built-in-category allowlist (applyAgentTools): MCP
+      // access is governed by the agent's separate `mcpServers` field, already
+      // resolved into `mcpTools`. Withheld in plan mode like spawn (a remote call
+      // is a side effect); regained the moment a plan is approved.
+      planMode ? [] : mcpTools
+    )
   // The non-droppable base prompt (mode prompt). Everything else is a droppable
   // context SECTION handed to the ContextBuilder, which budgets + composes them
   // into the system block under one global budget with an explicit drop order
@@ -1543,11 +1449,6 @@ export async function runAgentLoop(
             agent.body.trim()
           )}\n\n${modePrompt}`
         : modePrompt) +
-    (opts.processRunId &&
-    opts.processPhaseRunId &&
-    opts.processCompletionInstruction
-      ? `\n\n${opts.processCompletionInstruction}`
-      : "") +
     (opts.completionInstruction ? `\n\n${opts.completionInstruction}` : "")
   const sections: ContextSection[] = [...(opts.extraContextSections ?? [])]
 
@@ -1565,21 +1466,6 @@ export async function runAgentLoop(
         source: "chat_python_venv",
       },
     })
-  }
-
-  // Seat memory (plan 106.7): the seat's active lessons, after its charter.
-  // Injecting records an exposure, so a retraction can find this session.
-  const seatIdentity =
-    opts.missionControlSeat && (opts.agentDepth ?? 0) === 0
-      ? opts.missionControlSeat
-      : null
-  if (seatIdentity) {
-    try {
-      const lessons = seatMemorySection(seatIdentity, conversationId)
-      if (lessons) sections.push(lessons)
-    } catch (err) {
-      console.warn("[seat-memory] injection failed:", err)
-    }
   }
 
   // Environment orientation: date + model always, and (when a workspace exists)
@@ -1770,9 +1656,7 @@ export async function runAgentLoop(
   // Workspace-index summary (plan 008): cheap structured orientation. Advisory,
   // most droppable. Gated by the "use index for context" setting + a workspace.
   if (useIndex && conversation?.workspaceId) {
-    // A Mission Control worker works in a worktree but belongs to its feature's
-    // workspace, so this is the indexed checkout. A workspace the user picked
-    // may itself be an unindexed git worktree; summarize its main checkout then.
+    // Summarize the main checkout when this workspace is an unindexed worktree.
     const workspacePath = getWorkspace(conversation.workspaceId)?.path
     const indexed = workspacePath
       ? await indexedWorkspaceFor(workspacePath)
@@ -1829,7 +1713,7 @@ export async function runAgentLoop(
   // Recording it would double the reference log and spend a second extraction
   // call on text the retry is about to record anyway.
   let turnWillRetry = false
-  // Where this turn begins in the transcript, for seat lesson extraction.
+  // Where this turn begins in the transcript.
   const turnStartSeq = getMaxMessageSeq(conversationId)
   if (userMessage !== undefined) {
     let userContent = userMessage || "What files are in the workspace?"
@@ -1892,17 +1776,6 @@ export async function runAgentLoop(
         break
       }
     }
-  }
-
-  // Seat mail held for this seat while its next playbook step was pending
-  // (plan 106.4) lands at the start of that step, after its kickoff.
-  if (seatProfile && seatProfile !== "answer_only") {
-    const mail = deliverQueued({
-      identity: opts.missionControlSeat!,
-      conversationId,
-      wakeTaskId: null,
-    })
-    if (mail) messages.push({ role: "user", content: mail.content })
   }
 
   for (const name of forcedSkills.names) {
@@ -2069,14 +1942,6 @@ export async function runAgentLoop(
     // token so the two pieces don't run together in the bubble.
     let streamedText = false
 
-    // Refocus (plan 106.7): a working seat is re-shown why its work exists
-    // every N model rounds of one step. Any other reminder (compaction,
-    // drift) restarts the count.
-    const refocusEvery =
-      seatIdentity?.profile === "work"
-        ? refocusInterval(seatIdentity.featureId)
-        : 0
-    let roundsSinceRefocus = 0
     // Per-round context usage log (plan 108). Measurement only: it never
     // changes the request and never fails the turn.
     let modelRound = 0
@@ -2106,14 +1971,7 @@ export async function runAgentLoop(
           accountId: llm.accountId,
           model: llm.model,
           mode: conversation?.mode ?? "chat",
-          seat: seatIdentity
-            ? {
-                address: seatIdentity.address,
-                profile: seatIdentity.profile,
-                featureId: seatIdentity.featureId,
-                anchor: seatIdentity.anchor,
-              }
-            : null,
+          seat: null,
           request: {
             reported,
             estimated: size.total,
@@ -2139,12 +1997,6 @@ export async function runAgentLoop(
         console.warn("[ctx] context usage logging failed:", error)
       }
     }
-    const deliverRefocus = (content: string) => {
-      appendMessage({ conversationId, role: "user", content })
-      messages.push({ role: "user", content })
-      roundsSinceRefocus = 0
-    }
-
     const executeCalls = async (
       toolCalls: ToolCallRecord[],
       text: string,
@@ -2599,9 +2451,6 @@ export async function runAgentLoop(
             agentAncestors: opts.agentAncestors ?? [],
             commandCompletions: commandCompletionInbox,
             commandCompletionOwner,
-            processRunId: opts.processRunId,
-            processPhaseRunId: opts.processPhaseRunId,
-            missionControlSeat: opts.missionControlSeat,
           }
           // MCP tool calls (mcp__<server>__<tool>) route to the connection pool via
           // the manager, not the static tool registry. Gate first: calling a
@@ -2724,41 +2573,12 @@ export async function runAgentLoop(
         return { stopped: true }
       }
 
-      // Notes that arrived mid-turn (a user's nudge, or Mission Control
-      // telling a long phase to wrap up) join before the next model round.
+      // Notes that arrived mid-turn join before the next model round.
       for (const note of takeConversationNotes(conversationId)) {
-        if (note.source === REFOCUS_NOTE_SOURCE) {
-          // Only a seat turn can be refocused; anywhere else it's dropped.
-          const trigger = parseRefocusTrigger(note.body)
-          const content =
-            trigger && seatIdentity
-              ? renderRefocusEvent(seatIdentity, trigger)
-              : null
-          if (content) {
-            deliverRefocus(content)
-            recordRefocusDelivered(
-              seatIdentity!,
-              trigger!,
-              conversationId,
-              note.id
-            )
-          }
-          continue
-        }
-        const content = `${note.source === "user" ? "Note from the user while you work" : "Note from Mission Control"}:\n\n${note.body}`
+        const content = `${note.source === "user" ? "Note from the user while you work" : "Note while you work"}:\n\n${note.body}`
         appendMessage({ conversationId, role: "user", content })
         messages.push({ role: "user", content })
       }
-      if (refocusEvery > 0 && roundsSinceRefocus >= refocusEvery) {
-        const trigger = { kind: "interval" as const, rounds: refocusEvery }
-        const content = renderRefocusEvent(seatIdentity!, trigger)
-        if (content) {
-          deliverRefocus(content)
-          recordRefocusDelivered(seatIdentity!, trigger, conversationId, null)
-        } else roundsSinceRefocus = 0
-      }
-      roundsSinceRefocus++
-
       // Recompute the toolset from the live plan-mode flag: an approval during
       // the previous iteration's present_plan call flips planMode off, so this
       // round-trip regains the full filesystem toolset.
@@ -3146,17 +2966,6 @@ export async function runAgentLoop(
           "A tool outcome is unknown. Reconcile its effects before continuing."
         )
       }
-      // Seat mail that arrived while this seat was busy (plan 106.4) lands
-      // here, at the tool-round boundary, as one tagged turn. The claim and the
-      // transcript row commit together, so it is delivered exactly once.
-      if (seatProfile && seatProfile !== "answer_only") {
-        const mail = deliverQueued({
-          identity: opts.missionControlSeat!,
-          conversationId,
-          wakeTaskId: null,
-        })
-        if (mail) messages.push({ role: "user", content: mail.content })
-      }
     }
   } catch (error) {
     // A user Stop aborts the in-flight stream, which surfaces here as an abort
@@ -3173,19 +2982,16 @@ export async function runAgentLoop(
     if (error instanceof ModelRequestRetryExhaustedError) {
       console.error("Model request retry budget exhausted:", error)
       turnWillRetry = error.retryable
-      const failure =
-        taskId || opts.processRunId || opts.processPhaseRunId
-          ? agentFailure({
-              code: "model_request_retry_exhausted",
-              stage: "model_request",
-              message: error.message,
-              retryable: error.retryable,
-              taskId,
-              processRunId: opts.processRunId,
-              processPhaseRunId: opts.processPhaseRunId,
-              cause: error.name,
-            })
-          : undefined
+      const failure = taskId
+        ? agentFailure({
+            code: "model_request_retry_exhausted",
+            stage: "model_request",
+            message: error.message,
+            retryable: error.retryable,
+            taskId,
+            cause: error.name,
+          })
+        : undefined
       return failTurn(
         conversationId,
         error.message,
@@ -3205,10 +3011,7 @@ export async function runAgentLoop(
       !(error instanceof ToolLifecycleError) && isTransientError(error)
     turnWillRetry = retryable
     const failure =
-      error instanceof ToolLifecycleError ||
-      taskId ||
-      opts.processRunId ||
-      opts.processPhaseRunId
+      error instanceof ToolLifecycleError || taskId
         ? agentFailure({
             toolCallId:
               error instanceof ToolLifecycleError
@@ -3227,27 +3030,11 @@ export async function runAgentLoop(
             message,
             retryable,
             taskId,
-            processRunId: opts.processRunId,
-            processPhaseRunId: opts.processPhaseRunId,
             cause: error instanceof Error ? error.name : null,
           })
         : undefined
     return failTurn(conversationId, message, retryable, undefined, failure)
   } finally {
-    // A seat turn (plan 106.7): its conversation may now be long enough to
-    // compact (the next turn then gets a Refocus), and a working turn may
-    // have taught the seat a lesson worth keeping for its successors.
-    if (!turnWillRetry && seatIdentity) {
-      afterSeatTurn(conversationId)
-      if (seatIdentity.profile === "work" && !abort.signal.aborted)
-        void recordSeatLessons({
-          identity: seatIdentity,
-          conversationId,
-          sinceSeq: turnStartSeq,
-        }).catch((err) =>
-          console.warn("[seat-memory] lesson record failed:", err)
-        )
-    }
     // Record the turn for automatic memory on EVERY terminal path, not only the
     // clean final-answer one. Turns that end in a user stop, an output-cap
     // truncation, or a thrown model error still carry durable user-stated facts,
@@ -3906,8 +3693,7 @@ export async function runChat(
         bashCommand,
         planMode,
         autoMode,
-        // Snapshot the opt-in at turn start. Process workers call runAgentLoop
-        // directly and intentionally do not consult this conversation preference.
+        // Snapshot the opt-in at turn start.
         conversationSubagentsEnabled:
           settingsService.getConversations().allowConversationSubagents,
         chatPythonVenv: true,

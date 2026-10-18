@@ -6,7 +6,6 @@ import type {
 import type { Environment } from "../env/types"
 import type { TodoStatus } from "../../db/types"
 import type { BrowserHandle } from "../../browser/manager"
-import type { SeatTurnIdentity } from "../../mission-control/seat-turns"
 import type {
   SpawnSubagentsInput,
   SubagentResult,
@@ -200,18 +199,6 @@ export interface ToolContext {
   commandCompletions?: CommandCompletionInbox
   commandCompletionOwner?: CommandCompletionOwner
   // --- Process phase context (plan 031.2 cross-phase flag-back) ---
-  // Set ONLY when this turn is a Process phase worker (makeRunPhase forks the
-  // conversation with these). The flag_for_rework tool uses them to load the run's
-  // graph, validate the flagged target is a real upstream phase, and record a
-  // durable flag. Absent for ordinary chats/subagents — flag_for_rework then
-  // reports it's unavailable (and isn't offered).
-  processRunId?: string
-  processPhaseRunId?: string
-  // --- Mission Control seat turn (plan 106.4) ---
-  // Set ONLY on a seat turn (a role-bound playbook worker, a seat-session step,
-  // or a wake). The Comms tools take the sender from here, never from model
-  // arguments. Absent otherwise — the Comms tools then report unavailable.
-  missionControlSeat?: SeatTurnIdentity
 }
 
 export interface ToolEffects {

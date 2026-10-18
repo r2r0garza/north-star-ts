@@ -98,8 +98,6 @@ import {
 } from "../db/repositories/model-request-retry-budgets"
 import { createTask, getTask } from "../db/repositories/tasks"
 import { upsertWorkspace } from "../db/repositories/workspaces"
-import * as processes from "../db/repositories/processes"
-import { ProcessService } from "../tasks/process/service"
 import { resolveApproval, runAgentLoop, runChat, stopChat } from "."
 import { replaceTodos } from "../db/repositories/todos"
 import {
@@ -1363,39 +1361,6 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
     )
   })
 
-  it("exposes exhausted empty responses as nonretryable process worker failures", async () => {
-    const workspace = await makeWorkspace()
-    const conversation = createConversation({ mode: "interactive" })
-
-    scriptedCompletions.push(() => streamEmpty("stop"))
-    scriptedCompletions.push(() => streamEmpty("stop"))
-    scriptedCompletions.push(() => streamEmpty("stop"))
-
-    const result = await runAgentLoop({
-      conversationId: conversation.id,
-      workspace,
-      userMessage: "finish the process phase",
-      abort: new AbortController(),
-      processRunId: "process-run",
-      processPhaseRunId: "phase-run",
-      onEvent: () => {},
-    })
-
-    expect(result.error).toContain("The model returned no usable answer")
-    expect(result.retryable).toBe(false)
-    expect(result.failure).toMatchObject({
-      code: "model_request_retry_exhausted",
-      stage: "model_request",
-      retryable: false,
-      runId: "process-run",
-      phaseRunId: "phase-run",
-    })
-    expect(getBudget(conversation.id, "after-seq:1")).toMatchObject({
-      status: "exhausted",
-      attemptsConsumed: 3,
-    })
-  })
-
   describe("hung streams", () => {
     const saved = { ...MODEL_STREAM_IDLE }
     beforeEach(() => {
@@ -1685,82 +1650,75 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
     {
       label: "withholds delegation from an opted-out conversation",
       conversationSubagentsEnabled: false,
-      processRunId: undefined,
       offered: false,
     },
     {
       label: "offers delegation to an opted-in conversation",
       conversationSubagentsEnabled: true,
-      processRunId: undefined,
       offered: true,
     },
     {
-      label: "preserves delegation for direct Process-style runs",
+      label: "preserves delegation for independent background runs",
       conversationSubagentsEnabled: undefined,
-      processRunId: "process-run",
       offered: true,
     },
-  ])(
-    "$label",
-    async ({ conversationSubagentsEnabled, processRunId, offered }) => {
-      const workspace = await makeWorkspace()
-      const agentsDir = join(workspace, ".cowork", "agents")
-      await mkdir(agentsDir, { recursive: true })
-      await writeFile(
-        join(agentsDir, "parent.agent.md"),
-        [
-          "---",
-          "name: parent",
-          "description: Delegates work.",
-          "tools: [agent]",
-          "children: [child]",
-          "user-invocable: true",
-          "---",
-          "Delegate suitable work.",
-        ].join("\n"),
-        "utf-8"
-      )
-      await writeFile(
-        join(agentsDir, "child.agent.md"),
-        [
-          "---",
-          "name: child",
-          "description: Handles delegated work.",
-          "tools: [read]",
-          "---",
-          "Read files and report back.",
-        ].join("\n"),
-        "utf-8"
-      )
-      const conversation = createConversation({
-        mode: "interactive",
-        agentName: "parent",
-      })
+  ])("$label", async ({ conversationSubagentsEnabled, offered }) => {
+    const workspace = await makeWorkspace()
+    const agentsDir = join(workspace, ".cowork", "agents")
+    await mkdir(agentsDir, { recursive: true })
+    await writeFile(
+      join(agentsDir, "parent.agent.md"),
+      [
+        "---",
+        "name: parent",
+        "description: Delegates work.",
+        "tools: [agent]",
+        "children: [child]",
+        "user-invocable: true",
+        "---",
+        "Delegate suitable work.",
+      ].join("\n"),
+      "utf-8"
+    )
+    await writeFile(
+      join(agentsDir, "child.agent.md"),
+      [
+        "---",
+        "name: child",
+        "description: Handles delegated work.",
+        "tools: [read]",
+        "---",
+        "Read files and report back.",
+      ].join("\n"),
+      "utf-8"
+    )
+    const conversation = createConversation({
+      mode: "interactive",
+      agentName: "parent",
+    })
 
-      scriptedCompletions.push((request) => {
-        expect(request.tools.includes("spawn_subagent")).toBe(offered)
-        expect(request.tools.includes("spawn_subagents")).toBe(offered)
-        const system = request.messages.find(
-          (message) => message.role === "system"
-        )?.content as string
-        expect(system.includes("## Subagents")).toBe(offered)
-        return streamText("Done.")
-      })
+    scriptedCompletions.push((request) => {
+      expect(request.tools.includes("spawn_subagent")).toBe(offered)
+      expect(request.tools.includes("spawn_subagents")).toBe(offered)
+      const system = request.messages.find(
+        (message) => message.role === "system"
+      )?.content as string
+      expect(system.includes("## Subagents")).toBe(offered)
+      return streamText("Done.")
+    })
 
-      expect(
-        await runAgentLoop({
-          conversationId: conversation.id,
-          workspace,
-          agentDir: workspace,
-          userMessage: "Handle this task.",
-          abort: new AbortController(),
-          conversationSubagentsEnabled,
-          processRunId,
-          onEvent: () => {},
-        })
-      ).toEqual({ content: "Done." })
-    }
-  )
+    expect(
+      await runAgentLoop({
+        conversationId: conversation.id,
+        workspace,
+        agentDir: workspace,
+        userMessage: "Handle this task.",
+        abort: new AbortController(),
+        conversationSubagentsEnabled,
+        onEvent: () => {},
+      })
+    ).toEqual({ content: "Done." })
+  })
 
   it.each([false, true])(
     "tool handoff carries the trusted %s snapshot, not model arguments",
@@ -2074,314 +2032,6 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
     expect(contentsByCallId(conversation.id).get("call_write")).toContain(
       "ERROR[tool_unavailable]"
     )
-  })
-
-  it.each(["completed", "blocked", "failed", "invalid"])(
-    "enforces a %s outcome after native tool-error recovery in a real process worker",
-    async (outcomeStatus) => {
-      const workspace = await makeWorkspace()
-      await mkdir(join(workspace, ".claude", "agents"), { recursive: true })
-      await writeFile(
-        join(workspace, ".claude", "agents", "reader.md"),
-        [
-          "---",
-          "name: reader",
-          "description: Reads files for a process phase.",
-          "tools: Read",
-          "---",
-          "Use file reads only.",
-          "",
-        ].join("\n"),
-        "utf-8"
-      )
-
-      const workspaceId = upsertWorkspace(workspace).id
-      const source = createConversation({
-        mode: "interactive",
-        workspaceId,
-      })
-      const definition = processes.createProcessDefinition({
-        name: "Loop test",
-      })
-      const phase = processes.createPhase({
-        processId: definition.id,
-        key: "read",
-        name: "Read",
-        completionContract: {
-          policy: "validated",
-          version: 1,
-          requiredArtifacts: ["ok.txt"],
-        },
-        routing: "single",
-        position: 0,
-      })
-      processes.createPhaseAgent({
-        phaseId: phase.id,
-        agentName: "reader",
-        position: 0,
-      })
-      const backingTask = createTask({
-        conversationId: source.id,
-        sourceConversationId: source.id,
-        status: "running",
-        title: "Process",
-        input: { kind: "process_run" },
-      })
-      const run = processes.createProcessRun({
-        processId: definition.id,
-        sourceConversationId: source.id,
-        workspaceId,
-        taskId: backingTask.id,
-        objective: "read files",
-        status: "running",
-      })
-
-      scriptedCompletions.push((request) => {
-        expect(request.tools).toContain("read_file_tool")
-        expect(request.tools).not.toContain("write_file_tool")
-        return streamToolCalls([
-          {
-            id: "process_missing",
-            name: "read_file_tool",
-            arguments: JSON.stringify({ path: "missing.txt" }),
-          },
-        ])
-      })
-      scriptedCompletions.push((request) => {
-        expect(lastMessage(request, "tool")).toMatchObject({
-          tool_call_id: "process_missing",
-        })
-        expect(lastMessage(request, "tool")?.content).toContain(
-          "ERROR[not_found]"
-        )
-        return streamToolCalls([
-          {
-            id: "process_corrected",
-            name: "read_file_tool",
-            arguments: JSON.stringify({ path: "ok.txt" }),
-          },
-        ])
-      })
-      scriptedCompletions.push((request) => {
-        expect(lastMessage(request, "tool")).toMatchObject({
-          tool_call_id: "process_corrected",
-        })
-        expect(lastMessage(request, "tool")?.content).toContain(
-          "corrected content"
-        )
-        const system = request.messages.find((m) => m.role === "system")
-          ?.content as string
-        const attemptId = system.match(/attemptId: "([^"]+)"/)?.[1]
-        expect(attemptId).toBeTruthy()
-        return streamText(
-          outcomeStatus === "invalid"
-            ? "phase done"
-            : JSON.stringify({
-                version: 1,
-                attemptId,
-                status: outcomeStatus,
-                output: "Read the file",
-                evidence: "Read ok.txt after correcting the failed read",
-                reason: "Need another input",
-                nextAction: "Provide the input",
-              })
-        )
-      })
-
-      const svc = new ProcessService({ enqueueKind: vi.fn() } as never)
-      const events: TaskEventPayload[] = []
-      const result = await svc.execute({
-        task: {
-          ...backingTask,
-          input: { processRunId: run.id },
-        } as never,
-        signal: new AbortController().signal,
-        emit: (event) => {
-          events.push(event)
-        },
-        workspace: undefined,
-      })
-
-      if (outcomeStatus === "completed")
-        expect(result).toEqual({ content: "process complete" })
-      else expect(result).toHaveProperty("error")
-      expect(processes.getProcessRun(run.id)?.status).toBe(
-        outcomeStatus === "completed" ? "completed" : "failed"
-      )
-      const phaseRun = processes.listPhaseRuns({
-        runId: run.id,
-        parentId: null,
-      })[0]
-      expect(phaseRun.status).toBe(
-        outcomeStatus === "completed" ? "completed" : "failed"
-      )
-      if (outcomeStatus === "completed")
-        expect(phaseRun.completionReceipt?.checkedArtifacts).toEqual(["ok.txt"])
-      expect(phaseRun.agentName).toBe("reader")
-      const workerTask = getTask(phaseRun.taskId!)
-      expect(workerTask).toBeTruthy()
-      const workerResults = contentsByCallId(workerTask!.conversationId)
-      expect(workerResults.get("process_missing")).toContain("ERROR[not_found]")
-      expect(workerResults.get("process_corrected")).toContain(
-        "corrected content"
-      )
-      expect(completionRequests).toHaveLength(3)
-    }
-  )
-
-  it("keeps a process worker tool failure distinct from a later API failure", async () => {
-    const workspace = await makeWorkspace()
-    await mkdir(join(workspace, ".claude", "agents"), { recursive: true })
-    await writeFile(
-      join(workspace, ".claude", "agents", "reader.md"),
-      [
-        "---",
-        "name: reader",
-        "description: Reads files for a process phase.",
-        "tools: Read",
-        "---",
-        "Use file reads only.",
-        "",
-      ].join("\n"),
-      "utf-8"
-    )
-
-    const workspaceId = upsertWorkspace(workspace).id
-    const source = createConversation({
-      mode: "interactive",
-      workspaceId,
-    })
-    const definition = processes.createProcessDefinition({ name: "Loop test" })
-    const phase = processes.createPhase({
-      processId: definition.id,
-      key: "read",
-      name: "Read",
-      routing: "single",
-      position: 0,
-    })
-    processes.createPhaseAgent({
-      phaseId: phase.id,
-      agentName: "reader",
-      position: 0,
-    })
-    const backingTask = createTask({
-      conversationId: source.id,
-      sourceConversationId: source.id,
-      status: "running",
-      title: "Process",
-      input: { kind: "process_run" },
-    })
-    const run = processes.createProcessRun({
-      processId: definition.id,
-      sourceConversationId: source.id,
-      workspaceId,
-      taskId: backingTask.id,
-      objective: "read files",
-      status: "running",
-    })
-
-    scriptedCompletions.push(() =>
-      streamToolCalls([
-        {
-          id: "process_missing",
-          name: "read_file_tool",
-          arguments: JSON.stringify({ path: "missing.txt" }),
-        },
-      ])
-    )
-    const apiError = Object.assign(new Error("invalid api key after tool"), {
-      status: 401,
-    })
-    scriptedCompletions.push((request) => {
-      expect(lastMessage(request, "tool")).toMatchObject({
-        tool_call_id: "process_missing",
-      })
-      expect(lastMessage(request, "tool")?.content).toContain(
-        "ERROR[not_found]"
-      )
-      throw apiError
-    })
-
-    const svc = new ProcessService({ enqueueKind: vi.fn() } as never)
-    const events: TaskEventPayload[] = []
-    const result = await svc.execute({
-      task: {
-        ...backingTask,
-        input: { processRunId: run.id },
-      } as never,
-      signal: new AbortController().signal,
-      emit: (event) => {
-        events.push(event)
-      },
-      workspace: undefined,
-    })
-
-    expect(result).toEqual({
-      error: "a process phase failed",
-      retryable: false,
-    })
-    expect(processes.getProcessRun(run.id)?.status).toBe("failed")
-    const phaseRun = processes.listPhaseRuns({
-      runId: run.id,
-      parentId: null,
-    })[0]
-    expect(phaseRun.status).toBe("failed")
-    expect(phaseRun.agentName).toBe("reader")
-    expect(phaseRun.failure).toMatchObject({
-      code: "model_request_failed",
-      stage: "model_request",
-      message: "invalid api key after tool",
-      phaseRunId: phaseRun.id,
-      phaseId: phase.id,
-      workerTaskId: phaseRun.taskId,
-      agentName: "reader",
-    })
-    expect(phaseRun.failure?.taskId).toBe(phaseRun.taskId)
-    expect(phaseRun.failure?.toolCallId ?? null).toBeNull()
-
-    const attempts = processes.listPhaseAttempts({ phaseRunId: phaseRun.id })
-    expect(attempts).toHaveLength(1)
-    expect(attempts[0]).toMatchObject({
-      stage: "model_request",
-      error: "invalid api key after tool",
-      workerTaskId: phaseRun.taskId,
-      failure: {
-        code: "model_request_failed",
-        stage: "model_request",
-      },
-    })
-
-    const failedEvent = events.find(
-      (event) => event.type === "process_phase" && event.status === "failed"
-    )
-    expect(failedEvent).toMatchObject({
-      type: "process_phase",
-      phaseRunId: phaseRun.id,
-      failure: {
-        code: "model_request_failed",
-        stage: "model_request",
-      },
-    })
-
-    const workerTask = getTask(phaseRun.taskId!)
-    expect(workerTask).toBeTruthy()
-    const workerResults = contentsByCallId(workerTask!.conversationId)
-    expect(workerResults.get("process_missing")).toContain("ERROR[not_found]")
-    const lifecycle = listToolCallLifecycle(workerTask!.conversationId)
-    expect(lifecycle).toHaveLength(1)
-    expect(lifecycle[0]).toMatchObject({
-      toolCallId: "process_missing",
-      toolName: "read_file_tool",
-      state: "settled_error",
-      logicalRoundId: "after-seq:1",
-    })
-    expect(lifecycle[0].error).toContain("ERROR[not_found]")
-    expect(getBudget(workerTask!.conversationId, "after-seq:3")).toMatchObject({
-      status: "exhausted",
-      attemptsConsumed: 1,
-      lastError: "invalid api key after tool",
-    })
-    expect(completionRequests).toHaveLength(2)
   })
 
   it("retries only the failed model request after a completed tool round", async () => {

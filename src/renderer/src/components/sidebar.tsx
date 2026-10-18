@@ -502,10 +502,6 @@ export function AppSidebar({
   onSettingsClick,
   onSkillsClick,
   onAgentsClick,
-  onProcessClick,
-  showProcesses,
-  showMissionControl,
-  onMissionControlClick,
   onMcpClick,
   onDashboardsClick,
   refreshKey,
@@ -523,10 +519,6 @@ export function AppSidebar({
   onSettingsClick: () => void
   onSkillsClick: () => void
   onAgentsClick: () => void
-  onProcessClick: () => void
-  showProcesses: boolean
-  showMissionControl: boolean
-  onMissionControlClick: () => void
   onMcpClick: () => void
   onDashboardsClick: () => void
   // Bumped by the app whenever conversations change, so the list refetches.
@@ -940,30 +932,6 @@ export function AppSidebar({
           <LayoutDashboard className="size-4" />
           Dashboards
         </Button>
-        {showMissionControl && (
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            onClick={onMissionControlClick}
-            className="w-full justify-start"
-          >
-            <Network className="size-4" />
-            Mission Control
-          </Button>
-        )}
-        {showProcesses && (
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            onClick={onProcessClick}
-            className="w-full justify-start"
-          >
-            <Workflow className="size-4" />
-            Processes
-          </Button>
-        )}
         <Button
           type="button"
           size="sm"

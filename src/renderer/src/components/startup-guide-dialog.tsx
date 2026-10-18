@@ -25,7 +25,7 @@ interface StartupGuideDialogProps {
   onDismiss: (dontShowAgain: boolean) => void
 }
 
-function guideItems(missionControlEnabled: boolean) {
+function guideItems() {
   return [
     {
       key: "chat",
@@ -48,21 +48,6 @@ function guideItems(missionControlEnabled: boolean) {
       description:
         "Use this workspace-backed mode for longer autonomous work where the agent can plan, execute, and keep momentum across steps.",
     },
-    missionControlEnabled
-      ? {
-          key: "mission-control",
-          title: "Mission Control",
-          icon: NetworkIcon,
-          description:
-            "Mission Control plans features with a team of agent seats. Its Playbooks are reusable multi-step workflows; Quick run starts one on its own.",
-        }
-      : {
-          key: "processes",
-          title: "Processes",
-          icon: WorkflowIcon,
-          description:
-            "Processes are reusable multi-step workflows. Create a process and run it to automate repeatable work.",
-        },
     {
       key: "dashboards",
       title: "Dashboards",
@@ -99,29 +84,27 @@ export function StartupGuideDialog({
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-2 sm:grid-cols-2">
-          {guideItems(window.cowork.system().missionControlEnabled).map(
-            (item) => {
-              const Icon = item.icon
-              return (
-                <section
-                  key={item.key}
-                  className="rounded-lg border bg-background/70 p-3"
-                >
-                  <div className="mb-2 flex items-center gap-2">
-                    <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
-                      <Icon className="size-4" />
-                    </span>
-                    <h3 className="font-heading text-sm font-medium">
-                      {item.title ?? agentName}
-                    </h3>
-                  </div>
-                  <p className="text-sm leading-5 text-muted-foreground">
-                    {item.description}
-                  </p>
-                </section>
-              )
-            }
-          )}
+          {guideItems().map((item) => {
+            const Icon = item.icon
+            return (
+              <section
+                key={item.key}
+                className="rounded-lg border bg-background/70 p-3"
+              >
+                <div className="mb-2 flex items-center gap-2">
+                  <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+                    <Icon className="size-4" />
+                  </span>
+                  <h3 className="font-heading text-sm font-medium">
+                    {item.title ?? agentName}
+                  </h3>
+                </div>
+                <p className="text-sm leading-5 text-muted-foreground">
+                  {item.description}
+                </p>
+              </section>
+            )
+          })}
         </div>
         <label className="flex items-center gap-2 text-sm">
           <Checkbox

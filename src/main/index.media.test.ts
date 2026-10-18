@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest"
 const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8")
 const registration = source.slice(
   source.indexOf('ipcMain.handle(\n  "media:read-message"'),
-  source.indexOf('ipcMain.handle("chat",')
+  source.indexOf('ipcMain.handle(\n  "files:save-link"')
 )
 function setup() {
   const contents = { mainFrame: {} }

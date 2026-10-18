@@ -36,14 +36,7 @@ afterEach(() => {
 })
 
 describe("sidebar Mission Control visibility", () => {
-  it.each([
-    [true, false],
-    [true, true],
-    [false, false],
-    [false, true],
-  ])("flag %s, legacy preference %s", async (enabled, legacy) => {
-    const onMissionControlClick = vi.fn()
-    const onProcessClick = vi.fn()
+  it("does not expose retired orchestration destinations", async () => {
     const props: ComponentProps<typeof AppSidebar> = {
       view: "Chat",
       onViewChange: vi.fn(),
@@ -54,10 +47,6 @@ describe("sidebar Mission Control visibility", () => {
       onSettingsClick: vi.fn(),
       onSkillsClick: vi.fn(),
       onAgentsClick: vi.fn(),
-      onProcessClick,
-      onMissionControlClick,
-      showMissionControl: enabled,
-      showProcesses: !enabled || legacy,
       onMcpClick: vi.fn(),
       onDashboardsClick: vi.fn(),
       refreshKey: 0,
@@ -77,15 +66,7 @@ describe("sidebar Mission Control visibility", () => {
       Array.from(container.querySelectorAll("button")).find(
         (element) => element.textContent?.trim() === label
       )
-    expect(Boolean(button("Mission Control"))).toBe(enabled)
-    expect(Boolean(button("Processes"))).toBe(!enabled || legacy)
-    if (enabled) {
-      act(() => button("Mission Control")!.click())
-      expect(onMissionControlClick).toHaveBeenCalledOnce()
-    }
-    if (!enabled || legacy) {
-      act(() => button("Processes")!.click())
-      expect(onProcessClick).toHaveBeenCalledOnce()
-    }
+    expect(button("Mission Control")).toBeUndefined()
+    expect(button("Processes")).toBeUndefined()
   })
 })

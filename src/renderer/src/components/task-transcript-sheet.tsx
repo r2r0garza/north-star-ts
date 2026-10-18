@@ -11,7 +11,6 @@ import { Message, MessageContent } from "@/components/ui/message"
 import { Bubble, BubbleContent } from "@/components/ui/bubble"
 import { Markdown } from "@/components/markdown"
 import { ToolGroup } from "@/components/tool-group"
-import { RefocusChip } from "@/components/mission-control/refocus-chip"
 import { buildTimeline } from "@/lib/timeline"
 import { cn } from "@/lib/utils"
 import type { Task, TodoStatus } from "@/types"
@@ -139,7 +138,7 @@ export function TaskTranscriptSheet({
                 )
               }
               if (item.notice === "refocus")
-                return <RefocusChip key={item.key} content={item.content} />
+                return <div key={item.key}>{item.content}</div>
               const align = item.role === "user" ? "end" : "start"
               return (
                 <Message key={item.key} align={align}>

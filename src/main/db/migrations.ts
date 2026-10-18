@@ -56,6 +56,11 @@ import {
   SCHEMA_V49_TABLES,
 } from "./schema"
 import { renameWorkTerms } from "./work-terms-migration"
+import {
+  ORCHESTRATION_TABLES,
+  retireOrchestration,
+} from "./retire-orchestration"
+import { existsSync } from "node:fs"
 
 // Ordered migrations. Index 0 runs to reach user_version 1, index 1 to reach 2,
 // and so on. Add a new entry to evolve the schema (e.g. future repo-indexing
@@ -196,6 +201,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureProviderImageInputColumn,
   ensureProcessCommandPhases,
   ensureProcessDeletionColumn,
+  retireOrchestration,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -619,6 +625,18 @@ export function runMigrations(
   options: { through?: number } = {}
 ): void {
   const current = db.pragma("user_version", { simple: true }) as number
+  const retirementPending = ORCHESTRATION_TABLES.some((table) =>
+    tableExists(db, table)
+  )
+  if (
+    options.through === undefined &&
+    retirementPending &&
+    db.name !== ":memory:" &&
+    db.name
+  ) {
+    const backup = `${db.name}.before-orchestration-retirement.bak`
+    if (!existsSync(backup)) db.prepare("VACUUM INTO ?").run(backup)
+  }
   const fkWasOn = db.pragma("foreign_keys", { simple: true }) === 1
   if (fkWasOn) db.pragma("foreign_keys = OFF")
   try {
@@ -644,30 +662,17 @@ export function runMigrations(
     // so keep prerelease schema drift self-healing instead of making users repair
     // SQLite by hand.
     db.transaction(() => {
-      ensureProcessRuntimeProfileColumns(db)
-      ensureProcessResultContentColumn(db)
-      ensurePhaseReviewColumn(db)
+      retireOrchestration(db)
       ensureGeneratedFilesColumn(db)
       ensureWorktreeSetupColumn(db)
       ensureConversationNotes(db)
-      ensureSeatMemory(db)
-      ensureHealth(db)
-      ensureWorkspaceAnalyses(db)
-      ensureMissionControlPlaybooks(db)
-      ensurePlaybookHookOwnership(db)
-      ensureMissionControlComms(db)
-      ensureContextScopes(db)
-      ensureMissionIntegration(db)
-      ensureNavigator(db)
-      healAndRenameWorkTerms(db)
       ensureSubscriptionProviderConstraints(db)
       ensureProjectPositionColumn(db)
       ensureSubagentArtifactsTable(db)
       ensureWorkingDirectoryColumns(db)
       ensureNativeAssistantColumn(db)
       ensureToolMedia(db)
-      ensureProcessCommandPhases(db)
-      ensureProcessDeletionColumn(db)
+      addColumnIfMissing(db, "workspaces", "command_checks", "TEXT")
       // After ensureSubscriptionProviderConstraints: its V65 table rebuild
       // predates this column and would drop it.
       ensureProviderImageInputColumn(db)

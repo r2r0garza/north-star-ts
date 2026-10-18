@@ -70,7 +70,6 @@ import type {
   IdeSettings,
   NotificationSettings,
   ConversationSettings,
-  SidebarSettings,
   Backend,
   LocalRuntimeProfile,
   LocalProfileCapabilities,
@@ -177,7 +176,6 @@ const SETTINGS_GROUPS: SettingsGroup[] = [
       "Personalize how the app looks, opens files, and gets your attention.",
     sections: [
       { value: "appearance", label: "Appearance" },
-      { value: "sidebar", label: "Sidebar" },
       { value: "editor", label: "Editor" },
       { value: "browser", label: "Browser" },
       { value: "notifications", label: "Notifications" },
@@ -483,17 +481,7 @@ export function SettingsScreen({
   // "providers"; the composer's "Configure model…" also lands there.
   initialTab?: string
 }) {
-  const [missionControlEnabled] = useState(
-    () => window.cowork.system().missionControlEnabled
-  )
-  const [settingsGroups] = useState(() =>
-    SETTINGS_GROUPS.map((group) => ({
-      ...group,
-      sections: group.sections.filter(
-        (section) => section.value !== "sidebar" || missionControlEnabled
-      ),
-    }))
-  )
+  const settingsGroups = SETTINGS_GROUPS
   const contentRef = useRef<HTMLDivElement | null>(null)
   const [activeSection, setActiveSection] = useState(() =>
     resolveSettingsSection(initialTab, settingsGroups)
@@ -521,7 +509,6 @@ export function SettingsScreen({
     useState<NotificationSettings | null>(null)
   const [conversations, setConversations] =
     useState<ConversationSettings | null>(null)
-  const [sidebar, setSidebar] = useState<SidebarSettings | null>(null)
   // The last-persisted theme override, and the in-progress draft the Appearance
   // pickers edit. The draft drives a live preview; Save persists it, Reset clears
   // the override, and closing without Save restores `savedTheme` (drops preview).
@@ -562,22 +549,6 @@ export function SettingsScreen({
     const group = settingsGroupFor(section, settingsGroups)
     lastSectionByGroup.current[group.value] = section
   }, [open, initialTab, settingsGroups])
-
-  // Sidebar destinations, loaded on their own so the rest of the screen
-  // doesn't wait on them.
-  useEffect(() => {
-    if (!open || !missionControlEnabled) return
-    let cancelled = false
-    window.cowork.settings
-      .getSidebar()
-      .then((next) => {
-        if (!cancelled) setSidebar(next)
-      })
-      .catch(() => {})
-    return () => {
-      cancelled = true
-    }
-  }, [open, missionControlEnabled])
 
   // Load current settings + runtime availability whenever the screen opens.
   useEffect(() => {
@@ -816,10 +787,6 @@ export function SettingsScreen({
   async function saveNotifications(next: NotificationSettings) {
     setNotifications(next)
     await window.cowork.settings.setNotifications(next)
-  }
-  async function saveSidebar(next: SidebarSettings) {
-    setSidebar(next)
-    await window.cowork.settings.setSidebar(next)
   }
   async function saveConversations(next: ConversationSettings) {
     setConversations(next)
@@ -1857,42 +1824,6 @@ export function SettingsScreen({
                           />
                         )}
                       </TabsContent>
-
-                      {/* Sidebar — optional destinations. Processes is legacy
-                        (plan 106.9): Mission Control runs Processes as
-                        playbooks, so its button is hidden unless turned on. */}
-                      {missionControlEnabled && (
-                        <TabsContent
-                          value="sidebar"
-                          className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-6"
-                        >
-                          {sidebar && (
-                            <Field orientation="horizontal">
-                              <FieldContent>
-                                <FieldLabel htmlFor="sidebar-legacy-processes">
-                                  Show legacy Processes in sidebar
-                                </FieldLabel>
-                                <FieldDescription>
-                                  Processes now live in Mission Control under
-                                  Playbooks, with Quick run and run history.
-                                  Turn this on to bring back the Processes
-                                  button. Nothing is deleted either way.
-                                </FieldDescription>
-                              </FieldContent>
-                              <Switch
-                                id="sidebar-legacy-processes"
-                                checked={sidebar.showLegacyProcesses}
-                                onCheckedChange={(checked) =>
-                                  saveSidebar({
-                                    ...sidebar,
-                                    showLegacyProcesses: checked,
-                                  })
-                                }
-                              />
-                            </Field>
-                          )}
-                        </TabsContent>
-                      )}
 
                       {/* Editor — which IDE a changed-file pill / "open in editor"
                         launches. Opens the repo root first (focusing an existing

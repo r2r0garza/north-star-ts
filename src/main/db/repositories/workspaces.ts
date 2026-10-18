@@ -4,7 +4,7 @@ import {
   normalizeWorkspaceChecks,
   parseCheckName,
   parseWorkspaceCheck,
-} from "../../../shared/process-command"
+} from "../../../shared/workspace-checks"
 import type {
   WorkspaceCheck,
   WorkspaceChecks,

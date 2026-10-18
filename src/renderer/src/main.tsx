@@ -21,9 +21,7 @@ import { SettingsScreen } from "@/components/settings-screen"
 import { SkillsScreen } from "@/components/skills-screen"
 import { AgentsScreen } from "@/components/agents-screen"
 import { McpScreen } from "@/components/mcp-screen"
-import { ProcessScreen } from "@/components/process-screen"
 import { DashboardsScreen } from "@/components/dashboards-screen"
-import { MissionControlScreen } from "@/components/mission-control-screen"
 import { StartupGuideDialog } from "@/components/startup-guide-dialog"
 import { GitActions } from "@/components/git-actions"
 import { TaskTranscriptSheet } from "@/components/task-transcript-sheet"
@@ -57,9 +55,6 @@ const DEFAULT_MODE_TO_VIEW = {
 // Tracks window fullscreen state so the sidebar toggle can reposition (the
 // macOS traffic lights disappear in fullscreen, freeing the left edge).
 function Shell() {
-  const [missionControlEnabled] = useState(
-    () => window.cowork.system().missionControlEnabled
-  )
   const isMac = window.cowork.platform === "darwin"
   const reserveWindowControls = !isMac
   const [fullscreen, setFullscreen] = useState(false)
@@ -121,15 +116,6 @@ function Shell() {
   // Whether the Agents view is open (opened from the sidebar footer). An in-panel
   // destination in the center region; authors <name>.agent.md agents.
   const [agentsOpen, setAgentsOpen] = useState(false)
-  // Whether the Process view is open (opened from the sidebar footer). An in-panel
-  // destination in the center region; authors process DAGs + monitors live runs.
-  const [processOpen, setProcessOpen] = useState(false)
-  // Whether the sidebar shows the legacy Processes button (plan 106.9). Off by
-  // default; Mission Control's Playbooks tab reaches every Process workflow.
-  const [showProcesses, setShowProcesses] = useState(false)
-  const [missionControlOpen, setMissionControlOpen] = useState(false)
-  // Whether the MCP view is open (opened from the sidebar footer). An in-panel
-  // destination in the center region; browses/edits mcp.json server configs.
   const [mcpOpen, setMcpOpen] = useState(false)
   // Whether the Dashboards view is open (opened from the sidebar footer). An
   // in-panel destination in the center region; authors/views live dashboards
@@ -258,13 +244,7 @@ function Shell() {
   const handleBrowserPoppedOutChange = (poppedOut: boolean) => {
     setActivity(!poppedOut)
   }
-  const overlayViewOpen =
-    agentsOpen ||
-    skillsOpen ||
-    processOpen ||
-    missionControlOpen ||
-    mcpOpen ||
-    dashboardsOpen
+  const overlayViewOpen = agentsOpen || skillsOpen || mcpOpen || dashboardsOpen
   // The activity panel and terminal only apply to the conversation, so an
   // overlay view hides them without touching their saved open state — they
   // reappear as they were when the user returns to the conversation.
@@ -403,23 +383,6 @@ function Shell() {
     })
   }, [openSidebarTab])
 
-  // Re-read after Settings closes so the switch applies right away.
-  useEffect(() => {
-    if (settingsOpen) return
-    let cancelled = false
-    window.cowork.settings
-      .getSidebar()
-      .then((next) => {
-        if (!cancelled) setShowProcesses(next.showLegacyProcesses)
-      })
-      .catch((err) => {
-        console.warn("[settings] failed to load sidebar settings:", err)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [settingsOpen])
-
   // First launch: if no LLM provider is configured yet, open Settings to the
   // Providers tab so the user configures one before sending a message.
   useEffect(() => {
@@ -436,8 +399,6 @@ function Shell() {
     setSettingsOpen(true)
     setAgentsOpen(false)
     setSkillsOpen(false)
-    setProcessOpen(false)
-    setMissionControlOpen(false)
     setMcpOpen(false)
     setDashboardsOpen(false)
   }
@@ -451,7 +412,6 @@ function Shell() {
         setSettingsOpen(true)
         setAgentsOpen(false)
         setSkillsOpen(false)
-        setProcessOpen(false)
         setMcpOpen(false)
         setDashboardsOpen(false)
       }
@@ -472,8 +432,6 @@ function Shell() {
     setFreshTerminalConversationId(crypto.randomUUID())
     setAgentsOpen(false)
     setSkillsOpen(false)
-    setProcessOpen(false)
-    setMissionControlOpen(false)
     setMcpOpen(false)
     setDashboardsOpen(false)
   }
@@ -500,8 +458,6 @@ function Shell() {
     setPendingProjectId(null)
     setAgentsOpen(false)
     setSkillsOpen(false)
-    setProcessOpen(false)
-    setMissionControlOpen(false)
     setMcpOpen(false)
     setDashboardsOpen(false)
   }
@@ -519,8 +475,6 @@ function Shell() {
     setFreshTerminalConversationId(crypto.randomUUID())
     setAgentsOpen(false)
     setSkillsOpen(false)
-    setProcessOpen(false)
-    setMissionControlOpen(false)
     setMcpOpen(false)
     setDashboardsOpen(false)
   }
@@ -587,41 +541,17 @@ function Shell() {
           onSkillsClick={() => {
             setSkillsOpen(true)
             setAgentsOpen(false)
-            setProcessOpen(false)
-            setMissionControlOpen(false)
             setMcpOpen(false)
             setDashboardsOpen(false)
           }}
           onAgentsClick={() => {
             setAgentsOpen(true)
             setSkillsOpen(false)
-            setProcessOpen(false)
-            setMissionControlOpen(false)
-            setMcpOpen(false)
-            setDashboardsOpen(false)
-          }}
-          onMissionControlClick={() => {
-            setMissionControlOpen(true)
-            setProcessOpen(false)
-            setAgentsOpen(false)
-            setSkillsOpen(false)
-            setMcpOpen(false)
-            setDashboardsOpen(false)
-          }}
-          showMissionControl={missionControlEnabled}
-          showProcesses={!missionControlEnabled || showProcesses}
-          onProcessClick={() => {
-            setProcessOpen(true)
-            setMissionControlOpen(false)
-            setAgentsOpen(false)
-            setSkillsOpen(false)
             setMcpOpen(false)
             setDashboardsOpen(false)
           }}
           onMcpClick={() => {
             setMcpOpen(true)
-            setProcessOpen(false)
-            setMissionControlOpen(false)
             setAgentsOpen(false)
             setSkillsOpen(false)
             setDashboardsOpen(false)
@@ -629,8 +559,6 @@ function Shell() {
           onDashboardsClick={() => {
             setDashboardsOpen(true)
             setMcpOpen(false)
-            setProcessOpen(false)
-            setMissionControlOpen(false)
             setAgentsOpen(false)
             setSkillsOpen(false)
           }}
@@ -646,12 +574,7 @@ function Shell() {
           <div
             className={cn(
               "flex min-h-0 min-w-0 flex-1 overflow-hidden",
-              (agentsOpen ||
-                skillsOpen ||
-                processOpen ||
-                missionControlOpen ||
-                mcpOpen ||
-                dashboardsOpen) &&
+              (agentsOpen || skillsOpen || mcpOpen || dashboardsOpen) &&
                 "hidden"
             )}
           >
@@ -690,14 +613,6 @@ function Shell() {
           </div>
           {agentsOpen && <AgentsScreen onClose={() => setAgentsOpen(false)} />}
           {skillsOpen && <SkillsScreen onClose={() => setSkillsOpen(false)} />}
-          {processOpen && (
-            <ProcessScreen onClose={() => setProcessOpen(false)} />
-          )}
-          {missionControlOpen && (
-            <MissionControlScreen
-              onClose={() => setMissionControlOpen(false)}
-            />
-          )}
           {mcpOpen && <McpScreen onClose={() => setMcpOpen(false)} />}
           {dashboardsOpen && (
             <DashboardsScreen onClose={() => setDashboardsOpen(false)} />
