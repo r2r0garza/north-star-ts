@@ -397,7 +397,7 @@ export function getProcessDefinition(
 export function listProcessDefinitions(): ProcessDefinition[] {
   const rows = getDb()
     .prepare(
-      "SELECT * FROM process_definitions ORDER BY name COLLATE NOCASE ASC"
+      "SELECT * FROM process_definitions WHERE deleted_at IS NULL ORDER BY name COLLATE NOCASE ASC"
     )
     .all() as ProcessDefinitionRow[]
   return rows.map(toDefinition)
@@ -435,9 +435,16 @@ export function updateProcessDefinition(
   return getProcessDefinition(id)!
 }
 
-// CASCADE clears phases, phase agents, and edges (FKs to process_definitions).
-// A definition a playbook runs can't be deleted (playbook_hooks RESTRICTs it);
-// say which playbook instead of surfacing the bare FK error.
+export function assertProcessDefinitionAvailable(id: string): void {
+  const definition = getDb()
+    .prepare(
+      "SELECT 1 FROM process_definitions WHERE id = ? AND deleted_at IS NULL"
+    )
+    .get(id)
+  if (!definition) throw new Error("Process not found or has been deleted.")
+}
+
+// Keep the graph when history references it; only unused definitions cascade.
 export function deleteProcessDefinition(id: string): void {
   const playbook = getDb()
     .prepare(
@@ -448,7 +455,37 @@ export function deleteProcessDefinition(id: string): void {
     throw new Error(
       `The playbook "${playbook.name}" runs this process. Delete that playbook first.`
     )
-  getDb().prepare("DELETE FROM process_definitions WHERE id = ?").run(id)
+  const db = getDb()
+  const activeRun = db
+    .prepare(
+      "SELECT 1 FROM process_runs WHERE process_id = ? AND status NOT IN ('completed', 'failed', 'cancelled', 'interrupted') LIMIT 1"
+    )
+    .get(id)
+  if (activeRun)
+    throw new Error(
+      "This process has an unfinished run. Finish or cancel it before deleting the process."
+    )
+  const parent = db
+    .prepare(
+      "SELECT d.name FROM process_phases p JOIN process_definitions d ON d.id = p.process_id WHERE p.subprocess_id = ? AND d.deleted_at IS NULL LIMIT 1"
+    )
+    .get(id) as { name: string } | undefined
+  if (parent)
+    throw new Error(
+      `The process "${parent.name}" uses this as a sub-process. Remove that step first.`
+    )
+  const history = db
+    .prepare(
+      "SELECT 1 FROM process_runs WHERE process_id = ? UNION ALL SELECT 1 FROM process_phase_runs r JOIN process_phases p ON p.id = r.phase_id WHERE p.process_id = ? UNION ALL SELECT 1 FROM process_phases WHERE subprocess_id = ? LIMIT 1"
+    )
+    .get(id, id, id)
+  if (history) {
+    db.prepare(
+      "UPDATE process_definitions SET deleted_at = COALESCE(deleted_at, ?) WHERE id = ?"
+    ).run(Date.now(), id)
+  } else {
+    db.prepare("DELETE FROM process_definitions WHERE id = ?").run(id)
+  }
 }
 
 // ── phases ──────────────────────────────────────────────────────────────────
@@ -505,6 +542,7 @@ function assertSubprocessValid(
   _fanOut: boolean | undefined
 ): void {
   if (!subprocessId) return
+  assertProcessDefinitionAvailable(subprocessId)
   if (wouldCloseSubprocessCycle(ownerProcessId, subprocessId))
     throw new Error("sub-process would create a cycle")
 }
@@ -1001,6 +1039,7 @@ export function createProcessRun(input: {
   missionControl?: MissionControlRunLink | null
   status?: ProcessRunStatus
 }): ProcessRun {
+  if (input.processId) assertProcessDefinitionAvailable(input.processId)
   const id = randomUUID()
   const now = Date.now()
   getDb()

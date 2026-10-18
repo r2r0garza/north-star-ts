@@ -22,6 +22,34 @@ import { sqliteLoadsForTests } from "../test/sqlite"
 
 const sqliteLoads = sqliteLoadsForTests()
 
+describe.skipIf(!sqliteLoads)("v70 process deletion", () => {
+  it("upgrades existing definitions without losing their graph or runs", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db, { through: 69 })
+    db.exec(`
+      INSERT INTO process_definitions (id, name, created_at, updated_at) VALUES ('p', 'P', 0, 0);
+      INSERT INTO process_phases (id, process_id, key, name, position) VALUES ('phase', 'p', 'a', 'A', 0);
+      INSERT INTO process_runs (id, process_id, status, created_at) VALUES ('r', 'p', 'completed', 0);
+      INSERT INTO process_phase_runs (id, run_id, phase_id, status) VALUES ('pr', 'r', 'phase', 'completed');
+    `)
+    runMigrations(db)
+    runMigrations(db)
+    expect(
+      db
+        .prepare("SELECT deleted_at FROM process_definitions WHERE id = 'p'")
+        .get()
+    ).toEqual({ deleted_at: null })
+    expect(
+      db
+        .prepare("SELECT phase_id FROM process_phase_runs WHERE id = 'pr'")
+        .get()
+    ).toEqual({ phase_id: "phase" })
+    expect(db.pragma("foreign_key_check")).toEqual([])
+    db.close()
+  })
+})
+
 // Bring a DB to user_version 8 WITHOUT running V9, so a test can seed pre-V9
 // orphans and then apply V9 via runMigrations. Mirrors runMigrations' FK-off loop.
 function migrateTo8(db: Database.Database): void {
@@ -92,7 +120,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(69)
+    expect(db.pragma("user_version", { simple: true })).toBe(70)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
@@ -403,7 +431,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
           .all()
       ).toEqual([{ value: 1 }])
       expect(db.pragma("user_version", { simple: true })).toBe(
-        version === 999 ? 999 : 69
+        version === 999 ? 999 : 70
       )
       expect(db.pragma("foreign_keys", { simple: true })).toBe(1)
       expect(db.pragma("foreign_key_check")).toEqual([])
@@ -855,7 +883,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
 
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(69)
+    expect(db.pragma("user_version", { simple: true })).toBe(70)
     expect(
       (db.pragma("table_info(process_phases)") as Array<{ name: string }>).map(
         (c) => c.name
@@ -1073,7 +1101,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(69)
+    expect(db.pragma("user_version", { simple: true })).toBe(70)
 
     // Reaped: orphan + its nested descendant, and all their state.
     const taskIds = (
@@ -1167,7 +1195,7 @@ describe.skipIf(!sqliteLoads)(
 
       runMigrations(db)
 
-      expect(db.pragma("user_version", { simple: true })).toBe(69)
+      expect(db.pragma("user_version", { simple: true })).toBe(70)
       const columns = db.pragma("table_info(process_phase_agents)") as Array<{
         name: string
         notnull: number
@@ -1270,7 +1298,7 @@ describe.skipIf(!sqliteLoads)("context scopes migration (v51)", () => {
         ('a', 'd', 'a', 'A', 0, 'fresh'), ('b', 'd', 'b', 'B', 1, 'seat_session');
     `)
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(69)
+    expect(db.pragma("user_version", { simple: true })).toBe(70)
     // v51 moved them to the initiative scope; v54 renamed it to feature.
     expect(
       db
@@ -1369,7 +1397,7 @@ describe.skipIf(!sqliteLoads)("work terms migration (v54)", () => {
 
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(69)
+    expect(db.pragma("user_version", { simple: true })).toBe(70)
     const tables = db
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
       .pluck()
@@ -1502,7 +1530,7 @@ describe.skipIf(!sqliteLoads)("work terms migration (v54)", () => {
 
     // Running it again changes nothing.
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(69)
+    expect(db.pragma("user_version", { simple: true })).toBe(70)
     db.close()
   })
 })

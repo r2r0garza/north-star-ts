@@ -25,6 +25,7 @@ import {
   convertAgentsToSeatRoles,
   importProcessAsPlaybook,
   listAgentsForRoleConversion,
+  listProcessRunHistory,
   quickRunRoles,
   startQuickRun,
   suggestRole,
@@ -115,6 +116,38 @@ describe.skipIf(!sqliteLoads)("importProcessAsPlaybook", () => {
     expect(() => processes.deleteProcessDefinition(definition.id)).toThrow(
       /playbook "Ship it" runs this process/
     )
+  })
+
+  it("removes owned processes with past runs while preserving named history", () => {
+    const playbook = playbooks.createPlaybook({
+      name: "Own steps",
+      altitude: "user_story",
+    })
+    const withHook = playbooks.createHookProcess(playbook.id, "run")
+    const processId = withHook.hooks[0].processId
+    const definition = processes.getProcessDefinition(processId)!
+    const phase = processes.createPhase({
+      processId,
+      key: "a",
+      name: "A",
+      position: 0,
+    })
+    const run = processes.createProcessRun({
+      processId,
+      sourceConversationId: null,
+      status: "completed",
+    })
+    processes.createPhaseRun({
+      runId: run.id,
+      phaseId: phase.id,
+      status: "completed",
+    })
+    playbooks.deletePlaybook(playbook.id)
+    expect(processes.listProcessDefinitions()).toHaveLength(0)
+    expect(processes.getProcessGraph(processId)?.phases).toHaveLength(1)
+    expect(listProcessRunHistory()[0].processName).toBe(definition.name)
+    expect(() => importProcessAsPlaybook(processId)).toThrow(/deleted/)
+    expect(db.pragma("foreign_key_check")).toEqual([])
   })
 
   it("still deletes the steps a playbook owns", () => {

@@ -110,6 +110,10 @@ function ensureToolMedia(db: Database.Database): void {
   CREATE INDEX IF NOT EXISTS tool_media_conversation ON tool_media(conversation_id, tool_call_id);`)
 }
 
+function ensureProcessDeletionColumn(db: Database.Database): void {
+  addColumnIfMissing(db, "process_definitions", "deleted_at", "INTEGER")
+}
+
 const MIGRATIONS: Array<(db: Database.Database) => void> = [
   (db) => db.exec(SCHEMA_V1),
   (db) => db.exec(SCHEMA_V2),
@@ -191,6 +195,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureToolMedia,
   ensureProviderImageInputColumn,
   ensureProcessCommandPhases,
+  ensureProcessDeletionColumn,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -662,6 +667,7 @@ export function runMigrations(
       ensureNativeAssistantColumn(db)
       ensureToolMedia(db)
       ensureProcessCommandPhases(db)
+      ensureProcessDeletionColumn(db)
       // After ensureSubscriptionProviderConstraints: its V65 table rebuild
       // predates this column and would drop it.
       ensureProviderImageInputColumn(db)
