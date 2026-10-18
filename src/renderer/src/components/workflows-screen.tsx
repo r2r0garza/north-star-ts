@@ -1,0 +1,588 @@
+import { useEffect, useState } from "react"
+import {
+  CalendarIcon,
+  FolderOpen,
+  Layers,
+  ListFilter,
+  Play,
+  Plus,
+  Workflow,
+  Trash2,
+} from "lucide-react"
+import { toast } from "sonner"
+import { ScreenHeader } from "@/components/screen-header"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import {
+  Card,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { Calendar } from "@/components/ui/calendar"
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
+import { Label } from "@/components/ui/label"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import {
+  Combobox,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxList,
+  ComboboxTrigger,
+  ComboboxValue,
+} from "@/components/ui/combobox"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { cn } from "@/lib/utils"
+import type { Project } from "@/types"
+import { WorkflowDetail } from "@/components/workflow-detail"
+import { NewRunDialog } from "@/components/new-run-dialog"
+import type { WorkflowDefinition } from "../../../shared/workflows"
+
+const RUN_STATUSES = ["All statuses", "Completed", "Paused", "Cancelled"]
+
+const EXAMPLE_RUNS = [
+  {
+    id: "example-run",
+    title: "Code review",
+    projectId: null,
+    status: "Completed",
+    createdAt: Date.parse("2026-10-17T14:30:00Z"),
+  },
+  {
+    id: "example-cancelled-run",
+    title: "Project health check",
+    projectId: null,
+    status: "Cancelled",
+    createdAt: Date.parse("2026-10-17T16:45:00Z"),
+  },
+  {
+    id: "example-paused-run",
+    title: "Release preparation",
+    projectId: null,
+    status: "Paused",
+    createdAt: Date.parse("2026-10-17T18:15:00Z"),
+  },
+]
+
+export function WorkflowsScreen({ onClose }: { onClose: () => void }) {
+  const [projects, setProjects] = useState<Project[]>([])
+  const [workflows, setWorkflows] = useState<WorkflowDefinition[]>([])
+  const [creatingWorkflow, setCreatingWorkflow] = useState(false)
+  const [pendingDelete, setPendingDelete] = useState<WorkflowDefinition | null>(
+    null
+  )
+  const [deletingWorkflow, setDeletingWorkflow] = useState(false)
+  const [workflowsLoaded, setWorkflowsLoaded] = useState(false)
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(
+    null
+  )
+  const [activeTab, setActiveTab] = useState("runs")
+  const [newRunOpen, setNewRunOpen] = useState(false)
+  const selectedWorkflow = workflows.find(
+    (workflow) => workflow.id === selectedWorkflowId
+  )
+  const [projectFilter, setProjectFilter] = useState<string | null>("all")
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const [dateFilter, setDateFilter] = useState<Date>()
+  const [datePickerOpen, setDatePickerOpen] = useState(false)
+  const [statusFilter, setStatusFilter] = useState("")
+  const projectRuns = EXAMPLE_RUNS.filter(
+    (run) => projectFilter === "all" || run.projectId === projectFilter
+  )
+  const runs = projectRuns
+    .filter((run) => {
+      const date = new Date(run.createdAt)
+      return (
+        (!dateFilter || date.toDateString() === dateFilter.toDateString()) &&
+        (!statusFilter || run.status === statusFilter)
+      )
+    })
+    .sort((a, b) => b.createdAt - a.createdAt)
+  const newRunButton = (
+    <Button
+      size="sm"
+      variant="outline"
+      className="shrink-0"
+      onClick={() => setNewRunOpen(true)}
+    >
+      <Plus className="size-4" />
+      New Run
+    </Button>
+  )
+
+  useEffect(() => {
+    let cancelled = false
+    window.cowork.db.projects.list().then(
+      (list) => {
+        if (!cancelled) setProjects(list)
+      },
+      () => {
+        if (!cancelled) toast.error("Could not load projects")
+      }
+    )
+    window.cowork.db.workflows.list().then(
+      (list) => {
+        if (!cancelled) {
+          setWorkflows(list)
+          setWorkflowsLoaded(true)
+        }
+      },
+      () => {
+        if (!cancelled)
+          toast.error(
+            "Could not load workflows. Reopen Workflows to try again."
+          )
+      }
+    )
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const filters = [
+    { id: "all", name: "All", icon: Layers },
+    { id: null, name: "None", icon: FolderOpen },
+    ...projects.map((project) => ({
+      id: project.id,
+      name: project.name,
+      icon: FolderOpen,
+    })),
+  ]
+  const selectedName = filters.find(
+    (filter) => filter.id === projectFilter
+  )?.name
+  const runDescription =
+    projectFilter === "all"
+      ? "Runs across all projects, including runs without a project."
+      : projectFilter === null
+        ? "Runs that aren't assigned to a project."
+        : `Runs for ${selectedName}.`
+
+  async function createWorkflow() {
+    setCreatingWorkflow(true)
+    try {
+      const workflow = await window.cowork.db.workflows.create()
+      setWorkflows((current) => [...current, workflow])
+      setSelectedWorkflowId(workflow.id)
+    } catch {
+      toast.error("Could not create workflow. Please try again.")
+    } finally {
+      setCreatingWorkflow(false)
+    }
+  }
+
+  async function deleteWorkflow() {
+    if (!pendingDelete || deletingWorkflow) return
+    const id = pendingDelete.id
+    setDeletingWorkflow(true)
+    try {
+      await window.cowork.db.workflows.delete(id)
+      setWorkflows((current) =>
+        current.filter((workflow) => workflow.id !== id)
+      )
+      setPendingDelete(null)
+    } catch {
+      toast.error("Could not delete workflow. Please try again.")
+    } finally {
+      setDeletingWorkflow(false)
+    }
+  }
+
+  if (selectedWorkflow) {
+    return (
+      <WorkflowDetail
+        workflow={selectedWorkflow}
+        onChange={(updated) => {
+          setWorkflows((current) =>
+            current.map((workflow) =>
+              workflow.id === updated.id ? updated : workflow
+            )
+          )
+        }}
+        onBack={() => setSelectedWorkflowId(null)}
+        onClose={onClose}
+      />
+    )
+  }
+
+  return (
+    <div
+      data-slot="workflows-screen"
+      className="flex min-h-0 min-w-0 flex-1 flex-col bg-background pt-11 text-sm text-foreground"
+    >
+      <ScreenHeader
+        title="Workflows"
+        onBack={onClose}
+        backLabel="Close workflows"
+        onClose={onClose}
+      />
+      <Tabs
+        value={activeTab}
+        onValueChange={setActiveTab}
+        className="flex min-h-0 flex-1 flex-col gap-0"
+      >
+        <div className="flex shrink-0 items-center justify-between gap-2 border-b px-4 py-2">
+          <TabsList
+            variant="line"
+            className="gap-1"
+            aria-label="Workflow views"
+          >
+            <TabsTrigger value="runs">Runs</TabsTrigger>
+            <TabsTrigger value="workflows">Workflows</TabsTrigger>
+          </TabsList>
+          <Badge variant="outline">UI preview</Badge>
+        </div>
+        <TabsContent value="runs" className="min-h-0 overflow-hidden">
+          <div className="flex h-full min-h-0 min-w-0">
+            <nav
+              aria-label="Run projects"
+              className="flex w-60 shrink-0 flex-col border-r"
+            >
+              <div className="flex h-12 shrink-0 items-center px-3 text-xs font-medium text-muted-foreground">
+                Projects
+              </div>
+              <ScrollArea className="min-h-0 flex-1">
+                <div className="flex flex-col gap-0.5 px-2 pb-2">
+                  {filters.map((filter) => (
+                    <button
+                      key={filter.id ?? "none"}
+                      type="button"
+                      aria-pressed={projectFilter === filter.id}
+                      onClick={() => setProjectFilter(filter.id)}
+                      className={cn(
+                        "flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left focus-visible:outline-2 focus-visible:outline-ring",
+                        projectFilter === filter.id
+                          ? "bg-accent text-accent-foreground"
+                          : "hover:bg-accent/50"
+                      )}
+                    >
+                      <filter.icon className="size-4 shrink-0 text-muted-foreground" />
+                      <span className="truncate">{filter.name}</span>
+                    </button>
+                  ))}
+                </div>
+              </ScrollArea>
+            </nav>
+            <section
+              aria-label="Project runs"
+              className="flex min-h-0 min-w-0 flex-1 flex-col"
+            >
+              <header className="flex min-h-12 shrink-0 items-center justify-between gap-3 border-b px-4 py-2">
+                <div className="min-w-0 space-y-0.5">
+                  <h2 className="truncate font-medium">
+                    {projectFilter === "all"
+                      ? "All runs"
+                      : `${selectedName} · Runs`}
+                  </h2>
+                  <p className="text-xs text-muted-foreground">
+                    {runDescription}
+                  </p>
+                </div>
+                {projectRuns.length > 0 && (
+                  <div className="flex shrink-0 items-center gap-2">
+                    <Button
+                      variant={
+                        filtersOpen || dateFilter || statusFilter
+                          ? "secondary"
+                          : "outline"
+                      }
+                      size="icon-sm"
+                      aria-label="Filter runs"
+                      aria-expanded={filtersOpen}
+                      aria-controls="run-filters"
+                      onClick={() => setFiltersOpen((open) => !open)}
+                    >
+                      <ListFilter className="size-4" />
+                    </Button>
+                    {newRunButton}
+                  </div>
+                )}
+              </header>
+              {projectRuns.length > 0 && filtersOpen && (
+                <div
+                  id="run-filters"
+                  role="region"
+                  aria-label="Run filters"
+                  className="flex shrink-0 flex-wrap items-end gap-3 border-b px-4 py-3"
+                >
+                  <div className="flex flex-col gap-2">
+                    <Label htmlFor="run-date">Date</Label>
+                    <Popover
+                      open={datePickerOpen}
+                      onOpenChange={setDatePickerOpen}
+                    >
+                      <PopoverTrigger asChild>
+                        <Button
+                          id="run-date"
+                          variant="outline"
+                          className={cn(
+                            "min-w-40 justify-start font-normal",
+                            !dateFilter && "text-muted-foreground"
+                          )}
+                        >
+                          <CalendarIcon className="size-4" />
+                          {dateFilter
+                            ? dateFilter.toLocaleDateString(undefined, {
+                                dateStyle: "medium",
+                              })
+                            : "Pick a date"}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent align="start" className="w-auto p-0">
+                        <Calendar
+                          mode="single"
+                          captionLayout="dropdown"
+                          selected={dateFilter}
+                          defaultMonth={dateFilter}
+                          onSelect={(date) => {
+                            setDateFilter(date)
+                            setDatePickerOpen(false)
+                          }}
+                          autoFocus
+                        />
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <Label htmlFor="run-status">Status</Label>
+                    <Combobox
+                      items={RUN_STATUSES}
+                      value={statusFilter || "All statuses"}
+                      onValueChange={(value) => {
+                        if (value)
+                          setStatusFilter(value === "All statuses" ? "" : value)
+                      }}
+                    >
+                      <ComboboxTrigger
+                        id="run-status"
+                        className="flex h-8 min-w-40 items-center justify-between gap-2 rounded-lg border border-input px-2.5 text-sm hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring"
+                      >
+                        <ComboboxValue />
+                      </ComboboxTrigger>
+                      <ComboboxContent>
+                        <ComboboxInput
+                          placeholder="Search statuses…"
+                          showTrigger={false}
+                        />
+                        <ComboboxEmpty>No statuses found.</ComboboxEmpty>
+                        <ComboboxList>
+                          {(status: string) => (
+                            <ComboboxItem key={status} value={status}>
+                              {status}
+                            </ComboboxItem>
+                          )}
+                        </ComboboxList>
+                      </ComboboxContent>
+                    </Combobox>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    disabled={!dateFilter && !statusFilter}
+                    onClick={() => {
+                      setDateFilter(undefined)
+                      setStatusFilter("")
+                    }}
+                  >
+                    Clear filters
+                  </Button>
+                </div>
+              )}
+              <ScrollArea className="min-h-0 flex-1">
+                {runs.length > 0 ? (
+                  <ul aria-label="Runs" className="space-y-3 p-4">
+                    {runs.map((run) => (
+                      <li
+                        key={run.id}
+                        className="flex items-start justify-between gap-4 rounded-lg border p-4"
+                      >
+                        <div className="min-w-0 space-y-1">
+                          <h3 className="font-medium">{run.title}</h3>
+                          <p className="text-xs text-muted-foreground">
+                            No project · Example run for layout preview only
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 flex-col items-end gap-1">
+                          <Badge
+                            variant="secondary"
+                            className={cn(
+                              "w-24 justify-center",
+                              run.status === "Completed" &&
+                                "bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300",
+                              run.status === "Paused" &&
+                                "bg-yellow-100 text-yellow-800 dark:bg-yellow-950 dark:text-yellow-300",
+                              run.status === "Cancelled" &&
+                                "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300"
+                            )}
+                          >
+                            {run.status}
+                          </Badge>
+                          <time
+                            dateTime={new Date(run.createdAt).toISOString()}
+                            className="text-xs text-muted-foreground"
+                          >
+                            {new Date(run.createdAt).toLocaleString(undefined, {
+                              dateStyle: "medium",
+                              timeStyle: "short",
+                            })}
+                          </time>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                ) : projectRuns.length > 0 ? (
+                  <div className="flex flex-col items-center gap-3 px-6 py-16 text-center">
+                    <h3 className="font-medium">No matching runs</h3>
+                    <p className="text-muted-foreground">
+                      Try another date or status, or clear the filters.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center gap-3 px-6 py-16 text-center">
+                    <Play className="size-8 text-muted-foreground" />
+                    <h3 className="font-medium">No runs yet</h3>
+                    <p className="max-w-sm text-muted-foreground">
+                      {projectFilter === "all"
+                        ? "Workflow runs will appear here."
+                        : projectFilter === null
+                          ? "Runs without a project will appear here."
+                          : `Workflow runs for ${selectedName} will appear here.`}{" "}
+                      Run execution and history aren't connected yet.
+                    </p>
+                    {newRunButton}
+                  </div>
+                )}
+              </ScrollArea>
+            </section>
+          </div>
+        </TabsContent>
+        <TabsContent value="workflows" className="min-h-0 overflow-hidden">
+          <ScrollArea className="h-full">
+            <div className="space-y-4 p-4">
+              <div>
+                <div className="flex items-center justify-between gap-3">
+                  <h2 className="font-medium">Workflow collection</h2>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={creatingWorkflow || !workflowsLoaded}
+                    onClick={createWorkflow}
+                  >
+                    <Plus className="size-4" />
+                    {creatingWorkflow ? "Creating…" : "New Workflow"}
+                  </Button>
+                </div>
+                <p className="mt-1 text-muted-foreground">
+                  Inspect and edit your saved workflows. Execution is coming
+                  later.
+                </p>
+              </div>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+                {[...workflows]
+                  .sort((a, b) =>
+                    a.name.trim().localeCompare(b.name.trim(), undefined, {
+                      sensitivity: "base",
+                    })
+                  )
+                  .map((workflow) => (
+                    <Card
+                      key={workflow.id}
+                      size="sm"
+                      className="relative hover:ring-foreground/25"
+                    >
+                      <CardHeader className="gap-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <Workflow className="size-5 text-muted-foreground" />
+                          <Badge variant="secondary">Saved</Badge>
+                        </div>
+                        <CardTitle>
+                          <button
+                            type="button"
+                            className="text-left after:absolute after:inset-0 focus-visible:outline-2 focus-visible:outline-ring"
+                            onClick={() => setSelectedWorkflowId(workflow.id)}
+                          >
+                            {workflow.name}
+                          </button>
+                        </CardTitle>
+                        <CardDescription>
+                          {workflow.description}
+                        </CardDescription>
+                        <div className="relative z-10 flex items-center gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="flex-1"
+                            disabled
+                          >
+                            <Play className="size-4" />
+                            Run workflow
+                          </Button>
+                          <Button
+                            size="icon-sm"
+                            variant="ghost"
+                            className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                            aria-label={`Delete workflow: ${workflow.name || "Untitled workflow"}`}
+                            onClick={() => setPendingDelete(workflow)}
+                          >
+                            <Trash2 className="size-4" />
+                          </Button>
+                        </div>
+                      </CardHeader>
+                    </Card>
+                  ))}
+              </div>
+            </div>
+          </ScrollArea>
+        </TabsContent>
+      </Tabs>
+      <NewRunDialog
+        open={newRunOpen}
+        onOpenChange={setNewRunOpen}
+        projects={projects}
+        workflows={workflows}
+      />
+      <Dialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingDelete(null)
+        }}
+      >
+        <DialogContent onBackdropClick={() => setPendingDelete(null)}>
+          <DialogHeader>
+            <DialogTitle>Delete workflow?</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete “
+              {pendingDelete?.name || "Untitled workflow"}”? This action cannot
+              be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPendingDelete(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={deletingWorkflow}
+              onClick={deleteWorkflow}
+            >
+              {deletingWorkflow ? "Deleting…" : "Confirm"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
+}

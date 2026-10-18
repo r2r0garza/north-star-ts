@@ -49,6 +49,7 @@ describe("sidebar Mission Control visibility", () => {
       onAgentsClick: vi.fn(),
       onMcpClick: vi.fn(),
       onDashboardsClick: vi.fn(),
+      onWorkflowsClick: vi.fn(),
       refreshKey: 0,
       runningConvos: new Set(),
       waitingConvos: new Set(),
@@ -66,6 +67,14 @@ describe("sidebar Mission Control visibility", () => {
       Array.from(container.querySelectorAll("button")).find(
         (element) => element.textContent?.trim() === label
       )
+    const workflows = button("Workflows")!
+    const dashboards = button("Dashboards")!
+    expect(
+      workflows.compareDocumentPosition(dashboards) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
+    await act(async () => workflows.click())
+    expect(props.onWorkflowsClick).toHaveBeenCalledOnce()
     expect(button("Mission Control")).toBeUndefined()
     expect(button("Processes")).toBeUndefined()
   })

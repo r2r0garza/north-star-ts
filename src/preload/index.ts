@@ -1,4 +1,5 @@
 import type { ToolMediaReference } from "../shared/tool-media"
+import type { WorkflowDefinition } from "../shared/workflows"
 import type {
   ClaudeSubscriptionPreflight,
   ClaudeSubscriptionRefresh,
@@ -1049,6 +1050,22 @@ const api = {
         ) as Promise<Workspace>,
       delete: (id: string) =>
         ipcRenderer.invoke("db:workspaces:delete", id) as Promise<void>,
+    },
+    workflows: {
+      flush: (workflow: WorkflowDefinition) =>
+        ipcRenderer.sendSync("db:workflows:flush", workflow) as { ok: boolean },
+      delete: (id: string) =>
+        ipcRenderer.invoke("db:workflows:delete", id) as Promise<void>,
+      create: () =>
+        ipcRenderer.invoke(
+          "db:workflows:create"
+        ) as Promise<WorkflowDefinition>,
+      list: () =>
+        ipcRenderer.invoke("db:workflows:list") as Promise<
+          WorkflowDefinition[]
+        >,
+      update: (workflow: WorkflowDefinition) =>
+        ipcRenderer.invoke("db:workflows:update", workflow) as Promise<void>,
     },
     projects: {
       create: (input: { name: string; workspaceId?: string | null }) =>

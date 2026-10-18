@@ -1,9 +1,11 @@
 import { ipcMain, type WebContents } from "electron"
+import type { WorkflowDefinition } from "../../shared/workflows"
 import {
   conversations,
   messages,
   workspaces,
   projects,
+  workflows,
   tasks,
   taskEvents,
   checkpoints,
@@ -246,6 +248,23 @@ export function registerDbHandlers(
   )
   ipcMain.handle("db:projects:reorder", (_e, ids: string[]) =>
     projects.reorderProjects(ids)
+  )
+
+  ipcMain.on("db:workflows:flush", (event, workflow: WorkflowDefinition) => {
+    try {
+      workflows.updateWorkflow(workflow)
+      event.returnValue = { ok: true }
+    } catch {
+      event.returnValue = { ok: false }
+    }
+  })
+  ipcMain.handle("db:workflows:delete", (_e, id: string) =>
+    workflows.deleteWorkflow(id)
+  )
+  ipcMain.handle("db:workflows:create", () => workflows.createWorkflow())
+  ipcMain.handle("db:workflows:list", () => workflows.listWorkflows())
+  ipcMain.handle("db:workflows:update", (_e, workflow: WorkflowDefinition) =>
+    workflows.updateWorkflow(workflow)
   )
 
   // Tasks (storage-only)

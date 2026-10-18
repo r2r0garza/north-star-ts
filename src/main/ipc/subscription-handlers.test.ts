@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   getConversation: vi.fn(),
   setConversationTitleIfUntitled: vi.fn(),
   listTodos: vi.fn(() => []),
+  updateWorkflow: vi.fn(),
   subscribeConversationChanges: vi.fn<
     (listener: (payload: { conversationIds: string[] }) => void) => () => void
   >(() => vi.fn()),
@@ -16,6 +17,9 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("electron", () => ({
   ipcMain: {
+    on: (channel: string, handler: (...args: any[]) => any) => {
+      mocks.handlers.set(channel, handler)
+    },
     handle: (channel: string, handler: (...args: any[]) => any) => {
       mocks.handlers.set(channel, handler)
     },
@@ -44,6 +48,7 @@ vi.mock("../db/repositories", () => ({
   messages: {},
   workspaces: {},
   projects: {},
+  workflows: { updateWorkflow: mocks.updateWorkflow },
   tasks: {},
   taskEvents: {},
   checkpoints: {},
@@ -267,4 +272,18 @@ describe("background conversation titles", () => {
     ).toBe(task)
     expect(mocks.generateTitle).not.toHaveBeenCalled()
   })
+})
+
+it("acknowledges workflow exit flush only after the database write succeeds", () => {
+  registerDbHandlers()
+  const event = { returnValue: undefined as unknown }
+  const workflow = { id: "workflow", name: "Title", description: "", steps: [] }
+  mocks.handlers.get("db:workflows:flush")!(event, workflow)
+  expect(mocks.updateWorkflow).toHaveBeenCalledWith(workflow)
+  expect(event.returnValue).toEqual({ ok: true })
+  mocks.updateWorkflow.mockImplementationOnce(() => {
+    throw new Error("disk full")
+  })
+  mocks.handlers.get("db:workflows:flush")!(event, workflow)
+  expect(event.returnValue).toEqual({ ok: false })
 })

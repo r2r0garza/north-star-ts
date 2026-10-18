@@ -504,6 +504,7 @@ export function AppSidebar({
   onAgentsClick,
   onMcpClick,
   onDashboardsClick,
+  onWorkflowsClick,
   refreshKey,
   runningConvos,
   waitingConvos,
@@ -521,6 +522,7 @@ export function AppSidebar({
   onAgentsClick: () => void
   onMcpClick: () => void
   onDashboardsClick: () => void
+  onWorkflowsClick: () => void
   // Bumped by the app whenever conversations change, so the list refetches.
   refreshKey: number
   // Conversations with a turn currently streaming — each shows a spinner.
@@ -922,6 +924,16 @@ export function AppSidebar({
         />
       </SidebarContent>
       <SidebarFooter className="p-2">
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          onClick={onWorkflowsClick}
+          className="w-full justify-start"
+        >
+          <Workflow className="size-4" />
+          Workflows
+        </Button>
         <Button
           type="button"
           size="sm"

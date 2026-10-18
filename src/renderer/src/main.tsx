@@ -22,6 +22,7 @@ import { SkillsScreen } from "@/components/skills-screen"
 import { AgentsScreen } from "@/components/agents-screen"
 import { McpScreen } from "@/components/mcp-screen"
 import { DashboardsScreen } from "@/components/dashboards-screen"
+import { WorkflowsScreen } from "@/components/workflows-screen"
 import { StartupGuideDialog } from "@/components/startup-guide-dialog"
 import { GitActions } from "@/components/git-actions"
 import { TaskTranscriptSheet } from "@/components/task-transcript-sheet"
@@ -121,6 +122,7 @@ function Shell() {
   // in-panel destination in the center region; authors/views live dashboards
   // (plan 033). Mutually exclusive with the other footer overlays.
   const [dashboardsOpen, setDashboardsOpen] = useState(false)
+  const [workflowsOpen, setWorkflowsOpen] = useState(false)
   const [startupGuideOpen, setStartupGuideOpen] = useState(false)
   // Which section Settings opens on. Normal entry starts in General; first launch
   // goes straight to AI connections so the user can configure a provider.
@@ -244,7 +246,8 @@ function Shell() {
   const handleBrowserPoppedOutChange = (poppedOut: boolean) => {
     setActivity(!poppedOut)
   }
-  const overlayViewOpen = agentsOpen || skillsOpen || mcpOpen || dashboardsOpen
+  const overlayViewOpen =
+    agentsOpen || skillsOpen || mcpOpen || dashboardsOpen || workflowsOpen
   // The activity panel and terminal only apply to the conversation, so an
   // overlay view hides them without touching their saved open state — they
   // reappear as they were when the user returns to the conversation.
@@ -401,6 +404,7 @@ function Shell() {
     setSkillsOpen(false)
     setMcpOpen(false)
     setDashboardsOpen(false)
+    setWorkflowsOpen(false)
   }
 
   // Cmd+, (macOS) / Ctrl+, (Windows/Linux) opens Settings — the platform's
@@ -414,6 +418,7 @@ function Shell() {
         setSkillsOpen(false)
         setMcpOpen(false)
         setDashboardsOpen(false)
+        setWorkflowsOpen(false)
       }
     }
     window.addEventListener("keydown", onKeyDown)
@@ -434,6 +439,7 @@ function Shell() {
     setSkillsOpen(false)
     setMcpOpen(false)
     setDashboardsOpen(false)
+    setWorkflowsOpen(false)
   }
 
   // Reopen a stored conversation — switch the view to match its mode. The
@@ -460,6 +466,7 @@ function Shell() {
     setSkillsOpen(false)
     setMcpOpen(false)
     setDashboardsOpen(false)
+    setWorkflowsOpen(false)
   }
 
   // Start a fresh conversation, optionally in a project (its directory is
@@ -477,6 +484,7 @@ function Shell() {
     setSkillsOpen(false)
     setMcpOpen(false)
     setDashboardsOpen(false)
+    setWorkflowsOpen(false)
   }
 
   // A session was deleted from the sidebar. If it was the active one, drop back
@@ -543,20 +551,31 @@ function Shell() {
             setAgentsOpen(false)
             setMcpOpen(false)
             setDashboardsOpen(false)
+            setWorkflowsOpen(false)
           }}
           onAgentsClick={() => {
             setAgentsOpen(true)
             setSkillsOpen(false)
             setMcpOpen(false)
             setDashboardsOpen(false)
+            setWorkflowsOpen(false)
           }}
           onMcpClick={() => {
             setMcpOpen(true)
             setAgentsOpen(false)
             setSkillsOpen(false)
             setDashboardsOpen(false)
+            setWorkflowsOpen(false)
+          }}
+          onWorkflowsClick={() => {
+            setWorkflowsOpen(true)
+            setDashboardsOpen(false)
+            setMcpOpen(false)
+            setAgentsOpen(false)
+            setSkillsOpen(false)
           }}
           onDashboardsClick={() => {
+            setWorkflowsOpen(false)
             setDashboardsOpen(true)
             setMcpOpen(false)
             setAgentsOpen(false)
@@ -574,8 +593,7 @@ function Shell() {
           <div
             className={cn(
               "flex min-h-0 min-w-0 flex-1 overflow-hidden",
-              (agentsOpen || skillsOpen || mcpOpen || dashboardsOpen) &&
-                "hidden"
+              overlayViewOpen && "hidden"
             )}
           >
             <App
@@ -614,6 +632,9 @@ function Shell() {
           {agentsOpen && <AgentsScreen onClose={() => setAgentsOpen(false)} />}
           {skillsOpen && <SkillsScreen onClose={() => setSkillsOpen(false)} />}
           {mcpOpen && <McpScreen onClose={() => setMcpOpen(false)} />}
+          {workflowsOpen && (
+            <WorkflowsScreen onClose={() => setWorkflowsOpen(false)} />
+          )}
           {dashboardsOpen && (
             <DashboardsScreen onClose={() => setDashboardsOpen(false)} />
           )}
