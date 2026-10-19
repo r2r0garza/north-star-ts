@@ -90,6 +90,23 @@ export function RunDetail({
   const timestamp = new Date(run.createdAt)
   const activities = run.steps
   const [controlling, setControlling] = useState(false)
+  const [modelLabels, setModelLabels] = useState<Record<string, string>>({})
+  useEffect(() => {
+    void window.cowork.providers.listWithModels().then(
+      (accounts) =>
+        setModelLabels(
+          Object.fromEntries(
+            accounts.flatMap(({ account, models }) =>
+              models.map((model) => [
+                `${account.id}::${model.modelId}`,
+                `${account.displayName} · ${model.modelName?.trim() || model.modelId}`,
+              ])
+            )
+          )
+        ),
+      () => toast.error("Could not load model details")
+    )
+  }, [])
   const [liveText, setLiveText] = useState("")
   const activeStepId = run.steps.find((step) => step.status === "active")?.id
   useEffect(() => {
@@ -288,9 +305,24 @@ export function RunDetail({
                           </div>
                           <div className="min-w-0 flex-1 space-y-1.5">
                             <div className="flex flex-wrap items-center justify-between gap-2">
-                              <h4 className="font-medium">
-                                {step?.title ?? `Step ${index + 1}`}
-                              </h4>
+                              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                                <h4 className="font-medium">
+                                  {step?.title ?? `Step ${index + 1}`}
+                                </h4>
+                                <Badge
+                                  variant="outline"
+                                  className="max-w-full truncate text-[10px]"
+                                >
+                                  {activity.accountId && activity.modelId
+                                    ? (modelLabels[
+                                        `${activity.accountId}::${activity.modelId}`
+                                      ] ??
+                                      `${activity.accountId} · ${activity.modelId}`)
+                                    : (modelLabels[
+                                        `${run.accountId}::${run.modelId}`
+                                      ] ?? `${run.accountId} · ${run.modelId}`)}
+                                </Badge>
+                              </div>
                               <Badge
                                 variant="secondary"
                                 className={cn(

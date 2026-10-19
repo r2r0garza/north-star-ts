@@ -60,6 +60,9 @@ function fixtureRuns(): import("../../../shared/workflow-runs").WorkflowRun[] {
       error: null,
       steps: workflow.steps.map((step) => ({
         ...step,
+        accountId: step.id === "review-changes" ? "openai" : undefined,
+        modelId: step.id === "review-changes" ? "gpt-test" : undefined,
+        agentName: step.id === "review-changes" ? "north-star" : undefined,
         status:
           status === "Completed"
             ? "completed"
@@ -83,6 +86,17 @@ beforeEach(() => {
   let stored = structuredClone(EXAMPLE_WORKFLOWS)
   vi.mocked(toast.error).mockClear()
   window.cowork = {
+    system: vi.fn(() => ({ mainAgentName: "North Star" })),
+    agents: {
+      list: vi.fn(async () => [
+        { name: "north-star", refId: "north-star", label: "North Star" },
+        {
+          name: "code-reviewer",
+          refId: "code-reviewer",
+          label: "Code Reviewer",
+        },
+      ]),
+    },
     providers: {
       listWithModels: vi.fn(async () => [
         {
@@ -881,6 +895,11 @@ it("shows Default Objective below Description and reloads its saved text", async
   )
   expect(objective.className).toBe(description.className)
   expect(objective.value).toBe("")
+  const sidebarSwitch = container.querySelector<HTMLButtonElement>(
+    "#workflow-view-in-sidebar"
+  )!
+  expect(sidebarSwitch.disabled).toBe(true)
+  expect(sidebarSwitch.getAttribute("data-state")).toBe("unchecked")
   await editText("#workflow-default-objective", "Find actionable improvements.")
   expect(window.cowork.db.workflows.update).not.toHaveBeenCalled()
   await act(async () =>
@@ -891,12 +910,26 @@ it("shows Default Objective below Description and reloads its saved text", async
       defaultObjective: "Find actionable improvements.",
     })
   )
+  const enabledSidebarSwitch = container.querySelector<HTMLButtonElement>(
+    "#workflow-view-in-sidebar"
+  )!
+  expect(enabledSidebarSwitch.disabled).toBe(false)
+  expect(document.querySelector('[data-slot="tooltip-content"]')).toBeNull()
+  await act(async () => enabledSidebarSwitch.click())
+  expect(window.cowork.db.workflows.update).toHaveBeenCalledWith(
+    expect.objectContaining({ viewInConversationSidebar: true })
+  )
   await act(async () => root.render(null))
   await openCodeReview()
   expect(
     container.querySelector<HTMLTextAreaElement>("#workflow-default-objective")
       ?.value
   ).toBe("Find actionable improvements.")
+  expect(
+    container
+      .querySelector<HTMLButtonElement>("#workflow-view-in-sidebar")
+      ?.getAttribute("data-state")
+  ).toBe("checked")
 })
 
 it("flushes pending text edits on app exit without needing blur", async () => {
@@ -942,6 +975,7 @@ it("opens persisted run activity and invokes lifecycle controls", async () => {
   expect(container.textContent).toContain("Auto mode")
   expect(container.textContent).not.toContain("Simulated preview")
   expect(container.textContent).toContain("Review changes")
+  expect(container.textContent).toContain("OpenAI · GPT Test")
   await act(async () => button("Pause").click())
   expect(window.cowork.workflowRuns.pause).toHaveBeenCalledWith("active")
   await act(async () => button("Cancel").click())

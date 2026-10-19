@@ -254,6 +254,7 @@ export class WorkflowService {
                 : null,
               accountId: run.accountId,
               modelId: run.modelId,
+              agentName: step.agentName ?? null,
               title: step.title,
             }).id
             appendMessage({

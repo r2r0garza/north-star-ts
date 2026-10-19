@@ -4,6 +4,7 @@ export interface WorkflowStep {
   instructions: string
   accountId?: string | null
   modelId?: string | null
+  agentName?: string | null
 }
 
 export interface WorkflowDefinition {
@@ -11,5 +12,6 @@ export interface WorkflowDefinition {
   name: string
   description: string
   defaultObjective: string
+  viewInConversationSidebar?: boolean
   steps: WorkflowStep[]
 }

@@ -8,6 +8,7 @@ export function createWorkflow(): WorkflowDefinition {
     name: "New workflow",
     description: "",
     defaultObjective: "",
+    viewInConversationSidebar: false,
     steps: [],
   }
   getDb()
@@ -26,10 +27,14 @@ export function createWorkflow(): WorkflowDefinition {
 export function listWorkflows(): WorkflowDefinition[] {
   const rows = getDb()
     .prepare(
-      "SELECT id, name, description, default_objective AS defaultObjective, steps FROM workflows ORDER BY position"
+      "SELECT id, name, description, default_objective AS defaultObjective, COALESCE(view_in_conversation_sidebar, 0) AS viewInConversationSidebar, steps FROM workflows ORDER BY position"
     )
     .all() as Array<Omit<WorkflowDefinition, "steps"> & { steps: string }>
-  return rows.map((row) => ({ ...row, steps: JSON.parse(row.steps) }))
+  return rows.map((row) => ({
+    ...row,
+    viewInConversationSidebar: Boolean(row.viewInConversationSidebar),
+    steps: JSON.parse(row.steps),
+  }))
 }
 
 export function updateWorkflow(workflow: WorkflowDefinition): void {
@@ -39,6 +44,8 @@ export function updateWorkflow(workflow: WorkflowDefinition): void {
     typeof workflow.name !== "string" ||
     typeof workflow.description !== "string" ||
     typeof workflow.defaultObjective !== "string" ||
+    (workflow.viewInConversationSidebar !== undefined &&
+      typeof workflow.viewInConversationSidebar !== "boolean") ||
     !Array.isArray(workflow.steps) ||
     workflow.steps.some(
       (step) =>
@@ -46,7 +53,10 @@ export function updateWorkflow(workflow: WorkflowDefinition): void {
         typeof step.id !== "string" ||
         !step.id ||
         typeof step.title !== "string" ||
-        typeof step.instructions !== "string"
+        typeof step.instructions !== "string" ||
+        (step.accountId != null && typeof step.accountId !== "string") ||
+        (step.modelId != null && typeof step.modelId !== "string") ||
+        (step.agentName != null && typeof step.agentName !== "string")
     ) ||
     new Set(workflow.steps.map((step) => step.id)).size !==
       workflow.steps.length
@@ -54,12 +64,13 @@ export function updateWorkflow(workflow: WorkflowDefinition): void {
     throw new Error("Invalid workflow")
   const result = getDb()
     .prepare(
-      "UPDATE workflows SET name = ?, description = ?, default_objective = ?, steps = ? WHERE id = ?"
+      "UPDATE workflows SET name = ?, description = ?, default_objective = ?, view_in_conversation_sidebar = ?, steps = ? WHERE id = ?"
     )
     .run(
       workflow.name,
       workflow.description,
       workflow.defaultObjective,
+      workflow.viewInConversationSidebar ? 1 : 0,
       JSON.stringify(workflow.steps),
       workflow.id
     )

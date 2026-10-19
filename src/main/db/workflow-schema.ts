@@ -81,7 +81,8 @@ export function ensureWorkflows(db: Database.Database): void {
     name TEXT NOT NULL,
     description TEXT NOT NULL,
     steps TEXT NOT NULL CHECK(json_valid(steps)),
-    position INTEGER NOT NULL
+    position INTEGER NOT NULL,
+    view_in_conversation_sidebar INTEGER NOT NULL DEFAULT 0 CHECK(view_in_conversation_sidebar IN (0, 1))
   )`)
   const insert = db.prepare(
     "INSERT INTO workflows (id, name, description, steps, position) VALUES (?, ?, ?, ?, ?)"

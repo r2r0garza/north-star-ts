@@ -212,6 +212,13 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
       "TEXT NOT NULL DEFAULT ''"
     ),
   ensureWorkflowRuns,
+  (db) =>
+    addColumnIfMissing(
+      db,
+      "workflows",
+      "view_in_conversation_sidebar",
+      "INTEGER NOT NULL DEFAULT 0 CHECK(view_in_conversation_sidebar IN (0, 1))"
+    ),
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -688,6 +695,12 @@ export function runMigrations(
       ensureProviderImageInputColumn(db)
       ensureWorkflows(db)
       ensureWorkflowRuns(db)
+      addColumnIfMissing(
+        db,
+        "workflows",
+        "view_in_conversation_sidebar",
+        "INTEGER NOT NULL DEFAULT 0 CHECK(view_in_conversation_sidebar IN (0, 1))"
+      )
     })()
   } finally {
     if (fkWasOn) db.pragma("foreign_keys = ON")

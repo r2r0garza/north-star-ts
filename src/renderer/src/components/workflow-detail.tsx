@@ -28,6 +28,13 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Textarea } from "@/components/ui/textarea"
+import { Switch } from "@/components/ui/switch"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import {
   Combobox,
   ComboboxContent,
@@ -42,6 +49,7 @@ import {
   ComboboxValue,
 } from "@/components/ui/combobox"
 import type { AccountWithModels } from "../../../main/ipc/provider-handlers"
+import type { AgentSummary } from "@/types"
 
 import type {
   WorkflowDefinition,
@@ -55,6 +63,8 @@ function SortableStep({
   onDelete,
   onSave,
   modelGroups,
+  agents,
+  systemAgentName,
 }: {
   step: WorkflowStep
   index: number
@@ -62,9 +72,12 @@ function SortableStep({
   onDelete: () => void
   onSave: () => void
   modelGroups: AccountWithModels[]
+  agents: AgentSummary[]
+  systemAgentName: string
 }) {
   const [open, setOpen] = useState(false)
   const modelTrigger = useRef<HTMLButtonElement>(null)
+  const agentTrigger = useRef<HTMLButtonElement>(null)
   const groups = modelGroups
     .filter((account) => account.models.length > 0)
     .map(({ account, models }) => ({
@@ -155,67 +168,6 @@ function SortableStep({
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor={`${step.id}-model`}>Model</Label>
-              <Combobox
-                items={groups}
-                value={selectedModel}
-                isItemEqualToValue={(a, b) => a?.value === b?.value}
-                onValueChange={(item) => {
-                  if (!item) {
-                    onChange({ ...step, accountId: null, modelId: null })
-                  } else {
-                    const separator = item.value.indexOf("::")
-                    if (separator >= 0)
-                      onChange({
-                        ...step,
-                        accountId: item.value.slice(0, separator),
-                        modelId: item.value.slice(separator + 2),
-                      })
-                  }
-                  onSave()
-                }}
-              >
-                <ComboboxTrigger
-                  ref={modelTrigger}
-                  id={`${step.id}-model`}
-                  className="flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-input px-3 text-sm hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring"
-                >
-                  <ComboboxValue placeholder="Use default model">
-                    {(value: { label: string } | null) => (
-                      <span className="truncate">
-                        {value?.label ?? "Use default model"}
-                      </span>
-                    )}
-                  </ComboboxValue>
-                </ComboboxTrigger>
-                <ComboboxContent anchor={modelTrigger} className="min-w-72">
-                  <ComboboxInput
-                    placeholder="Search models…"
-                    showTrigger={false}
-                  />
-                  <ComboboxEmpty>No models found.</ComboboxEmpty>
-                  <ComboboxList>
-                    {(group: {
-                      value: string
-                      label: string
-                      items: { value: string; label: string }[]
-                    }) => (
-                      <ComboboxGroup key={group.value} items={group.items}>
-                        <ComboboxLabel>{group.label}</ComboboxLabel>
-                        <ComboboxCollection>
-                          {(model: { value: string; label: string }) => (
-                            <ComboboxItem key={model.value} value={model}>
-                              {model.label}
-                            </ComboboxItem>
-                          )}
-                        </ComboboxCollection>
-                      </ComboboxGroup>
-                    )}
-                  </ComboboxList>
-                </ComboboxContent>
-              </Combobox>
-            </div>
-            <div className="space-y-2">
               <Label htmlFor={`${step.id}-instructions`}>Instructions</Label>
               <Textarea
                 id={`${step.id}-instructions`}
@@ -225,8 +177,138 @@ function SortableStep({
                   onChange({ ...step, instructions: event.target.value })
                 }
                 placeholder="What should this step do?"
-                className="min-h-32"
+                className="h-36 min-h-36 resize-y overflow-y-auto"
               />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="min-w-0 space-y-2">
+                <Label htmlFor={`${step.id}-model`}>Model</Label>
+                <Combobox
+                  items={groups}
+                  value={selectedModel}
+                  isItemEqualToValue={(a, b) => a?.value === b?.value}
+                  onValueChange={(item) => {
+                    if (!item) {
+                      onChange({ ...step, accountId: null, modelId: null })
+                    } else {
+                      const separator = item.value.indexOf("::")
+                      if (separator >= 0)
+                        onChange({
+                          ...step,
+                          accountId: item.value.slice(0, separator),
+                          modelId: item.value.slice(separator + 2),
+                        })
+                    }
+                    onSave()
+                  }}
+                >
+                  <ComboboxTrigger
+                    ref={modelTrigger}
+                    id={`${step.id}-model`}
+                    className="flex h-9 w-full min-w-0 items-center justify-between gap-2 overflow-hidden rounded-lg border border-input px-3 text-sm hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring"
+                  >
+                    <ComboboxValue placeholder="Use default model">
+                      {(value: { label: string } | null) => (
+                        <span className="truncate">
+                          {value?.label ?? "Use default model"}
+                        </span>
+                      )}
+                    </ComboboxValue>
+                  </ComboboxTrigger>
+                  <ComboboxContent anchor={modelTrigger} className="min-w-72">
+                    <ComboboxInput
+                      placeholder="Search models…"
+                      showTrigger={false}
+                    />
+                    <ComboboxEmpty>No models found.</ComboboxEmpty>
+                    <ComboboxList>
+                      {(group: {
+                        value: string
+                        label: string
+                        items: { value: string; label: string }[]
+                      }) => (
+                        <ComboboxGroup key={group.value} items={group.items}>
+                          <ComboboxLabel>{group.label}</ComboboxLabel>
+                          <ComboboxCollection>
+                            {(model: { value: string; label: string }) => (
+                              <ComboboxItem key={model.value} value={model}>
+                                {model.label}
+                              </ComboboxItem>
+                            )}
+                          </ComboboxCollection>
+                        </ComboboxGroup>
+                      )}
+                    </ComboboxList>
+                  </ComboboxContent>
+                </Combobox>
+              </div>
+              <div className="min-w-0 space-y-2">
+                <Label htmlFor={`${step.id}-agent`}>Agent</Label>
+                <Combobox
+                  items={[
+                    { value: "", label: systemAgentName },
+                    ...agents.map((agent) => ({
+                      value: agent.ref ?? agent.name,
+                      label: agent.label ?? agent.name,
+                    })),
+                  ]}
+                  value={
+                    [
+                      { value: "", label: systemAgentName },
+                      ...agents.map((agent) => ({
+                        value: agent.ref ?? agent.name,
+                        label: agent.label ?? agent.name,
+                      })),
+                    ].find(
+                      (agent) => agent.value === (step.agentName ?? "")
+                    ) ?? {
+                      value: step.agentName ?? "",
+                      label: step.agentName ?? systemAgentName,
+                    }
+                  }
+                  isItemEqualToValue={(a, b) => a?.value === b?.value}
+                  onValueChange={(agent) => {
+                    onChange({
+                      ...step,
+                      agentName: agent?.value || undefined,
+                    })
+                    onSave()
+                  }}
+                >
+                  <ComboboxTrigger
+                    ref={agentTrigger}
+                    id={`${step.id}-agent`}
+                    className="flex h-9 w-full min-w-0 items-center justify-between gap-2 overflow-hidden rounded-lg border border-input px-3 text-sm hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring"
+                  >
+                    <ComboboxValue>
+                      {(value: { label: string } | null) => (
+                        <span className="truncate">
+                          {value?.label ?? systemAgentName}
+                        </span>
+                      )}
+                    </ComboboxValue>
+                  </ComboboxTrigger>
+                  <ComboboxContent anchor={agentTrigger} className="min-w-64">
+                    <ComboboxInput
+                      placeholder="Search agents…"
+                      showTrigger={false}
+                    />
+                    <ComboboxEmpty>No agents found.</ComboboxEmpty>
+                    <ComboboxList>
+                      <ComboboxCollection>
+                        {(agent: { value: string; label: string }) => (
+                          <ComboboxItem
+                            key={agent.value || "__system__"}
+                            value={agent}
+                          >
+                            {agent.label}
+                          </ComboboxItem>
+                        )}
+                      </ComboboxCollection>
+                    </ComboboxList>
+                  </ComboboxContent>
+                </Combobox>
+              </div>
             </div>
           </div>
         </CollapsibleContent>
@@ -247,10 +329,15 @@ export function WorkflowDetail({
   onClose: () => void
 }) {
   const [modelGroups, setModelGroups] = useState<AccountWithModels[]>([])
+  const [agents, setAgents] = useState<AgentSummary[]>([])
+  const systemAgentName = window.cowork.system().mainAgentName
   useEffect(() => {
     void window.cowork.providers
       .listWithModels()
       .then(setModelGroups, () => toast.error("Could not load models"))
+    void window.cowork.agents
+      .list()
+      .then(setAgents, () => toast.error("Could not load agents"))
   }, [])
 
   const latest = useRef(workflow)
@@ -375,6 +462,46 @@ export function WorkflowDetail({
                 }
               />
             </div>
+            <div className="mt-4 flex items-center justify-between gap-4">
+              <Label htmlFor="workflow-view-in-sidebar">
+                View in Conversation Sidebar
+              </Label>
+              {!workflow.defaultObjective.trim() ? (
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="inline-flex" tabIndex={0}>
+                        <Switch
+                          id="workflow-view-in-sidebar"
+                          checked={workflow.viewInConversationSidebar ?? false}
+                          disabled
+                          onCheckedChange={(checked) =>
+                            commit({
+                              ...workflow,
+                              viewInConversationSidebar: checked,
+                            })
+                          }
+                        />
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      Add a default objective to enable this option.
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              ) : (
+                <Switch
+                  id="workflow-view-in-sidebar"
+                  checked={workflow.viewInConversationSidebar ?? false}
+                  onCheckedChange={(checked) =>
+                    commit({
+                      ...workflow,
+                      viewInConversationSidebar: checked,
+                    })
+                  }
+                />
+              )}
+            </div>
             <p className="mt-2 text-xs text-muted-foreground">
               Changes are saved automatically.
             </p>
@@ -447,6 +574,8 @@ export function WorkflowDetail({
                       }
                       onSave={save}
                       modelGroups={modelGroups}
+                      agents={agents}
+                      systemAgentName={systemAgentName}
                       onChange={(updated) =>
                         change({
                           ...workflow,

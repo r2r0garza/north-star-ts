@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { runMigrations } from "../migrations"
+import { systemDisplayName } from "../../config/system-name"
 import { sqliteLoadsForTests } from "../../test/sqlite"
 import {
   createWorkflow,
@@ -59,6 +60,8 @@ describe.skipIf(!sqliteLoads)("workflow storage", () => {
       name: "New workflow",
       description: "",
       defaultObjective: "",
+      viewInConversationSidebar: false,
+      agentName: "Cowork",
       steps: [],
     })
     expect(second.id).not.toBe(first.id)
@@ -68,7 +71,15 @@ describe.skipIf(!sqliteLoads)("workflow storage", () => {
       name: "My workflow",
       description: "My description",
       defaultObjective: "My default objective",
-      steps: [{ id: "step", title: "First step", instructions: "Do the work" }],
+      viewInConversationSidebar: true,
+      steps: [
+        {
+          id: "step",
+          title: "First step",
+          instructions: "Do the work",
+          agentName: "agentref:v1:test",
+        },
+      ],
     }
     updateWorkflow(edited)
     db.close()

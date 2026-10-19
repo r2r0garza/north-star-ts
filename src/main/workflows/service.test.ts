@@ -49,12 +49,12 @@ vi.mock("../db/repositories/workflow-runs", () => ({
     [...state.runs.values()].map((run) => structuredClone(run)),
 }))
 vi.mock("../db/repositories/conversations", () => ({
-  createConversation: (input: { projectId?: string | null }) => {
+  createConversation: vi.fn((input: { projectId?: string | null }) => {
     if (input.projectId && !state.projects.has(input.projectId))
       throw new Error("FOREIGN KEY constraint failed")
     state.conversationProjects.push(input.projectId)
     return { id: `conversation-${++state.conversations}` }
-  },
+  }),
 }))
 vi.mock("../db/repositories/messages", () => ({ appendMessage: vi.fn() }))
 vi.mock("../db/repositories/tasks", () => ({
@@ -77,6 +77,7 @@ vi.mock("../index/indexed-workspace", () => ({
 vi.mock("../index/auto-index", () => ({ autoIndexWorkspace: state.autoIndex }))
 import { WorkflowService } from "./service"
 import { appendMessage } from "../db/repositories/messages"
+import { createConversation } from "../db/repositories/conversations"
 import type { TaskRunner, TaskExecContext } from "../tasks/runner"
 
 const runner = {
@@ -179,6 +180,34 @@ it("executes ordered autonomous turns, passes prior results, and skips completed
   )
   await service.execute(context(run))
   expect(state.agent).toHaveBeenCalledTimes(2)
+})
+it.each([
+  ["coding-agent", "qa-agent"],
+  ["coding-agent", null],
+  [undefined, "qa-agent"],
+])("uses each step's selected agent (%s, %s)", async (first, second) => {
+  const run = start()
+  run.steps[0].agentName = first
+  run.steps[1].agentName = second
+  state.runs.set(run.id, structuredClone(run))
+  state.agent
+    .mockResolvedValueOnce({ content: handoff(`${run.id}:a`) })
+    .mockResolvedValueOnce({ content: handoff(`${run.id}:b`) })
+
+  expect(await service.execute(context(run))).not.toHaveProperty("error")
+  expect(createConversation).toHaveBeenNthCalledWith(
+    1,
+    expect.objectContaining({ mode: "north_star", agentName: first ?? null })
+  )
+  expect(createConversation).toHaveBeenNthCalledWith(
+    2,
+    expect.objectContaining({ mode: "north_star", agentName: second ?? null })
+  )
+  expect(state.agent.mock.calls[0][0].conversationId).toBe("conversation-1")
+  expect(state.agent.mock.calls[1][0].conversationId).toBe("conversation-2")
+
+  await service.execute(context(run))
+  expect(createConversation).toHaveBeenCalledTimes(2)
 })
 it.each(["blocked", "failed"])(
   "does not advance after a %s handoff",
