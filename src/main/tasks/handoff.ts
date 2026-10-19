@@ -23,11 +23,12 @@ export function parseTaskHandoff(
   content: unknown,
   taskId: string
 ): TaskHandoff {
-  const invalid = () =>
+  const invalid = (reason: string) =>
     new Error(
-      "The background worker did not return a valid structured handoff; completion could not be confirmed."
+      `The background worker did not return a valid structured handoff; completion could not be confirmed. (${reason})`
     )
-  if (typeof content !== "string" || content.length > 32_000) throw invalid()
+  if (typeof content !== "string" || content.length > 32_000)
+    throw invalid("the reply is not text or exceeds 32000 characters")
   let value: unknown
   try {
     value = JSON.parse(content)
@@ -60,38 +61,57 @@ export function parseTaskHandoff(
         start = -1
       }
     }
-    if (candidates.length !== 1) throw invalid()
+    if (candidates.length !== 1)
+      throw invalid(
+        `expected exactly one JSON object, found ${candidates.length}`
+      )
     value = candidates[0]
   }
   if (!value || typeof value !== "object" || Array.isArray(value))
-    throw invalid()
+    throw invalid("the handoff is not a JSON object")
   const o = value as Record<string, unknown>
   const text = (v: unknown): v is string =>
     typeof v === "string" && v.trim().length > 0 && v.length <= 8_000
   const texts = (v: unknown): v is string[] =>
     Array.isArray(v) && v.length <= 50 && v.every(text)
-  if (
-    o.version !== 1 ||
-    o.taskId !== taskId ||
-    !["completed", "blocked", "failed"].includes(o.status as string) ||
-    !text(o.summary) ||
-    !texts(o.changes) ||
-    !texts(o.verification) ||
-    !texts(o.unresolved) ||
-    !(o.nextAction === null || text(o.nextAction)) ||
-    (o.status !== "completed" &&
-      (o.unresolved.length === 0 || !text(o.nextAction)))
-  )
-    throw invalid()
+  // A completed handoff has nothing to suggest, so an omitted nextAction means null.
+  const nextAction =
+    o.nextAction === undefined && o.status === "completed" ? null : o.nextAction
+  const checks: [boolean, string][] = [
+    [o.version === 1, "version must be 1"],
+    [o.taskId === taskId, `taskId must be ${JSON.stringify(taskId)}`],
+    [
+      ["completed", "blocked", "failed"].includes(o.status as string),
+      "status must be completed, blocked, or failed",
+    ],
+    [text(o.summary), "summary must be a nonempty string"],
+    [texts(o.changes), "changes must be an array of nonempty strings"],
+    [
+      texts(o.verification),
+      "verification must be an array of nonempty strings",
+    ],
+    [texts(o.unresolved), "unresolved must be an array of nonempty strings"],
+    [
+      nextAction === null || text(nextAction),
+      "nextAction must be null or a nonempty string",
+    ],
+    [
+      o.status === "completed" ||
+        (texts(o.unresolved) && o.unresolved.length > 0 && text(nextAction)),
+      "a blocked or failed handoff needs unresolved entries and a nonempty nextAction",
+    ],
+  ]
+  const problem = checks.find(([ok]) => !ok)?.[1]
+  if (problem) throw invalid(problem)
   return {
     version: 1,
     taskId,
     status: o.status as TaskHandoff["status"],
-    summary: o.summary,
-    changes: o.changes,
-    verification: o.verification,
-    unresolved: o.unresolved,
-    nextAction: o.nextAction as string | null,
+    summary: o.summary as string,
+    changes: o.changes as string[],
+    verification: o.verification as string[],
+    unresolved: o.unresolved as string[],
+    nextAction: nextAction as string | null,
   }
 }
 

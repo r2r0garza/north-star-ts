@@ -115,6 +115,11 @@ import { getMcpManager } from "./agent/mcp"
 import { registerTaskHandlers } from "./ipc/task-handlers"
 import { registerIndexHandlers } from "./ipc/index-handlers"
 import { TaskRunner } from "./tasks/runner"
+import {
+  WorkflowService,
+  WORKFLOW_RUN_KIND,
+  registerWorkflowHandlers,
+} from "./workflows/service"
 import { TaskReportBack } from "./tasks/report-back"
 import { IndexService } from "./index/service"
 import { IndexWatcher } from "./index/watcher"
@@ -1417,6 +1422,17 @@ app.whenReady().then(async () => {
     hasIndependentSurface: true,
     run: dashboardService.execute,
   })
+  const workflowService = new WorkflowService(taskRunner, {
+    service: indexService,
+    watcher: indexWatcher,
+  })
+  taskRunner.registerKind(WORKFLOW_RUN_KIND, {
+    autoResume: false,
+    lane: "work",
+    hasIndependentSurface: true,
+    run: workflowService.execute,
+  })
+  registerWorkflowHandlers(workflowService)
   await taskRunner.start()
   taskReportBack.start()
   registerTaskHandlers(taskRunner)

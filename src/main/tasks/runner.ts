@@ -609,7 +609,7 @@ export class TaskRunner {
       conversationId: task.conversationId,
       logicalRoundId: `after-seq:${getMaxMessageSeq(task.conversationId)}`,
     })
-    updateTask(taskId, { status: "queued" })
+    updateTask(taskId, { status: "queued", error: null })
     this.emit(taskId, {
       type: "status_change",
       from: task.status,
@@ -1050,6 +1050,7 @@ export class TaskRunner {
         updateTask(taskId, {
           status: "completed",
           result: result.content ?? null,
+          error: null,
         })
         this.emit(taskId, { type: "task_completed", result: result.content })
         this.emit(taskId, {

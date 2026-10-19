@@ -12,7 +12,7 @@ const SNIPPET_START = "\u0001"
 const SNIPPET_END = "\u0002"
 
 export const USER_FACING_CONVERSATION_PREDICATE =
-  "c.id NOT IN (SELECT conversation_id FROM tasks WHERE conversation_id IS NOT NULL AND COALESCE(json_extract(input, '$.kind'), 'agent_chat') <> 'inline_todos')"
+  "c.id NOT IN (SELECT conversation_id FROM tasks WHERE conversation_id IS NOT NULL AND COALESCE(json_extract(input, '$.kind'), 'agent_chat') <> 'inline_todos') AND c.id NOT IN (SELECT json_extract(step.value, '$.conversationId') FROM workflow_runs, json_each(data, '$.steps') AS step WHERE json_extract(step.value, '$.conversationId') IS NOT NULL)"
 
 interface ConversationRow {
   id: string

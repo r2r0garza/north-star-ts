@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { resolve } from "path"
 import { EventEmitter } from "events"
+import { pollCommandTool } from "./command_session_tools"
 import {
   getTestResultsTool,
   runTestsTool,
@@ -272,6 +273,119 @@ describe("workspace diagnostics and test tools", () => {
     ])
     expect(page.hasMore).toBe(true)
     expect(page.nextOffset).toBe(2)
+  })
+
+  it.each([
+    ["pnpm-lock.yaml", "pnpm run 'test' 'src/a.test.ts'"],
+    ["yarn.lock", "yarn run 'test' 'src/a.test.ts'"],
+    ["package-lock.json", "npm run 'test' -- 'src/a.test.ts'"],
+  ] as const)(
+    "passes a path filter the way %s forwards script arguments",
+    async (lockfile, command) => {
+      const env = fakeEnv({
+        packageJson: { scripts: { test: "vitest run" } },
+        lockfile,
+      })
+      await runTestsTool.execute(
+        { path: "src/a.test.ts", yield_ms: 20 },
+        ctx(env)
+      )
+      expect(env.spawnCommands).toEqual([command])
+    }
+  )
+
+  it.each([
+    [
+      " ❯ src/a.test.ts (3 tests | 1 failed)\n   × broke 3ms\n\n Test Files  1 failed | 4 passed (5)\n      Tests  1 failed | 40 passed | 2 skipped (43)\n",
+      { total: 43, passed: 40, failed: 1, skipped: 2, todo: 0 },
+    ],
+    [
+      "Tests:       1 failed, 2 skipped, 7 passed, 10 total\n",
+      { total: 10, passed: 7, failed: 1, skipped: 2, todo: 0 },
+    ],
+  ])(
+    "takes counts from the runner summary line",
+    async (spawnOutput, counts) => {
+      const env = fakeEnv({
+        packageJson: { scripts: { test: "vitest run" } },
+        spawnOutput,
+      })
+      const started = parsed(
+        await runTestsTool.execute({ yield_ms: 20 }, ctx(env))
+      )
+      expect(started.counts).toEqual(counts)
+      expect(started.countsSource).toBe("runner_summary")
+    }
+  )
+
+  it("ignores unindented checkmarks from tools wrapped around the runner", async () => {
+    const env = fakeEnv({
+      packageJson: { scripts: { test: "vitest run" } },
+      spawnOutput:
+        " ✓ src/a.test.ts (1)\n   ✓ first 4ms\n\n      Tests  1 passed (1)\n\nRestoring native modules for Electron...\n✔ Rebuild Complete\n",
+    })
+    const started = parsed(
+      await runTestsTool.execute({ yield_ms: 20 }, ctx(env))
+    )
+    expect(started.results).toEqual([
+      expect.objectContaining({ name: "first", status: "passed" }),
+    ])
+  })
+
+  it("waits for a running session when get_test_results passes wait_ms", async () => {
+    const env = fakeEnv({
+      packageJson: { scripts: { test: "vitest run" } },
+      neverExit: true,
+    })
+    const started = parsed(
+      await runTestsTool.execute({ yield_ms: 0 }, ctx(env))
+    )
+    expect(started.status).toBe("running")
+    setTimeout(() => env.handles[0].emitExit({ exitCode: 0, signal: null }), 10)
+    const done = parsed(
+      await getTestResultsTool.execute(
+        { session_id: started.sessionId, wait_ms: 5_000 },
+        ctx(env)
+      )
+    )
+    expect(done.status).toBe("completed")
+  })
+
+  it("points poll_command at get_test_results for a test session id", async () => {
+    const env = fakeEnv({
+      packageJson: { scripts: { test: "vitest run" } },
+      neverExit: true,
+    })
+    const started = parsed(
+      await runTestsTool.execute({ yield_ms: 0 }, ctx(env))
+    )
+    const result = await pollCommandTool.execute(
+      { session_id: started.sessionId },
+      ctx(env)
+    )
+    expect(result).toContain("ERROR[not_found]")
+    expect(result).toContain("get_test_results")
+  })
+
+  it("returns only the tail of raw output by default", async () => {
+    const env = fakeEnv({
+      packageJson: { scripts: { test: "vitest run" } },
+      spawnOutput: `${"noise line\n".repeat(5_000)} Tests  2 passed (2)\n`,
+    })
+    const started = parsed(
+      await runTestsTool.execute({ yield_ms: 20 }, ctx(env))
+    )
+    const raw = started.rawEvidence as string
+    expect(Buffer.byteLength(raw, "utf8")).toBeLessThanOrEqual(16 * 1024)
+    expect(raw).toContain("Tests  2 passed (2)")
+    expect(started.rawEvidenceTruncated).toBe(true)
+    const page = parsed(
+      await getTestResultsTool.execute(
+        { session_id: started.sessionId },
+        ctx(env)
+      )
+    )
+    expect(page.rawEvidence).toBeUndefined()
   })
 
   it("keeps test result sessions scoped to their conversation", async () => {

@@ -53,48 +53,20 @@ import { RunDetail } from "@/components/run-detail"
 import { NewRunDialog } from "@/components/new-run-dialog"
 import type { WorkflowDefinition } from "../../../shared/workflows"
 
-const RUN_STATUSES = ["All statuses", "Active", "Completed", "Paused", "Cancelled"]
-
-const EXAMPLE_RUNS = [
-  {
-    id: "example-run",
-    workflowId: "code-review",
-    title: "Code review",
-    objective: "Review the changes for correctness, security, and test coverage.",
-    projectId: null,
-    status: "Completed",
-    createdAt: Date.parse("2026-10-17T14:30:00Z"),
-  },
-  {
-    id: "example-active-run",
-    workflowId: "code-review",
-    title: "Code review",
-    objective: "Review the changes for correctness, security, and test coverage.",
-    projectId: null,
-    status: "Active",
-    createdAt: Date.parse("2026-10-18T12:30:00Z"),
-  },
-  {
-    id: "example-cancelled-run",
-    workflowId: "project-health",
-    title: "Project health check",
-    objective: "Assess the project’s health and identify actionable risks.",
-    projectId: null,
-    status: "Cancelled",
-    createdAt: Date.parse("2026-10-17T16:45:00Z"),
-  },
-  {
-    id: "example-paused-run",
-    workflowId: "release-preparation",
-    title: "Release preparation",
-    objective: "Check readiness and prepare a concise release summary.",
-    projectId: null,
-    status: "Paused",
-    createdAt: Date.parse("2026-10-17T18:15:00Z"),
-  },
+const RUN_STATUSES = [
+  "All statuses",
+  "Active",
+  "Completed",
+  "Paused",
+  "Cancelled",
+  "Failed",
+  "Interrupted",
 ]
 
 export function WorkflowsScreen({ onClose }: { onClose: () => void }) {
+  const [savedRuns, setSavedRuns] = useState<
+    import("../../../shared/workflow-runs").WorkflowRun[]
+  >([])
   const [projects, setProjects] = useState<Project[]>([])
   const [workflows, setWorkflows] = useState<WorkflowDefinition[]>([])
   const [creatingWorkflow, setCreatingWorkflow] = useState(false)
@@ -117,7 +89,7 @@ export function WorkflowsScreen({ onClose }: { onClose: () => void }) {
   const [dateFilter, setDateFilter] = useState<Date>()
   const [datePickerOpen, setDatePickerOpen] = useState(false)
   const [statusFilter, setStatusFilter] = useState("")
-  const projectRuns = EXAMPLE_RUNS.filter(
+  const projectRuns = savedRuns.filter(
     (run) => projectFilter === "all" || run.projectId === projectFilter
   )
   const runs = projectRuns
@@ -143,14 +115,44 @@ export function WorkflowsScreen({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     let cancelled = false
-    window.cowork.db.projects.list().then(
-      (list) => {
-        if (!cancelled) setProjects(list)
-      },
-      () => {
-        if (!cancelled) toast.error("Could not load projects")
+    let loading = false
+    async function refresh() {
+      if (loading) return
+      loading = true
+      try {
+        const list = await window.cowork.workflowRuns.list()
+        if (!cancelled) setSavedRuns(list)
+      } catch {
+        if (!cancelled) toast.error("Could not load workflow runs")
+      } finally {
+        loading = false
       }
-    )
+    }
+    void refresh()
+    const timer = setInterval(() => void refresh(), 1000)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    let loadingProjects = false
+    async function refreshProjects() {
+      if (loadingProjects) return
+      loadingProjects = true
+      try {
+        const list = await window.cowork.db.projects.list()
+        if (!cancelled) setProjects(list)
+      } catch {
+        if (!cancelled) toast.error("Could not load projects")
+      } finally {
+        loadingProjects = false
+      }
+    }
+    void refreshProjects()
+    const projectsTimer = setInterval(() => void refreshProjects(), 1000)
     window.cowork.db.workflows.list().then(
       (list) => {
         if (!cancelled) {
@@ -167,6 +169,7 @@ export function WorkflowsScreen({ onClose }: { onClose: () => void }) {
     )
     return () => {
       cancelled = true
+      clearInterval(projectsTimer)
     }
   }, [])
 
@@ -219,15 +222,13 @@ export function WorkflowsScreen({ onClose }: { onClose: () => void }) {
     }
   }
 
-  const selectedRun = EXAMPLE_RUNS.find((run) => run.id === selectedRunId)
+  const selectedRun = savedRuns.find((run) => run.id === selectedRunId)
 
   if (selectedRun) {
     return (
       <RunDetail
         run={selectedRun}
-        workflow={workflows.find(
-          (workflow) => workflow.id === selectedRun.workflowId
-        )}
+        workflow={selectedRun.workflow}
         onBack={() => setSelectedRunId(null)}
         onClose={onClose}
       />
@@ -276,7 +277,7 @@ export function WorkflowsScreen({ onClose }: { onClose: () => void }) {
             <TabsTrigger value="runs">Runs</TabsTrigger>
             <TabsTrigger value="workflows">Workflows</TabsTrigger>
           </TabsList>
-          <Badge variant="outline">UI preview</Badge>
+          <Badge variant="outline">Auto mode</Badge>
         </div>
         <TabsContent value="runs" className="min-h-0 overflow-hidden">
           <div className="flex h-full min-h-0 min-w-0">
@@ -443,39 +444,43 @@ export function WorkflowsScreen({ onClose }: { onClose: () => void }) {
                           onClick={() => setSelectedRunId(run.id)}
                           className="flex w-full items-start justify-between gap-4 rounded-lg border p-4 text-left transition-colors hover:bg-accent/40 focus-visible:outline-2 focus-visible:outline-ring"
                         >
-                        <div className="min-w-0 space-y-1">
-                          <h3 className="font-medium">{run.title}</h3>
-                          <p className="text-xs text-muted-foreground">
-                            No project · Example run for layout preview only
-                          </p>
-                        </div>
-                        <div className="flex shrink-0 flex-col items-end gap-1">
-                          <Badge
-                            variant="secondary"
-                            className={cn(
-                              "w-24 justify-center",
-                              run.status === "Completed" &&
-                                "bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300",
-                              run.status === "Active" &&
-                                "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300",
-                              run.status === "Paused" &&
-                                "bg-yellow-100 text-yellow-800 dark:bg-yellow-950 dark:text-yellow-300",
-                              run.status === "Cancelled" &&
-                                "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300"
-                            )}
-                          >
-                            {run.status}
-                          </Badge>
-                          <time
-                            dateTime={new Date(run.createdAt).toISOString()}
-                            className="text-xs text-muted-foreground"
-                          >
-                            {new Date(run.createdAt).toLocaleString(undefined, {
-                              dateStyle: "medium",
-                              timeStyle: "short",
-                            })}
-                          </time>
-                        </div>
+                          <div className="min-w-0 space-y-1">
+                            <h3 className="font-medium">{run.title}</h3>
+                            <p className="text-xs text-muted-foreground">
+                              {run.projectName ?? "No project"} ·{" "}
+                              {run.workspacePath}
+                            </p>
+                          </div>
+                          <div className="flex shrink-0 flex-col items-end gap-1">
+                            <Badge
+                              variant="secondary"
+                              className={cn(
+                                "w-24 justify-center",
+                                run.status === "Completed" &&
+                                  "bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300",
+                                run.status === "Active" &&
+                                  "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300",
+                                run.status === "Paused" &&
+                                  "bg-yellow-100 text-yellow-800 dark:bg-yellow-950 dark:text-yellow-300",
+                                run.status === "Cancelled" &&
+                                  "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300"
+                              )}
+                            >
+                              {run.status}
+                            </Badge>
+                            <time
+                              dateTime={new Date(run.createdAt).toISOString()}
+                              className="text-xs text-muted-foreground"
+                            >
+                              {new Date(run.createdAt).toLocaleString(
+                                undefined,
+                                {
+                                  dateStyle: "medium",
+                                  timeStyle: "short",
+                                }
+                              )}
+                            </time>
+                          </div>
                         </button>
                       </li>
                     ))}
@@ -497,7 +502,7 @@ export function WorkflowsScreen({ onClose }: { onClose: () => void }) {
                         : projectFilter === null
                           ? "Runs without a project will appear here."
                           : `Workflow runs for ${selectedName} will appear here.`}{" "}
-                      Run execution and history aren't connected yet.
+                      Choose a workflow to get started.
                     </p>
                     {newRunButton}
                   </div>
@@ -523,8 +528,7 @@ export function WorkflowsScreen({ onClose }: { onClose: () => void }) {
                   </Button>
                 </div>
                 <p className="mt-1 text-muted-foreground">
-                  Inspect and edit your saved workflows. Execution is coming
-                  later.
+                  Inspect and edit your saved workflows.
                 </p>
               </div>
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -589,7 +593,12 @@ export function WorkflowsScreen({ onClose }: { onClose: () => void }) {
         open={newRunOpen}
         onOpenChange={setNewRunOpen}
         projects={projects}
+        selectedProjectId={projectFilter !== "all" ? projectFilter : null}
         workflows={workflows}
+        onStarted={(run) => {
+          setSavedRuns((current) => [run, ...current])
+          setSelectedRunId(run.id)
+        }}
       />
       <Dialog
         open={pendingDelete !== null}

@@ -927,6 +927,7 @@ export interface RunAgentLoopOptions {
   // which surfaces the question in the activity panel. The worker proceeds on
   // reasonable assumptions instead (its kickoff frames the work as self-contained).
   suppressUserQuestions?: boolean
+  unattended?: boolean
   // Child-run overrides used by conversation subagents. They are runtime-only:
   // ephemeral identities are never persisted as conversation agent names.
   agentOverride?: AgentDefinition | null
@@ -1218,12 +1219,20 @@ export async function runAgentLoop(
   if (isLiveTurn) autoModeSetters.set(conversationId, setAutoMode)
 
   // Whether to surface the workspace index to the agent (plan 008/014): a
-  // workspace-backed non-chat session with the "use index for context" setting on.
+  // workspace-backed non-chat session with the "use index for context" setting on
+  // and an index that actually exists (its own, or its main checkout's), so the
+  // model is never offered a tool that can only answer "not indexed yet".
   // Gates BOTH the index_query_tool and the injected summary below.
-  const useIndex =
+  const indexWorkspacePath =
     showTodos &&
-    !!conversation?.workspaceId &&
+    conversation?.workspaceId &&
     settingsService.getIndexing().useIndexForContext
+      ? getWorkspace(conversation.workspaceId)?.path
+      : undefined
+  const indexedWorkspace = indexWorkspacePath
+    ? await indexedWorkspaceFor(indexWorkspacePath)
+    : null
+  const useIndex = !!indexedWorkspace
 
   // The agent browser is offered when the caller wired a provider (the live chat
   // path does; the durable task runner does not — a background task has no window
@@ -1330,6 +1339,19 @@ export async function runAgentLoop(
   // (ask_user_question, read_skill, plan-mode handoff) bypass the allowlist.
   const applyAgentTools = (defs: { function: { name: string } }[]) => {
     if (opts.reportOnly) return []
+    if (opts.unattended)
+      defs = defs.filter(
+        (d) =>
+          ![
+            "ask_user_question",
+            "run_todos_in_background",
+            "spawn_subagent",
+            "spawn_subagents",
+            "present_plan",
+            "write_plan",
+            "browser_handoff",
+          ].includes(d.function.name)
+      )
     const agentFiltered = externalToolAllowed
       ? defs.filter((d) => externalToolAllowed(d.function.name))
       : agentToolNames === null
@@ -1655,15 +1677,9 @@ export async function runAgentLoop(
 
   // Workspace-index summary (plan 008): cheap structured orientation. Advisory,
   // most droppable. Gated by the "use index for context" setting + a workspace.
-  if (useIndex && conversation?.workspaceId) {
+  if (indexedWorkspace) {
     // Summarize the main checkout when this workspace is an unindexed worktree.
-    const workspacePath = getWorkspace(conversation.workspaceId)?.path
-    const indexed = workspacePath
-      ? await indexedWorkspaceFor(workspacePath)
-      : null
-    const indexSummary = buildIndexSummary(
-      indexed?.workspace.id ?? conversation.workspaceId
-    )
+    const indexSummary = buildIndexSummary(indexedWorkspace.workspace.id)
     if (indexSummary) {
       sections.push({
         name: "index",
@@ -2152,6 +2168,22 @@ export async function runAgentLoop(
           }),
         signal: abort.signal,
         execute: async (call, _index, callSignal) => {
+          if (
+            opts.unattended &&
+            [
+              "ask_user_question",
+              "run_todos_in_background",
+              "spawn_subagent",
+              "spawn_subagents",
+              "present_plan",
+              "write_plan",
+              "browser_handoff",
+            ].includes(call.name)
+          )
+            return {
+              result:
+                "This tool is unavailable in an unattended workflow. Complete the current step directly or report the blocker.",
+            }
           if (opts.reportOnly)
             return { result: "Tools are disabled for this report-only turn." }
           const persistLifecycle = <T>(action: () => T): T => {

@@ -60,7 +60,8 @@ export const gitStatusTool = gitTool(
 
 export const gitDiffTool = gitTool(
   "git_diff",
-  "Return a bounded unified Git diff. Optional path is workspace-relative; staged reads the index; base compares against a validated revision.",
+  "Return a bounded unified Git diff. Optional path is workspace-relative; staged reads the index; base compares against a validated revision. " +
+    "Untracked (new) files never appear, even when passed as path: find them with git_status and read them with read_file_tool.",
   {
     path: { type: "string" },
     staged: { type: "boolean" },

@@ -440,6 +440,7 @@ export async function runClaudeConversation(input: {
 
 async function runCliCompletionReport(input: {
   conversation: Conversation
+  userMessage?: string
   completionInstruction?: string
   model?: string | null
   abort: AbortController
@@ -447,6 +448,12 @@ async function runCliCompletionReport(input: {
 }): Promise<ChatResult> {
   // Use a fresh tool-free session: resuming the CLI's native session would also
   // resume its autonomous permissions and omit newer app transcript messages.
+  if (input.userMessage !== undefined)
+    appendMessage({
+      conversationId: input.conversation.id,
+      role: "user",
+      content: input.userMessage,
+    })
   const history = listMessages(input.conversation.id)
     .filter(
       (message) => message.role === "user" || message.role === "assistant"

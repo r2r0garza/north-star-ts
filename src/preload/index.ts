@@ -1,5 +1,6 @@
 import type { ToolMediaReference } from "../shared/tool-media"
 import type { WorkflowDefinition } from "../shared/workflows"
+import type { WorkflowRun, StartWorkflowRun } from "../shared/workflow-runs"
 import type {
   ClaudeSubscriptionPreflight,
   ClaudeSubscriptionRefresh,
@@ -425,6 +426,20 @@ const api = {
   // persists its progress to task_events, and survives the renderer detaching or
   // the app restarting. Replay a task's history with db.taskEvents.list, then
   // subscribe to the live tail with tasks.onEvent.
+  workflowRuns: {
+    start: (input: StartWorkflowRun) =>
+      ipcRenderer.invoke("workflow-runs:start", input) as Promise<WorkflowRun>,
+    list: () =>
+      ipcRenderer.invoke("workflow-runs:list") as Promise<WorkflowRun[]>,
+    pause: (id: string) =>
+      ipcRenderer.invoke("workflow-runs:pause", id) as Promise<void>,
+    resume: (id: string) =>
+      ipcRenderer.invoke("workflow-runs:resume", id) as Promise<void>,
+    cancel: (id: string) =>
+      ipcRenderer.invoke("workflow-runs:cancel", id) as Promise<void>,
+    retry: (id: string) =>
+      ipcRenderer.invoke("workflow-runs:retry", id) as Promise<void>,
+  },
   tasks: {
     // Start a new durable agent turn. Resolves with the created task row.
     start: (input: {

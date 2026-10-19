@@ -181,11 +181,13 @@ describe.skipIf(!sqliteLoads)(
       await settle()
 
       runner.restart(task.id)
+      expect(getTask(task.id)?.error).toBeNull()
       await settle()
 
       // Same task id, re-run to completion.
       expect(loopCalls).toHaveLength(1)
       expect(getTask(task.id)?.status).toBe("completed")
+      expect(getTask(task.id)?.error).toBeNull()
       const retry = getBudget(conv.id, "after-seq:2")
       expect(retry).toMatchObject({
         source: "user_retry",
@@ -194,6 +196,26 @@ describe.skipIf(!sqliteLoads)(
       })
       expect(retry?.parentBudgetId).toBe(getBudget(conv.id, "after-seq:1")?.id)
       await runner.stop()
+    })
+
+    it("clears a preexisting error when a queued task completes without restart", async () => {
+      const conv = createConversation({ mode: "chat" })
+      const task = createTask({
+        conversationId: conv.id,
+        input: { kind: "agent_chat", message: "hi" },
+      })
+      updateTask(task.id, { error: "Previous failure" })
+      const runner = new TaskRunner()
+      try {
+        await runner.start()
+        await settle()
+        expect(getTask(task.id)).toMatchObject({
+          status: "completed",
+          error: null,
+        })
+      } finally {
+        await runner.stop()
+      }
     })
 
     it("keeps completed side-effect results in the transcript on retry", async () => {

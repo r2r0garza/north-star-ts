@@ -15,6 +15,7 @@ import type {
 import { renderContextEnvelope } from "../context/provenance"
 import { truncateForModel, toolError } from "./output"
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "./types"
+import { isTestSessionId } from "./test_diagnostics_tools"
 import { repositoryDelegationLeases } from "../subagents/repository-lease"
 import {
   activeSkillResourceRootPaths,
@@ -745,7 +746,14 @@ function getOwnedSession(
   }
   const session = sessions.get(id)
   if (!session) {
-    return { error: toolError("not_found", "Command session was not found.") }
+    return {
+      error: toolError(
+        "not_found",
+        isTestSessionId(id)
+          ? "This is a run_tests session, not a command session. Read it with get_test_results (use wait_ms to wait for it to finish)."
+          : "Command session was not found."
+      ),
+    }
   }
   if (session.workspace !== ctx.workspace) {
     return {

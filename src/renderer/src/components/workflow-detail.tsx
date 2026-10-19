@@ -28,6 +28,20 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Textarea } from "@/components/ui/textarea"
+import {
+  Combobox,
+  ComboboxContent,
+  ComboboxCollection,
+  ComboboxEmpty,
+  ComboboxGroup,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxLabel,
+  ComboboxList,
+  ComboboxTrigger,
+  ComboboxValue,
+} from "@/components/ui/combobox"
+import type { AccountWithModels } from "../../../main/ipc/provider-handlers"
 
 import type {
   WorkflowDefinition,
@@ -40,14 +54,34 @@ function SortableStep({
   onChange,
   onDelete,
   onSave,
+  modelGroups,
 }: {
   step: WorkflowStep
   index: number
   onChange: (step: WorkflowStep) => void
   onDelete: () => void
   onSave: () => void
+  modelGroups: AccountWithModels[]
 }) {
   const [open, setOpen] = useState(false)
+  const modelTrigger = useRef<HTMLButtonElement>(null)
+  const groups = modelGroups
+    .filter((account) => account.models.length > 0)
+    .map(({ account, models }) => ({
+      value: account.id,
+      label: account.displayName,
+      items: models.map((model) => ({
+        value: `${account.id}::${model.modelId}`,
+        label: model.modelName?.trim() || model.modelId,
+      })),
+    }))
+  const selectedModel =
+    groups
+      .flatMap((group) => group.items)
+      .find((item) => item.value === `${step.accountId}::${step.modelId}`) ??
+    (step.modelId
+      ? { value: `${step.accountId}::${step.modelId}`, label: step.modelId }
+      : null)
   const {
     attributes,
     listeners,
@@ -121,6 +155,67 @@ function SortableStep({
               />
             </div>
             <div className="space-y-2">
+              <Label htmlFor={`${step.id}-model`}>Model</Label>
+              <Combobox
+                items={groups}
+                value={selectedModel}
+                isItemEqualToValue={(a, b) => a?.value === b?.value}
+                onValueChange={(item) => {
+                  if (!item) {
+                    onChange({ ...step, accountId: null, modelId: null })
+                  } else {
+                    const separator = item.value.indexOf("::")
+                    if (separator >= 0)
+                      onChange({
+                        ...step,
+                        accountId: item.value.slice(0, separator),
+                        modelId: item.value.slice(separator + 2),
+                      })
+                  }
+                  onSave()
+                }}
+              >
+                <ComboboxTrigger
+                  ref={modelTrigger}
+                  id={`${step.id}-model`}
+                  className="flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-input px-3 text-sm hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring"
+                >
+                  <ComboboxValue placeholder="Use default model">
+                    {(value: { label: string } | null) => (
+                      <span className="truncate">
+                        {value?.label ?? "Use default model"}
+                      </span>
+                    )}
+                  </ComboboxValue>
+                </ComboboxTrigger>
+                <ComboboxContent anchor={modelTrigger} className="min-w-72">
+                  <ComboboxInput
+                    placeholder="Search models…"
+                    showTrigger={false}
+                  />
+                  <ComboboxEmpty>No models found.</ComboboxEmpty>
+                  <ComboboxList>
+                    {(group: {
+                      value: string
+                      label: string
+                      items: { value: string; label: string }[]
+                    }) => (
+                      <ComboboxGroup key={group.value} items={group.items}>
+                        <ComboboxLabel>{group.label}</ComboboxLabel>
+                        <ComboboxCollection>
+                          {(model: { value: string; label: string }) => (
+                            <ComboboxItem key={model.value} value={model}>
+                              {model.label}
+                            </ComboboxItem>
+                          )}
+                        </ComboboxCollection>
+                      </ComboboxGroup>
+                    )}
+                  </ComboboxList>
+                </ComboboxContent>
+              </Combobox>
+            </div>
+            <div className="space-y-2">
               <Label htmlFor={`${step.id}-instructions`}>Instructions</Label>
               <Textarea
                 id={`${step.id}-instructions`}
@@ -151,6 +246,13 @@ export function WorkflowDetail({
   onBack: () => void
   onClose: () => void
 }) {
+  const [modelGroups, setModelGroups] = useState<AccountWithModels[]>([])
+  useEffect(() => {
+    void window.cowork.providers
+      .listWithModels()
+      .then(setModelGroups, () => toast.error("Could not load models"))
+  }, [])
+
   const latest = useRef(workflow)
   const saved = useRef(JSON.stringify(workflow))
   const queued = useRef(saved.current)
@@ -344,6 +446,7 @@ export function WorkflowDetail({
                         })
                       }
                       onSave={save}
+                      modelGroups={modelGroups}
                       onChange={(updated) =>
                         change({
                           ...workflow,

@@ -33,11 +33,77 @@ vi.mock("@dnd-kit/core", async (importOriginal) => {
 let container: HTMLDivElement
 let root: Root
 
+function fixtureRuns(): import("../../../shared/workflow-runs").WorkflowRun[] {
+  return [
+    ["completed", 0, "Completed", "2026-10-17T14:30:00Z"],
+    ["active", 0, "Active", "2026-10-18T12:30:00Z"],
+    ["cancelled", 1, "Cancelled", "2026-10-17T16:45:00Z"],
+    ["paused", 2, "Paused", "2026-10-17T18:15:00Z"],
+  ].map(([id, index, status, date]) => {
+    const workflow = structuredClone(EXAMPLE_WORKFLOWS[index as number])
+    return {
+      id: String(id),
+      taskId: String(id),
+      workflowId: workflow.id,
+      workflow,
+      title: workflow.name,
+      objective: "Check this project",
+      workspaceId: "workspace-1",
+      workspacePath: "/projects/north-star",
+      projectId: null,
+      projectName: null,
+      accountId: "account",
+      modelId: "model",
+      status,
+      createdAt: Date.parse(date as string),
+      updatedAt: Date.parse(date as string),
+      error: null,
+      steps: workflow.steps.map((step) => ({
+        ...step,
+        status:
+          status === "Completed"
+            ? "completed"
+            : status === "Cancelled"
+              ? "cancelled"
+              : status === "Paused"
+                ? "paused"
+                : "active",
+        conversationId: null,
+        result: null,
+        error: null,
+        startedAt: null,
+        finishedAt: null,
+      })),
+    } as import("../../../shared/workflow-runs").WorkflowRun
+  })
+}
+
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
   let stored = structuredClone(EXAMPLE_WORKFLOWS)
   vi.mocked(toast.error).mockClear()
   window.cowork = {
+    providers: {
+      listWithModels: vi.fn(async () => [
+        {
+          account: { id: "openai", displayName: "OpenAI" },
+          models: [{ modelId: "gpt-test", modelName: "GPT Test" }],
+        },
+        {
+          account: { id: "anthropic", displayName: "Anthropic" },
+          models: [{ modelId: "claude-test", modelName: "Claude Test" }],
+        },
+      ]),
+    },
+    tasks: { onEvent: vi.fn(() => () => {}) },
+    workflowRuns: {
+      list: vi.fn(async () => fixtureRuns()),
+      start: vi.fn(async () => ({ ...fixtureRuns()[1], id: "new-run" })),
+      pause: vi.fn(),
+      resume: vi.fn(),
+      cancel: vi.fn(),
+      retry: vi.fn(),
+    },
     db: {
       workflows: {
         flush: vi.fn((updated: (typeof EXAMPLE_WORKFLOWS)[number]) => {
@@ -429,7 +495,7 @@ it("places New Run in the header for All and None, and below the empty message f
   expect(section.querySelector("header button:last-child")?.textContent).toBe(
     "New Run"
   )
-  expect(section.textContent).toContain("Example run for layout preview only")
+  expect(section.textContent).toContain("/projects/north-star")
   expect(section.textContent).not.toContain("No runs yet")
   await act(async () => button("None").click())
   expect(section.querySelector("header button:last-child")?.textContent).toBe(
@@ -442,7 +508,7 @@ it("places New Run in the header for All and None, and below the empty message f
     expect(section.textContent).toContain("No runs yet")
     const newRun = button("New Run")
     const message = Array.from(section.querySelectorAll("p")).find((element) =>
-      element.textContent?.includes("Run execution and history")
+      element.textContent?.includes("Choose a workflow to get started")
     )!
     expect(
       message.compareDocumentPosition(newRun) & Node.DOCUMENT_POSITION_FOLLOWING
@@ -453,6 +519,19 @@ it("places New Run in the header for All and None, and below the empty message f
   expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
     "New Run"
   )
+  await act(async () => dialogButton("Cancel").click())
+  await act(async () => button("North Star").click())
+  await act(async () => button("New Run").click())
+  const projectPicker =
+    document.querySelector<HTMLButtonElement>("#new-run-project")!
+  const workspacePicker =
+    document.querySelector<HTMLButtonElement>("#new-run-workspace")!
+  expect(projectPicker.textContent).toContain("North Star")
+  expect(projectPicker.disabled).toBe(true)
+  expect(workspacePicker.textContent).toContain("/projects/north-star")
+  expect(workspacePicker.disabled).toBe(true)
+  expect(dialogButton("Choose folder")).toBeUndefined()
+  expect(dialogButton("Clear fields").disabled).toBe(true)
   await act(async () => dialogButton("Cancel").click())
   await act(async () => button("All").click())
   expect(section.querySelector("header button:last-child")?.textContent).toBe(
@@ -854,45 +933,19 @@ it("flushes pending text when leaving the editor and avoids writing an unchanged
   expect(window.cowork.db.workflows.flush).not.toHaveBeenCalled()
 })
 
-it("opens each sample run with simulated activity for its workflow steps", async () => {
+it("opens persisted run activity and invokes lifecycle controls", async () => {
   await act(async () => root.render(<WorkflowsScreen onClose={() => {}} />))
-  const openRun = async (title: string) => {
-    const card = Array.from(
-      container.querySelectorAll<HTMLButtonElement>('ul[aria-label="Runs"] button')
-    ).find((element) => element.textContent?.includes(title))!
-    await act(async () => card.click())
-  }
-
-  await openRun("Code review")
-  expect(container.textContent).toContain("Simulated preview")
+  const card = container.querySelector<HTMLButtonElement>(
+    'ul[aria-label="Runs"] button'
+  )!
+  await act(async () => card.click())
+  expect(container.textContent).toContain("Auto mode")
+  expect(container.textContent).not.toContain("Simulated preview")
   expect(container.textContent).toContain("Review changes")
-  expect(container.textContent).toContain("Identify risks")
-  expect(container.textContent).toContain("Summarize findings")
-  expect(container.textContent).toContain("no work was executed")
-  const stepDisclosure = container.querySelector<HTMLDetailsElement>("li details")!
-  expect(stepDisclosure.open).toBe(false)
-  await act(async () => stepDisclosure.querySelector("summary")!.click())
-  expect(stepDisclosure.open).toBe(true)
-  expect(container.textContent).toContain("I’ll map the changed files")
-  expect(container.textContent).toContain("Tool calls")
-  expect(container.textContent).toContain("Read files")
-  expect(container.textContent).toContain("nothing was executed")
-  await act(async () =>
-    container.querySelector<HTMLButtonElement>('[aria-label="Back to runs"]')!.click()
-  )
-
-  await openRun("Project health check")
-  expect(container.textContent).toContain("Check quality")
-  expect(container.textContent).toContain("Report project health")
-  expect(container.textContent).toContain("Not completed")
-  await act(async () =>
-    container.querySelector<HTMLButtonElement>('[aria-label="Back to runs"]')!.click()
-  )
-
-  await openRun("Release preparation")
-  expect(container.textContent).toContain("Review readiness")
-  expect(container.textContent).toContain("Prepare release summary")
-  expect(container.textContent).toContain("Waiting to prepare the release summary.")
+  await act(async () => button("Pause").click())
+  expect(window.cowork.workflowRuns.pause).toHaveBeenCalledWith("active")
+  await act(async () => button("Cancel").click())
+  expect(window.cowork.workflowRuns.cancel).toHaveBeenCalledWith("active")
 })
 
 async function selectRunOption(id: string, label: string) {
@@ -923,7 +976,7 @@ async function editRunObjective(value: string) {
   })
 }
 
-it("requires workspace, workflow, and nonblank objective, and leaves Start unwired", async () => {
+it("requires workspace, workflow, and nonblank objective, and starts a persisted run", async () => {
   await act(async () => root.render(<WorkflowsScreen onClose={() => {}} />))
   await act(async () => button("New Run").click())
   expect(dialogButton("Start").disabled).toBe(true)
@@ -938,9 +991,6 @@ it("requires workspace, workflow, and nonblank objective, and leaves Start unwir
   await editRunObjective(" \n ")
   expect(dialogButton("Start").disabled).toBe(true)
   await editRunObjective("Review this project")
-  await act(async () => dialogButton("Start").click())
-  expect(document.querySelector('[role="dialog"]')).not.toBeNull()
-  expect(container.querySelectorAll('ul[aria-label="Runs"] li')).toHaveLength(4)
   await selectRunOption("new-run-workspace", "/projects/other")
   expect(document.querySelector("#new-run-project")?.textContent).toContain(
     "No project"
@@ -954,6 +1004,16 @@ it("requires workspace, workflow, and nonblank objective, and leaves Start unwir
     "Select a workspace"
   )
   expect(dialogButton("Start").disabled).toBe(true)
+  await selectRunOption("new-run-workspace", "/projects/north-star")
+  await act(async () => dialogButton("Start").click())
+  expect(window.cowork.workflowRuns.start).toHaveBeenCalledWith({
+    workspaceId: "workspace-1",
+    projectId: "project-1",
+    workflowId: "code-review",
+    objective: "Review this project",
+  })
+  expect(document.querySelector('[role="dialog"]')).toBeNull()
+  expect(container.querySelector('[data-slot="run-detail"]')).not.toBeNull()
 })
 
 it("prefills workflow objectives, preserves dismissed drafts, and clears every field on request", async () => {
@@ -1046,4 +1106,86 @@ it("reports workspace load and folder selection failures without enabling Start"
   )
   expect(dialogButton("Start").disabled).toBe(true)
   expect(dialogButton("Choose folder").disabled).toBe(false)
+})
+
+it.each(["saved workspace", "folder"])(
+  "starts a run for a locked project without a default using a %s",
+  async (selection) => {
+    window.cowork.pickWorkspace = vi
+      .fn()
+      .mockResolvedValue({ path: "/projects/north-star" })
+    await act(async () => root.render(<WorkflowsScreen onClose={() => {}} />))
+    const projectFilter = Array.from(
+      container.querySelectorAll<HTMLButtonElement>("nav button")
+    ).find((item) => item.textContent === "Website")!
+    await act(async () => projectFilter.click())
+    await act(async () => button("New Run").click())
+    const projectPicker =
+      document.querySelector<HTMLButtonElement>("#new-run-project")!
+    expect(projectPicker.disabled).toBe(true)
+    expect(projectPicker.textContent).toContain("Website")
+    expect(
+      document.querySelector<HTMLButtonElement>("#new-run-workspace")!.disabled
+    ).toBe(false)
+    expect(dialogButton("Choose folder")).toBeDefined()
+    await selectRunOption("new-run-workflow", "Code review")
+    await editRunObjective("Review the website")
+    expect(dialogButton("Start").disabled).toBe(true)
+    if (selection === "folder")
+      await act(async () => dialogButton("Choose folder").click())
+    else await selectRunOption("new-run-workspace", "/projects/north-star")
+    expect(projectPicker.disabled).toBe(true)
+    expect(projectPicker.textContent).toContain("Website")
+    expect(dialogButton("Start").disabled).toBe(false)
+    await act(async () => dialogButton("Start").click())
+    expect(window.cowork.workflowRuns.start).toHaveBeenCalledWith({
+      workspaceId: "workspace-1",
+      projectId: "project-2",
+      workflowId: "code-review",
+      objective: "Review the website",
+    })
+  }
+)
+
+it("opens a single anchored model picker, filters models, and saves the step selection", async () => {
+  await openCodeReview()
+  await act(async () => button("1.Review changes").click())
+  const trigger = container.querySelector<HTMLButtonElement>(
+    "#review-changes-model"
+  )!
+  expect(trigger.className).toContain("flex")
+  await act(async () => trigger.click())
+  const popup = document.querySelector<HTMLElement>(
+    '[data-slot="combobox-content"]'
+  )!
+  expect(popup).not.toBeNull()
+  expect(popup.className).toContain("min-w-72")
+  expect(popup.querySelector('[data-slot="combobox-trigger"]')).toBeNull()
+  expect(popup.textContent).toContain("OpenAI")
+  expect(popup.textContent).toContain("Anthropic")
+  const search = popup.querySelector<HTMLInputElement>("input")!
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value"
+    )!.set!.call(search, "Claude")
+    search.dispatchEvent(new Event("input", { bubbles: true }))
+  })
+  expect(popup.textContent).not.toContain("GPT Test")
+  const option = Array.from(
+    popup.querySelectorAll<HTMLElement>('[role="option"]')
+  ).find((item) => item.textContent === "Claude Test")!
+  await act(async () => option.click())
+  expect(trigger.textContent).toContain("Claude Test")
+  expect(window.cowork.db.workflows.update).toHaveBeenCalledWith(
+    expect.objectContaining({
+      steps: expect.arrayContaining([
+        expect.objectContaining({
+          id: "review-changes",
+          accountId: "anthropic",
+          modelId: "claude-test",
+        }),
+      ]),
+    })
+  )
 })

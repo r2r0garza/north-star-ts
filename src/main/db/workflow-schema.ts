@@ -63,6 +63,12 @@ export const EXAMPLE_WORKFLOWS: WorkflowDefinition[] = [
   },
 ]
 
+export function ensureWorkflowRuns(db: Database.Database): void {
+  db.exec(
+    "CREATE TABLE IF NOT EXISTS workflow_runs (id TEXT PRIMARY KEY, data TEXT NOT NULL CHECK(json_valid(data)))"
+  )
+}
+
 export function ensureWorkflows(db: Database.Database): void {
   const exists = db
     .prepare(

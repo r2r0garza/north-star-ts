@@ -56,7 +56,7 @@ import {
   SCHEMA_V49_TABLES,
 } from "./schema"
 import { renameWorkTerms } from "./work-terms-migration"
-import { ensureWorkflows } from "./workflow-schema"
+import { ensureWorkflows, ensureWorkflowRuns } from "./workflow-schema"
 import {
   ORCHESTRATION_TABLES,
   retireOrchestration,
@@ -211,6 +211,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
       "default_objective",
       "TEXT NOT NULL DEFAULT ''"
     ),
+  ensureWorkflowRuns,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -686,6 +687,7 @@ export function runMigrations(
       // predates this column and would drop it.
       ensureProviderImageInputColumn(db)
       ensureWorkflows(db)
+      ensureWorkflowRuns(db)
     })()
   } finally {
     if (fkWasOn) db.pragma("foreign_keys = ON")

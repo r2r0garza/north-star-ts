@@ -28,20 +28,53 @@ export function NewRunDialog({
   open,
   onOpenChange,
   projects,
+  selectedProjectId,
   workflows,
+  onStarted,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   projects: Project[]
+  selectedProjectId: string | null
   workflows: WorkflowDefinition[]
+  onStarted: (run: import("../../../shared/workflow-runs").WorkflowRun) => void
 }) {
   const contentRef = useRef<HTMLDivElement>(null)
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [projectId, setProjectId] = useState<string | null>(null)
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
+  const lockedProject = selectedProjectId
+    ? projects.find((item) => item.id === selectedProjectId)
+    : undefined
   const [workflowId, setWorkflowId] = useState<string | null>(null)
   const [objective, setObjective] = useState("")
   const [pickingWorkspace, setPickingWorkspace] = useState(false)
+  const [starting, setStarting] = useState(false)
+  const startingRef = useRef(false)
+
+  async function startRun() {
+    if (startingRef.current || !workspaceId || !workflowId || !objective.trim())
+      return
+    startingRef.current = true
+    setStarting(true)
+    try {
+      const run = await window.cowork.workflowRuns.start({
+        workspaceId,
+        projectId,
+        workflowId,
+        objective,
+      })
+      onStarted(run)
+      onOpenChange(false)
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not start run"
+      )
+    } finally {
+      startingRef.current = false
+      setStarting(false)
+    }
+  }
   const project = projects.find((item) => item.id === projectId)
   const workspace = workspaces.find((item) => item.id === workspaceId)
   const workflow = workflows.find((item) => item.id === workflowId)
@@ -49,6 +82,10 @@ export function NewRunDialog({
   useEffect(() => {
     if (!open) return
     let cancelled = false
+    if (lockedProject) {
+      setProjectId(lockedProject.id)
+      setWorkspaceId(lockedProject.workspaceId)
+    }
     window.cowork.db.workspaces.list().then(
       (list) => {
         if (!cancelled) setWorkspaces(list)
@@ -61,13 +98,15 @@ export function NewRunDialog({
     return () => {
       cancelled = true
     }
-  }, [open])
+  }, [open, lockedProject?.id])
 
   function selectWorkspace(id: string) {
     setWorkspaceId(id)
     setProjectId(
-      projects.find((item) => item.id === projectId && item.workspaceId === id)
-        ?.id ??
+      lockedProject?.id ??
+        projects.find(
+          (item) => item.id === projectId && item.workspaceId === id
+        )?.id ??
         projects.find((item) => item.workspaceId === id)?.id ??
         null
     )
@@ -169,8 +208,14 @@ export function NewRunDialog({
               >
                 <ComboboxTrigger
                   id={picker.id}
-                  disabled={pickingWorkspace}
-                  className="flex h-8 w-full items-center justify-between gap-2 rounded-lg border border-input px-2.5 text-sm hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring"
+                  disabled={
+                    pickingWorkspace ||
+                    (Boolean(lockedProject) &&
+                      picker.id === "new-run-project") ||
+                    (Boolean(lockedProject?.workspaceId) &&
+                      picker.id === "new-run-workspace")
+                  }
+                  className="flex h-8 w-full items-center justify-between gap-2 rounded-lg border border-input px-2.5 text-sm hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <span className="truncate">
                     {picker.items.find((item) => item.id === picker.value)
@@ -192,17 +237,18 @@ export function NewRunDialog({
                   </ComboboxList>
                 </ComboboxContent>
               </Combobox>
-              {picker.id === "new-run-workspace" && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={pickWorkspace}
-                  disabled={pickingWorkspace}
-                >
-                  <FolderOpen className="size-4" />
-                  {pickingWorkspace ? "Choosing…" : "Choose folder"}
-                </Button>
-              )}
+              {picker.id === "new-run-workspace" &&
+                !lockedProject?.workspaceId && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={pickWorkspace}
+                    disabled={pickingWorkspace}
+                  >
+                    <FolderOpen className="size-4" />
+                    {pickingWorkspace ? "Choosing…" : "Choose folder"}
+                  </Button>
+                )}
             </div>
           ))}
           <div className="space-y-2">
@@ -215,14 +261,15 @@ export function NewRunDialog({
           </div>
           <p className="text-xs text-muted-foreground">
             {project ? `Project: ${project.name}.` : "This run has no project."}{" "}
-            Run execution isn't connected yet.
+            Auto mode: steps execute without questions or confirmation prompts.
+            Cancelling does not undo changes.
           </p>
         </div>
         <DialogFooter>
           <Button
             variant="ghost"
             className="sm:mr-auto"
-            disabled={pickingWorkspace}
+            disabled={pickingWorkspace || Boolean(lockedProject)}
             onClick={() => {
               setProjectId(null)
               setWorkspaceId(null)
@@ -237,10 +284,15 @@ export function NewRunDialog({
           </Button>
           <Button
             disabled={
-              !workspace || !workflow || !objective.trim() || pickingWorkspace
+              !workspace ||
+              !workflow?.steps.length ||
+              !objective.trim() ||
+              pickingWorkspace ||
+              starting
             }
+            onClick={startRun}
           >
-            Start
+            {starting ? "Starting…" : "Start"}
           </Button>
         </DialogFooter>
       </DialogContent>
