@@ -435,7 +435,7 @@ it("places New Run in the header for All and None, and below the empty message f
   expect(section.querySelector("header button:last-child")?.textContent).toBe(
     "New Run"
   )
-  expect(section.querySelectorAll('ul[aria-label="Runs"] li')).toHaveLength(3)
+  expect(section.querySelectorAll('ul[aria-label="Runs"] li')).toHaveLength(4)
   for (const project of ["North Star", "Website"]) {
     await act(async () => button(project).click())
     expect(section.querySelector("header button")).toBeNull()
@@ -471,7 +471,7 @@ it("shows run dates below status badges and sorts newest first in All and None",
       cards.map(
         (card) => card.querySelector('[data-slot="badge"]')?.textContent
       )
-    ).toEqual(["Paused", "Cancelled", "Completed"])
+    ).toEqual(["Active", "Paused", "Cancelled", "Completed"])
     const dates = cards.map((card) => {
       const time = card.querySelector("time")!
       expect(time.textContent).toBe(
@@ -532,7 +532,7 @@ it("toggles run filters and combines date and status without hiding header contr
     await act(async () => option.click())
     expect(status.textContent).toBe(value)
   }
-  for (const value of ["Completed", "Paused", "Cancelled"]) {
+  for (const value of ["Active", "Completed", "Paused", "Cancelled"]) {
     await setStatus(value)
     expect(badges()).toEqual([value])
   }
@@ -554,7 +554,7 @@ it("toggles run filters and combines date and status without hiding header contr
   expect(container.textContent).toContain("No matching runs")
   await act(async () => toggle.click())
   await act(async () => button("Clear filters").click())
-  expect(badges()).toEqual(["Paused", "Cancelled", "Completed"])
+  expect(badges()).toEqual(["Active", "Paused", "Cancelled", "Completed"])
   expect(container.querySelector("#run-date")?.textContent).toContain(
     "Pick a date"
   )
@@ -854,6 +854,47 @@ it("flushes pending text when leaving the editor and avoids writing an unchanged
   expect(window.cowork.db.workflows.flush).not.toHaveBeenCalled()
 })
 
+it("opens each sample run with simulated activity for its workflow steps", async () => {
+  await act(async () => root.render(<WorkflowsScreen onClose={() => {}} />))
+  const openRun = async (title: string) => {
+    const card = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('ul[aria-label="Runs"] button')
+    ).find((element) => element.textContent?.includes(title))!
+    await act(async () => card.click())
+  }
+
+  await openRun("Code review")
+  expect(container.textContent).toContain("Simulated preview")
+  expect(container.textContent).toContain("Review changes")
+  expect(container.textContent).toContain("Identify risks")
+  expect(container.textContent).toContain("Summarize findings")
+  expect(container.textContent).toContain("no work was executed")
+  const stepDisclosure = container.querySelector<HTMLDetailsElement>("li details")!
+  expect(stepDisclosure.open).toBe(false)
+  await act(async () => stepDisclosure.querySelector("summary")!.click())
+  expect(stepDisclosure.open).toBe(true)
+  expect(container.textContent).toContain("I’ll map the changed files")
+  expect(container.textContent).toContain("Tool calls")
+  expect(container.textContent).toContain("Read files")
+  expect(container.textContent).toContain("nothing was executed")
+  await act(async () =>
+    container.querySelector<HTMLButtonElement>('[aria-label="Back to runs"]')!.click()
+  )
+
+  await openRun("Project health check")
+  expect(container.textContent).toContain("Check quality")
+  expect(container.textContent).toContain("Report project health")
+  expect(container.textContent).toContain("Not completed")
+  await act(async () =>
+    container.querySelector<HTMLButtonElement>('[aria-label="Back to runs"]')!.click()
+  )
+
+  await openRun("Release preparation")
+  expect(container.textContent).toContain("Review readiness")
+  expect(container.textContent).toContain("Prepare release summary")
+  expect(container.textContent).toContain("Waiting to prepare the release summary.")
+})
+
 async function selectRunOption(id: string, label: string) {
   await act(async () =>
     document.querySelector<HTMLButtonElement>(`#${id}`)!.click()
@@ -899,7 +940,7 @@ it("requires workspace, workflow, and nonblank objective, and leaves Start unwir
   await editRunObjective("Review this project")
   await act(async () => dialogButton("Start").click())
   expect(document.querySelector('[role="dialog"]')).not.toBeNull()
-  expect(container.querySelectorAll('ul[aria-label="Runs"] li')).toHaveLength(3)
+  expect(container.querySelectorAll('ul[aria-label="Runs"] li')).toHaveLength(4)
   await selectRunOption("new-run-workspace", "/projects/other")
   expect(document.querySelector("#new-run-project")?.textContent).toContain(
     "No project"

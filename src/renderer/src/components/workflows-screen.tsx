@@ -49,29 +49,45 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
 import type { Project } from "@/types"
 import { WorkflowDetail } from "@/components/workflow-detail"
+import { RunDetail } from "@/components/run-detail"
 import { NewRunDialog } from "@/components/new-run-dialog"
 import type { WorkflowDefinition } from "../../../shared/workflows"
 
-const RUN_STATUSES = ["All statuses", "Completed", "Paused", "Cancelled"]
+const RUN_STATUSES = ["All statuses", "Active", "Completed", "Paused", "Cancelled"]
 
 const EXAMPLE_RUNS = [
   {
     id: "example-run",
+    workflowId: "code-review",
     title: "Code review",
+    objective: "Review the changes for correctness, security, and test coverage.",
     projectId: null,
     status: "Completed",
     createdAt: Date.parse("2026-10-17T14:30:00Z"),
   },
   {
+    id: "example-active-run",
+    workflowId: "code-review",
+    title: "Code review",
+    objective: "Review the changes for correctness, security, and test coverage.",
+    projectId: null,
+    status: "Active",
+    createdAt: Date.parse("2026-10-18T12:30:00Z"),
+  },
+  {
     id: "example-cancelled-run",
+    workflowId: "project-health",
     title: "Project health check",
+    objective: "Assess the project’s health and identify actionable risks.",
     projectId: null,
     status: "Cancelled",
     createdAt: Date.parse("2026-10-17T16:45:00Z"),
   },
   {
     id: "example-paused-run",
+    workflowId: "release-preparation",
     title: "Release preparation",
+    objective: "Check readiness and prepare a concise release summary.",
     projectId: null,
     status: "Paused",
     createdAt: Date.parse("2026-10-17T18:15:00Z"),
@@ -90,6 +106,7 @@ export function WorkflowsScreen({ onClose }: { onClose: () => void }) {
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(
     null
   )
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState("runs")
   const [newRunOpen, setNewRunOpen] = useState(false)
   const selectedWorkflow = workflows.find(
@@ -200,6 +217,21 @@ export function WorkflowsScreen({ onClose }: { onClose: () => void }) {
     } finally {
       setDeletingWorkflow(false)
     }
+  }
+
+  const selectedRun = EXAMPLE_RUNS.find((run) => run.id === selectedRunId)
+
+  if (selectedRun) {
+    return (
+      <RunDetail
+        run={selectedRun}
+        workflow={workflows.find(
+          (workflow) => workflow.id === selectedRun.workflowId
+        )}
+        onBack={() => setSelectedRunId(null)}
+        onClose={onClose}
+      />
+    )
   }
 
   if (selectedWorkflow) {
@@ -405,10 +437,12 @@ export function WorkflowsScreen({ onClose }: { onClose: () => void }) {
                 {runs.length > 0 ? (
                   <ul aria-label="Runs" className="space-y-3 p-4">
                     {runs.map((run) => (
-                      <li
-                        key={run.id}
-                        className="flex items-start justify-between gap-4 rounded-lg border p-4"
-                      >
+                      <li key={run.id}>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedRunId(run.id)}
+                          className="flex w-full items-start justify-between gap-4 rounded-lg border p-4 text-left transition-colors hover:bg-accent/40 focus-visible:outline-2 focus-visible:outline-ring"
+                        >
                         <div className="min-w-0 space-y-1">
                           <h3 className="font-medium">{run.title}</h3>
                           <p className="text-xs text-muted-foreground">
@@ -422,6 +456,8 @@ export function WorkflowsScreen({ onClose }: { onClose: () => void }) {
                               "w-24 justify-center",
                               run.status === "Completed" &&
                                 "bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300",
+                              run.status === "Active" &&
+                                "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300",
                               run.status === "Paused" &&
                                 "bg-yellow-100 text-yellow-800 dark:bg-yellow-950 dark:text-yellow-300",
                               run.status === "Cancelled" &&
@@ -440,6 +476,7 @@ export function WorkflowsScreen({ onClose }: { onClose: () => void }) {
                             })}
                           </time>
                         </div>
+                        </button>
                       </li>
                     ))}
                   </ul>
