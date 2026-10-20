@@ -198,11 +198,17 @@ export function WorkflowsScreen({
   const filters = [
     { id: "all", name: "All", icon: Layers },
     { id: null, name: "None", icon: FolderOpen },
-    ...projects.map((project) => ({
-      id: project.id,
-      name: project.name,
-      icon: FolderOpen,
-    })),
+    ...[...projects]
+      .sort((a, b) =>
+        a.name.trim().localeCompare(b.name.trim(), undefined, {
+          sensitivity: "base",
+        })
+      )
+      .map((project) => ({
+        id: project.id,
+        name: project.name,
+        icon: FolderOpen,
+      })),
   ]
   const selectedName = filters.find(
     (filter) => filter.id === projectFilter
@@ -352,9 +358,27 @@ export function WorkflowsScreen({
               </div>
               <ScrollArea className="min-h-0 flex-1">
                 <div className="flex flex-col gap-0.5 px-2 pb-2">
-                  {filters.map((filter) => (
+                  {filters.slice(0, 2).map((filter) => (
                     <button
                       key={filter.id ?? "none"}
+                      type="button"
+                      aria-pressed={projectFilter === filter.id}
+                      onClick={() => setProjectFilter(filter.id)}
+                      className={cn(
+                        "flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left focus-visible:outline-2 focus-visible:outline-ring",
+                        projectFilter === filter.id
+                          ? "bg-accent text-accent-foreground"
+                          : "hover:bg-accent/50"
+                      )}
+                    >
+                      <filter.icon className="size-4 shrink-0 text-muted-foreground" />
+                      <span className="truncate">{filter.name}</span>
+                    </button>
+                  ))}
+                  <div role="separator" className="my-1 border-t" />
+                  {filters.slice(2).map((filter) => (
+                    <button
+                      key={filter.id}
                       type="button"
                       aria-pressed={projectFilter === filter.id}
                       onClick={() => setProjectFilter(filter.id)}
