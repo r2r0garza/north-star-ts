@@ -40,6 +40,7 @@ export function NewRunDialog({
   projects,
   selectedProjectId,
   workflows,
+  initialWorkflowId = null,
   onStarted,
 }: {
   open: boolean
@@ -47,6 +48,7 @@ export function NewRunDialog({
   projects: Project[]
   selectedProjectId: string | null
   workflows: WorkflowDefinition[]
+  initialWorkflowId?: string | null
   onStarted: (run: import("../../../shared/workflow-runs").WorkflowRun) => void
 }) {
   const popupContainerRef = useRef<HTMLDivElement>(null)
@@ -89,6 +91,25 @@ export function NewRunDialog({
   const project = projects.find((item) => item.id === projectId)
   const workspace = workspaces.find((item) => item.id === workspaceId)
   const workflow = workflows.find((item) => item.id === workflowId)
+
+  const wasOpen = useRef(false)
+  const openedFromShortcut = useRef(false)
+  useEffect(() => {
+    if (open && !wasOpen.current) {
+      if (initialWorkflowId) {
+        const initial = workflows.find((item) => item.id === initialWorkflowId)
+        setWorkflowId(initial?.id ?? null)
+        setObjective(initial?.defaultObjective ?? "")
+        setPendingObjective(null)
+      } else if (openedFromShortcut.current) {
+        setWorkflowId(null)
+        setObjective("")
+        setPendingObjective(null)
+      }
+      openedFromShortcut.current = Boolean(initialWorkflowId)
+    }
+    wasOpen.current = open
+  }, [open, initialWorkflowId, workflows])
 
   useEffect(() => {
     if (!open) return

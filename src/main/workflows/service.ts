@@ -35,7 +35,10 @@ export function workflowStepPrompt(run: WorkflowRun, index: number): string {
   const previous = run.steps
     .slice(0, index)
     .map((step) => ({ title: step.title, result: step.result?.slice(0, 8000) }))
-  return `Execute step ${index + 1} of ${run.steps.length} of workflow ${JSON.stringify(run.title)} in the selected workspace.
+  const skillPrefix = run.steps[index].skillName
+    ? `/${run.steps[index].skillName}\n`
+    : ""
+  return `${skillPrefix}Execute step ${index + 1} of ${run.steps.length} of workflow ${JSON.stringify(run.title)} in the selected workspace.
 Overall objective: ${run.objective}
 Current step: ${run.steps[index].title}
 Instructions: ${run.steps[index].instructions}
@@ -289,11 +292,13 @@ export class WorkflowService {
             conversationSubagentsEnabled: false,
             taskId: task.id,
             completionInstruction: handoffInstruction(handoffId),
+            // The opening message is already persisted, so activate its skill explicitly.
+            ...(!repair && step.skillName ? { skills: [step.skillName] } : {}),
             ...(repair
               ? { userMessage: repair, reportOnly: true }
               : continuing
                 ? {
-                    userMessage: `Resume execution of the unfinished step. This supersedes any previous report-only repair request. Inspect existing progress and completed actions; do not repeat completed work. Continue the remaining work and return the required handoff.\n\n${workflowStepPrompt(run, index)}`,
+                    userMessage: `${step.skillName ? `/${step.skillName}\n` : ""}Resume execution of the unfinished step. This supersedes any previous report-only repair request. Inspect existing progress and completed actions; do not repeat completed work. Continue the remaining work and return the required handoff.\n\n${workflowStepPrompt(run, index)}`,
                   }
                 : {}),
             onEvent: (event) => {

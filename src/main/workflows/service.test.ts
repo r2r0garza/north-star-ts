@@ -613,3 +613,36 @@ it("leaves shutdown-aborted work for interruption reconciliation and resumes the
   expect(state.agent).toHaveBeenCalledTimes(3)
   expect(state.runs.get(run.id)?.steps).toEqual(completed.steps)
 })
+
+it("prefixes assigned skills and activates them without duplicating opening messages", async () => {
+  state.workflow.steps[0].skillName = "git-commit"
+  const run = start()
+  state.workflow.steps[0].skillName = "changed"
+  expect(run.steps[0].skillName).toBe("git-commit")
+  state.agent.mockResolvedValueOnce({ content: handoff(`${run.id}:a`) })
+  state.agent.mockResolvedValueOnce({ content: handoff(`${run.id}:b`) })
+  expect(await service.execute(context(run))).not.toHaveProperty("error")
+  expect(vi.mocked(appendMessage).mock.calls[0][0].content).toMatch(
+    /^\/git-commit\nExecute step/
+  )
+  expect(state.agent.mock.calls[0][0]).toMatchObject({ skills: ["git-commit"] })
+  expect(state.agent.mock.calls[0][0]).not.toHaveProperty("userMessage")
+  expect(state.agent.mock.calls[1][0]).not.toHaveProperty("skills")
+  expect(vi.mocked(appendMessage).mock.calls[1][0].content).toMatch(
+    /^Execute step/
+  )
+})
+
+it("keeps assigned skills active when resuming a step", async () => {
+  state.workflow.steps[0].skillName = "git-commit"
+  const run = start()
+  const saved = state.runs.get(run.id)!
+  saved.steps[0].conversationId = "existing-conversation"
+  state.agent.mockResolvedValueOnce({ content: handoff(`${run.id}:a`) })
+  state.agent.mockResolvedValueOnce({ content: handoff(`${run.id}:b`) })
+  expect(await service.execute(context(run))).not.toHaveProperty("error")
+  expect(state.agent.mock.calls[0][0]).toMatchObject({
+    skills: ["git-commit"],
+    userMessage: expect.stringMatching(/^\/git-commit\nResume/),
+  })
+})

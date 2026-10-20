@@ -50,6 +50,7 @@ import {
 } from "@/components/ui/combobox"
 import type { AccountWithModels } from "../../../main/ipc/provider-handlers"
 import type { AgentSummary } from "@/types"
+import type { SkillSummary } from "../../../preload"
 
 import type {
   WorkflowDefinition,
@@ -64,6 +65,7 @@ function SortableStep({
   onSave,
   modelGroups,
   agents,
+  skills,
   systemAgentName,
 }: {
   step: WorkflowStep
@@ -73,11 +75,17 @@ function SortableStep({
   onSave: () => void
   modelGroups: AccountWithModels[]
   agents: AgentSummary[]
+  skills: SkillSummary[]
   systemAgentName: string
 }) {
   const [open, setOpen] = useState(false)
   const modelTrigger = useRef<HTMLButtonElement>(null)
   const agentTrigger = useRef<HTMLButtonElement>(null)
+  const skillTrigger = useRef<HTMLButtonElement>(null)
+  const skillOptions = [
+    { value: "", label: "Automatic (no assigned skill)" },
+    ...skills.map((skill) => ({ value: skill.name, label: skill.name })),
+  ]
   const groups = modelGroups
     .filter((account) => account.models.length > 0)
     .map(({ account, models }) => ({
@@ -310,6 +318,60 @@ function SortableStep({
                 </Combobox>
               </div>
             </div>
+            <div className="space-y-2">
+              <Label htmlFor={`${step.id}-skill`}>Skill</Label>
+              <Combobox
+                items={skillOptions}
+                value={
+                  skillOptions.find(
+                    (item) => item.value === (step.skillName ?? "")
+                  ) ?? {
+                    value: step.skillName!,
+                    label: step.skillName!,
+                  }
+                }
+                isItemEqualToValue={(a, b) => a?.value === b?.value}
+                onValueChange={(skill) => {
+                  onChange({ ...step, skillName: skill?.value || undefined })
+                  onSave()
+                }}
+              >
+                <ComboboxTrigger
+                  ref={skillTrigger}
+                  id={`${step.id}-skill`}
+                  className="flex h-9 w-full min-w-0 items-center justify-between gap-2 overflow-hidden rounded-lg border border-input px-3 text-sm hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring"
+                >
+                  <ComboboxValue>
+                    {(value: { label: string } | null) => (
+                      <span className="truncate">
+                        {value?.label ?? "Automatic (no assigned skill)"}
+                      </span>
+                    )}
+                  </ComboboxValue>
+                </ComboboxTrigger>
+                <ComboboxContent anchor={skillTrigger} className="min-w-64">
+                  <ComboboxInput
+                    placeholder="Search skills…"
+                    showTrigger={false}
+                  />
+                  <ComboboxEmpty>No skills found.</ComboboxEmpty>
+                  <ComboboxList>
+                    {(skill: { value: string; label: string }) => (
+                      <ComboboxItem
+                        key={skill.value || "__automatic__"}
+                        value={skill}
+                      >
+                        {skill.label}
+                      </ComboboxItem>
+                    )}
+                  </ComboboxList>
+                </ComboboxContent>
+              </Combobox>
+              <p className="text-xs text-muted-foreground">
+                Without an assigned skill, the agent may choose any relevant
+                skills for this step.
+              </p>
+            </div>
           </div>
         </CollapsibleContent>
       </Collapsible>
@@ -330,6 +392,7 @@ export function WorkflowDetail({
 }) {
   const [modelGroups, setModelGroups] = useState<AccountWithModels[]>([])
   const [agents, setAgents] = useState<AgentSummary[]>([])
+  const [skills, setSkills] = useState<SkillSummary[]>([])
   const systemAgentName = window.cowork.system().mainAgentName
   useEffect(() => {
     void window.cowork.providers
@@ -338,6 +401,9 @@ export function WorkflowDetail({
     void window.cowork.agents
       .list()
       .then(setAgents, () => toast.error("Could not load agents"))
+    void window.cowork.skills
+      .list()
+      .then(setSkills, () => toast.error("Could not load skills"))
   }, [])
 
   const latest = useRef(workflow)
@@ -575,6 +641,7 @@ export function WorkflowDetail({
                       onSave={save}
                       modelGroups={modelGroups}
                       agents={agents}
+                      skills={skills}
                       systemAgentName={systemAgentName}
                       onChange={(updated) =>
                         change({

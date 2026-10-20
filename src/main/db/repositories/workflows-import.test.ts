@@ -25,6 +25,7 @@ function definition(): WorkflowDefinition {
         accountId: "local-account",
         modelId: "local-model",
         agentName: "local-agent",
+        skillName: "git-commit",
       },
       { id: "second", title: "Report", instructions: "Summarize findings" },
     ],
@@ -118,6 +119,7 @@ describe("workflow import validation", () => {
         id: expect.any(String),
         title: "Inspect",
         instructions: "Read the diff",
+        skillName: "git-commit",
       },
       {
         id: expect.any(String),
@@ -127,4 +129,23 @@ describe("workflow import validation", () => {
     ])
     expect(run).toHaveBeenCalledOnce()
   })
+})
+
+it.each([123, "", "/git-commit", "git-commit\ninjected"])(
+  "rejects invalid skill assignment %j",
+  (skillName) => {
+    const source = definition()
+    expect(() =>
+      importWorkflow({ ...source, steps: [{ ...source.steps[0], skillName }] })
+    ).toThrow("Invalid workflow")
+    expect(getDb).not.toHaveBeenCalled()
+  }
+)
+
+it("preserves assigned skills through portable export and import", () => {
+  const imported = importWorkflow(
+    JSON.parse(serializeWorkflowExport(definition()))
+  )
+  expect(imported.steps[0].skillName).toBe("git-commit")
+  expect(imported.steps[1].skillName).toBeUndefined()
 })

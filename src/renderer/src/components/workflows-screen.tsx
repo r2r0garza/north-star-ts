@@ -89,6 +89,9 @@ export function WorkflowsScreen({
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState("runs")
   const [newRunOpen, setNewRunOpen] = useState(false)
+  const [initialWorkflowId, setInitialWorkflowId] = useState<string | null>(
+    null
+  )
   useEffect(() => {
     if (requestedRun) {
       setSelectedWorkflowId(null)
@@ -121,7 +124,10 @@ export function WorkflowsScreen({
       size="sm"
       variant="outline"
       className="shrink-0"
-      onClick={() => setNewRunOpen(true)}
+      onClick={() => {
+        setInitialWorkflowId(null)
+        setNewRunOpen(true)
+      }}
     >
       <Plus className="size-4" />
       New Run
@@ -240,7 +246,9 @@ export function WorkflowsScreen({
       setWorkflows((current) => [...current, result.workflow!])
       toast.info("Workflow imported")
     } catch {
-      toast.error("Could not import workflow. Check that the JSON file is valid.")
+      toast.error(
+        "Could not import workflow. Check that the JSON file is valid."
+      )
     }
   }
 
@@ -604,7 +612,14 @@ export function WorkflowsScreen({
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-3">
                     <h2 className="font-medium">Workflow collection</h2>
-                    <Button variant="outline" size="sm" disabled={!workflowsLoaded} onClick={importWorkflow}>Import JSON</Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={!workflowsLoaded}
+                      onClick={importWorkflow}
+                    >
+                      Import JSON
+                    </Button>
                   </div>
                   <Button
                     variant="outline"
@@ -631,36 +646,48 @@ export function WorkflowsScreen({
                     <Card
                       key={workflow.id}
                       size="sm"
-                      className="relative hover:ring-foreground/25"
+                      className="relative h-full min-w-0 hover:ring-foreground/25"
                     >
-                      <CardHeader className="gap-3">
+                      <CardHeader className="h-full min-w-0 grid-cols-1 gap-3">
                         <div className="flex items-center justify-between gap-2">
                           <Workflow className="size-5 text-muted-foreground" />
                           <Badge variant="secondary">Saved</Badge>
                         </div>
-                        <CardTitle>
+                        <CardTitle className="min-w-0">
                           <button
                             type="button"
-                            className="text-left after:absolute after:inset-0 focus-visible:outline-2 focus-visible:outline-ring"
+                            className="block max-w-full truncate text-left after:absolute after:inset-0 focus-visible:outline-2 focus-visible:outline-ring"
+                            title={workflow.name}
                             onClick={() => setSelectedWorkflowId(workflow.id)}
                           >
                             {workflow.name}
                           </button>
                         </CardTitle>
-                        <CardDescription>
+                        <CardDescription className="line-clamp-2 min-h-10">
                           {workflow.description}
                         </CardDescription>
-                        <div className="relative z-10 flex items-center gap-2">
+                        <div className="relative z-10 mt-auto flex items-center gap-2">
                           <Button
                             size="sm"
                             variant="outline"
                             className="flex-1"
-                            disabled
+                            onClick={() => {
+                              setInitialWorkflowId(workflow.id)
+                              setActiveTab("runs")
+                              setNewRunOpen(true)
+                            }}
                           >
                             <Play className="size-4" />
                             Run workflow
                           </Button>
-                          <Button size="sm" variant="ghost" aria-label={`Export workflow: ${workflow.name || "Untitled workflow"}`} onClick={() => void exportWorkflow(workflow)}>Export</Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            aria-label={`Export workflow: ${workflow.name || "Untitled workflow"}`}
+                            onClick={() => void exportWorkflow(workflow)}
+                          >
+                            Export
+                          </Button>
                           <Button
                             size="icon-sm"
                             variant="ghost"
@@ -685,6 +712,7 @@ export function WorkflowsScreen({
         projects={projects}
         selectedProjectId={projectFilter !== "all" ? projectFilter : null}
         workflows={workflows}
+        initialWorkflowId={initialWorkflowId}
         onStarted={(run) => {
           setSavedRuns((current) => [run, ...current])
           setSelectedRunId(run.id)

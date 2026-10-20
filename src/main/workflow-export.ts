@@ -10,10 +10,11 @@ export function serializeWorkflowExport(workflow: WorkflowDefinition): string {
       description,
       defaultObjective,
       viewInConversationSidebar,
-      steps: workflow.steps.map(({ id, title, instructions }) => ({
+      steps: workflow.steps.map(({ id, title, instructions, skillName }) => ({
         id,
         title,
         instructions,
+        skillName,
       })),
     },
     null,

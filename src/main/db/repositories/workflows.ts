@@ -28,7 +28,14 @@ export function importWorkflow(input: unknown): WorkflowDefinition {
   if (!input || typeof input !== "object" || Array.isArray(input))
     throw new Error("Invalid workflow")
   const source = input as Record<string, unknown>
-  const allowed = new Set(["id", "name", "description", "defaultObjective", "viewInConversationSidebar", "steps"])
+  const allowed = new Set([
+    "id",
+    "name",
+    "description",
+    "defaultObjective",
+    "viewInConversationSidebar",
+    "steps",
+  ])
   if (Object.keys(source).some((key) => !allowed.has(key)))
     throw new Error("Invalid workflow")
   if (!Array.isArray(source.steps)) throw new Error("Invalid workflow")
@@ -36,8 +43,17 @@ export function importWorkflow(input: unknown): WorkflowDefinition {
     if (!step || typeof step !== "object" || Array.isArray(step))
       throw new Error("Invalid workflow")
     const row = step as Record<string, unknown>
-    const stepKeys = new Set(["id", "title", "instructions", "accountId", "modelId", "agentName"])
-    if (Object.keys(row).some((key) => !stepKeys.has(key))) throw new Error("Invalid workflow")
+    const stepKeys = new Set([
+      "id",
+      "title",
+      "instructions",
+      "accountId",
+      "modelId",
+      "agentName",
+      "skillName",
+    ])
+    if (Object.keys(row).some((key) => !stepKeys.has(key)))
+      throw new Error("Invalid workflow")
   })
   validateWorkflow(source)
   const workflow: WorkflowDefinition = {
@@ -46,8 +62,16 @@ export function importWorkflow(input: unknown): WorkflowDefinition {
     steps: source.steps.map((step) => ({ ...step, id: randomUUID() })),
   }
   const db = getDb()
-  db.prepare("INSERT INTO workflows (id, name, description, default_objective, view_in_conversation_sidebar, steps, position) SELECT ?, ?, ?, ?, ?, ?, COALESCE(MAX(position), -1) + 1 FROM workflows")
-    .run(workflow.id, workflow.name, workflow.description, workflow.defaultObjective, workflow.viewInConversationSidebar ? 1 : 0, JSON.stringify(workflow.steps))
+  db.prepare(
+    "INSERT INTO workflows (id, name, description, default_objective, view_in_conversation_sidebar, steps, position) SELECT ?, ?, ?, ?, ?, ?, COALESCE(MAX(position), -1) + 1 FROM workflows"
+  ).run(
+    workflow.id,
+    workflow.name,
+    workflow.description,
+    workflow.defaultObjective,
+    workflow.viewInConversationSidebar ? 1 : 0,
+    JSON.stringify(workflow.steps)
+  )
   return workflow
 }
 
@@ -64,7 +88,9 @@ export function listWorkflows(): WorkflowDefinition[] {
   }))
 }
 
-export function validateWorkflow(input: unknown): asserts input is WorkflowDefinition {
+export function validateWorkflow(
+  input: unknown
+): asserts input is WorkflowDefinition {
   const workflow = input as WorkflowDefinition
   if (
     !workflow ||
@@ -84,7 +110,10 @@ export function validateWorkflow(input: unknown): asserts input is WorkflowDefin
         typeof step.instructions !== "string" ||
         (step.accountId != null && typeof step.accountId !== "string") ||
         (step.modelId != null && typeof step.modelId !== "string") ||
-        (step.agentName != null && typeof step.agentName !== "string")
+        (step.agentName != null && typeof step.agentName !== "string") ||
+        (step.skillName != null &&
+          (typeof step.skillName !== "string" ||
+            !/^[a-z0-9-]+$/.test(step.skillName)))
     ) ||
     new Set(workflow.steps.map((step) => step.id)).size !==
       workflow.steps.length

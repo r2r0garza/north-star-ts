@@ -87,6 +87,11 @@ beforeEach(() => {
   vi.mocked(toast.error).mockClear()
   window.cowork = {
     system: vi.fn(() => ({ mainAgentName: "North Star" })),
+    skills: {
+      list: vi.fn(async () => [
+        { name: "git-commit", description: "Commit changes" },
+      ]),
+    },
     agents: {
       list: vi.fn(async () => [
         { name: "north-star", refId: "north-star", label: "North Star" },
@@ -216,18 +221,25 @@ it("defaults to Runs and switches between all, unassigned, and project scopes", 
 
 it("imports workflows and reports import errors", async () => {
   const imported = { ...EXAMPLE_WORKFLOWS[0], id: "imported" }
-  vi.mocked(window.cowork.db.workflows.importFile).mockResolvedValueOnce({ canceled: false, workflow: imported })
+  vi.mocked(window.cowork.db.workflows.importFile).mockResolvedValueOnce({
+    canceled: false,
+    workflow: imported,
+  })
   await openWorkflowCollection()
   await act(async () => button("Import JSON").click())
   expect(container.querySelectorAll('[data-slot="card"]')).toHaveLength(4)
   expect(container.querySelectorAll('[data-slot="card"]')).toHaveLength(4)
   expect(toast.info).toHaveBeenCalledWith("Workflow imported")
-  vi.mocked(window.cowork.db.workflows.importFile).mockRejectedValueOnce(new Error("invalid"))
+  vi.mocked(window.cowork.db.workflows.importFile).mockRejectedValueOnce(
+    new Error("invalid")
+  )
   await act(async () => button("Import JSON").click())
-  expect(toast.error).toHaveBeenCalledWith(expect.stringContaining("Could not import workflow"))
+  expect(toast.error).toHaveBeenCalledWith(
+    expect.stringContaining("Could not import workflow")
+  )
 })
 
-it("shows clearly labeled workflow preview cards without execution controls enabled", async () => {
+it("shows clearly labeled workflow preview cards with enabled run shortcuts", async () => {
   await act(async () => root.render(<WorkflowsScreen onClose={() => {}} />))
   const tab = container.querySelector<HTMLElement>(
     '[role="tab"][id$="workflows"]'
@@ -244,7 +256,7 @@ it("shows clearly labeled workflow preview cards without execution controls enab
     (button) => button.textContent?.includes("Run workflow")
   )
   expect(runButtons).toHaveLength(3)
-  expect(runButtons.every((button) => button.disabled)).toBe(true)
+  expect(runButtons.every((button) => !button.disabled)).toBe(true)
 })
 
 async function openCodeReview() {
@@ -744,7 +756,9 @@ async function openWorkflowCollection() {
 
 function dialogButton(label: string) {
   return Array.from(
-    document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button, [role="alertdialog"] button')
+    document.querySelectorAll<HTMLButtonElement>(
+      '[role="dialog"] button, [role="alertdialog"] button'
+    )
   ).find((element) => element.textContent === label)!
 }
 
@@ -1015,50 +1029,59 @@ it.each([
   ["new-run-project", "north", "North Star", "Website"],
   ["new-run-workspace", "north", "/projects/north-star", "/projects/other"],
   ["new-run-workflow", "review", "Code review", "Project health check"],
-])("searches and selects a filtered result in %s", async (id, query, match, other) => {
-  await act(async () => root.render(<WorkflowsScreen onClose={() => {}} />))
-  await act(async () => button("New Run").click())
-  const dialog = document.querySelector<HTMLElement>('[data-slot="dialog-content"]')!
-  const childCount = dialog.children.length
-  await act(async () =>
-    document.querySelector<HTMLButtonElement>(`#${id}`)!.click()
-  )
-  expect(dialog.children).toHaveLength(childCount)
-  const popup = document.querySelector<HTMLElement>(
-    '[data-slot="combobox-content"]'
-  )!
-  expect(popup.closest('[data-slot="dialog-content"]')).toBe(dialog)
-  const portalContainer = Array.from(dialog.children).find((child) => child.contains(popup))!
-  expect(portalContainer.classList.contains("absolute")).toBe(true)
-  const search = popup.querySelector<HTMLInputElement>("input")!
-  await act(async () => search.focus())
-  expect(document.activeElement).toBe(search)
-  async function typeSearch(value: string) {
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(
-        HTMLInputElement.prototype,
-        "value"
-      )!.set!.call(search, value)
-      search.dispatchEvent(new Event("input", { bubbles: true }))
-    })
+])(
+  "searches and selects a filtered result in %s",
+  async (id, query, match, other) => {
+    await act(async () => root.render(<WorkflowsScreen onClose={() => {}} />))
+    await act(async () => button("New Run").click())
+    const dialog = document.querySelector<HTMLElement>(
+      '[data-slot="dialog-content"]'
+    )!
+    const childCount = dialog.children.length
+    await act(async () =>
+      document.querySelector<HTMLButtonElement>(`#${id}`)!.click()
+    )
+    expect(dialog.children).toHaveLength(childCount)
+    const popup = document.querySelector<HTMLElement>(
+      '[data-slot="combobox-content"]'
+    )!
+    expect(popup.closest('[data-slot="dialog-content"]')).toBe(dialog)
+    const portalContainer = Array.from(dialog.children).find((child) =>
+      child.contains(popup)
+    )!
+    expect(portalContainer.classList.contains("absolute")).toBe(true)
+    const search = popup.querySelector<HTMLInputElement>("input")!
+    await act(async () => search.focus())
     expect(document.activeElement).toBe(search)
+    async function typeSearch(value: string) {
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(
+          HTMLInputElement.prototype,
+          "value"
+        )!.set!.call(search, value)
+        search.dispatchEvent(new Event("input", { bubbles: true }))
+      })
+      expect(document.activeElement).toBe(search)
+    }
+    const options = () =>
+      Array.from(popup.querySelectorAll<HTMLElement>('[role="option"]'))
+    expect(options().map((item) => item.textContent)).toContain(other)
+    await typeSearch(query)
+    expect(options().map((item) => item.textContent)).toContain(match)
+    expect(options().map((item) => item.textContent)).not.toContain(other)
+    await typeSearch("no-such-option")
+    expect(options()).toHaveLength(0)
+    expect(popup.textContent).toContain("No matches found.")
+    await typeSearch(query)
+    await act(async () =>
+      options()
+        .find((item) => item.textContent === match)!
+        .click()
+    )
+    expect(document.querySelector(`#${id}`)?.textContent).toContain(match)
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull()
   }
-  const options = () =>
-    Array.from(popup.querySelectorAll<HTMLElement>('[role="option"]'))
-  expect(options().map((item) => item.textContent)).toContain(other)
-  await typeSearch(query)
-  expect(options().map((item) => item.textContent)).toContain(match)
-  expect(options().map((item) => item.textContent)).not.toContain(other)
-  await typeSearch("no-such-option")
-  expect(options()).toHaveLength(0)
-  expect(popup.textContent).toContain("No matches found.")
-  await typeSearch(query)
-  await act(async () =>
-    options().find((item) => item.textContent === match)!.click()
-  )
-  expect(document.querySelector(`#${id}`)?.textContent).toContain(match)
-  expect(document.querySelector('[role="dialog"]')).not.toBeNull()
-})
+)
 
 async function editRunObjective(value: string) {
   const field =
@@ -1143,7 +1166,9 @@ it("prefills workflow objectives, preserves dismissed drafts, and clears every f
   expect(
     document.querySelector<HTMLTextAreaElement>("#new-run-objective")?.value
   ).toBe("My objective")
-  expect(document.querySelector('[data-slot="alert-dialog-content"]')).toBeNull()
+  expect(
+    document.querySelector('[data-slot="alert-dialog-content"]')
+  ).toBeNull()
   await selectRunOption("new-run-workflow", "Code review")
   expect(document.body.textContent).toContain("Find issues.")
   expect(document.querySelector('[role="alertdialog"]')).not.toBeNull()
@@ -1346,4 +1371,96 @@ it("opens the exact requested sidebar run and reports a missing run without subs
   )
   expect(container.textContent).toContain("This workflow run is unavailable.")
   expect(container.querySelector('[data-slot="run-detail"]')).toBeNull()
+})
+
+it("assigns and clears a step skill with immediate saves", async () => {
+  await openCodeReview()
+  await act(async () => button("1.Review changes").click())
+  const trigger = container.querySelector<HTMLButtonElement>(
+    "#review-changes-skill"
+  )!
+  expect(trigger.textContent).toContain("Automatic")
+  async function choose(label: string) {
+    await act(async () => trigger.click())
+    const option = Array.from(
+      document.querySelectorAll<HTMLElement>('[role="option"]')
+    ).find((item) => item.textContent === label)!
+    await act(async () => option.click())
+  }
+  await choose("git-commit")
+  expect(trigger.textContent).toContain("git-commit")
+  expect(
+    vi.mocked(window.cowork.db.workflows.update).mock.lastCall?.[0].steps[0]
+      .skillName
+  ).toBe("git-commit")
+  await choose("Automatic (no assigned skill)")
+  expect(
+    vi.mocked(window.cowork.db.workflows.update).mock.lastCall?.[0].steps[0]
+      .skillName
+  ).toBeUndefined()
+})
+
+it("displays a saved skill even when it is no longer listed", async () => {
+  const workflows = structuredClone(EXAMPLE_WORKFLOWS)
+  workflows[0].steps[0].skillName = "missing-skill"
+  vi.mocked(window.cowork.db.workflows.list).mockResolvedValueOnce(workflows)
+  await openCodeReview()
+  await act(async () => button("1.Review changes").click())
+  expect(
+    container.querySelector("#review-changes-skill")?.textContent
+  ).toContain("missing-skill")
+})
+
+it("opens the clicked workflow in Runs, resets shortcut selections, and starts the selected workflow", async () => {
+  const workflows = structuredClone(EXAMPLE_WORKFLOWS)
+  workflows[0].defaultObjective = "Review changes now"
+  workflows[1].defaultObjective = "Check project health"
+  vi.mocked(window.cowork.db.workflows.list).mockResolvedValueOnce(workflows)
+  await act(async () => root.render(<WorkflowsScreen onClose={() => {}} />))
+  async function runCard(name: string) {
+    await act(async () =>
+      container
+        .querySelector<HTMLElement>('[role="tab"][id$="workflows"]')!
+        .dispatchEvent(
+          new MouseEvent("mousedown", { bubbles: true, button: 0 })
+        )
+    )
+    const card = Array.from(
+      container.querySelectorAll('[data-slot="card"]')
+    ).find((item) => item.textContent?.includes(name))!
+    const run = Array.from(card.querySelectorAll("button")).find((item) =>
+      item.textContent?.includes("Run workflow")
+    )!
+    await act(async () => run.click())
+  }
+  await runCard("Code review")
+  expect(
+    container
+      .querySelector('[role="tab"][id$="runs"]')
+      ?.getAttribute("aria-selected")
+  ).toBe("true")
+  expect(document.querySelector("#new-run-workflow")?.textContent).toContain(
+    "Code review"
+  )
+  expect(
+    document.querySelector<HTMLTextAreaElement>("#new-run-objective")?.value
+  ).toBe("Review changes now")
+  await act(async () => dialogButton("Cancel").click())
+  await act(async () => button("New Run").click())
+  expect(document.querySelector("#new-run-workflow")?.textContent).toContain(
+    "Select a workflow"
+  )
+  await act(async () => dialogButton("Cancel").click())
+  await runCard("Project health check")
+  expect(document.querySelector("#new-run-workflow")?.textContent).toContain(
+    "Project health check"
+  )
+  await selectRunOption("new-run-project", "North Star")
+  await act(async () => dialogButton("Start").click())
+  expect(window.cowork.workflowRuns.start).toHaveBeenCalledWith(
+    expect.objectContaining({
+      workflowId: "project-health",
+      objective: "Check project health",
+    })
+  )
 })

@@ -5,6 +5,7 @@ export interface WorkflowStep {
   accountId?: string | null
   modelId?: string | null
   agentName?: string | null
+  skillName?: string | null
 }
 
 export interface WorkflowDefinition {
