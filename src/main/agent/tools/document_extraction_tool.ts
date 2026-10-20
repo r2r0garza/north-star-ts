@@ -813,7 +813,7 @@ export const readDocumentTool: Tool = {
             description:
               "Document path. In a workspace, relative to the workspace root " +
               "or an activated skill resource URI like skill://name/path. " +
-              "In Chat, the name or path of an attached file.",
+              "In any mode, an exact absolute path of an attached file; without a workspace, a unique attachment filename also works.",
           },
           cursor: {
             type: "string",

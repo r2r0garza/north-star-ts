@@ -5,6 +5,7 @@ import { beforeEach, afterEach, expect, it, vi } from "vitest"
 import App, { type AppHandle, type WorkflowConversationContext } from "./App"
 import { TooltipProvider } from "./components/ui/tooltip"
 import { formatWorkflowResult } from "../../shared/workflow-result"
+vi.mock("@/lib/notify", () => ({ maybeNotify: vi.fn() }))
 vi.mock("@/components/transcript", () => ({
   LiveTranscriptTurn: () => null,
   SettledTranscript: () => null,
@@ -19,13 +20,13 @@ const onContext = (next: WorkflowConversationContext) => {
   context = next
 }
 let id: string | null
-function render() {
+function render(view: "North Star" | "Interactive" | "Chat" = "North Star") {
   return act(async () => {
     root.render(
       <TooltipProvider>
         <App
           ref={ref}
-          view="North Star"
+          view={view}
           conversationId={id}
           pendingProjectId={null}
           searchOpen={null}
@@ -189,4 +190,186 @@ it("follows a folder picked in an unlocked worktree conversation", async () => {
   expect(update).toHaveBeenCalledWith("another", { workspaceId: "picked" })
   expect(context?.ready).toBe(true)
   expect(context?.workspace).toBe("/picked")
+})
+
+for (const view of ["Chat", "Interactive", "North Star"] as const) {
+  it(`stages picker and conversation drops with deduplication in ${view}`, async () => {
+    Object.assign(window.cowork, {
+      pickFiles: vi.fn(async () => ({ paths: ["/outside/screenshot.png"] })),
+      getPathForFile: (file: File) => `/outside/${file.name}`,
+    })
+    await render(view)
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Attach files"]')!
+        .click()
+    )
+    const zone = container.querySelector("[data-conversation-drop-zone]")!
+    function drag(type: string, target: Element = zone, types = ["Files"]) {
+      const event = new Event(type, { bubbles: true, cancelable: true })
+      Object.defineProperty(event, "dataTransfer", {
+        value: {
+          types,
+          files: [
+            new File(["image"], "screenshot.png"),
+            new File(["text"], "notes.txt"),
+          ],
+          dropEffect: "none",
+        },
+      })
+      target.dispatchEvent(event)
+      return event
+    }
+    await act(async () => {
+      drag("dragenter")
+      drag("dragenter", container.querySelector("textarea")!)
+    })
+    expect(container.textContent).toContain("Drop files to attach")
+    await act(async () => {
+      drag("dragleave", container.querySelector("textarea")!)
+    })
+    expect(container.textContent).toContain("Drop files to attach")
+    await act(async () => {
+      expect(
+        drag("drop", container.querySelector("textarea")!).defaultPrevented
+      ).toBe(true)
+    })
+    expect(container.textContent).not.toContain("Drop files to attach")
+    expect(
+      container.querySelectorAll('[aria-label="Remove screenshot.png"]')
+    ).toHaveLength(1)
+    expect(
+      container.querySelector('[aria-label="Remove notes.txt"]')
+    ).not.toBeNull()
+    await act(async () => {
+      expect(drag("drop", zone, ["text/plain"]).defaultPrevented).toBe(false)
+    })
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Remove notes.txt"]')!
+        .click()
+    )
+    expect(
+      container.querySelector('[aria-label="Remove notes.txt"]')
+    ).toBeNull()
+    expect(chat).not.toHaveBeenCalled()
+    id = "another"
+    await render(view)
+    expect(
+      container.querySelector('[aria-label="Remove screenshot.png"]')
+    ).toBeNull()
+  })
+}
+
+it("ignores picker results after changing conversations", async () => {
+  let finish!: (value: { paths: string[] }) => void
+  Object.assign(window.cowork, {
+    pickFiles: () =>
+      new Promise((resolve) => {
+        finish = resolve
+      }),
+  })
+  await render()
+  await act(async () =>
+    container
+      .querySelector<HTMLButtonElement>('[aria-label="Attach files"]')!
+      .click()
+  )
+  id = "another"
+  await render()
+  await act(async () => finish({ paths: ["/outside/stale.png"] }))
+  expect(container.querySelector('[aria-label="Remove stale.png"]')).toBeNull()
+})
+
+for (const view of ["Chat", "Interactive", "North Star"] as const) {
+  it(`sends attachments with the foreground message in ${view}`, async () => {
+    Object.assign(window.cowork.providers, {
+      listWithModels: async () => [
+        {
+          account: {
+            id: "account",
+            provider: "openai",
+            enabled: true,
+            name: "Test",
+          },
+          models: [{ modelId: "model", name: "Test model" }],
+        },
+      ],
+      getDefault: async () => ({
+        activeAccountId: "account",
+        activeModelId: "model",
+      }),
+    })
+    Object.assign(window.cowork.settings, {
+      getConversations: async () => ({ showRunInBackgroundButton: true }),
+    })
+    Object.assign(window.cowork, {
+      pickFiles: async () => ({ paths: ["/outside/screenshot.png"] }),
+    })
+    chat.mockResolvedValue({ error: "Test finished" })
+    await render(view)
+    await act(async () => {
+      ref.current?.appendTerminalSelection("Please inspect this screenshot")
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Attach files"]')!
+        .click()
+    })
+    if (view !== "Chat")
+      expect(
+        container.querySelector<HTMLButtonElement>(
+          'button[aria-label="Run in background"]'
+        )!.disabled
+      ).toBe(true)
+    const send = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Send"]'
+    )!
+    expect(send.disabled).toBe(false)
+    await act(async () => send.click())
+    expect(chat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining("Please inspect this screenshot"),
+        attachments: ["/outside/screenshot.png"],
+        workspace: view === "Chat" ? undefined : "/project",
+      }),
+      expect.any(Function)
+    )
+    expect(
+      container.querySelector('[aria-label="Remove screenshot.png"]')
+    ).toBeNull()
+  })
+}
+
+it("prevents silently dropping files with a CLI provider", async () => {
+  Object.assign(window.cowork.providers, {
+    listWithModels: async () => [
+      {
+        account: {
+          id: "account",
+          provider: "codex_cli",
+          enabled: true,
+          name: "Codex",
+        },
+        models: [{ modelId: "model", name: "Test model" }],
+      },
+    ],
+    getDefault: async () => ({
+      activeAccountId: "account",
+      activeModelId: "model",
+    }),
+  })
+  Object.assign(window.cowork, {
+    pickFiles: async () => ({ paths: ["/outside/screenshot.png"] }),
+  })
+  await render()
+  await act(async () => {
+    ref.current?.appendTerminalSelection("Please inspect this screenshot")
+    container
+      .querySelector<HTMLButtonElement>('[aria-label="Attach files"]')!
+      .click()
+  })
+  expect(
+    container.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!
+      .disabled
+  ).toBe(true)
+  expect(chat).not.toHaveBeenCalled()
 })

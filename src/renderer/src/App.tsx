@@ -570,6 +570,16 @@ function App(
   // project, not a per-conversation pick.
   const [lockedWorkspace, setLockedWorkspace] = useState(false)
   const [attachments, setAttachments] = useState<string[]>([])
+  const [draggingFiles, setDraggingFiles] = useState(false)
+  const fileDragDepth = useRef(0)
+  const attachmentContext = `${view}:${conversationId ?? "draft"}`
+  const attachmentContextRef = useRef(attachmentContext)
+  attachmentContextRef.current = attachmentContext
+  useEffect(() => {
+    fileDragDepth.current = 0
+    setDraggingFiles(false)
+    setAttachments([])
+  }, [attachmentContext])
   const [message, setMessage] = useState("")
   // Agent mode: controls how the agent behaves on workspace views.
   //   "default" — normal operation, confirms gated actions with the user.
@@ -974,14 +984,22 @@ function App(
   // Chat needs only a message (a file is optional); the workspace views need a
   // selected folder as well. All views need an LLM selection.
   const canSend =
-    !!message.trim() && !loading && hasLlm && (isChat || !!workspace.trim())
-  const sendUnavailableReason = !message.trim()
-    ? "Enter a message first"
-    : !hasLlm
-      ? "Choose a model before sending"
-      : !isChat && !workspace.trim()
-        ? "Select a workspace folder before sending"
-        : null
+    !!message.trim() &&
+    !loading &&
+    hasLlm &&
+    (isChat || !!workspace.trim()) &&
+    !(effectiveIsCli && attachments.length > 0)
+  const canRunInBackground = canSend && attachments.length === 0
+  const sendUnavailableReason =
+    effectiveIsCli && attachments.length > 0
+      ? "Attachments are not supported by CLI providers. Choose another model or remove the files."
+      : !message.trim()
+        ? "Enter a message first"
+        : !hasLlm
+          ? "Choose a model before sending"
+          : !isChat && !workspace.trim()
+            ? "Select a workspace folder before sending"
+            : null
 
   // Subscribe to elements picked in the agent browser. Each pick APPENDS a chip
   // (sticky picker button, or Alt/Option+click on a live page), so several can be
@@ -1453,16 +1471,44 @@ function App(
     }
   }
 
+  function addAttachments(paths: string[]) {
+    setAttachments((prev) => [...new Set([...prev, ...paths])])
+  }
+
   async function attachFiles() {
+    const context = attachmentContextRef.current
     try {
       const data = await window.cowork.pickFiles()
-      if (data.paths?.length) {
-        // Merge with existing, de-duplicating by path.
-        setAttachments((prev) => [...new Set([...prev, ...data.paths!])])
-      }
+      if (context !== attachmentContextRef.current) return
+      if (data.paths?.length) addAttachments(data.paths)
     } catch (error) {
-      pushError(error)
+      if (context === attachmentContextRef.current) pushError(error)
     }
+  }
+
+  function dropFiles(event: React.DragEvent) {
+    fileDragDepth.current = 0
+    setDraggingFiles(false)
+    if (!Array.from(event.dataTransfer.types).includes("Files")) return
+    event.preventDefault()
+    const paths: string[] = []
+    let failed = false
+    for (const file of Array.from(event.dataTransfer.files)) {
+      try {
+        const path = window.cowork.getPathForFile(file)
+        if (path) paths.push(path)
+        else failed = true
+      } catch {
+        failed = true
+      }
+    }
+    addAttachments(paths)
+    if (failed)
+      pushError(
+        new Error(
+          "Could not read a dropped file's path. Try the Attach files button instead."
+        )
+      )
   }
 
   // Surface a picker failure as an assistant text item in the transcript.
@@ -1688,7 +1734,9 @@ function App(
         kind: "text",
         key: `local-${turnConvoId}-${prev.length}`,
         role: "user",
-        content: text,
+        content: sentAttachments.length
+          ? `${text}\n\nAttached files: ${sentAttachments.map(lastSegment).join(", ")}`
+          : text,
         createdAt,
       },
     ])
@@ -1732,9 +1780,9 @@ function App(
           conversationId: turnConvoId,
           message: text,
           bashBlock,
-          // Chat sends no workspace and inlines attachments instead.
+          // Chat has no workspace; explicit attachments work in every mode.
           workspace: isChat ? undefined : workspace.trim(),
-          attachments: isChat ? sentAttachments : undefined,
+          attachments: sentAttachments,
           skills: bashBlock ? [] : [...confirmedSkills],
           // Plan mode is interactive/north_star only (never Chat); auto mode is
           // available everywhere, including Chat (suppresses browser_navigate
@@ -1986,7 +2034,7 @@ function App(
   // touch the transcript view here. Workspace-backed views only for now (Chat's
   // attachment-only path can come later).
   async function runInBackground() {
-    if (!canSend || isChat) return
+    if (!canRunInBackground || isChat) return
     if (!(await preflightExternalAgentModel("background"))) return
     const text = message.trim()
 
@@ -2911,8 +2959,8 @@ function App(
           ))}
         </AttachmentGroup>
       )}
-      {/* Attachment cards (Chat only) — removable, shown above the input. */}
-      {isChat && attachments.length > 0 && (
+      {/* Removable files staged for the next message. */}
+      {attachments.length > 0 && (
         <AttachmentGroup className="mb-2">
           {attachments.map((path) => (
             <Attachment key={path} size="sm" title={path}>
@@ -2987,17 +3035,16 @@ function App(
         </div>
         <div className="flex items-center justify-between px-2.5 pb-2.5">
           <div className="flex items-center gap-1">
-            {isChat ? (
-              <TooltipButton
-                tooltip="Attach files"
-                type="button"
-                onClick={attachFiles}
-                aria-label="Attach files"
-                className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              >
-                <Plus className="size-4" />
-              </TooltipButton>
-            ) : (
+            <TooltipButton
+              tooltip="Attach files"
+              type="button"
+              onClick={attachFiles}
+              aria-label="Attach files"
+              className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              <Plus className="size-4" />
+            </TooltipButton>
+            {!isChat && (
               <>
                 {lockedWorkspace ? (
                   // The directory comes from the conversation's project and can't
@@ -3175,17 +3222,19 @@ function App(
                   <TooltipTrigger asChild>
                     <span
                       className="inline-flex"
-                      role={!canSend ? "button" : undefined}
-                      aria-disabled={!canSend ? "true" : undefined}
-                      aria-label={!canSend ? "Run in background" : undefined}
-                      tabIndex={!canSend ? 0 : undefined}
+                      role={!canRunInBackground ? "button" : undefined}
+                      aria-disabled={!canRunInBackground ? "true" : undefined}
+                      aria-label={
+                        !canRunInBackground ? "Run in background" : undefined
+                      }
+                      tabIndex={!canRunInBackground ? 0 : undefined}
                     >
                       <Button
                         type="button"
                         size="icon"
                         variant="outline"
                         onClick={runInBackground}
-                        disabled={!canSend}
+                        disabled={!canRunInBackground}
                         aria-label="Run in background"
                         className="size-8 rounded-full"
                       >
@@ -3194,7 +3243,9 @@ function App(
                     </span>
                   </TooltipTrigger>
                   <TooltipContent>
-                    {sendUnavailableReason ?? "Run in background"}
+                    {attachments.length > 0
+                      ? "Attachments are not supported by background tasks. Send in this conversation instead."
+                      : (sendUnavailableReason ?? "Run in background")}
                   </TooltipContent>
                 </Tooltip>
               )}
@@ -3369,7 +3420,34 @@ function App(
     // Info/Browser/Changes toggle): the scroll region starts BELOW it, so
     // messages scrolling up are clipped at the bar's edge instead of passing
     // under it.
-    <div className="relative flex h-full w-full flex-col overflow-hidden pt-11">
+    <div
+      className="relative flex h-full w-full flex-col overflow-hidden pt-11"
+      data-conversation-drop-zone
+      onDragEnter={(event) => {
+        if (!Array.from(event.dataTransfer.types).includes("Files")) return
+        event.preventDefault()
+        fileDragDepth.current += 1
+        setDraggingFiles(true)
+      }}
+      onDragOver={(event) => {
+        if (!Array.from(event.dataTransfer.types).includes("Files")) return
+        event.preventDefault()
+        event.dataTransfer.dropEffect = "copy"
+      }}
+      onDragLeave={() => {
+        fileDragDepth.current = Math.max(0, fileDragDepth.current - 1)
+        if (fileDragDepth.current === 0) setDraggingFiles(false)
+      }}
+      onDrop={dropFiles}
+    >
+      {draggingFiles && (
+        <div
+          role="status"
+          className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center border-2 border-dashed border-primary bg-background/90 text-sm font-medium"
+        >
+          Drop files to attach to your next message
+        </div>
+      )}
       {conversationFindOpen && (
         <div className="absolute top-12 right-4 z-30 flex h-9 items-center gap-1 rounded-lg border bg-background p-1 shadow-md">
           <Search className="ml-1 size-3.5 text-muted-foreground" />

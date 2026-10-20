@@ -18,11 +18,9 @@ export type Readable =
 
 export type HostOrigin = "attachment" | "skill_resource"
 
-// Resolve the model-supplied `path` to a safe location. With a workspace it must
-// resolve inside it (symlinks included), via the env. Without one (Chat sessions),
-// the only readable files are the user's attachments, so `path` must match one of
-// them — by exact absolute path or by file name — and is read from the host (the
-// env is irrelevant: a container is only ever used when a workspace exists).
+// Exact attachment paths are explicit read-only host grants in every mode.
+// Other workspace paths resolve through the confined env. Without a workspace,
+// attachment basenames are also accepted when they identify exactly one file.
 export async function resolveReadable(
   ctx: ToolContext,
   env: Environment,
@@ -35,11 +33,19 @@ export async function resolveReadable(
       path: await resolveSkillResourcePath(ctx, path),
     }
   }
+  const attachments = ctx.attachments ?? []
+  const exact = attachments.find((a) => a === path)
+  if (exact) return { source: "host", origin: "attachment", path: exact }
   if (ctx.workspace) {
     return { source: "env", path: await env.resolve(path) }
   }
-  const attachments = ctx.attachments ?? []
-  const match = attachments.find((a) => a === path || basename(a) === path)
+  const matches = attachments.filter((a) => basename(a) === path)
+  if (matches.length > 1) {
+    throw new Error(
+      `"${path}" matches multiple attachments. Use an exact absolute path.`
+    )
+  }
+  const match = matches[0]
   if (!match) {
     throw new Error(
       `"${path}" is not an attached file. Readable files: ${

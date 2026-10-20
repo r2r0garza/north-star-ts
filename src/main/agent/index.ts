@@ -430,7 +430,7 @@ export interface ChatRequest {
   // The directory the agent's filesystem tools are confined to. Optional: the
   // Chat view runs without a workspace and relies on inlined attachments.
   workspace?: string
-  // Absolute paths of files to inline into the prompt (Chat view attachments).
+  // Absolute host paths explicitly attached by the user, readable on demand.
   attachments?: string[]
   // Skill names explicitly selected by the user through slash mentions.
   skills?: string[]
@@ -844,7 +844,7 @@ export interface RunAgentLoopOptions {
   // The directory the agent's filesystem tools are confined to. Optional: the
   // Chat view runs without a workspace and relies on inlined attachments.
   workspace?: string
-  // Absolute paths of files to inline into the prompt (Chat view attachments).
+  // Absolute host paths explicitly attached by the user, readable on demand.
   attachments?: string[]
   // Skill names explicitly selected by the user through slash mentions.
   skills?: string[]
@@ -1052,6 +1052,8 @@ export async function runAgentLoop(
     effectiveAccount?.provider === "claude_code" ||
     effectiveAccount?.provider === "codex_cli"
   ) {
+    if (attachments?.length)
+      return { error: "Attachments are not supported by CLI providers." }
     if (opts.bashCommand)
       return { error: "Run code is unavailable for CLI providers." }
     if (!conversation) return { error: "Conversation not found." }
@@ -1746,14 +1748,14 @@ export async function runAgentLoop(
       if (attachedTextFiles.length > 0) {
         noteParts.push(
           `read with read_file_tool: ${attachedTextFiles
-            .map((p) => basename(p))
+            .map((p) => JSON.stringify(p))
             .join(", ")}`
         )
       }
       if (attachedDocuments.length > 0) {
         noteParts.push(
           `read with read_document: ${attachedDocuments
-            .map((p) => basename(p))
+            .map((p) => JSON.stringify(p))
             .join(", ")}`
         )
       }

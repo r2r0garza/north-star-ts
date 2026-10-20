@@ -507,7 +507,7 @@ const api = {
       path?: string
       canceled?: boolean
     }>,
-  // Native multi-file picker for Chat attachments.
+  // Native multi-file picker for conversation attachments.
   pickFiles: () =>
     ipcRenderer.invoke("pick-files") as Promise<{
       paths?: string[]

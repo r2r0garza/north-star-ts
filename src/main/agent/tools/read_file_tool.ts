@@ -33,7 +33,7 @@ export const readFileTool: Tool = {
             description:
               "The file to read. In a workspace, a path relative to the workspace " +
               "root, or an activated skill resource URI like skill://name/path. " +
-              "In a Chat session, the name (or path) of one of the attached files.",
+              "In any mode, an exact absolute path of an attached file; without a workspace, a unique attachment filename also works.",
           },
           offset: {
             type: "integer",
