@@ -136,13 +136,14 @@ const SettledTranscriptRow = memo(function SettledTranscriptRow({
         <MessageContent>
           <Bubble
             align={align}
-            variant={item.role === "user" ? "default" : "muted"}
+            variant={item.role === "user" ? "default" : "ghost"}
+            className={item.role === "assistant" ? "w-full max-w-full" : undefined}
           >
             <BubbleContent
               className={cn(
                 item.role === "user"
                   ? "whitespace-pre-wrap"
-                  : "overflow-visible"
+                  : "w-full overflow-visible"
               )}
             >
               {item.role === "assistant" ? (
@@ -285,8 +286,8 @@ const LiveTranscriptSegment = memo(function LiveTranscriptSegment({
   }
   if (!segment.text) return null
   return (
-    <Bubble align="start" variant="muted">
-      <BubbleContent className="overflow-visible">
+    <Bubble align="start" variant="ghost" className="w-full max-w-full">
+      <BubbleContent className="w-full overflow-visible">
         <Markdown
           content={segment.text}
           mode="streaming"
