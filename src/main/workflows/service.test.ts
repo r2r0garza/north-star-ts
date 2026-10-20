@@ -1,5 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest"
 import type { WorkflowRun } from "../../shared/workflow-runs"
+import type { WorkflowDefinition } from "../../shared/workflows"
 
 const state = vi.hoisted(() => ({
   runs: new Map<string, WorkflowRun>(),
@@ -15,6 +16,8 @@ const state = vi.hoisted(() => ({
   indexRun: undefined as { taskId: string } | undefined,
   indexed: null as object | null,
   autoIndex: vi.fn(),
+  workflow: {} as WorkflowDefinition,
+  afterSave: undefined as ((run: WorkflowRun) => void) | undefined,
 }))
 vi.mock("electron", () => ({ ipcMain: { handle: vi.fn() } }))
 vi.mock("../tasks/runner", () => ({}))
@@ -28,22 +31,13 @@ vi.mock("../db/repositories/projects", () => ({
   getProject: (id: string) => state.projects.get(id),
 }))
 vi.mock("../db/repositories/workflows", () => ({
-  listWorkflows: () => [
-    {
-      id: "wf",
-      name: "Test",
-      description: "",
-      defaultObjective: "",
-      steps: [
-        { id: "a", title: "First", instructions: "Inspect" },
-        { id: "b", title: "Second", instructions: "Report" },
-      ],
-    },
-  ],
+  listWorkflows: () => [structuredClone(state.workflow)],
 }))
 vi.mock("../db/repositories/workflow-runs", () => ({
-  saveWorkflowRun: (run: WorkflowRun) =>
-    state.runs.set(run.id, structuredClone(run)),
+  saveWorkflowRun: (run: WorkflowRun) => {
+    state.runs.set(run.id, structuredClone(run))
+    state.afterSave?.(run)
+  },
   getWorkflowRun: (id: string) => structuredClone(state.runs.get(id)),
   listWorkflowRuns: () =>
     [...state.runs.values()].map((run) => structuredClone(run)),
@@ -130,6 +124,17 @@ beforeEach(() => {
   state.indexRun = undefined
   state.indexed = null
   state.autoIndex.mockReset()
+  state.afterSave = undefined
+  state.workflow = {
+    id: "wf",
+    name: "Test",
+    description: "",
+    defaultObjective: "",
+    steps: [
+      { id: "a", title: "First", instructions: "Inspect" },
+      { id: "b", title: "Second", instructions: "Report" },
+    ],
+  }
 })
 it("validates start and snapshots a durable run", () => {
   expect(() =>
@@ -154,6 +159,41 @@ it("validates start and snapshots a durable run", () => {
   run.steps[0].instructions = "Changed"
   expect(state.runs.get(run.id)?.steps[0].instructions).toBe("Inspect")
   expect(run.taskId).toBe("task")
+})
+it("keeps executing from the launch snapshot after the workflow is edited mid-run", async () => {
+  const { PAUSE_ABORT_REASON } = await import("../agent/abort")
+  const run = start()
+  const pause = new AbortController()
+  // Pause right after step 1 completes, before step 2 builds its prompt.
+  state.afterSave = (saved) => {
+    if (saved.steps[0].status === "completed") pause.abort(PAUSE_ABORT_REASON)
+  }
+  state.agent.mockResolvedValueOnce({ content: handoff(`${run.id}:a`) })
+  expect(await service.execute(context(run, pause.signal))).toMatchObject({
+    paused: true,
+  })
+  state.afterSave = undefined
+  state.workflow.name = "Edited"
+  state.workflow.steps = [
+    { id: "a", title: "First", instructions: "Inspect" },
+    { id: "b", title: "Renamed", instructions: "Changed" },
+    { id: "c", title: "Extra", instructions: "Added" },
+  ]
+  state.agent.mockResolvedValueOnce({ content: handoff(`${run.id}:b`) })
+
+  expect(await service.execute(context(run))).not.toHaveProperty("error")
+  expect(state.agent).toHaveBeenCalledTimes(2)
+  const prompt = vi.mocked(appendMessage).mock.calls[1][0].content
+  expect(prompt).toContain("Current step: Second")
+  expect(prompt).toContain("Instructions: Report")
+  expect(prompt).not.toContain("Changed")
+  const saved = state.runs.get(run.id)!
+  expect(saved.title).toBe("Test")
+  expect(saved.steps.map((step) => step.instructions)).toEqual([
+    "Inspect",
+    "Report",
+  ])
+  expect(saved.steps.every((step) => step.status === "completed")).toBe(true)
 })
 it("executes ordered autonomous turns, passes prior results, and skips completed steps on resume", async () => {
   const run = start()

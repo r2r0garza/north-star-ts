@@ -4,10 +4,10 @@
   "private": true,
   "main": "./out/main/index.js",
   "scripts": {
-    "dev": "electron-vite dev",
+    "dev": "node scripts/with-node-sqlite.mjs --recover && electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "start": "electron-vite preview",
+    "start": "node scripts/with-node-sqlite.mjs --recover && electron-vite preview",
     "dist": "node scripts/dist.mjs",
     "format": "prettier --write \"**/*.{ts,tsx}\"",
     "test": "node scripts/with-node-sqlite.mjs pnpm exec vitest run",

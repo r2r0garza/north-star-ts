@@ -213,7 +213,7 @@ describe("Markdown fenced blocks", () => {
     expect(mermaidRender).toHaveBeenCalledWith("graph TD; A-->B\n")
   })
 
-  it("keeps the sticky action rail outside the horizontal scroll surface", () => {
+  it("keeps the sticky action rail outside the wrapped code surface", () => {
     mount("```js\nconsole.log('wide block')\n```")
 
     const block = container.querySelector('[data-slot="markdown-code-block"]')
@@ -225,7 +225,9 @@ describe("Markdown fenced blocks", () => {
     expect(block).not.toBeNull()
     expect(rail?.parentElement).toBe(block)
     expect(scrollSurface?.parentElement).toBe(block)
-    expect(scrollSurface?.classList.contains("overflow-x-auto")).toBe(true)
+    expect(scrollSurface?.classList.contains("overflow-x-auto")).toBe(false)
+    expect(scrollSurface?.classList.contains("whitespace-pre-wrap")).toBe(true)
+    expect(scrollSurface?.classList.contains("[overflow-wrap:anywhere]")).toBe(true)
     expect(rail?.contains(scrollSurface ?? null)).toBe(false)
   })
 })
