@@ -299,6 +299,8 @@ export function NewRunDialog({
             <Label htmlFor="new-run-objective">Objective</Label>
             <Textarea
               id="new-run-objective"
+              rows={10}
+              className="field-sizing-fixed overflow-y-auto"
               value={objective}
               onChange={(event) => setObjective(event.target.value)}
             />
