@@ -1,5 +1,6 @@
 import { ipcMain, type WebContents } from "electron"
 import type { WorkflowDefinition } from "../../shared/workflows"
+import { serializeWorkflowExport } from "../workflow-export"
 import {
   conversations,
   messages,
@@ -261,6 +262,20 @@ export function registerDbHandlers(
   ipcMain.handle("db:workflows:delete", (_e, id: string) =>
     workflows.deleteWorkflow(id)
   )
+  ipcMain.handle("db:workflows:import", (_e, data: unknown) => workflows.importWorkflow(data))
+  ipcMain.handle("db:workflows:export", (_e, workflow: WorkflowDefinition) => {
+    const { dialog, BrowserWindow } = require("electron") as typeof import("electron")
+    const { writeFile } = require("node:fs/promises") as typeof import("node:fs/promises")
+    const safeName = workflow.name.replace(/[\\/:*?\"<>|]/g, "-").trim() || "workflow"
+    return (async () => {
+      const win = BrowserWindow.getFocusedWindow()
+    const options = { defaultPath: `${safeName}.json`, filters: [{ name: "JSON", extensions: ["json"] }] }
+    const result = win ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options)
+      if (result.canceled || !result.filePath) return { canceled: true }
+      await writeFile(result.filePath, serializeWorkflowExport(workflow), "utf8")
+      return { canceled: false }
+    })()
+  })
   ipcMain.handle("db:workflows:create", () => workflows.createWorkflow())
   ipcMain.handle("db:workflows:list", () => workflows.listWorkflows())
   ipcMain.handle("db:workflows:update", (_e, workflow: WorkflowDefinition) =>

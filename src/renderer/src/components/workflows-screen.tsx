@@ -227,6 +227,26 @@ export function WorkflowsScreen({
     }
   }
 
+  async function importWorkflow() {
+    try {
+      const result = await window.cowork.db.workflows.importFile()
+      if (result.canceled || !result.workflow) return
+      setWorkflows((current) => [...current, result.workflow!])
+      toast.info("Workflow imported")
+    } catch {
+      toast.error("Could not import workflow. Check that the JSON file is valid.")
+    }
+  }
+
+  async function exportWorkflow(workflow: WorkflowDefinition) {
+    try {
+      const result = await window.cowork.db.workflows.export(workflow)
+      if (!result.canceled) toast.info("Workflow exported")
+    } catch {
+      toast.error("Could not export workflow. Please try again.")
+    }
+  }
+
   async function deleteWorkflow() {
     if (!pendingDelete || deletingWorkflow) return
     const id = pendingDelete.id
@@ -558,7 +578,10 @@ export function WorkflowsScreen({
             <div className="space-y-4 p-4">
               <div>
                 <div className="flex items-center justify-between gap-3">
-                  <h2 className="font-medium">Workflow collection</h2>
+                  <div className="flex items-center gap-3">
+                    <h2 className="font-medium">Workflow collection</h2>
+                    <Button variant="outline" size="sm" disabled={!workflowsLoaded} onClick={importWorkflow}>Import JSON</Button>
+                  </div>
                   <Button
                     variant="outline"
                     size="sm"
@@ -613,6 +636,7 @@ export function WorkflowsScreen({
                             <Play className="size-4" />
                             Run workflow
                           </Button>
+                          <Button size="sm" variant="ghost" aria-label={`Export workflow: ${workflow.name || "Untitled workflow"}`} onClick={() => void exportWorkflow(workflow)}>Export</Button>
                           <Button
                             size="icon-sm"
                             variant="ghost"

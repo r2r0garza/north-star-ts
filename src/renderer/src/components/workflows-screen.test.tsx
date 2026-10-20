@@ -120,6 +120,8 @@ beforeEach(() => {
     },
     db: {
       workflows: {
+        importFile: vi.fn(async () => ({ canceled: true })),
+        export: vi.fn(async () => ({ canceled: true })),
         flush: vi.fn((updated: (typeof EXAMPLE_WORKFLOWS)[number]) => {
           stored = stored.map((workflow) =>
             workflow.id === updated.id ? structuredClone(updated) : workflow
@@ -210,6 +212,19 @@ it("defaults to Runs and switches between all, unassigned, and project scopes", 
       .click()
   })
   expect(onClose).toHaveBeenCalledOnce()
+})
+
+it("imports workflows and reports import errors", async () => {
+  const imported = { ...EXAMPLE_WORKFLOWS[0], id: "imported" }
+  vi.mocked(window.cowork.db.workflows.importFile).mockResolvedValueOnce({ canceled: false, workflow: imported })
+  await openWorkflowCollection()
+  await act(async () => button("Import JSON").click())
+  expect(container.querySelectorAll('[data-slot="card"]')).toHaveLength(4)
+  expect(container.querySelectorAll('[data-slot="card"]')).toHaveLength(4)
+  expect(toast.info).toHaveBeenCalledWith("Workflow imported")
+  vi.mocked(window.cowork.db.workflows.importFile).mockRejectedValueOnce(new Error("invalid"))
+  await act(async () => button("Import JSON").click())
+  expect(toast.error).toHaveBeenCalledWith(expect.stringContaining("Could not import workflow"))
 })
 
 it("shows clearly labeled workflow preview cards without execution controls enabled", async () => {
@@ -729,7 +744,7 @@ async function openWorkflowCollection() {
 
 function dialogButton(label: string) {
   return Array.from(
-    document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')
+    document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button, [role="alertdialog"] button')
   ).find((element) => element.textContent === label)!
 }
 
@@ -990,13 +1005,60 @@ async function selectRunOption(id: string, label: string) {
     document.querySelectorAll<HTMLElement>('[role="option"]')
   ).find((item) => item.textContent === label)!
   expect(option).toBeDefined()
-  expect(option.closest('[data-slot="dialog-content"]')).toBe(
-    document.querySelector('[data-slot="dialog-content"]')
-  )
+  expect(option.closest('[data-slot="dialog-content"]')).not.toBeNull()
   expect(getComputedStyle(option).pointerEvents).not.toBe("none")
   await act(async () => option.click())
   expect(document.querySelector('[role="dialog"]')).not.toBeNull()
 }
+
+it.each([
+  ["new-run-project", "north", "North Star", "Website"],
+  ["new-run-workspace", "north", "/projects/north-star", "/projects/other"],
+  ["new-run-workflow", "review", "Code review", "Project health check"],
+])("searches and selects a filtered result in %s", async (id, query, match, other) => {
+  await act(async () => root.render(<WorkflowsScreen onClose={() => {}} />))
+  await act(async () => button("New Run").click())
+  const dialog = document.querySelector<HTMLElement>('[data-slot="dialog-content"]')!
+  const childCount = dialog.children.length
+  await act(async () =>
+    document.querySelector<HTMLButtonElement>(`#${id}`)!.click()
+  )
+  expect(dialog.children).toHaveLength(childCount)
+  const popup = document.querySelector<HTMLElement>(
+    '[data-slot="combobox-content"]'
+  )!
+  expect(popup.closest('[data-slot="dialog-content"]')).toBe(dialog)
+  const portalContainer = Array.from(dialog.children).find((child) => child.contains(popup))!
+  expect(portalContainer.classList.contains("absolute")).toBe(true)
+  const search = popup.querySelector<HTMLInputElement>("input")!
+  await act(async () => search.focus())
+  expect(document.activeElement).toBe(search)
+  async function typeSearch(value: string) {
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value"
+      )!.set!.call(search, value)
+      search.dispatchEvent(new Event("input", { bubbles: true }))
+    })
+    expect(document.activeElement).toBe(search)
+  }
+  const options = () =>
+    Array.from(popup.querySelectorAll<HTMLElement>('[role="option"]'))
+  expect(options().map((item) => item.textContent)).toContain(other)
+  await typeSearch(query)
+  expect(options().map((item) => item.textContent)).toContain(match)
+  expect(options().map((item) => item.textContent)).not.toContain(other)
+  await typeSearch("no-such-option")
+  expect(options()).toHaveLength(0)
+  expect(popup.textContent).toContain("No matches found.")
+  await typeSearch(query)
+  await act(async () =>
+    options().find((item) => item.textContent === match)!.click()
+  )
+  expect(document.querySelector(`#${id}`)?.textContent).toContain(match)
+  expect(document.querySelector('[role="dialog"]')).not.toBeNull()
+})
 
 async function editRunObjective(value: string) {
   const field =
@@ -1080,8 +1142,48 @@ it("prefills workflow objectives, preserves dismissed drafts, and clears every f
   await selectRunOption("new-run-workflow", "Project health check")
   expect(
     document.querySelector<HTMLTextAreaElement>("#new-run-objective")?.value
-  ).toBe("")
+  ).toBe("My objective")
+  expect(document.querySelector('[data-slot="alert-dialog-content"]')).toBeNull()
   await selectRunOption("new-run-workflow", "Code review")
+  expect(document.body.textContent).toContain("Find issues.")
+  expect(document.querySelector('[role="alertdialog"]')).not.toBeNull()
+  const newRunDialog = document.querySelector('[role="dialog"]')!
+  await act(async () => {
+    const keep = dialogButton("Keep my objective")
+    keep.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }))
+    keep.focus()
+    keep.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }))
+    keep.click()
+  })
+  expect(document.querySelector('[role="alertdialog"]')).toBeNull()
+  expect(document.querySelector('[role="dialog"]')).toBe(newRunDialog)
+  expect(
+    document.querySelector<HTMLTextAreaElement>("#new-run-objective")?.value
+  ).toBe("My objective")
+  await selectRunOption("new-run-workflow", "Code review")
+  expect(document.body.textContent).toContain("Find issues.")
+  await act(async () => {
+    const useDefault = dialogButton("Use default")
+    useDefault.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }))
+    useDefault.focus()
+    useDefault.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }))
+    useDefault.click()
+  })
+  expect(document.querySelector('[role="alertdialog"]')).toBeNull()
+  expect(document.querySelector('[role="dialog"]')).toBe(newRunDialog)
+  expect(
+    document.querySelector<HTMLTextAreaElement>("#new-run-objective")?.value
+  ).toBe("  Find issues.  ")
+  for (const objective of ["  Find issues.  ", "Find issues."]) {
+    await editRunObjective(objective)
+    await selectRunOption("new-run-workflow", "Project health check")
+    await selectRunOption("new-run-workflow", "Code review")
+    expect(document.querySelector('[role="alertdialog"]')).toBeNull()
+    expect(document.querySelector('[role="dialog"]')).toBe(newRunDialog)
+    expect(
+      document.querySelector<HTMLTextAreaElement>("#new-run-objective")?.value
+    ).toBe(objective)
+  }
   await act(async () => dialogButton("Clear fields").click())
   expect(document.querySelector("#new-run-project")?.textContent).toContain(
     "No project"

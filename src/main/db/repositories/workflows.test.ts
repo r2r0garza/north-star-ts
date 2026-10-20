@@ -10,6 +10,7 @@ import {
   createWorkflow,
   deleteWorkflow,
   listWorkflows,
+  importWorkflow,
   updateWorkflow,
 } from "./workflows"
 
@@ -119,6 +120,18 @@ describe.skipIf(!sqliteLoads)("workflow storage", () => {
     db.prepare("DELETE FROM workflows").run()
     runMigrations(db)
     expect(listWorkflows()).toEqual([])
+  })
+
+  it("imports validated copies with fresh workflow and step IDs", () => {
+    const original = listWorkflows()
+    const source = { ...original[0], steps: original[0].steps.map((step) => ({ ...step })) }
+    const imported = importWorkflow(source)
+    expect(imported.id).not.toBe(source.id)
+    expect(imported.steps.map((step) => step.id)).not.toEqual(source.steps.map((step) => step.id))
+    expect({ ...imported, id: source.id, steps: source.steps }).toEqual(source)
+    expect(listWorkflows()).toEqual([...original, imported])
+    expect(() => importWorkflow({ ...source, extra: true })).toThrow("Invalid workflow")
+    expect(listWorkflows()).toHaveLength(original.length + 1)
   })
 
   it("rejects malformed steps and unknown workflows without changing saved data", () => {

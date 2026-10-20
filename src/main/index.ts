@@ -36,6 +36,7 @@ import {
   pickFiles,
   pickSkillImport,
   pickAgentImport,
+  pickWorkflowImport,
 } from "./pick-workspace"
 import {
   skillSources,
@@ -512,6 +513,14 @@ ipcMain.handle("pick-files", () => pickFiles())
 ipcMain.handle("pick-skill-import", () => pickSkillImport())
 // Multi-select .agent.md picker for the Agents view's Import affordance.
 ipcMain.handle("pick-agent-import", () => pickAgentImport())
+ipcMain.handle("pick-workflow-import", () => pickWorkflowImport())
+ipcMain.handle("db:workflows:importFile", async () => {
+  const picked = await pickWorkflowImport()
+  if (picked.canceled || !picked.paths?.[0]) return { canceled: true }
+  const { readFile } = await import("node:fs/promises")
+  const { importWorkflow } = await import("./db/repositories/workflows")
+  return { canceled: false, workflow: importWorkflow(JSON.parse(await readFile(picked.paths[0], "utf8"))) }
+})
 // List available skills (name + description only) for the composer's slash
 // menu. Resolves the same source dirs the agent uses at turn time, so the
 // picker shows exactly what the model can read via read_skill. `body`/`path`

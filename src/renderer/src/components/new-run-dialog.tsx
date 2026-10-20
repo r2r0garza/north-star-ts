@@ -20,6 +20,16 @@ import {
   ComboboxTrigger,
 } from "@/components/ui/combobox"
 import { Label } from "@/components/ui/label"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Textarea } from "@/components/ui/textarea"
 import type { Project, Workspace } from "@/types"
 import type { WorkflowDefinition } from "../../../shared/workflows"
@@ -39,7 +49,7 @@ export function NewRunDialog({
   workflows: WorkflowDefinition[]
   onStarted: (run: import("../../../shared/workflow-runs").WorkflowRun) => void
 }) {
-  const contentRef = useRef<HTMLDivElement>(null)
+  const popupContainerRef = useRef<HTMLDivElement>(null)
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [projectId, setProjectId] = useState<string | null>(null)
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
@@ -48,6 +58,7 @@ export function NewRunDialog({
     : undefined
   const [workflowId, setWorkflowId] = useState<string | null>(null)
   const [objective, setObjective] = useState("")
+  const [pendingObjective, setPendingObjective] = useState<string | null>(null)
   const [pickingWorkspace, setPickingWorkspace] = useState(false)
   const [starting, setStarting] = useState(false)
   const startingRef = useRef(false)
@@ -173,7 +184,15 @@ export function NewRunDialog({
         setWorkflowId(id)
         const defaultObjective =
           workflows.find((item) => item.id === id)?.defaultObjective ?? ""
-        setObjective(defaultObjective.trim() ? defaultObjective : "")
+        if (
+          objective.trim() &&
+          defaultObjective.trim() &&
+          objective.trim() !== defaultObjective.trim()
+        ) {
+          setPendingObjective(defaultObjective)
+        } else if (!objective.trim()) {
+          setObjective(defaultObjective.trim() ? defaultObjective : "")
+        }
       },
     },
   ]
@@ -181,9 +200,13 @@ export function NewRunDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        ref={contentRef}
         className="sm:max-w-lg"
-        onBackdropClick={() => onOpenChange(false)}
+        onInteractOutside={(event) => {
+          if (pendingObjective !== null) event.preventDefault()
+        }}
+        onBackdropClick={() => {
+          if (pendingObjective === null) onOpenChange(false)
+        }}
       >
         <DialogHeader>
           <DialogTitle>New Run</DialogTitle>
@@ -222,7 +245,7 @@ export function NewRunDialog({
                       ?.label ?? picker.placeholder}
                   </span>
                 </ComboboxTrigger>
-                <ComboboxContent portalContainer={contentRef}>
+                <ComboboxContent portalContainer={popupContainerRef}>
                   <ComboboxInput
                     placeholder={`Search ${picker.label === "Project (optional)" ? "projects" : `${picker.label.toLowerCase()}s`}…`}
                     showTrigger={false}
@@ -295,6 +318,38 @@ export function NewRunDialog({
             {starting ? "Starting…" : "Start"}
           </Button>
         </DialogFooter>
+        <div
+          ref={popupContainerRef}
+          className="pointer-events-none absolute inset-0 [&>*]:pointer-events-auto"
+        />
+        <AlertDialog
+          open={pendingObjective !== null}
+          onOpenChange={(isOpen) => {
+            if (!isOpen) setPendingObjective(null)
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                Use the workflow’s default objective?
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                Replace your current objective with: “{pendingObjective}”
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Keep my objective</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => {
+                  if (pendingObjective !== null) setObjective(pendingObjective)
+                  setPendingObjective(null)
+                }}
+              >
+                Use default
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </DialogContent>
     </Dialog>
   )

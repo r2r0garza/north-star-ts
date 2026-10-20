@@ -26,6 +26,20 @@ export async function pickWorkspace(): Promise<PickResult> {
   return { path: result.filePaths[0] }
 }
 
+export async function pickWorkflowImport(): Promise<PickFilesResult> {
+  const win = BrowserWindow.getFocusedWindow() ?? undefined
+  const options: OpenDialogOptions = {
+    title: "Import a workflow",
+    properties: ["openFile"],
+    filters: [{ name: "Workflow", extensions: ["json"] }],
+  }
+  const result = win
+    ? await dialog.showOpenDialog(win, options)
+    : await dialog.showOpenDialog(options)
+  if (result.canceled || result.filePaths.length === 0) return { canceled: true }
+  return { paths: [result.filePaths[0]] }
+}
+
 export interface PickFilesResult {
   paths?: string[]
   canceled?: boolean

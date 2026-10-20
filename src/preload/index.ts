@@ -1081,6 +1081,8 @@ const api = {
         >,
       update: (workflow: WorkflowDefinition) =>
         ipcRenderer.invoke("db:workflows:update", workflow) as Promise<void>,
+      importFile: () => ipcRenderer.invoke("db:workflows:importFile") as Promise<{ canceled: boolean; workflow?: WorkflowDefinition }>,
+      export: (workflow: WorkflowDefinition) => ipcRenderer.invoke("db:workflows:export", workflow) as Promise<{ canceled: boolean }>, 
     },
     projects: {
       create: (input: { name: string; workspaceId?: string | null }) =>
