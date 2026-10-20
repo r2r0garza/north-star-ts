@@ -10,6 +10,7 @@ import {
 } from "react"
 import type { KeyboardEvent } from "react"
 import { toast } from "sonner"
+import { normalizeWorkflowResults } from "../../shared/workflow-result"
 import {
   ArrowLeft,
   ArrowUp,
@@ -372,7 +373,19 @@ function formatPickedElement(el: PickedElement): string {
   return `[User pointed at a browser element — ${parts.join(", ")}]`
 }
 
+export type WorkflowConversationContext = {
+  key: string
+  generation: object
+  workspace: string
+  projectId: string | null
+  ready: boolean
+}
+
 export type AppHandle = {
+  appendWorkflowResult: (
+    text: string,
+    context: WorkflowConversationContext
+  ) => boolean
   appendTerminalSelection: (text: string) => void
   appendFileSelection: (selection: {
     path: string
@@ -415,6 +428,8 @@ type AppProps = {
   // Report the active conversation's workspace root up to the Shell (the sidebar
   // Files tab + browser opens need it for workspace access and file:// URLs).
   onWorkspaceChange?: (workspace: string) => void
+  workflowDraftKey?: string
+  onWorkflowContextChange?: (context: WorkflowConversationContext) => void
   // Open the sidebar Files tab for a turn's changed files.
   onReviewFiles?: () => void
   // Open an html changed-file in the sidebar agent browser.
@@ -446,6 +461,8 @@ function App(
     settingsOpen,
     rightPanelOpen,
     onWorkspaceChange,
+    workflowDraftKey = "draft",
+    onWorkflowContextChange,
     onReviewFiles,
     onOpenHtml,
     onRanInBackground,
@@ -467,6 +484,82 @@ function App(
   const systemName = system.displayName
 
   const [workspace, setWorkspace] = useState("")
+  const workflowKey = conversationId ?? workflowDraftKey
+  const workspaceResolutionKey = useMemo(
+    () => ({}),
+    [workflowKey, pendingProjectId]
+  )
+  const [resolvedWorkspaceKey, setResolvedWorkspaceKey] = useState<
+    object | null
+  >(null)
+  const workflowGeneration = useMemo(
+    () => ({}),
+    [workflowKey, pendingProjectId, isChat, workspace]
+  )
+  const [workflowContext, setWorkflowContext] =
+    useState<WorkflowConversationContext | null>(null)
+  const workflowContextRef = useRef<WorkflowConversationContext | null>(null)
+  const currentWorkflowContext =
+    workflowContext?.generation === workflowGeneration &&
+    resolvedWorkspaceKey === workspaceResolutionKey
+      ? workflowContext
+      : null
+  workflowContextRef.current = currentWorkflowContext
+  useEffect(() => {
+    let cancelled = false
+    const base: WorkflowConversationContext = {
+      key: workflowKey,
+      generation: workflowGeneration,
+      workspace: "",
+      projectId: null,
+      ready: false,
+    }
+    onWorkflowContextChange?.(base)
+    async function resolve() {
+      if (resolvedWorkspaceKey !== workspaceResolutionKey) return
+      const conversation = conversationId
+        ? await window.cowork.db.conversations.get(conversationId)
+        : null
+      if (conversationId && !conversation)
+        throw new Error("Conversation unavailable")
+      const projectId = conversation?.projectId ?? pendingProjectId
+      const project = projectId
+        ? await window.cowork.db.projects.get(projectId)
+        : null
+      if (projectId && !project) throw new Error("Project unavailable")
+      // The settled composer workspace is what chat sends; never re-derive it.
+      const path = workspace.trim()
+      if (!cancelled) {
+        const next = {
+          ...base,
+          projectId,
+          workspace: isChat ? "" : path,
+          ready: true,
+        }
+        setWorkflowContext(next)
+        onWorkflowContextChange?.(next)
+      }
+    }
+    void resolve().catch(() => {
+      if (!cancelled) {
+        setWorkflowContext(base)
+        onWorkflowContextChange?.(base)
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [
+    workflowGeneration,
+    workflowKey,
+    conversationId,
+    pendingProjectId,
+    isChat,
+    workspace,
+    onWorkflowContextChange,
+    resolvedWorkspaceKey,
+    workspaceResolutionKey,
+  ])
   const [parentConversation, setParentConversation] = useState<{
     id: string
     title: string | null
@@ -916,6 +1009,7 @@ function App(
     // flag) so we don't wipe the in-flight stream the user is watching.
     if (conversationId && justCreatedRef.current === conversationId) {
       justCreatedRef.current = null
+      setResolvedWorkspaceKey(workspaceResolutionKey)
       return
     }
     // Existing conversations retain their session-scoped mode while offscreen.
@@ -940,72 +1034,92 @@ function App(
       // If starting in a project that has a directory, adopt + lock it; otherwise
       // clear the picker (unassigned / directory-less project).
       if (pendingProjectId) {
-        void window.cowork.db.projects.get(pendingProjectId).then(async (p) => {
-          if (cancelled) return
-          if (p?.workspaceId) {
-            const ws = await window.cowork.db.workspaces.list()
-            const match = ws.find((w) => w.id === p.workspaceId)
+        void window.cowork.db.projects
+          .get(pendingProjectId)
+          .then(async (p) => {
             if (cancelled) return
-            setWorkspace(match?.path ?? "")
-            setLockedWorkspace(!!match)
-          } else {
-            setWorkspace("")
-            setLockedWorkspace(false)
-          }
-        })
+            if (p?.workspaceId) {
+              const ws = await window.cowork.db.workspaces.list()
+              const match = ws.find((w) => w.id === p.workspaceId)
+              if (cancelled) return
+              setWorkspace(match?.path ?? "")
+              setLockedWorkspace(!!match)
+            } else {
+              setWorkspace("")
+              setLockedWorkspace(false)
+            }
+            setResolvedWorkspaceKey(workspaceResolutionKey)
+          })
+          .catch(() => {
+            if (!cancelled) setResolvedWorkspaceKey(null)
+          })
       } else {
         setWorkspace("")
         setLockedWorkspace(false)
+        setResolvedWorkspaceKey(workspaceResolutionKey)
       }
-      return
+      return () => {
+        cancelled = true
+      }
     }
     setLoadedConversationId(null)
     Promise.all([
       window.cowork.db.messages.list(conversationId),
       window.cowork.db.conversations.get(conversationId),
-    ]).then(async ([rows, convo]) => {
-      if (cancelled) return
-      setTimeline(buildTimeline(rows))
-      setLoadedConversationId(conversationId)
-      setAttachments([])
-      // Restore the conversation's own model selection (null falls back to default).
-      setSelAccountId(convo?.accountId ?? null)
-      setSelModelId(convo?.modelId ?? null)
-      // Restore the conversation's selected custom agent (null = main agent).
-      setSelAgentName(convo?.agentName ?? null)
-      // If the conversation belongs to a project with a directory, that directory
-      // is the source of truth and the picker is locked. Otherwise fall back to
-      // the conversation's own workspace_id (legacy / unassigned).
-      let locked = false
-      if (convo?.projectId) {
-        const project = await window.cowork.db.projects.get(convo.projectId)
+    ])
+      .then(async ([rows, convo]) => {
         if (cancelled) return
-        if (project?.workspaceId) {
-          const ws = await window.cowork.db.workspaces.list()
-          const match = ws.find((w) => w.id === project.workspaceId)
+        setTimeline(buildTimeline(rows))
+        setLoadedConversationId(conversationId)
+        setAttachments([])
+        // Restore the conversation's own model selection (null falls back to default).
+        setSelAccountId(convo?.accountId ?? null)
+        setSelModelId(convo?.modelId ?? null)
+        // Restore the conversation's selected custom agent (null = main agent).
+        setSelAgentName(convo?.agentName ?? null)
+        // If the conversation belongs to a project with a directory, that directory
+        // is the source of truth and the picker is locked. Otherwise fall back to
+        // the conversation's own workspace_id (legacy / unassigned).
+        let locked = false
+        if (convo?.projectId) {
+          const project = await window.cowork.db.projects.get(convo.projectId)
           if (cancelled) return
-          setWorkspace(match?.path ?? "")
-          locked = !!match
+          if (project?.workspaceId) {
+            const ws = await window.cowork.db.workspaces.list()
+            const match = ws.find((w) => w.id === project.workspaceId)
+            if (cancelled) return
+            setWorkspace(match?.path ?? "")
+            locked = !!match
+          }
         }
-      }
-      setLockedWorkspace(locked)
-      if (!locked) {
-        // A Mission Control worker works in a worktree of its workspace.
-        if (convo?.workingDirectory) {
-          setWorkspace(convo.workingDirectory)
-        } else if (convo?.workspaceId) {
-          const ws = await window.cowork.db.workspaces.list()
-          const match = ws.find((w) => w.id === convo.workspaceId)
-          if (!cancelled) setWorkspace(match?.path ?? "")
-        } else {
-          setWorkspace("")
+        setLockedWorkspace(locked)
+        if (!locked) {
+          // A Mission Control worker works in a worktree of its workspace.
+          if (convo?.workingDirectory) {
+            setWorkspace(convo.workingDirectory)
+          } else if (convo?.workspaceId) {
+            const ws = await window.cowork.db.workspaces.list()
+            const match = ws.find((w) => w.id === convo.workspaceId)
+            if (!cancelled) setWorkspace(match?.path ?? "")
+          } else {
+            setWorkspace("")
+          }
         }
-      }
-    })
+        if (!cancelled) setResolvedWorkspaceKey(workspaceResolutionKey)
+      })
+      .catch(() => {
+        if (!cancelled) setResolvedWorkspaceKey(null)
+      })
     return () => {
       cancelled = true
     }
-  }, [conversationId, pendingProjectId, setAgentModeFor])
+  }, [
+    conversationId,
+    pendingProjectId,
+    workflowDraftKey,
+    workspaceResolutionKey,
+    setAgentModeFor,
+  ])
 
   // Fetch the skill catalog for the slash menu. Extracted so it can be re-run on
   // demand (see below): the main process reads skills fresh from disk every turn,
@@ -1202,6 +1316,18 @@ function App(
   useImperativeHandle(
     ref,
     () => ({
+      appendWorkflowResult: (text, context) => {
+        if (
+          workflowContextRef.current?.generation !== context.generation ||
+          workflowContextRef.current?.key !== context.key
+        )
+          return false
+        setMessage((prev) => (prev.trim() ? `${prev}\n\n${text}` : text))
+        setMenu(null)
+        setMenuActive(null)
+        requestAnimationFrame(() => textareaRef.current?.focus())
+        return true
+      },
       appendTerminalSelection,
       appendFileSelection,
       prepareComposerTransition,
@@ -1309,6 +1435,7 @@ function App(
     try {
       const data = await window.cowork.pickWorkspace()
       if (data.path) {
+        setResolvedWorkspaceKey(null)
         setWorkspace(data.path)
         // If a conversation already exists, record the workspace on it now;
         // otherwise it's linked when the conversation is created on first send.
@@ -1319,6 +1446,7 @@ function App(
           })
           onConversationChanged()
         }
+        setResolvedWorkspaceKey(workspaceResolutionKey)
       }
     } catch (error) {
       pushError(error)
@@ -1500,7 +1628,9 @@ function App(
     // Expand confirmed file mentions before sending, so the model gets bare
     // workspace paths (`@src/foo.ts` → `src/foo.ts`). Skill mentions stay literal
     // in the transcript and are sent separately as deterministic invocations.
-    const base = expandMentions(message, confirmedMentions).trim()
+    const base = normalizeWorkflowResults(
+      expandMentions(message, confirmedMentions).trim()
+    )
     // Prepend a descriptor per picked element (if any) so the agent knows exactly
     // which on-page element(s) the user is pointing at. It can act on each two
     // ways: edit the source that renders it (grep the selector/text), or

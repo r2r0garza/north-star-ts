@@ -19,7 +19,7 @@ import { getDb } from "../db/connection"
 import type { ToolMediaReference } from "../../shared/tool-media"
 import type { ToolImage } from "../agent/tools/types"
 import type { Message } from "../db/types"
-import { renderContextEnvelope } from "../agent/context/provenance"
+import { renderContextEnvelope } from "../../shared/context-provenance"
 
 export const MAX_IMAGE_BYTES = 2 * 1024 * 1024
 export const MAX_RESULT_IMAGES = 3

@@ -23,6 +23,9 @@ import { AgentsScreen } from "@/components/agents-screen"
 import { McpScreen } from "@/components/mcp-screen"
 import { DashboardsScreen } from "@/components/dashboards-screen"
 import { WorkflowsScreen } from "@/components/workflows-screen"
+import { WorkflowsSection } from "@/components/workflows-section"
+import { useConversationWorkflows } from "@/hooks/use-conversation-workflows"
+import type { WorkflowConversationContext } from "./App"
 import { StartupGuideDialog } from "@/components/startup-guide-dialog"
 import { GitActions } from "@/components/git-actions"
 import { TaskTranscriptSheet } from "@/components/task-transcript-sheet"
@@ -252,6 +255,38 @@ function Shell() {
   // overlay view hides them without touching their saved open state — they
   // reappear as they were when the user returns to the conversation.
   const activityVisible = activityOpen && !overlayViewOpen
+  const [workflowDraftKey, setWorkflowDraftKey] = useState(() =>
+    crypto.randomUUID()
+  )
+  const [workflowContext, setWorkflowContext] =
+    useState<WorkflowConversationContext | null>(null)
+  const [requestedRun, setRequestedRun] = useState<{
+    id: string
+    requestId: string
+  } | null>(null)
+  const conversationWorkflows = useConversationWorkflows({
+    context:
+      workflowContext?.key === (activeConversationId ?? workflowDraftKey)
+        ? workflowContext
+        : null,
+    visible:
+      activityVisible &&
+      !settingsOpen &&
+      !startupGuideOpen &&
+      viewingTask === null &&
+      sidebarTabState.tabs.find((tab) => tab.id === sidebarTabState.activeTabId)
+        ?.kind === "info",
+    append: (text, context) =>
+      appRef.current?.appendWorkflowResult(text, context) ?? false,
+  })
+  const viewWorkflowResults = (id: string) => {
+    setRequestedRun({ id, requestId: crypto.randomUUID() })
+    setAgentsOpen(false)
+    setSkillsOpen(false)
+    setMcpOpen(false)
+    setDashboardsOpen(false)
+    setWorkflowsOpen(true)
+  }
   const terminalVisible = terminalAvailable && terminalOpen && !overlayViewOpen
   // Keep the theme control immediately to the left of Terminal when the right
   // panel is closed. When it opens, it moves left by the panel's width so it
@@ -432,6 +467,7 @@ function Shell() {
       closeFreshTerminalSessions(freshTerminalConversationId)
     }
     setView(next)
+    setWorkflowDraftKey(crypto.randomUUID())
     setActiveConversationId(null)
     setPendingProjectId(null)
     setFreshTerminalConversationId(crypto.randomUUID())
@@ -478,6 +514,7 @@ function Shell() {
       appRef.current?.prepareComposerTransition("empty")
     }
     setActiveConversationId(null)
+    setWorkflowDraftKey(crypto.randomUUID())
     setPendingProjectId(projectId)
     setFreshTerminalConversationId(crypto.randomUUID())
     setAgentsOpen(false)
@@ -490,7 +527,11 @@ function Shell() {
   // A session was deleted from the sidebar. If it was the active one, drop back
   // to a fresh (uncreated) conversation; refresh the list either way.
   function handleConversationDeleted(id: string) {
-    if (id === activeConversationId) setActiveConversationId(null)
+    if (id === activeConversationId) {
+      setActiveConversationId(null)
+      // The old draft key is aliased to the deleted conversation; start fresh.
+      setWorkflowDraftKey(crypto.randomUUID())
+    }
     refreshConversations()
   }
 
@@ -568,6 +609,7 @@ function Shell() {
             setWorkflowsOpen(false)
           }}
           onWorkflowsClick={() => {
+            setRequestedRun(null)
             setWorkflowsOpen(true)
             setDashboardsOpen(false)
             setMcpOpen(false)
@@ -603,7 +645,10 @@ function Shell() {
               searchOpen={conversationSearchOpen}
               onSearchOpenComplete={() => setConversationSearchOpen(null)}
               pendingProjectId={pendingProjectId}
+              workflowDraftKey={workflowDraftKey}
+              onWorkflowContextChange={setWorkflowContext}
               onConversationCreated={(id) => {
+                conversationWorkflows.adopt(workflowDraftKey, id)
                 const pendingId = freshTerminalConversationId
                 void window.cowork.terminal.adoptConversation(pendingId, id)
                 setAdoptedTerminalConversation({ from: pendingId, to: id })
@@ -633,7 +678,13 @@ function Shell() {
           {skillsOpen && <SkillsScreen onClose={() => setSkillsOpen(false)} />}
           {mcpOpen && <McpScreen onClose={() => setMcpOpen(false)} />}
           {workflowsOpen && (
-            <WorkflowsScreen onClose={() => setWorkflowsOpen(false)} />
+            <WorkflowsScreen
+              requestedRun={requestedRun}
+              onClose={() => {
+                setWorkflowsOpen(false)
+                setRequestedRun(null)
+              }}
+            />
           )}
           {dashboardsOpen && (
             <DashboardsScreen onClose={() => setDashboardsOpen(false)} />
@@ -652,6 +703,14 @@ function Shell() {
           />
         </div>
         <ActivityPanel
+          workflowsSection={
+            conversationWorkflows.definitions.length > 0 && (
+              <WorkflowsSection
+                controller={conversationWorkflows}
+                onViewResults={viewWorkflowResults}
+              />
+            )
+          }
           conversationId={activeConversationId}
           open={activityVisible}
           tabs={sidebarTabState.tabs}

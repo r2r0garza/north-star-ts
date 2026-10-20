@@ -1,5 +1,5 @@
 import type { Task } from "../db/types"
-import { renderContextEnvelope } from "../agent/context/provenance"
+import { renderContextEnvelope } from "../../shared/context-provenance"
 
 export interface TaskHandoff {
   version: 1

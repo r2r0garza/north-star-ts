@@ -12,7 +12,7 @@ import type {
   CommandCompletionInbox,
   CommandCompletionOwner,
 } from "../command-completion-inbox"
-import { renderContextEnvelope } from "../context/provenance"
+import { renderContextEnvelope } from "../../../shared/context-provenance"
 import { truncateForModel, toolError } from "./output"
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "./types"
 import { isTestSessionId } from "./test_diagnostics_tools"

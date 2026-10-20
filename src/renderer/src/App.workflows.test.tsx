@@ -1,0 +1,192 @@
+// @vitest-environment happy-dom
+import { act, createRef } from "react"
+import { createRoot, type Root } from "react-dom/client"
+import { beforeEach, afterEach, expect, it, vi } from "vitest"
+import App, { type AppHandle, type WorkflowConversationContext } from "./App"
+import { TooltipProvider } from "./components/ui/tooltip"
+import { formatWorkflowResult } from "../../shared/workflow-result"
+vi.mock("@/components/transcript", () => ({
+  LiveTranscriptTurn: () => null,
+  SettledTranscript: () => null,
+}))
+let root: Root
+let container: HTMLDivElement
+let context: WorkflowConversationContext | null
+const ref = createRef<AppHandle>()
+const projectGet = vi.fn()
+const chat = vi.fn()
+const onContext = (next: WorkflowConversationContext) => {
+  context = next
+}
+let id: string | null
+function render() {
+  return act(async () => {
+    root.render(
+      <TooltipProvider>
+        <App
+          ref={ref}
+          view="North Star"
+          conversationId={id}
+          pendingProjectId={null}
+          searchOpen={null}
+          onSearchOpenComplete={() => {}}
+          onConversationCreated={() => {}}
+          onConversationChanged={() => {}}
+          onOpenSettings={() => {}}
+          settingsOpen={false}
+          rightPanelOpen={true}
+          onWorkflowContextChange={onContext}
+          workflowDraftKey="draft"
+        />
+      </TooltipProvider>
+    )
+  })
+}
+beforeEach(() => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      disconnect() {}
+      unobserve() {}
+    }
+  )
+  id = "conversation"
+  context = null
+  projectGet
+    .mockReset()
+    .mockResolvedValue({ id: "project", workspaceId: "project-workspace" })
+  chat.mockReset()
+  const noop = () => () => {}
+  window.cowork = {
+    platform: "darwin",
+    system: () => ({ mainAgentName: "North Star", displayName: "North Star" }),
+    providers: {
+      listWithModels: async () => [],
+      getDefault: async () => ({}),
+      onModelsChanged: noop,
+    },
+    settings: {
+      getConversations: async () => ({ showRunInBackgroundButton: false }),
+    },
+    onCompletionReportStream: noop,
+    onCompletionReport: noop,
+    onBrowserElementPicked: noop,
+    skills: { list: async () => [] },
+    agents: { list: async () => [] },
+    files: { list: async () => [] },
+    db: {
+      tasks: { list: async () => [] },
+      projects: { get: projectGet },
+      messages: { list: async () => [] },
+      conversations: {
+        get: async (key: string) => ({
+          id: key,
+          projectId: key === "conversation" ? "project" : null,
+          workspaceId: "fallback-workspace",
+          workingDirectory: "/worktree",
+        }),
+      },
+      workspaces: {
+        list: async () => [
+          { id: "project-workspace", path: "/project" },
+          { id: "fallback-workspace", path: "/fallback" },
+        ],
+      },
+    },
+    chat,
+  } as unknown as typeof window.cowork
+  container = document.createElement("div")
+  document.body.append(container)
+  root = createRoot(container)
+})
+afterEach(async () => {
+  await act(async () => root.unmount())
+  container.remove()
+  vi.unstubAllGlobals()
+})
+it("waits for project context, uses project workspace precedence, and rejects stale insertion destinations", async () => {
+  let resolve!: (value: { id: string; workspaceId: string }) => void
+  projectGet.mockImplementation(
+    () =>
+      new Promise((done) => {
+        resolve = done
+      })
+  )
+  await render()
+  expect(context?.ready).toBe(false)
+  projectGet.mockResolvedValue({
+    id: "project",
+    workspaceId: "project-workspace",
+  })
+  await act(async () => {
+    resolve({ id: "project", workspaceId: "project-workspace" })
+  })
+  // Resolve both independent readers after the delayed project lookup.
+  await render()
+  expect(context?.workspace).toBe("/project")
+  expect(context?.projectId).toBe("project")
+  const previous = context!
+  id = "another"
+  await render()
+  expect(context?.workspace).toBe("/worktree")
+  await act(async () => {
+    expect(
+      ref.current?.appendWorkflowResult("Wrong destination", previous)
+    ).toBe(false)
+  })
+  expect(container.querySelector("textarea")?.value).not.toContain(
+    "Wrong destination"
+  )
+})
+it("appends attributed final output into the real editable composer without submitting", async () => {
+  await render()
+  expect(context?.ready).toBe(true)
+  const text = formatWorkflowResult({
+    id: "run",
+    workflow: { name: "Review" },
+    status: "Completed",
+    steps: [{ result: "Final output" }],
+  } as import("../../shared/workflow-runs").WorkflowRun)
+  await act(async () => {
+    ref.current?.appendTerminalSelection("Existing draft")
+    expect(ref.current?.appendWorkflowResult(text, context!)).toBe(true)
+  })
+  const textarea = container.querySelector("textarea")!
+  expect(textarea.value).toContain("Existing draft")
+  expect(textarea.value).toContain("DATA: Final output")
+  expect(textarea.value).toContain('"runId":"run"')
+  expect(textarea.disabled).toBe(false)
+  expect(chat).not.toHaveBeenCalled()
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      "value"
+    )!.set!
+    setter.call(textarea, `${textarea.value}Please summarize.`)
+    textarea.dispatchEvent(new Event("input", { bubbles: true }))
+  })
+  expect(textarea.value).toContain("Please summarize.")
+  expect(chat).not.toHaveBeenCalled()
+})
+it("follows a folder picked in an unlocked worktree conversation", async () => {
+  id = "another"
+  const update = vi.fn(async () => {})
+  Object.assign(window.cowork, {
+    pickWorkspace: async () => ({ path: "/picked" }),
+  })
+  Object.assign(window.cowork.db.conversations, { update })
+  Object.assign(window.cowork.db.workspaces, {
+    upsert: async () => ({ id: "picked", path: "/picked" }),
+  })
+  await render()
+  expect(context?.workspace).toBe("/worktree")
+  const picker = container
+    .querySelector("svg.lucide-folder-open")
+    ?.closest("button")
+  await act(async () => picker!.click())
+  expect(update).toHaveBeenCalledWith("another", { workspaceId: "picked" })
+  expect(context?.ready).toBe(true)
+  expect(context?.workspace).toBe("/picked")
+})

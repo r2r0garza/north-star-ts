@@ -107,7 +107,7 @@ import {
   SECTION_PRIORITY,
   type ContextSection,
 } from "./context/context-builder"
-import { renderContextEnvelope } from "./context/provenance"
+import { renderContextEnvelope } from "../../shared/context-provenance"
 import {
   taskStateSection,
   approvalsSection,

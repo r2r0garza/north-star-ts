@@ -1223,3 +1223,25 @@ it("opens a single anchored model picker, filters models, and saves the step sel
     })
   )
 })
+
+it("opens the exact requested sidebar run and reports a missing run without substituting another", async () => {
+  await act(async () =>
+    root.render(
+      <WorkflowsScreen
+        onClose={() => {}}
+        requestedRun={{ id: "completed", requestId: "first" }}
+      />
+    )
+  )
+  expect(container.querySelector('[data-slot="run-detail"]')).not.toBeNull()
+  await act(async () =>
+    root.render(
+      <WorkflowsScreen
+        onClose={() => {}}
+        requestedRun={{ id: "missing", requestId: "second" }}
+      />
+    )
+  )
+  expect(container.textContent).toContain("This workflow run is unavailable.")
+  expect(container.querySelector('[data-slot="run-detail"]')).toBeNull()
+})

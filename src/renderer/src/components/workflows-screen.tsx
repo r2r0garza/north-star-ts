@@ -63,7 +63,15 @@ const RUN_STATUSES = [
   "Interrupted",
 ]
 
-export function WorkflowsScreen({ onClose }: { onClose: () => void }) {
+export function WorkflowsScreen({
+  onClose,
+  requestedRun,
+}: {
+  onClose: () => void
+  requestedRun?: { id: string; requestId: string } | null
+}) {
+  const [runsLoaded, setRunsLoaded] = useState(false)
+  const [runsError, setRunsError] = useState(false)
   const [savedRuns, setSavedRuns] = useState<
     import("../../../shared/workflow-runs").WorkflowRun[]
   >([])
@@ -81,6 +89,13 @@ export function WorkflowsScreen({ onClose }: { onClose: () => void }) {
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState("runs")
   const [newRunOpen, setNewRunOpen] = useState(false)
+  useEffect(() => {
+    if (requestedRun) {
+      setSelectedWorkflowId(null)
+      setSelectedRunId(requestedRun.id)
+      setActiveTab("runs")
+    }
+  }, [requestedRun])
   const selectedWorkflow = workflows.find(
     (workflow) => workflow.id === selectedWorkflowId
   )
@@ -121,9 +136,16 @@ export function WorkflowsScreen({ onClose }: { onClose: () => void }) {
       loading = true
       try {
         const list = await window.cowork.workflowRuns.list()
-        if (!cancelled) setSavedRuns(list)
+        if (!cancelled) {
+          setSavedRuns(list)
+          setRunsLoaded(true)
+          setRunsError(false)
+        }
       } catch {
-        if (!cancelled) toast.error("Could not load workflow runs")
+        if (!cancelled) {
+          setRunsError(true)
+          toast.error("Could not load workflow runs")
+        }
       } finally {
         loading = false
       }
@@ -232,6 +254,26 @@ export function WorkflowsScreen({ onClose }: { onClose: () => void }) {
         onBack={() => setSelectedRunId(null)}
         onClose={onClose}
       />
+    )
+  }
+
+  if (selectedRunId && !selectedRun) {
+    return (
+      <div className="flex flex-1 flex-col pt-11">
+        <ScreenHeader
+          title="Workflow Run"
+          backLabel="Back to runs"
+          onBack={() => setSelectedRunId(null)}
+          onClose={onClose}
+        />
+        <p role={runsError ? "alert" : "status"} className="p-4">
+          {runsError
+            ? "Could not load this workflow run. Retrying…"
+            : !runsLoaded
+              ? "Loading workflow run…"
+              : "This workflow run is unavailable."}
+        </p>
+      </div>
     )
   }
 

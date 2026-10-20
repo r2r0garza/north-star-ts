@@ -75,6 +75,7 @@ it("keeps tool responses inside their matching collapsed calls, including after 
     ],
   }
   vi.stubGlobal("cowork", {
+    providers: { listWithModels: vi.fn(async () => []) },
     tasks: { onEvent: () => () => {} },
     db: { messages: { list: vi.fn(async () => messages) } },
   })
@@ -231,6 +232,7 @@ it.each<{
     ],
   }
   vi.stubGlobal("cowork", {
+    providers: { listWithModels: vi.fn(async () => []) },
     tasks: { onEvent: () => () => {} },
     db: {
       messages: {

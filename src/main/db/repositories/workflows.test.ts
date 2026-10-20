@@ -61,7 +61,6 @@ describe.skipIf(!sqliteLoads)("workflow storage", () => {
       description: "",
       defaultObjective: "",
       viewInConversationSidebar: false,
-      agentName: "Cowork",
       steps: [],
     })
     expect(second.id).not.toBe(first.id)

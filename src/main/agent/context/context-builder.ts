@@ -8,7 +8,7 @@ import {
 } from "../../db/repositories/messages"
 import { defaultTokenCounter, type TokenCounter } from "./token-counter"
 import type { Message } from "../../db/types"
-import { renderContextEnvelope, type ContextProvenance } from "./provenance"
+import { renderContextEnvelope, type ContextProvenance } from "../../../shared/context-provenance"
 import { isCommandCompletionEvent } from "../../../shared/runtime-messages"
 import { replayToolCallArguments } from "../tool-call-arguments"
 import { replayToolMedia, type MediaContentPart } from "../../media/tool-media"
