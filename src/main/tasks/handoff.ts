@@ -4,7 +4,7 @@ import { renderContextEnvelope } from "../../shared/context-provenance"
 export interface TaskHandoff {
   version: 1
   taskId: string
-  status: "completed" | "blocked" | "failed"
+  status: "completed" | "unfinished" | "blocked" | "failed"
   summary: string
   changes: string[]
   verification: string[]
@@ -15,8 +15,8 @@ export interface TaskHandoff {
 export function handoffInstruction(taskId: string): string {
   return `# Required background task handoff
 When finished, return ONLY one JSON object, without markdown fences:
-{"version":1,"taskId":${JSON.stringify(taskId)},"status":"completed|blocked|failed","summary":"what was accomplished","changes":["concrete changes or results"],"verification":["checks actually performed and their results"],"unresolved":["limitations or unfinished work"],"nextAction":null}
-Choose exactly one status. All array entries must be nonempty strings. Use empty arrays when there are none; never invent verification. summary must be nonempty. For blocked or failed, unresolved must describe the obstacle and nextAction must be a nonempty suggested action. For completed, nextAction may be null. Completion means the assignment was fulfilled, not merely that the turn ended. This handoff is for the coordinating agent, not a user-facing closing statement.`
+{"version":1,"taskId":${JSON.stringify(taskId)},"status":"completed|unfinished|blocked|failed","summary":"what was accomplished","changes":["concrete changes or results"],"verification":["checks actually performed and their results"],"unresolved":["limitations or unfinished work"],"nextAction":null}
+Choose exactly one status. completed: the assignment was fulfilled, not merely that the turn ended. unfinished: work remains that you can still do with your tools; prefer to keep working instead. blocked: only an external obstacle your tools cannot resolve, such as credentials, login, approval, permissions, or a missing environment prerequisite; remaining work, a large scope, or verification you cannot run here (record it under unresolved) is not a blocker. failed: the assignment cannot be done as specified. All array entries must be nonempty strings. Use empty arrays when there are none; never invent verification. summary must be nonempty. For unfinished, blocked, or failed, unresolved must describe the remaining work or obstacle and nextAction must be a nonempty suggested action. For completed, nextAction may be null. This handoff is for the coordinating agent, not a user-facing closing statement.`
 }
 
 export function parseTaskHandoff(
@@ -81,8 +81,10 @@ export function parseTaskHandoff(
     [o.version === 1, "version must be 1"],
     [o.taskId === taskId, `taskId must be ${JSON.stringify(taskId)}`],
     [
-      ["completed", "blocked", "failed"].includes(o.status as string),
-      "status must be completed, blocked, or failed",
+      ["completed", "unfinished", "blocked", "failed"].includes(
+        o.status as string
+      ),
+      "status must be completed, unfinished, blocked, or failed",
     ],
     [text(o.summary), "summary must be a nonempty string"],
     [texts(o.changes), "changes must be an array of nonempty strings"],
@@ -98,7 +100,7 @@ export function parseTaskHandoff(
     [
       o.status === "completed" ||
         (texts(o.unresolved) && o.unresolved.length > 0 && text(nextAction)),
-      "a blocked or failed handoff needs unresolved entries and a nonempty nextAction",
+      "an unfinished, blocked, or failed handoff needs unresolved entries and a nonempty nextAction",
     ],
   ]
   const problem = checks.find(([ok]) => !ok)?.[1]

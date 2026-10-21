@@ -320,6 +320,48 @@ describe.skipIf(!sqliteLoads)(
       expect(runner.calls).toBe(2)
     })
 
+    it("prunes finished index tasks no run links to, keeping the linked one", () => {
+      const runner = fakeRunner()
+      const svc = new IndexService(runner)
+      const finish = () =>
+        db
+          .prepare(
+            "UPDATE tasks SET status = 'completed', input = json_object('kind', 'workspace_index') WHERE input IS NULL OR json_extract(input, '$.kind') = 'workspace_index'"
+          )
+          .run()
+      const now = Date.now()
+      db.prepare(
+        "INSERT INTO conversations (id, mode, title, workspace_id, created_at, updated_at) VALUES ('chat', 'interactive', NULL, NULL, ?, ?)"
+      ).run(now, now)
+      db.prepare(
+        "INSERT INTO tasks (id, conversation_id, source_conversation_id, title, status, input, result, error, created_at, updated_at) VALUES ('agent', 'chat', NULL, NULL, 'completed', '{\"kind\":\"agent_chat\"}', NULL, NULL, ?, ?)"
+      ).run(now, now)
+      const taskIds = () =>
+        db.prepare("SELECT id FROM tasks WHERE id <> 'agent'").pluck().all()
+
+      svc.ensureRunning(workspaceId, "low")
+      const first = runner.lastTaskId
+      finish()
+      svc.ensureRunning(workspaceId, "low")
+      const second = runner.lastTaskId
+      finish()
+      svc.ensureRunning(workspaceId, "low")
+      expect(runner.calls).toBe(3)
+      expect(taskIds()).not.toContain(first)
+      expect(taskIds()).toEqual(expect.arrayContaining([second, runner.lastTaskId]))
+
+      // The startup sweep drops the now-unlinked previous run too.
+      finish()
+      svc.pruneFinishedTasks()
+      expect(taskIds()).toEqual([runner.lastTaskId])
+      expect(
+        db.prepare("SELECT count(*) FROM conversations").pluck().get()
+      ).toBe(2)
+      expect(
+        db.prepare("SELECT status FROM tasks WHERE id = 'agent'").pluck().get()
+      ).toBe("completed")
+    })
+
     it("does not restart when the workspace is disabled", () => {
       const runner = fakeRunner()
       const svc = new IndexService(runner)

@@ -23,7 +23,10 @@ export function buildTodoListPrompt(todos: Todo[]): string | null {
     "",
     "This is your task list for this conversation (preserved across turns and " +
       "context compression). Keep it current with the todo_write tool. Do not " +
-      "re-do items already marked completed.",
+      "re-do items already marked completed. Revise this list rather than " +
+      "starting a new one, mark an item completed only when its whole scope is " +
+      "done and verified, and do not end your turn while items you can still do " +
+      "remain open.",
     "",
     ...lines,
   ].join("\n")

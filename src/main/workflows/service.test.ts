@@ -480,6 +480,38 @@ it.each(["blocked", "failed"])(
     ])
   }
 )
+it("continues an unfinished step automatically with its own remaining work", async () => {
+  const run = start()
+  state.agent
+    .mockResolvedValueOnce({ content: handoff(`${run.id}:a`, "unfinished") })
+    .mockResolvedValueOnce({ content: handoff(`${run.id}:a`) })
+    .mockResolvedValueOnce({ content: handoff(`${run.id}:b`) })
+  expect(await service.execute(context(run))).not.toHaveProperty("error")
+  const continuation = state.agent.mock.calls[1][0]
+  expect(continuation.userMessage).toContain("unfinished with no external blocker")
+  expect(continuation.userMessage).toContain("- Login needed")
+  expect(continuation.userMessage).toContain("Next action: Sign in")
+  expect(continuation.reportOnly).toBeUndefined()
+  expect(state.runs.get(run.id)?.steps.map((step) => step.status)).toEqual([
+    "completed",
+    "completed",
+  ])
+})
+it("fails an unfinished step after the automatic continuation budget", async () => {
+  const run = start()
+  state.agent.mockResolvedValue({ content: handoff(`${run.id}:a`, "unfinished") })
+  expect(await service.execute(context(run))).toEqual({ error: "Login needed" })
+  expect(state.agent).toHaveBeenCalledTimes(4)
+  expect(state.runs.get(run.id)?.steps[0].status).toBe("failed")
+})
+it("reserves blockers for external obstacles in the step prompt", async () => {
+  const run = start()
+  state.agent.mockResolvedValue({ content: handoff(`${run.id}:a`, "blocked") })
+  await service.execute(context(run))
+  const prompt = vi.mocked(appendMessage).mock.calls[0][0].content
+  expect(prompt).toContain("remaining work is not a blocker")
+  expect(prompt).toContain("Verification you cannot run here")
+})
 it("fails malformed completion after one repair turn instead of advancing", async () => {
   const run = start()
   state.agent.mockResolvedValue({ content: "All done" })
@@ -906,6 +938,30 @@ it("prefixes assigned skills and activates them without duplicating opening mess
   )
 })
 
+it("summarizes the step transcript before resume, continuation, and correction turns", async () => {
+  const before: number[] = []
+  const summarize = vi.fn(async (_conversationId: string, _signal: AbortSignal) => {
+    before.push(state.agent.mock.calls.length)
+  })
+  const summarizing = new WorkflowService(runner as unknown as TaskRunner, undefined, summarize)
+  const run = start()
+  const saved = state.runs.get(run.id)!
+  saved.steps[0].conversationId = "existing-conversation"
+  saved.steps[0].validateCompletion = true
+  state.agent
+    .mockResolvedValueOnce({ content: handoff(`${run.id}:a`, "unfinished") })
+    .mockResolvedValueOnce({ content: handoff(`${run.id}:a`) })
+    .mockResolvedValueOnce({ content: JSON.stringify({ verdict: "rejected", reason: "No", findings: ["Fix"] }) })
+    .mockResolvedValueOnce({ content: handoff(`${run.id}:a`) })
+    .mockResolvedValueOnce({ content: JSON.stringify({ verdict: "accepted", reason: "Done", findings: [] }) })
+    .mockResolvedValueOnce({ content: handoff(`${run.id}:b`) })
+  expect(await summarizing.execute(context(run))).not.toHaveProperty("error")
+  // Resume (turn 0), continuation (turn 1), correction (turn 3); step b starts fresh.
+  expect(before).toEqual([0, 1, 3])
+  expect(summarize.mock.calls.every(([id]) => id === "existing-conversation")).toBe(true)
+  expect(state.agent.mock.calls[1][0].userMessage).toContain("Execute step 1 of 2")
+  expect(state.agent.mock.calls[3][0].userMessage).toContain("Execute step 1 of 2")
+})
 it("keeps assigned skills active when resuming a step", async () => {
   state.workflow.steps[0].skillName = "git-commit"
   const run = start()

@@ -7,7 +7,9 @@ import {
   upsertRun,
   updateProgress,
   resetRun,
+  listUnlinkedFinishedIndexConversations,
 } from "../db/repositories/index-runs"
+import { deleteConversations } from "../db/repositories/conversations"
 import {
   getFileByPath,
   upsertFiles,
@@ -116,6 +118,9 @@ export class IndexService {
       const task = getTask(run.taskId)
       if (task && LIVE_STATUSES.has(task.status)) return
     }
+    // Runs while the previous task is still linked, so it survives: its status
+    // listeners may still be settling. Everything older goes.
+    this.pruneFinishedTasks()
     upsertRun(workspaceId, { enabled: true, priority })
     const task = this.runner.enqueueKind({
       kind: "workspace_index",
@@ -123,6 +128,12 @@ export class IndexService {
       input: { workspaceId, priority },
     })
     upsertRun(workspaceId, { taskId: task.id })
+  }
+
+  // Every file-change burst starts a new index task, so drop finished ones no run
+  // links to; also run once at startup to clear the backlog.
+  pruneFinishedTasks(): void {
+    deleteConversations(listUnlinkedFinishedIndexConversations())
   }
 
   async refreshMetadata(workspaceId: string): Promise<void> {

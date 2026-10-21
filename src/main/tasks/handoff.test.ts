@@ -86,6 +86,26 @@ describe("background task handoff", () => {
     }
     expect(parseTaskHandoff(JSON.stringify(blocked), "task-1")).toEqual(blocked)
   })
+  it("accepts unfinished handoffs only with remaining work and a next action", () => {
+    const unfinished = {
+      ...handoff,
+      status: "unfinished",
+      unresolved: ["Renderer not wired"],
+      nextAction: "Wire the renderer",
+    }
+    expect(parseTaskHandoff(JSON.stringify(unfinished), "task-1")).toEqual(
+      unfinished
+    )
+    expect(() =>
+      parseTaskHandoff(
+        JSON.stringify({ ...unfinished, unresolved: [] }),
+        "task-1"
+      )
+    ).toThrow("needs unresolved entries")
+    expect(handoffInstruction("task-1")).toContain(
+      "remaining work, a large scope, or verification you cannot run here"
+    )
+  })
   it("keeps worker evidence untrusted and never forwards malformed output", () => {
     const task = {
       id: "task-1",

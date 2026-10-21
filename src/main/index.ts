@@ -1445,6 +1445,7 @@ app.whenReady().then(async () => {
     hasIndependentSurface: true,
     run: indexService.execute,
   })
+  indexService.pruneFinishedTasks()
   // summarize: deterministic (one bounded LLM call, no agentic loop) executor for
   // the rolling conversation summary (plan 019). autoResume:false — a stale
   // summary is harmless and the next turn re-triggers, so there's no need to
@@ -1469,10 +1470,12 @@ app.whenReady().then(async () => {
     hasIndependentSurface: true,
     run: dashboardService.execute,
   })
-  const workflowService = new WorkflowService(taskRunner, {
-    service: indexService,
-    watcher: indexWatcher,
-  })
+  const workflowService = new WorkflowService(
+    taskRunner,
+    { service: indexService, watcher: indexWatcher },
+    (conversationId, signal) =>
+      summaryService.summarizeIfDue(conversationId, signal)
+  )
   taskRunner.registerKind(WORKFLOW_RUN_KIND, {
     autoResume: false,
     lane: "work",

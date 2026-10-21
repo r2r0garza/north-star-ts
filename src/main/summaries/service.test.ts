@@ -476,6 +476,59 @@ describe.skipIf(!sqliteLoads)("SummaryService.execute (executor)", () => {
     expect(getConversationSummary(convId)).toBeUndefined()
   })
 
+  it("summarizes a due step transcript inline with the work-state prompt", async () => {
+    indexingSettings.summarizeMessageThreshold = 5
+    try {
+      const convId = freshConversation()
+      seedMessages(convId, 2)
+      await svc.summarizeIfDue(convId, abortSignal())
+      expect(completionCalls).toBe(0)
+
+      seedMessages(convId, 6)
+      nextCompletion = {
+        choices: [{ message: { content: "## Objective\n- ship it" } }],
+      }
+      await svc.summarizeIfDue(convId, abortSignal())
+      expect(completionCalls).toBe(1)
+      const system =
+        lastBase?.messages?.find((m) => m.role === "system")?.content ?? ""
+      expect(system).toContain("work-state summary")
+      expect(system).toContain("## Remaining")
+      expect(getConversationSummary(convId)?.coversThrough).toBe(8)
+
+      seedMessages(convId, 6)
+      nextError = new Error("boom")
+      await expect(
+        svc.summarizeIfDue(convId, abortSignal())
+      ).resolves.toBeUndefined()
+      expect(getConversationSummary(convId)?.coversThrough).toBe(8)
+    } finally {
+      indexingSettings.summarizeMessageThreshold = 0
+    }
+  })
+
+  it("folds a backlog larger than one call's budget in sequential batches", async () => {
+    const convId = freshConversation()
+    for (let i = 0; i < 150; i++)
+      appendMessage({ conversationId: convId, role: "tool", content: "x".repeat(3000) })
+    nextCompletion = {
+      choices: [{ message: { content: "## Decisions\n- batch digest" } }],
+    }
+    const res = await svc.execute({
+      task: summarizeTask(convId),
+      signal: abortSignal(),
+      emit: () => {},
+      workspace: undefined,
+    })
+    expect(completionCalls).toBe(2)
+    // The second batch folds into the first batch's digest.
+    expect(lastBase?.messages?.[1].content).toContain(
+      "<prior_summary>\n## Decisions\n- batch digest"
+    )
+    expect(res.content).toContain("summarized 150 messages")
+    expect(getConversationSummary(convId)?.coversThrough).toBe(150)
+  })
+
   it("builds a fenced prompt with no continuable transcript cue", async () => {
     const convId = freshConversation()
     seedMessages(convId, 8)

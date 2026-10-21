@@ -40,3 +40,7 @@
    compositions with bounded layout tokens, host-defined local interactions and explicit revision-aware
    feedback. Concepts do not execute generated code, edit workspace files or grant action authority.
    [Plan](116-ui-concept-previews.md).
+8. **`118` — In-turn context compaction.** Bound a single long agent turn's request at the model-round
+   boundary: clear old tool-result bodies first, then fall back to a work-state summary and rebuild. The
+   persisted transcript stays complete; summary upserts become monotonic.
+   [Plan](118-in-turn-context-compaction.md).

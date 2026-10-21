@@ -165,3 +165,17 @@ export function listEnabledRuns(): IndexRun[] {
     .all() as IndexRunRow[]
   return rows.map(toIndexRun)
 }
+
+// Conversations of finished index tasks that no run links to anymore. Each index
+// run forks a hidden conversation; deleting it cascades to the task.
+export function listUnlinkedFinishedIndexConversations(): string[] {
+  return getDb()
+    .prepare(
+      `SELECT conversation_id FROM tasks
+       WHERE json_extract(input, '$.kind') = 'workspace_index'
+         AND status IN ('completed', 'failed', 'cancelled')
+         AND id NOT IN (SELECT task_id FROM index_runs WHERE task_id IS NOT NULL)`
+    )
+    .pluck()
+    .all() as string[]
+}
