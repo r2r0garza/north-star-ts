@@ -93,24 +93,75 @@ it("keeps tool responses inside their matching collapsed calls, including after 
         />
       )
     )
+    const stepTrigger = container.querySelector<HTMLButtonElement>(
+      'ol [data-slot="trace-collapsible-trigger"]'
+    )!
+    expect(stepTrigger.getAttribute("aria-expanded")).toBe("false")
+    expect(container.querySelector('[aria-label="Step transcript"]')).toBeNull()
+    const reads = vi.mocked(window.cowork.db.messages.list).mock.calls.length
+    expect(reads).toBe(1)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+    expect(vi.mocked(window.cowork.db.messages.list).mock.calls.length).toBe(
+      reads
+    )
+    await act(async () => stepTrigger.click())
     const transcript = container.querySelector(
       '[aria-label="Step transcript"]'
     )!
-    const calls = transcript.querySelectorAll("details")
+    const calls = transcript.querySelectorAll<HTMLButtonElement>(
+      '[data-slot="trace-collapsible-trigger"]'
+    )
     expect(calls).toHaveLength(2)
-    expect(calls[0].open).toBe(false)
-    expect(calls[1].open).toBe(false)
-    expect(calls[0].textContent).not.toContain("Second file output")
-    expect(calls[1].textContent).toContain("Second file output")
+    expect(calls[0].getAttribute("aria-expanded")).toBe("false")
+    expect(calls[1].getAttribute("aria-expanded")).toBe("false")
+    expect(transcript.textContent).not.toContain("Second file output")
+    await act(async () => {
+      calls[0].click()
+      calls[1].click()
+    })
+    const callContent = (index: number) =>
+      calls[index].closest('[data-slot="trace-collapsible"]')!
+    expect(callContent(0).textContent).not.toContain("Second file output")
+    expect(callContent(1).textContent).toContain("Second file output")
     expect(transcript.querySelectorAll("pre")).toHaveLength(3)
     expect(transcript.children).toHaveLength(4)
     expect(transcript.textContent).toContain("Unmatched output")
     expect(transcript.textContent).toContain("Unlinked output")
     expect(transcript.textContent).toContain("Finished checking")
-
-    await act(async () => {
-      calls[0].open = true
-    })
+    for (const [status, mapped, label] of [
+      ["waiting", "pending", "Waiting"],
+      ["active", "running", "Active"],
+      ["completed", null, "Completed"],
+      ["paused", null, "Paused"],
+      ["cancelled", null, "Cancelled"],
+      ["failed", "error", "Failed"],
+      ["interrupted", null, "Interrupted"],
+    ] as const) {
+      await act(async () =>
+        root.render(
+          <RunDetail
+            run={{ ...run, steps: [{ ...run.steps[0], status }] }}
+            workflow={workflow}
+            onBack={() => {}}
+            onClose={() => {}}
+          />
+        )
+      )
+      expect(stepTrigger.getAttribute("aria-expanded")).toBe("true")
+      expect(stepTrigger.textContent).toContain(label)
+      expect(
+        stepTrigger
+          .querySelector('[data-slot="trace-line"]')
+          ?.getAttribute("data-status")
+      ).toBe(mapped)
+      expect(calls[0].getAttribute("aria-expanded")).toBe("true")
+      if (status === "active") {
+        expect(calls[0].textContent).toContain("Running")
+        expect(calls[0].textContent).not.toContain("Interrupted")
+      }
+    }
     messages = [
       ...messages,
       message("first-result", {
@@ -118,19 +169,92 @@ it("keeps tool responses inside their matching collapsed calls, including after 
         toolCallId: "first",
         content: "First file output",
       }),
+      message("first-extra", {
+        role: "tool",
+        toolCallId: "first",
+        content: "ERROR[extra]: additional response",
+      }),
     ]
+    await act(async () =>
+      root.render(
+        <RunDetail
+          run={{
+            ...run,
+            status: "Active",
+            steps: [{ ...run.steps[0], status: "active" }],
+          }}
+          workflow={workflow}
+          onBack={() => {}}
+          onClose={() => {}}
+        />
+      )
+    )
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1000)
     })
-    expect(calls[0].open).toBe(true)
-    expect(calls[0].textContent).toContain("First file output")
-    expect(calls[1].textContent).not.toContain("First file output")
+    expect(calls[0].getAttribute("aria-expanded")).toBe("true")
+    expect(callContent(0).textContent).toContain("First file output")
+    expect(callContent(0).textContent).toContain(
+      "ERROR[extra]: additional response"
+    )
+    expect(calls[0].textContent).toContain("Failed")
+    expect(callContent(1).textContent).not.toContain("First file output")
     expect(transcript.children).toHaveLength(4)
+    expect(transcript.querySelectorAll("pre")).toHaveLength(5)
+    await act(async () => calls[0].click())
+    expect(calls[0].getAttribute("aria-expanded")).toBe("false")
+    expect(transcript.textContent).not.toContain("First file output")
+    await act(async () => stepTrigger.click())
+    const closedReads = vi.mocked(window.cowork.db.messages.list).mock.calls
+      .length
     await act(async () => {
-      calls[0].open = false
+      await vi.advanceTimersByTimeAsync(1000)
     })
-    expect(calls[0].open).toBe(false)
-    expect(transcript.querySelectorAll("pre")).toHaveLength(4)
+    expect(vi.mocked(window.cowork.db.messages.list).mock.calls.length).toBe(
+      closedReads + 1
+    )
+    await act(async () => stepTrigger.click())
+    const openReads = vi.mocked(window.cowork.db.messages.list).mock.calls
+      .length
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+    expect(vi.mocked(window.cowork.db.messages.list).mock.calls.length).toBe(
+      openReads + 2
+    )
+    messages = [
+      ...messages,
+      message("completion", { content: "Final saved output" }),
+    ]
+    await act(async () =>
+      root.render(
+        <RunDetail
+          run={run}
+          workflow={workflow}
+          onBack={() => {}}
+          onClose={() => {}}
+        />
+      )
+    )
+    expect(
+      container.querySelector('[aria-label="Step transcript"]')?.textContent
+    ).toContain("Final saved output")
+    expect(
+      container.querySelector('[aria-label="Run outcome"]')?.textContent
+    ).toContain("Final saved output")
+    const completedReads = vi.mocked(window.cowork.db.messages.list).mock.calls
+      .length
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000)
+    })
+    expect(vi.mocked(window.cowork.db.messages.list).mock.calls.length).toBe(
+      completedReads
+    )
+    await act(async () => stepTrigger.click())
+    await act(async () => stepTrigger.click())
+    expect(vi.mocked(window.cowork.db.messages.list).mock.calls.length).toBe(
+      completedReads + 1
+    )
   } finally {
     act(() => root.unmount())
     container.remove()
@@ -271,81 +395,84 @@ it.each<{
 it.each([
   ["Failed", "Retry", "retry"],
   ["Paused", "Resume", "resume"],
-] as const)("opens a feedback modal for a %s run and sends the feedback with %s", async (status, label, action) => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
-  const workflow = EXAMPLE_WORKFLOWS[0]
-  const control = vi.fn(async () => {})
-  const run: WorkflowRun = {
-    id: "run",
-    taskId: "task",
-    workflowId: workflow.id,
-    workflow,
-    title: "Failed run",
-    objective: "Check files",
-    workspaceId: "workspace",
-    workspacePath: "/project",
-    projectId: null,
-    projectName: null,
-    accountId: "account",
-    modelId: "model",
-    status,
-    error: "Validation failed",
-    createdAt: 0,
-    updatedAt: 0,
-    steps: [
-      {
-        ...workflow.steps[0],
-        status: "failed",
-        conversationId: null,
-        result: null,
-        error: "Validation failed",
-        startedAt: 0,
-        finishedAt: 0,
-      },
-    ],
-  }
-  vi.stubGlobal("cowork", {
-    providers: { listWithModels: vi.fn(async () => []) },
-    tasks: { onEvent: () => () => {} },
-    db: { messages: { list: vi.fn(async () => []) } },
-    workflowRuns: { [action]: control },
-  })
-  const container = document.createElement("div")
-  document.body.append(container)
-  const root = createRoot(container)
-  const button = (label: string, scope: ParentNode) =>
-    [...scope.querySelectorAll("button")].find(
-      (b) => b.textContent?.trim() === label
-    )!
-  try {
-    await act(async () =>
-      root.render(
-        <RunDetail
-          run={run}
-          workflow={workflow}
-          onBack={() => {}}
-          onClose={() => {}}
-        />
-      )
-    )
-    await act(async () => button(label, container).click())
-    expect(control).not.toHaveBeenCalled()
-    const dialog = document.querySelector('[role="dialog"]')!
-    expect(dialog.textContent).toContain(`${label} run`)
-    const textarea = dialog.querySelector("textarea")!
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(
-        HTMLTextAreaElement.prototype,
-        "value"
-      )!.set!.call(textarea, "Skip the browser tests")
-      textarea.dispatchEvent(new Event("input", { bubbles: true }))
+] as const)(
+  "opens a feedback modal for a %s run and sends the feedback with %s",
+  async (status, label, action) => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
+    const workflow = EXAMPLE_WORKFLOWS[0]
+    const control = vi.fn(async () => {})
+    const run: WorkflowRun = {
+      id: "run",
+      taskId: "task",
+      workflowId: workflow.id,
+      workflow,
+      title: "Failed run",
+      objective: "Check files",
+      workspaceId: "workspace",
+      workspacePath: "/project",
+      projectId: null,
+      projectName: null,
+      accountId: "account",
+      modelId: "model",
+      status,
+      error: "Validation failed",
+      createdAt: 0,
+      updatedAt: 0,
+      steps: [
+        {
+          ...workflow.steps[0],
+          status: "failed",
+          conversationId: null,
+          result: null,
+          error: "Validation failed",
+          startedAt: 0,
+          finishedAt: 0,
+        },
+      ],
+    }
+    vi.stubGlobal("cowork", {
+      providers: { listWithModels: vi.fn(async () => []) },
+      tasks: { onEvent: () => () => {} },
+      db: { messages: { list: vi.fn(async () => []) } },
+      workflowRuns: { [action]: control },
     })
-    await act(async () => button(label, dialog).click())
-    expect(control).toHaveBeenCalledWith("run", "Skip the browser tests")
-    expect(document.querySelector('[role="dialog"]')).toBeNull()
-  } finally {
-    act(() => root.unmount())
-    container.remove()
-    vi.unstubAllGlobals()
+    const container = document.createElement("div")
+    document.body.append(container)
+    const root = createRoot(container)
+    const button = (label: string, scope: ParentNode) =>
+      [...scope.querySelectorAll("button")].find(
+        (b) => b.textContent?.trim() === label
+      )!
+    try {
+      await act(async () =>
+        root.render(
+          <RunDetail
+            run={run}
+            workflow={workflow}
+            onBack={() => {}}
+            onClose={() => {}}
+          />
+        )
+      )
+      await act(async () => button(label, container).click())
+      expect(control).not.toHaveBeenCalled()
+      const dialog = document.querySelector('[role="dialog"]')!
+      expect(dialog.textContent).toContain(`${label} run`)
+      const textarea = dialog.querySelector("textarea")!
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(
+          HTMLTextAreaElement.prototype,
+          "value"
+        )!.set!.call(textarea, "Skip the browser tests")
+        textarea.dispatchEvent(new Event("input", { bubbles: true }))
+      })
+      await act(async () => button(label, dialog).click())
+      expect(control).toHaveBeenCalledWith("run", "Skip the browser tests")
+      expect(document.querySelector('[role="dialog"]')).toBeNull()
+    } finally {
+      act(() => root.unmount())
+      container.remove()
+      vi.unstubAllGlobals()
+    }
   }
-})
+)

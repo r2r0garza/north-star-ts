@@ -1,23 +1,8 @@
 import * as React from "react"
 import { Play } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { cn } from "@/lib/utils"
-import type { Todo, TodoStatus, TaskStatus, TaskEventPayload } from "@/types"
-
-// Compact status marker per todo status — mirrors the model-facing markers in
-// todo-prompt.ts so the panel reads the same way the agent's list does.
-const MARKERS: Record<TodoStatus, string> = {
-  pending: "[ ]",
-  in_progress: "[>]",
-  completed: "[x]",
-  cancelled: "[~]",
-}
-const STATUS_CLASS: Record<TodoStatus, string> = {
-  pending: "text-muted-foreground",
-  in_progress: "text-primary",
-  completed: "text-muted-foreground line-through",
-  cancelled: "text-muted-foreground line-through opacity-60",
-}
+import { TodoTraceList } from "@/components/todo-trace-list"
+import type { Todo, TaskStatus, TaskEventPayload } from "@/types"
 
 // Items that still represent work to do (mirrors actionableTodos server-side).
 function actionable(todos: Todo[]): Todo[] {
@@ -168,18 +153,7 @@ export function TodosSection({
 
   return (
     <div className="flex flex-col gap-2">
-      <ul className="flex flex-col gap-1">
-        {todos.map((t) => (
-          <li key={t.itemId} className="flex gap-1.5 text-xs">
-            <span className="font-mono text-muted-foreground select-none">
-              {MARKERS[t.status] ?? "[?]"}
-            </span>
-            <span className={cn("min-w-0 flex-1", STATUS_CLASS[t.status])}>
-              {t.content}
-            </span>
-          </li>
-        ))}
-      </ul>
+      <TodoTraceList todos={todos} className="text-xs" />
       <Button
         size="sm"
         variant="outline"

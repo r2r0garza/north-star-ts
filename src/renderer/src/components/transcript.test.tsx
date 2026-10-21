@@ -328,3 +328,20 @@ it("passes the conversation to settled and streaming download links without a wo
   for (const element of markdown)
     expect(element.getAttribute("data-conversation-id")).toBe("conv-chat")
 })
+
+it.each([
+  [false, false, "Thinking…"],
+  [false, true, "Connection interrupted — retrying…"],
+  [true, true, "Waiting for background command…"],
+])(
+  "renders noninteractive live activity (wait %s, retry %s)",
+  (commandWait, streamRetrying, expected) => {
+    render({ settled: [], live: [], commandWait, streamRetrying })
+    const line = container.querySelector('[data-slot="trace-line"]')!
+    expect(line.textContent).toBe(expected)
+    expect(line.getAttribute("data-status")).toBe("running")
+    expect(line.closest("button")).toBeNull()
+    expect(line.querySelector("button")).toBeNull()
+    expect(line.querySelector(".animate-spin")).toBeNull()
+  }
+)

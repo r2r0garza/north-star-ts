@@ -1,5 +1,5 @@
 import * as React from "react"
-import { CheckCircle2, Ban, Circle, CircleDot } from "lucide-react"
+import { TodoTraceList } from "@/components/todo-trace-list"
 import {
   Sheet,
   SheetContent,
@@ -33,18 +33,6 @@ function asInlineTodos(input: unknown): InlineTodosInput | null {
     return input as InlineTodosInput
   }
   return null
-}
-
-// Icon + tint per todo status, mirroring the status vocabulary used elsewhere in
-// the activity panel.
-const TODO_ICON: Record<
-  TodoStatus,
-  { Icon: typeof CheckCircle2; className: string }
-> = {
-  completed: { Icon: CheckCircle2, className: "text-primary" },
-  cancelled: { Icon: Ban, className: "text-muted-foreground line-through" },
-  in_progress: { Icon: CircleDot, className: "text-foreground" },
-  pending: { Icon: Circle, className: "text-muted-foreground" },
 }
 
 // A read-only viewer for a background task's PRIVATE transcript — the complete
@@ -102,28 +90,11 @@ export function TaskTranscriptSheet({
         </SheetHeader>
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto px-4 py-4">
           {inlineTodos ? (
-            <ul className="flex flex-col gap-1.5">
-              {inlineTodos.todos.map((todo) => {
-                const meta = TODO_ICON[todo.status] ?? TODO_ICON.pending
-                const Icon = meta.Icon
-                return (
-                  <li key={todo.itemId} className="flex items-start gap-2">
-                    <Icon
-                      className={cn("mt-0.5 size-4 shrink-0", meta.className)}
-                    />
-                    <span
-                      className={cn(
-                        "text-sm text-foreground",
-                        todo.status === "cancelled" &&
-                          "text-muted-foreground line-through"
-                      )}
-                    >
-                      {todo.content}
-                    </span>
-                  </li>
-                )
-              })}
-            </ul>
+            <TodoTraceList
+              todos={inlineTodos.todos}
+              strikeCompleted={false}
+              className="text-sm"
+            />
           ) : items.length === 0 ? (
             <p className="text-sm text-muted-foreground">No messages yet.</p>
           ) : (

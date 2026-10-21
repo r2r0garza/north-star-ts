@@ -95,16 +95,16 @@ describe("TodosSection live background progress", () => {
   it("discovers an agent-started worker and applies every committed update without reloading", async () => {
     act(() => root.render(<TodosSection conversationId="source" />))
     await flush()
-    expect(container.textContent).toContain("[ ]")
+    expect(container.textContent).toContain("Pending")
     tasks = [worker()]
     rows = [todo("in_progress", "worker")]
     lifecycle()
     await flush()
     expect(listTodos).toHaveBeenLastCalledWith("worker")
-    expect(container.textContent).toContain("[>]")
+    expect(container.textContent).toContain("In progress")
     publish("completed")
-    expect(container.textContent).toContain("[x]")
-    expect(container.textContent).not.toContain("[>]")
+    expect(container.textContent).toContain("Completed")
+    expect(container.textContent).not.toContain("In progress")
   })
 
   it("does not overwrite a live update with a stale list response", async () => {
@@ -123,8 +123,8 @@ describe("TodosSection live background progress", () => {
     publish("completed")
     resolve([todo("in_progress", "worker")])
     await flush()
-    expect(container.textContent).toContain("[x]")
-    expect(container.textContent).not.toContain("[>]")
+    expect(container.textContent).toContain("Completed")
+    expect(container.textContent).not.toContain("In progress")
   })
 
   it("ignores older task discovery responses arriving after newer ones", async () => {
@@ -144,7 +144,7 @@ describe("TodosSection live background progress", () => {
     resolve([])
     await flush()
     publish("in_progress")
-    expect(container.textContent).toContain("[>]")
+    expect(container.textContent).toContain("In progress")
     expect(listTodos).toHaveBeenLastCalledWith("worker")
   })
 
@@ -164,4 +164,42 @@ describe("TodosSection live background progress", () => {
     expect(container.textContent).toContain("Other assignment")
     expect(listTodos).toHaveBeenLastCalledWith("other")
   })
+})
+
+it("preserves Auto mode and disables handoff while dispatching and once a worker owns the list", async () => {
+  let finish!: (task: Task) => void
+  const startTodos = vi.fn(
+    () =>
+      new Promise<Task>((resolve) => {
+        finish = resolve
+      })
+  )
+  window.cowork.tasks.startTodos = startTodos
+  const onRanInBackground = vi.fn()
+  await act(async () =>
+    root.render(
+      <TodosSection
+        conversationId="source"
+        isAutoMode={() => true}
+        onRanInBackground={onRanInBackground}
+      />
+    )
+  )
+  const button = container.querySelector("button")!
+  expect(button.disabled).toBe(false)
+  await act(async () => button.click())
+  expect(startTodos).toHaveBeenCalledWith("source", { autoMode: true })
+  expect(button.disabled).toBe(true)
+  tasks = [worker()]
+  await act(async () => finish(worker()))
+  expect(onRanInBackground).toHaveBeenCalledTimes(1)
+  expect(button.disabled).toBe(true)
+  expect(button.title).toBe("Already running in the background")
+  publish("completed")
+  tasks = []
+  rows = [todo("completed")]
+  lifecycle()
+  await flush()
+  expect(button.disabled).toBe(true)
+  expect(button.title).toBe("No pending tasks to run")
 })

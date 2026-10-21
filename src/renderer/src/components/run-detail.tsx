@@ -11,6 +11,7 @@ import {
   CirclePause,
   CircleX,
   Clock3,
+  Activity,
   Info,
   Pause,
   Play,
@@ -33,7 +34,21 @@ import { Field, FieldLabel } from "@/components/ui/field"
 import { Textarea } from "@/components/ui/textarea"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
-import type { WorkflowDefinition } from "../../../shared/workflows"
+import {
+  Trace,
+  TraceLine,
+  TraceIcon,
+  TraceTitle,
+  TraceDescription,
+  TraceCollapsible,
+  TraceCollapsibleTrigger,
+  TraceCollapsibleContent,
+} from "@/components/ui/trace"
+import { isErrorResult } from "@/lib/timeline"
+import type {
+  WorkflowStep,
+  WorkflowDefinition,
+} from "../../../shared/workflows"
 
 const STATUS_STYLE: Record<string, string> = {
   Completed:
@@ -48,7 +63,7 @@ const ACTIVITY_STYLE = {
   active: {
     label: "Active",
     className: STATUS_STYLE.Active,
-    Icon: Spinner,
+    Icon: Activity,
   },
   completed: {
     label: "Completed",
@@ -56,7 +71,7 @@ const ACTIVITY_STYLE = {
     Icon: CircleCheck,
   },
   cancelled: {
-    label: "Not completed",
+    label: "Cancelled",
     className: STATUS_STYLE.Cancelled,
     Icon: CircleX,
   },
@@ -237,11 +252,14 @@ export function RunDetail({
                   <DialogContent>
                     <DialogHeader>
                       <DialogTitle>
-                        {feedbackAction === "resume" ? "Resume run" : "Retry run"}
+                        {feedbackAction === "resume"
+                          ? "Resume run"
+                          : "Retry run"}
                       </DialogTitle>
                       <DialogDescription>
                         Optionally tell the agent what to do differently. Your
-                        feedback is sent to the unfinished step and its validator.
+                        feedback is sent to the unfinished step and its
+                        validator.
                       </DialogDescription>
                     </DialogHeader>
                     <Field>
@@ -367,84 +385,23 @@ export function RunDetail({
             </div>
             {activities.length > 0 ? (
               <ol className="space-y-3">
-                {activities.map((activity, index) => {
-                  const display = ACTIVITY_STYLE[activity.status]
-                  const StepIcon = display.Icon
-                  const step = workflow?.steps[index]
-                  return (
-                    <li
-                      key={step?.id ?? index}
-                      className="rounded-xl border bg-card"
-                    >
-                      <details className="group">
-                        <summary className="flex cursor-pointer list-none items-start gap-3 p-4 focus-visible:outline-2 focus-visible:outline-ring">
-                          <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-medium">
-                            {index + 1}
-                          </div>
-                          <div className="min-w-0 flex-1 space-y-1.5">
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                              <div className="flex min-w-0 flex-wrap items-center gap-2">
-                                <h4 className="font-medium">
-                                  {step?.title ?? `Step ${index + 1}`}
-                                </h4>
-                                <Badge
-                                  variant="outline"
-                                  className="max-w-full truncate text-[10px]"
-                                >
-                                  {activity.accountId && activity.modelId
-                                    ? (modelLabels[
-                                        `${activity.accountId}::${activity.modelId}`
-                                      ] ??
-                                      `${activity.accountId} · ${activity.modelId}`)
-                                    : (modelLabels[
-                                        `${run.accountId}::${run.modelId}`
-                                      ] ?? `${run.accountId} · ${run.modelId}`)}
-                                </Badge>
-                              </div>
-                              <Badge
-                                variant="secondary"
-                                className={cn(
-                                  "w-28 justify-center gap-1",
-                                  display.className
-                                )}
-                              >
-                                <StepIcon className="size-3" />
-                                {display.label}
-                              </Badge>
-                            </div>
-                            {step?.instructions && (
-                              <p className="border-l-2 pl-2 text-xs text-muted-foreground">
-                                {step.instructions}
-                              </p>
-                            )}
-                          </div>
-                          <ChevronDown
-                            className="mt-1 size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180"
-                            aria-hidden="true"
-                          />
-                        </summary>
-                        <div className="space-y-4 border-t px-4 py-4 pl-14">
-                          <p className="text-xs leading-relaxed text-muted-foreground">
-                            {activity.error ??
-                              activity.result ??
-                              (activity.status === "waiting"
-                                ? "Waiting for earlier steps"
-                                : "Executing step")}
-                          </p>
-                          <StepTranscript step={activity} />
-                          {activity.status === "active" && liveText && (
-                            <p
-                              aria-label="Live output"
-                              className="text-xs break-words whitespace-pre-wrap"
-                            >
-                              {liveText}
-                            </p>
-                          )}
-                        </div>
-                      </details>
-                    </li>
-                  )
-                })}
+                {activities.map((activity, index) => (
+                  <StepActivity
+                    key={`${run.id}:${activity.id}`}
+                    activity={activity}
+                    index={index}
+                    definition={workflow?.steps.find(
+                      (step) => step.id === activity.id
+                    )}
+                    modelLabel={
+                      modelLabels[
+                        `${activity.accountId ?? run.accountId}::${activity.modelId ?? run.modelId}`
+                      ] ??
+                      `${activity.accountId ?? run.accountId} · ${activity.modelId ?? run.modelId}`
+                    }
+                    liveText={liveText}
+                  />
+                ))}
               </ol>
             ) : (
               <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
@@ -486,12 +443,12 @@ function OutcomeSection({
           if (!cancelled) toast.error("Could not load run outcome")
         })
     void refresh()
-    const timer = setInterval(() => void refresh(), 1000)
+    const timer = active ? setInterval(() => void refresh(), 1000) : undefined
     return () => {
       cancelled = true
       clearInterval(timer)
     }
-  }, [step?.conversationId])
+  }, [step?.conversationId, active])
 
   const response = messages.findLast(
     (message) => message.role === "assistant" && message.content?.trim()
@@ -532,10 +489,97 @@ function OutcomeSection({
   )
 }
 
-function StepTranscript({ step }: { step: WorkflowStepRun }) {
+function StepActivity({
+  activity,
+  index,
+  definition,
+  modelLabel,
+  liveText,
+}: {
+  activity: WorkflowStepRun
+  index: number
+  definition?: WorkflowStep
+  modelLabel: string
+  liveText: string
+}) {
+  const [open, setOpen] = useState(false)
+  const messages = useStepMessages(activity, open)
+  const display = ACTIVITY_STYLE[activity.status]
+  const Icon = display.Icon
+  return (
+    <li>
+      <Trace>
+        <TraceCollapsible open={open} onOpenChange={setOpen}>
+          <TraceCollapsibleTrigger className="w-full">
+            <TraceLine
+              status={
+                activity.status === "active"
+                  ? "running"
+                  : activity.status === "waiting"
+                    ? "pending"
+                    : activity.status === "failed"
+                      ? "error"
+                      : undefined
+              }
+              className="items-start"
+            >
+              <TraceIcon>
+                <Icon />
+              </TraceIcon>
+              <TraceTitle className="overflow-visible break-words text-clip whitespace-normal">
+                {index + 1}. {definition?.title ?? `Step ${index + 1}`} —{" "}
+                {display.label}
+              </TraceTitle>
+            </TraceLine>
+          </TraceCollapsibleTrigger>
+          <p className="mt-1 pl-6 text-xs break-words text-muted-foreground">
+            {modelLabel}
+          </p>
+          {definition?.instructions && (
+            <p className="mt-1 pl-6 text-xs break-words whitespace-pre-wrap text-muted-foreground">
+              {definition.instructions}
+            </p>
+          )}
+          <TraceCollapsibleContent className="space-y-4 text-xs">
+            {(activity.agentName || activity.skillName) && (
+              <p className="break-words whitespace-pre-wrap">
+                {activity.agentName && `Agent: ${activity.agentName}`}
+                {activity.skillName && ` Skill: ${activity.skillName}`}
+              </p>
+            )}
+            <p className="break-words whitespace-pre-wrap">
+              {activity.error ??
+                activity.result ??
+                (activity.status === "waiting"
+                  ? "Waiting for earlier steps"
+                  : "Executing step")}
+            </p>
+            <StepTranscript
+              messages={messages}
+              active={activity.status === "active"}
+            />
+            {activity.status === "active" && liveText && (
+              <p
+                aria-label="Live output"
+                className="break-words whitespace-pre-wrap"
+              >
+                {liveText}
+              </p>
+            )}
+          </TraceCollapsibleContent>
+        </TraceCollapsible>
+      </Trace>
+    </li>
+  )
+}
+
+function useStepMessages(step: WorkflowStepRun, open: boolean) {
   const [messages, setMessages] = useState<Message[]>([])
   useEffect(() => {
-    if (!step.conversationId) return
+    setMessages([])
+  }, [step.conversationId])
+  useEffect(() => {
+    if (!open || !step.conversationId) return
     let cancelled = false
     const refresh = () =>
       window.cowork.db.messages
@@ -547,12 +591,25 @@ function StepTranscript({ step }: { step: WorkflowStepRun }) {
           if (!cancelled) toast.error("Could not load step transcript")
         })
     void refresh()
-    const timer = setInterval(() => void refresh(), 1000)
+    const timer =
+      step.status === "active"
+        ? setInterval(() => void refresh(), 1000)
+        : undefined
     return () => {
       cancelled = true
       clearInterval(timer)
     }
-  }, [step.conversationId])
+  }, [step.conversationId, step.status, open])
+  return messages
+}
+
+function StepTranscript({
+  messages,
+  active,
+}: {
+  messages: Message[]
+  active: boolean
+}) {
   const callIds = new Set(
     messages.flatMap(
       (message) => message.toolCalls?.map((call) => call.id) ?? []
@@ -578,29 +635,66 @@ function StepTranscript({ step }: { step: WorkflowStepRun }) {
           <p className="font-medium">{message.toolName ?? message.role}</p>
           <p className="break-words whitespace-pre-wrap">{message.content}</p>
           {message.toolCalls?.map((call) => (
-            <details key={call.id} className="mt-2">
-              <summary className="flex cursor-pointer list-none items-center gap-1 focus-visible:outline-2 focus-visible:outline-ring">
-                <Wrench className="size-3" />
-                {call.name}
-              </summary>
-              <div className="mt-2 space-y-2">
-                <p className="font-medium">Arguments</p>
-                <pre className="break-words whitespace-pre-wrap">
-                  {call.arguments}
-                </pre>
-                {responses.get(call.id)?.map((response) => (
-                  <div key={response.id} className="space-y-1 border-t pt-2">
-                    <p className="font-medium">Response</p>
-                    <pre className="break-words whitespace-pre-wrap">
-                      {response.content}
-                    </pre>
-                  </div>
-                ))}
-              </div>
-            </details>
+            <WorkflowToolCall
+              key={call.id}
+              call={call}
+              responses={responses.get(call.id) ?? []}
+              active={active}
+            />
           ))}
         </div>
       ))}
     </div>
+  )
+}
+
+function WorkflowToolCall({
+  call,
+  responses,
+  active,
+}: {
+  call: NonNullable<Message["toolCalls"]>[number]
+  responses: Message[]
+  active: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const failed = responses.some((response) =>
+    isErrorResult(response.content ?? "")
+  )
+  const running = active && responses.length === 0
+  return (
+    <Trace className="mt-2">
+      <TraceCollapsible open={open} onOpenChange={setOpen}>
+        <TraceCollapsibleTrigger>
+          <TraceLine
+            status={failed ? "error" : running ? "running" : undefined}
+          >
+            <TraceIcon>
+              <Wrench />
+            </TraceIcon>
+            <TraceTitle>{call.name}</TraceTitle>
+            {(failed || running) && (
+              <TraceDescription>
+                {failed ? "Failed" : "Running"}
+              </TraceDescription>
+            )}
+          </TraceLine>
+        </TraceCollapsibleTrigger>
+        <TraceCollapsibleContent className="space-y-2">
+          <p className="font-medium">Arguments</p>
+          <pre className="break-words whitespace-pre-wrap">
+            {call.arguments}
+          </pre>
+          {responses.map((response) => (
+            <div key={response.id} className="space-y-1 border-t pt-2">
+              <p className="font-medium">Response</p>
+              <pre className="break-words whitespace-pre-wrap">
+                {response.content}
+              </pre>
+            </div>
+          ))}
+        </TraceCollapsibleContent>
+      </TraceCollapsible>
+    </Trace>
   )
 }

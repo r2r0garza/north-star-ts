@@ -10,6 +10,34 @@
 
 @custom-variant dark (&:is(.dark *));
 
+@utility trace-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    currentColor 35%,
+    var(--color-foreground) 50%,
+    currentColor 65%
+  );
+  background-size: 200% 100%;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: trace-shimmer 2s linear infinite;
+}
+
+@utility trace-shimmer-none {
+  background-image: none;
+  -webkit-text-fill-color: currentColor;
+  animation: none;
+}
+
+@keyframes trace-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+
 mark[data-conversation-find-match][data-active="true"] {
     background: oklch(0.75 0.18 70);
     color: oklch(0.15 0 0);

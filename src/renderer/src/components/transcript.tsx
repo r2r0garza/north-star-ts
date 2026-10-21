@@ -5,8 +5,8 @@ import { Message, MessageContent } from "@/components/ui/message"
 import { ConversationMessageMeta } from "@/components/conversation-message-meta"
 import { ConversationFindText } from "@/components/conversation-find-text"
 import { Bubble, BubbleContent } from "@/components/ui/bubble"
-import { Marker, MarkerIcon, MarkerContent } from "@/components/ui/marker"
-import { Spinner } from "@/components/ui/spinner"
+import { Trace, TraceLine, TraceIcon, TraceTitle } from "@/components/ui/trace"
+import { Activity } from "lucide-react"
 import { ToolGroup } from "@/components/tool-group"
 import { ChangedFilesBar } from "@/components/changed-files-bar"
 import type { TimelineItem, ToolUse } from "@/lib/timeline"
@@ -226,18 +226,20 @@ export function LiveTranscriptTurn({
             />
           ))}
           {segments.length === 0 && (
-            <Marker>
-              <MarkerIcon>
-                <Spinner />
-              </MarkerIcon>
-              <MarkerContent>
-                {commandWait
-                  ? "Waiting for background command…"
-                  : streamRetrying
-                    ? "Connection interrupted — retrying…"
-                    : "Thinking…"}
-              </MarkerContent>
-            </Marker>
+            <Trace>
+              <TraceLine status="running">
+                <TraceIcon>
+                  <Activity />
+                </TraceIcon>
+                <TraceTitle>
+                  {commandWait
+                    ? "Waiting for background command…"
+                    : streamRetrying
+                      ? "Connection interrupted — retrying…"
+                      : "Thinking…"}
+                </TraceTitle>
+              </TraceLine>
+            </Trace>
           )}
           {hasText && firstTextAt !== null && (
             <ConversationMessageMeta
@@ -248,12 +250,14 @@ export function LiveTranscriptTurn({
             />
           )}
           {segments.length > 0 && commandWait && (
-            <Marker>
-              <MarkerIcon>
-                <Spinner />
-              </MarkerIcon>
-              <MarkerContent>Waiting for background command…</MarkerContent>
-            </Marker>
+            <Trace>
+              <TraceLine status="running">
+                <TraceIcon>
+                  <Activity />
+                </TraceIcon>
+                <TraceTitle>Waiting for background command…</TraceTitle>
+              </TraceLine>
+            </Trace>
           )}
         </MessageContent>
       </Message>

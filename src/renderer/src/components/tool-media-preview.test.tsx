@@ -116,7 +116,9 @@ it("does not fetch collapsed tool results and unloads when collapsed", async () 
     conversationId: "conversation",
     resultMessageId: "result",
   }
-  await act(async () => root.render(<ToolGroup calls={[use]} />))
+  await act(async () =>
+    root.render(<ToolGroup calls={[use, { ...use, id: "other" }]} />)
+  )
   expect(readMedia).not.toHaveBeenCalled()
   const buttons = () => Array.from(container.querySelectorAll("button"))
   await act(async () => buttons()[0].click())
@@ -127,10 +129,21 @@ it("does not fetch collapsed tool results and unloads when collapsed", async () 
       .click()
   )
   expect(readMedia).toHaveBeenCalledTimes(1)
+  expect(readMedia).toHaveBeenLastCalledWith("conversation", "result", "first")
   await act(async () =>
     buttons()
       .find((button) => button.textContent?.includes("Read document"))!
       .click()
   )
   expect(container.querySelector("img")).toBeNull()
+  await act(async () => buttons()[1].click())
+  expect(readMedia).toHaveBeenCalledTimes(2)
+  expect(container.querySelector("img")).not.toBeNull()
+  await act(async () => buttons()[0].click())
+  expect(container.querySelector("img")).toBeNull()
+  await act(async () => buttons()[0].click())
+  expect(readMedia).toHaveBeenCalledTimes(2)
+  expect(buttons()[1].getAttribute("aria-expanded")).toBe("false")
+  await act(async () => buttons()[1].click())
+  expect(readMedia).toHaveBeenCalledTimes(3)
 })
