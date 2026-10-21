@@ -195,6 +195,218 @@ it("keeps executing from the launch snapshot after the workflow is edited mid-ru
   ])
   expect(saved.steps.every((step) => step.status === "completed")).toBe(true)
 })
+it("validates completion then corrects in the original transcript and accepts", async () => {
+  const run = start()
+  run.steps[0].validateCompletion = true
+  run.steps[0].maxCorrectionLoops = 1
+  run.steps[0].validatorAccountId = "validator-account"
+  run.steps[0].validatorModelId = "validator-model"
+  run.steps[0].validatorAgentName = "reviewer"
+  state.runs.set(run.id, structuredClone(run))
+  state.agent
+    .mockResolvedValueOnce({ content: handoff(`${run.id}:a`) })
+    .mockResolvedValueOnce({ content: JSON.stringify({ verdict: "rejected", reason: "Missing test", findings: ["Add test"] }) })
+    .mockResolvedValueOnce({ content: handoff(`${run.id}:a`) })
+    .mockResolvedValueOnce({ content: JSON.stringify({ verdict: "accepted", reason: "Complete", findings: [] }) })
+    .mockResolvedValueOnce({ content: handoff(`${run.id}:b`) })
+
+  expect(await service.execute(context(run))).not.toHaveProperty("error")
+  expect(state.agent).toHaveBeenCalledTimes(5)
+  const validator = state.agent.mock.calls[1][0]
+  expect(validator).toMatchObject({
+    conversationId: "conversation-1",
+    workspace: process.cwd(),
+    llmSelectionOverride: { accountId: "validator-account", modelId: "validator-model" },
+    agentNameOverride: "reviewer",
+    readOnlyTools: true,
+  })
+  expect(validator.userMessage).toContain("inspect the workspace yourself")
+  expect(validator.userMessage).toContain("Tests passed")
+  expect(validator.userMessage).toContain("Original objective: Check project")
+  expect(validator.userMessage).toContain("Exact instructions: Inspect")
+  expect(state.agent.mock.calls[2][0].conversationId).toBe("conversation-1")
+  expect(state.agent.mock.calls[2][0].userMessage).toContain("Add test")
+})
+it("keeps the original handoff evidence when a correction's handoff replaces the claim", async () => {
+  const run = start()
+  run.steps[0].validateCompletion = true
+  state.runs.set(run.id, structuredClone(run))
+  const claim = (summary: string, verification: string[]) =>
+    JSON.stringify({ version: 1, taskId: `${run.id}:a`, status: "completed", summary, changes: [], verification, unresolved: [], nextAction: null })
+  state.agent
+    .mockResolvedValueOnce({ content: claim("Integrated the stack", ["PostgreSQL tests: 39 passed", "Migrations applied"]) })
+    .mockResolvedValueOnce({ content: JSON.stringify({ verdict: "rejected", reason: "Weak assertion", findings: ["Fix it"] }) })
+    .mockResolvedValueOnce({ content: claim("Fixed the assertion", ["Frontend tests: 5 passed"]) })
+    .mockResolvedValueOnce({ content: JSON.stringify({ verdict: "accepted", reason: "Complete", findings: [] }) })
+    .mockResolvedValueOnce({ content: handoff(`${run.id}:b`) })
+
+  expect(await service.execute(context(run))).not.toHaveProperty("error")
+  const result = state.runs.get(run.id)?.steps[0].result ?? ""
+  expect(result).toMatch(/^Integrated the stack\nPostgreSQL tests: 39 passed\nMigrations applied\n/)
+  expect(result).toContain("Correction 1 after validator rejection (supersedes the above where they conflict):\nFixed the assertion\nFrontend tests: 5 passed")
+  // The next step's opening prompt carries both the original evidence and the correction.
+  const nextPrompt = vi.mocked(appendMessage).mock.calls.at(-1)![0].content ?? ""
+  expect(nextPrompt).toContain("Current step: Second")
+  expect(nextPrompt).toContain("39 passed")
+  expect(nextPrompt).toContain("Frontend tests: 5 passed")
+})
+it("creates each step's worker conversation on that step's own account and model", async () => {
+  const run = start()
+  run.steps[0].accountId = "step-account"
+  run.steps[0].modelId = "step-model"
+  state.runs.set(run.id, structuredClone(run))
+  state.agent
+    .mockResolvedValueOnce({ content: handoff(`${run.id}:a`) })
+    .mockResolvedValueOnce({ content: handoff(`${run.id}:b`) })
+  await service.execute(context(run))
+  const created = vi.mocked(createConversation).mock.calls.map(([input]) => [input.accountId, input.modelId])
+  expect(created).toEqual([
+    ["step-account", "step-model"],
+    ["account", "model"],
+  ])
+})
+it("uses the step account's default model when the step names an account without a model", async () => {
+  const run = start()
+  run.steps[0].accountId = "step-account"
+  state.runs.set(run.id, structuredClone(run))
+  state.agent
+    .mockResolvedValueOnce({ content: handoff(`${run.id}:a`) })
+    .mockResolvedValueOnce({ content: handoff(`${run.id}:b`) })
+  await service.execute(context(run))
+  expect(vi.mocked(createConversation).mock.calls[0][0]).toMatchObject({ accountId: "step-account", modelId: null })
+})
+it("scopes the validator to this step and the verification later steps own", async () => {
+  const run = start()
+  run.steps[0].validateCompletion = true
+  state.runs.set(run.id, structuredClone(run))
+  state.agent
+    .mockResolvedValueOnce({ content: handoff(`${run.id}:a`) })
+    .mockResolvedValueOnce({ content: JSON.stringify({ verdict: "accepted", reason: "Complete", findings: [] }) })
+    .mockResolvedValueOnce({ content: handoff(`${run.id}:b`) })
+
+  expect(await service.execute(context(run))).not.toHaveProperty("error")
+  const prompt: string = state.agent.mock.calls[1][0].userMessage
+  expect(prompt).toContain(`Later steps: ${JSON.stringify([{ title: "Second", instructions: "Report" }])}`)
+  expect(prompt).toContain("not the whole objective unless this step is responsible")
+  expect(prompt).toContain("when a later step owns it")
+  expect(prompt).toContain("do not reject again for a blocked verification method the worker already documented")
+  expect(prompt).toContain("Do not add acceptance criteria or testing requirements")
+  expect(prompt).toContain("never report unverified behavior as a confirmed defect")
+  expect(prompt).toContain("never present runtime behavior as verified by you")
+  expect(prompt).toContain("TODO list does not make incomplete work complete")
+  expect(prompt).not.toContain("Reject when you cannot verify a required result")
+})
+it("fails after the configured validation budget is exhausted", async () => {
+  const run = start()
+  run.steps[0].validateCompletion = true
+  run.steps[0].maxCorrectionLoops = 0
+  state.runs.set(run.id, structuredClone(run))
+  state.agent
+    .mockResolvedValueOnce({ content: handoff(`${run.id}:a`) })
+    .mockResolvedValueOnce({ content: JSON.stringify({ verdict: "rejected", reason: "Incomplete", findings: ["Missing output"] }) })
+
+  expect(await service.execute(context(run))).toMatchObject({ error: expect.stringContaining("Incomplete") })
+  expect(state.agent).toHaveBeenCalledTimes(2)
+  expect(state.runs.get(run.id)?.steps.map((step) => step.status)).toEqual(["failed", "waiting"])
+})
+it("keeps the spent correction budget across resume and resets it on retry", async () => {
+  const run = start()
+  run.taskId = "task"
+  run.steps[0].validateCompletion = true
+  run.steps[0].maxCorrectionLoops = 1
+  run.steps[0].conversationId = "conversation-1"
+  run.steps[0].correctionAttempts = 1
+  state.runs.set(run.id, structuredClone(run))
+  state.agent
+    .mockResolvedValueOnce({ content: handoff(`${run.id}:a`) })
+    .mockResolvedValueOnce({ content: JSON.stringify({ verdict: "rejected", reason: "Still incomplete", findings: [] }) })
+
+  expect(await service.execute(context(run))).toMatchObject({ error: expect.stringContaining("Still incomplete") })
+  expect(state.agent).toHaveBeenCalledTimes(2)
+  service.control(run.id, "retry")
+  expect(state.runs.get(run.id)?.steps[0].correctionAttempts).toBe(0)
+  expect(runner.restart).toHaveBeenCalledWith("task")
+})
+it("accepts and relays object-shaped validator findings", async () => {
+  const run = start()
+  run.steps[0].validateCompletion = true
+  state.runs.set(run.id, structuredClone(run))
+  const finding = { evidence: "docs/plan.md:61", detail: "Policy omits Fixed to Verified" }
+  state.agent
+    .mockResolvedValueOnce({ content: handoff(`${run.id}:a`) })
+    .mockResolvedValueOnce({ content: JSON.stringify({ verdict: "rejected", reason: "Contradiction", findings: [finding] }) })
+    .mockResolvedValueOnce({ content: handoff(`${run.id}:a`) })
+    .mockResolvedValueOnce({ content: JSON.stringify({ verdict: "accepted", reason: "Resolved", findings: [finding] }) })
+    .mockResolvedValueOnce({ content: handoff(`${run.id}:b`) })
+
+  expect(await service.execute(context(run))).not.toHaveProperty("error")
+  const correction = state.agent.mock.calls[2][0].userMessage
+  expect(correction).toContain("Policy omits Fixed to Verified")
+  expect(correction).not.toContain("[object Object]")
+  expect(state.runs.get(run.id)?.steps[0].status).toBe("completed")
+})
+it("persists each correction attempt before the correction turn runs", async () => {
+  const run = start()
+  run.steps[0].validateCompletion = true
+  state.runs.set(run.id, structuredClone(run))
+  let persisted: number | undefined
+  state.agent
+    .mockResolvedValueOnce({ content: handoff(`${run.id}:a`) })
+    .mockResolvedValueOnce({ content: JSON.stringify({ verdict: "rejected", reason: "No", findings: [] }) })
+    .mockImplementationOnce(async () => {
+      persisted = state.runs.get(run.id)?.steps[0].correctionAttempts
+      return { content: handoff(`${run.id}:a`) }
+    })
+    .mockResolvedValueOnce({ content: JSON.stringify({ verdict: "accepted", reason: "Done", findings: [] }) })
+    .mockResolvedValueOnce({ content: handoff(`${run.id}:b`) })
+
+  expect(await service.execute(context(run))).not.toHaveProperty("error")
+  expect(persisted).toBe(1)
+})
+it.each(["validator", "correction"])("pauses instead of failing when paused during the %s turn", async (phase) => {
+  const { PAUSE_ABORT_REASON } = await import("../agent/abort")
+  const run = start()
+  run.steps[0].validateCompletion = true
+  state.runs.set(run.id, structuredClone(run))
+  const abort = new AbortController()
+  const pause = async () => {
+    abort.abort(PAUSE_ABORT_REASON)
+    return { stopped: true }
+  }
+  state.agent.mockResolvedValueOnce({ content: handoff(`${run.id}:a`) })
+  if (phase === "validator") state.agent.mockImplementationOnce(pause)
+  else
+    state.agent
+      .mockResolvedValueOnce({ content: JSON.stringify({ verdict: "rejected", reason: "No", findings: [] }) })
+      .mockImplementationOnce(pause)
+
+  expect(await service.execute(context(run, abort.signal))).toMatchObject({ stopped: true, paused: true })
+  expect(state.runs.get(run.id)?.steps.map((step) => step.status)).toEqual(["paused", "waiting"])
+  expect(state.runs.get(run.id)?.error).toBeNull()
+})
+it("reports the validator's own error instead of an invalid verdict", async () => {
+  const run = start()
+  run.steps[0].validateCompletion = true
+  state.runs.set(run.id, structuredClone(run))
+  state.agent
+    .mockResolvedValueOnce({ content: handoff(`${run.id}:a`) })
+    .mockResolvedValueOnce({ error: "Provider unavailable" })
+
+  expect(await service.execute(context(run))).toMatchObject({ error: "Provider unavailable" })
+  expect(state.runs.get(run.id)?.steps[0].status).toBe("failed")
+})
+it("runs an unconfigured validator on the step conversation's own model", async () => {
+  const run = start()
+  run.steps[0].validateCompletion = true
+  state.runs.set(run.id, structuredClone(run))
+  state.agent
+    .mockResolvedValueOnce({ content: handoff(`${run.id}:a`) })
+    .mockResolvedValueOnce({ content: JSON.stringify({ verdict: "accepted", reason: "Done", findings: [] }) })
+    .mockResolvedValueOnce({ content: handoff(`${run.id}:b`) })
+
+  expect(await service.execute(context(run))).not.toHaveProperty("error")
+  expect(state.agent.mock.calls[1][0]).not.toHaveProperty("llmSelectionOverride")
+})
 it("executes ordered autonomous turns, passes prior results, and skips completed steps on resume", async () => {
   const run = start()
   state.agent.mockImplementation(async () => ({
@@ -495,6 +707,67 @@ it.each(["retry", "resume"] as const)(
   }
 )
 
+it("sends retry feedback to the failed step's worker and validator until the step completes", async () => {
+  const run = start()
+  run.steps[1].validateCompletion = true
+  state.runs.set(run.id, structuredClone(run))
+  state.agent.mockResolvedValueOnce({ content: handoff(`${run.id}:a`) })
+  state.agent.mockResolvedValueOnce({ content: handoff(`${run.id}:b`, "blocked") })
+  await service.execute(context(run))
+  service.control(run.id, "retry", "  Use the existing test runner.  ")
+  expect(state.runs.get(run.id)?.steps.map((step) => step.retryFeedback)).toEqual([
+    undefined,
+    "Use the existing test runner.",
+  ])
+  state.agent
+    .mockResolvedValueOnce({ content: handoff(`${run.id}:b`) })
+    .mockResolvedValueOnce({ content: JSON.stringify({ verdict: "accepted", reason: "Complete", findings: [] }) })
+  expect(await service.execute(context(run))).toHaveProperty("content")
+  const resumed = state.agent.mock.calls[2][0].userMessage
+  expect(resumed).toMatch(/^User feedback \(latest direction from the user\)/)
+  expect(resumed).toContain("replaces any earlier user feedback")
+  expect(resumed).toContain("overrides your remaining plan, TODO items, and these step instructions")
+  expect(resumed.indexOf("Use the existing test runner.")).toBeLessThan(
+    resumed.indexOf("Resume execution of the unfinished step")
+  )
+  const validator = state.agent.mock.calls[3][0].userMessage
+  expect(validator).toContain("Validate completion")
+  expect(validator).toContain("authoritative steering from the user")
+  expect(validator).toContain("Use the existing test runner.")
+  expect(state.runs.get(run.id)?.steps[1]).not.toHaveProperty("retryFeedback")
+})
+it("replaces retry feedback on each retry and clears it on a blank one", async () => {
+  const run = start()
+  state.agent.mockResolvedValueOnce({ content: handoff(`${run.id}:a`) })
+  state.agent.mockResolvedValueOnce({ content: handoff(`${run.id}:b`, "blocked") })
+  await service.execute(context(run))
+  service.control(run.id, "retry", "First")
+  service.control(run.id, "retry", "Second")
+  expect(state.runs.get(run.id)?.steps[1].retryFeedback).toBe("Second")
+  service.control(run.id, "retry", "")
+  expect(state.runs.get(run.id)?.steps[1]).not.toHaveProperty("retryFeedback")
+})
+it("takes feedback on resume and keeps the existing feedback on a blank resume", async () => {
+  const run = start()
+  state.agent.mockResolvedValueOnce({ content: handoff(`${run.id}:a`) })
+  state.agent.mockResolvedValueOnce({ content: handoff(`${run.id}:b`, "blocked") })
+  await service.execute(context(run))
+  service.control(run.id, "resume", " Steer it ")
+  expect(runner.resume).toHaveBeenCalledWith("task")
+  expect(state.runs.get(run.id)?.steps[1].retryFeedback).toBe("Steer it")
+  service.control(run.id, "resume", "")
+  expect(state.runs.get(run.id)?.steps[1].retryFeedback).toBe("Steer it")
+})
+it("adds nothing to the resumed turn for blank retry feedback", async () => {
+  const run = start()
+  state.agent.mockResolvedValueOnce({ content: handoff(`${run.id}:a`) })
+  state.agent.mockResolvedValueOnce({ content: handoff(`${run.id}:b`, "blocked") })
+  await service.execute(context(run))
+  service.control(run.id, "retry", "   ")
+  state.agent.mockResolvedValueOnce({ content: handoff(`${run.id}:b`) })
+  await service.execute(context(run))
+  expect(state.agent.mock.calls[2][0].userMessage).not.toContain("User feedback")
+})
 it.each(["before execution", "between steps", "before retry"])(
   "continues after project deletion %s while retaining historical metadata",
   async (when) => {

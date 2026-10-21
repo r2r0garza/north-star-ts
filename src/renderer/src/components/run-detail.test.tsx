@@ -267,3 +267,85 @@ it.each<{
     vi.unstubAllGlobals()
   }
 })
+
+it.each([
+  ["Failed", "Retry", "retry"],
+  ["Paused", "Resume", "resume"],
+] as const)("opens a feedback modal for a %s run and sends the feedback with %s", async (status, label, action) => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
+  const workflow = EXAMPLE_WORKFLOWS[0]
+  const control = vi.fn(async () => {})
+  const run: WorkflowRun = {
+    id: "run",
+    taskId: "task",
+    workflowId: workflow.id,
+    workflow,
+    title: "Failed run",
+    objective: "Check files",
+    workspaceId: "workspace",
+    workspacePath: "/project",
+    projectId: null,
+    projectName: null,
+    accountId: "account",
+    modelId: "model",
+    status,
+    error: "Validation failed",
+    createdAt: 0,
+    updatedAt: 0,
+    steps: [
+      {
+        ...workflow.steps[0],
+        status: "failed",
+        conversationId: null,
+        result: null,
+        error: "Validation failed",
+        startedAt: 0,
+        finishedAt: 0,
+      },
+    ],
+  }
+  vi.stubGlobal("cowork", {
+    providers: { listWithModels: vi.fn(async () => []) },
+    tasks: { onEvent: () => () => {} },
+    db: { messages: { list: vi.fn(async () => []) } },
+    workflowRuns: { [action]: control },
+  })
+  const container = document.createElement("div")
+  document.body.append(container)
+  const root = createRoot(container)
+  const button = (label: string, scope: ParentNode) =>
+    [...scope.querySelectorAll("button")].find(
+      (b) => b.textContent?.trim() === label
+    )!
+  try {
+    await act(async () =>
+      root.render(
+        <RunDetail
+          run={run}
+          workflow={workflow}
+          onBack={() => {}}
+          onClose={() => {}}
+        />
+      )
+    )
+    await act(async () => button(label, container).click())
+    expect(control).not.toHaveBeenCalled()
+    const dialog = document.querySelector('[role="dialog"]')!
+    expect(dialog.textContent).toContain(`${label} run`)
+    const textarea = dialog.querySelector("textarea")!
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value"
+      )!.set!.call(textarea, "Skip the browser tests")
+      textarea.dispatchEvent(new Event("input", { bubbles: true }))
+    })
+    await act(async () => button(label, dialog).click())
+    expect(control).toHaveBeenCalledWith("run", "Skip the browser tests")
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
+  } finally {
+    act(() => root.unmount())
+    container.remove()
+    vi.unstubAllGlobals()
+  }
+})

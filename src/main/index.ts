@@ -28,6 +28,8 @@ import {
   setAutoModeForConversation,
   type ChatRequest,
 } from "./agent"
+import { queueSteering, cancelSteering, steeringState } from "./agent/steering"
+import type { SteeringInput } from "../shared/steering"
 import { cancelAllQuestions } from "./agent/questions/broker"
 import { closeCliMcpBridge } from "./agent/mcp-server"
 import { shutdownClaudeSubscription } from "./agent/providers/claude-subscription/client"
@@ -437,6 +439,37 @@ ipcMain.handle(
 ipcMain.handle("chat:stop", (_event, conversationId: string) => {
   stopChat(conversationId)
 })
+for (const action of ["queue", "cancel", "state"] as const) {
+  ipcMain.handle(
+    `chat:steering:${action}`,
+    (
+      event,
+      conversationId: string,
+      runOrId?: string,
+      input?: SteeringInput
+    ) => {
+      const contents = mainWindow?.webContents
+      if (
+        !contents ||
+        event.sender !== contents ||
+        event.senderFrame !== contents.mainFrame ||
+        typeof conversationId !== "string"
+      )
+        throw new Error("Invalid steering request.")
+      if (action === "queue") {
+        if (typeof runOrId !== "string" || !input)
+          throw new Error("Invalid steering request.")
+        return queueSteering(conversationId, runOrId, input)
+      }
+      if (action === "cancel") {
+        if (typeof runOrId !== "string")
+          throw new Error("Invalid steering request.")
+        return cancelSteering(conversationId, runOrId)
+      }
+      return steeringState(conversationId)
+    }
+  )
+}
 // Flip Auto mode on an already-running turn (the composer dropdown, changed
 // mid-turn). Reaches the live loop's setAutoMode so the gate honors it on the
 // next gated action; turning Auto on also clears any pending approval prompt.
@@ -519,7 +552,12 @@ ipcMain.handle("db:workflows:importFile", async () => {
   if (picked.canceled || !picked.paths?.[0]) return { canceled: true }
   const { readFile } = await import("node:fs/promises")
   const { importWorkflow } = await import("./db/repositories/workflows")
-  return { canceled: false, workflow: importWorkflow(JSON.parse(await readFile(picked.paths[0], "utf8"))) }
+  return {
+    canceled: false,
+    workflow: importWorkflow(
+      JSON.parse(await readFile(picked.paths[0], "utf8"))
+    ),
+  }
 })
 // List available skills (name + description only) for the composer's slash
 // menu. Resolves the same source dirs the agent uses at turn time, so the

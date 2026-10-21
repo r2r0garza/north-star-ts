@@ -108,6 +108,16 @@ import type {
 
 // Streaming events emitted during a chat turn (mirrors ChatEvent in the agent).
 export type ChatEvent =
+  | {
+      type: "steering_state"
+      state: import("../shared/steering").SteeringState
+    }
+  | {
+      type: "steering_delivered"
+      id: string
+      content: string
+      createdAt: number
+    }
   | { type: "token"; delta: string; attemptId?: string }
   | {
       type: "stream_attempt"
@@ -399,6 +409,25 @@ const api = {
   },
   // Cancel the in-flight turn for a conversation (the Stop button). The chat()
   // promise above then resolves with `{ stopped: true }`.
+  chatSteeringState: (conversationId: string) =>
+    ipcRenderer.invoke("chat:steering:state", conversationId) as Promise<
+      import("../shared/steering").SteeringState
+    >,
+  chatSteer: (
+    conversationId: string,
+    runId: string,
+    input: import("../shared/steering").SteeringInput
+  ) =>
+    ipcRenderer.invoke(
+      "chat:steering:queue",
+      conversationId,
+      runId,
+      input
+    ) as Promise<import("../shared/steering").SteeringState>,
+  chatCancelSteering: (conversationId: string, id: string) =>
+    ipcRenderer.invoke("chat:steering:cancel", conversationId, id) as Promise<
+      import("../shared/steering").SteeringState
+    >,
   chatStop: (conversationId: string) =>
     ipcRenderer.invoke("chat:stop", conversationId) as Promise<void>,
   // Flip Auto mode on an already-running turn (the composer dropdown changed
@@ -433,12 +462,12 @@ const api = {
       ipcRenderer.invoke("workflow-runs:list") as Promise<WorkflowRun[]>,
     pause: (id: string) =>
       ipcRenderer.invoke("workflow-runs:pause", id) as Promise<void>,
-    resume: (id: string) =>
-      ipcRenderer.invoke("workflow-runs:resume", id) as Promise<void>,
+    resume: (id: string, feedback?: string) =>
+      ipcRenderer.invoke("workflow-runs:resume", id, feedback) as Promise<void>,
     cancel: (id: string) =>
       ipcRenderer.invoke("workflow-runs:cancel", id) as Promise<void>,
-    retry: (id: string) =>
-      ipcRenderer.invoke("workflow-runs:retry", id) as Promise<void>,
+    retry: (id: string, feedback?: string) =>
+      ipcRenderer.invoke("workflow-runs:retry", id, feedback) as Promise<void>,
   },
   tasks: {
     // Start a new durable agent turn. Resolves with the created task row.
@@ -1081,8 +1110,15 @@ const api = {
         >,
       update: (workflow: WorkflowDefinition) =>
         ipcRenderer.invoke("db:workflows:update", workflow) as Promise<void>,
-      importFile: () => ipcRenderer.invoke("db:workflows:importFile") as Promise<{ canceled: boolean; workflow?: WorkflowDefinition }>,
-      export: (workflow: WorkflowDefinition) => ipcRenderer.invoke("db:workflows:export", workflow) as Promise<{ canceled: boolean }>, 
+      importFile: () =>
+        ipcRenderer.invoke("db:workflows:importFile") as Promise<{
+          canceled: boolean
+          workflow?: WorkflowDefinition
+        }>,
+      export: (workflow: WorkflowDefinition) =>
+        ipcRenderer.invoke("db:workflows:export", workflow) as Promise<{
+          canceled: boolean
+        }>,
     },
     projects: {
       create: (input: { name: string; workspaceId?: string | null }) =>

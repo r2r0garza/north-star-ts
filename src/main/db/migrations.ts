@@ -57,6 +57,7 @@ import {
 } from "./schema"
 import { renameWorkTerms } from "./work-terms-migration"
 import { ensureWorkflows, ensureWorkflowRuns } from "./workflow-schema"
+import { ensureSteeringMessages } from "./steering-schema"
 import {
   ORCHESTRATION_TABLES,
   retireOrchestration,
@@ -219,6 +220,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
       "view_in_conversation_sidebar",
       "INTEGER NOT NULL DEFAULT 0 CHECK(view_in_conversation_sidebar IN (0, 1))"
     ),
+  ensureSteeringMessages,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -683,6 +685,7 @@ export function runMigrations(
       ensureGeneratedFilesColumn(db)
       ensureWorktreeSetupColumn(db)
       ensureConversationNotes(db)
+      ensureSteeringMessages(db)
       ensureSubscriptionProviderConstraints(db)
       ensureProjectPositionColumn(db)
       ensureSubagentArtifactsTable(db)

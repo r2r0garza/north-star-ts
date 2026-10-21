@@ -26,6 +26,7 @@ import { cn } from "@/lib/utils"
 // the settled transcript.
 export type LiveSegment =
   | { kind: "text"; text: string }
+  | { kind: "user"; text: string; createdAt: number }
   | { kind: "tools"; calls: ToolUse[] }
 
 interface ChangedFilesCallbacks {
@@ -137,7 +138,9 @@ const SettledTranscriptRow = memo(function SettledTranscriptRow({
           <Bubble
             align={align}
             variant={item.role === "user" ? "default" : "ghost"}
-            className={item.role === "assistant" ? "w-full max-w-full" : undefined}
+            className={
+              item.role === "assistant" ? "w-full max-w-full" : undefined
+            }
           >
             <BubbleContent
               className={cn(
@@ -284,6 +287,22 @@ const LiveTranscriptSegment = memo(function LiveTranscriptSegment({
       </div>
     )
   }
+  if (segment.kind === "user")
+    return (
+      <div className="flex flex-col items-end gap-1">
+        <Bubble align="end">
+          <BubbleContent>
+            <ConversationFindText text={segment.text} query={findQuery} />
+          </BubbleContent>
+        </Bubble>
+        <ConversationMessageMeta
+          content={segment.text}
+          createdAt={segment.createdAt}
+          align="end"
+          copyAlwaysVisible={false}
+        />
+      </div>
+    )
   if (!segment.text) return null
   return (
     <Bubble align="start" variant="ghost" className="w-full max-w-full">

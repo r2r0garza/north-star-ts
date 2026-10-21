@@ -1,3 +1,11 @@
+import {
+  openSteering,
+  consumeSteering,
+  setSteeringWake,
+  steeringState,
+  validateSteeringWith,
+} from "./steering"
+import type { SteeringState } from "../../shared/steering"
 import { nativeAssistant } from "./providers/claude-subscription/native-carrier"
 import { randomUUID } from "crypto"
 import { readFile, stat } from "fs/promises"
@@ -768,6 +776,13 @@ function reconcileSideEffectingToolAction(input: {
 // tool-call `id` joins start↔done (and matches the persisted toolCallId), so the
 // live markers render identically to the ones rebuilt from storage on reload.
 export type ChatEvent =
+  | { type: "steering_state"; state: SteeringState }
+  | {
+      type: "steering_delivered"
+      id: string
+      content: string
+      createdAt: number
+    }
   | { type: "token"; delta: string; attemptId?: string }
   | {
       type: "stream_attempt"
@@ -919,6 +934,8 @@ export interface RunAgentLoopOptions {
   agentDir?: string
   completionInstruction?: string
   reportOnly?: boolean
+  llmSelectionOverride?: LlmSelection
+  agentNameOverride?: string | null
   // Additional caller-provided context, budgeted like other sections.
   extraContextSections?: ContextSection[]
   // Withhold the ask_user_question tool: this turn has NO interactive user to
@@ -933,11 +950,16 @@ export interface RunAgentLoopOptions {
   agentOverride?: AgentDefinition | null
   childInstructionPrefix?: string
   allowedToolNames?: Set<string>
+  // Offer only read-only tools (workflow step validation). CLI providers
+  // cannot enforce this, so they refuse the turn instead.
+  readOnlyTools?: boolean
   subagentRun?: boolean
   repositoryLeaseToken?: string
   beforeApproval?: (signal: AbortSignal) => Promise<() => void>
   onApprovalWaitingChange?: (waiting: boolean) => void
   registerAutoModeSetter?: (setter: (enabled: boolean) => void) => () => void
+  receiveSteering?: boolean
+  closeSteering?: () => void
 }
 
 // The on-disk directory associated with a conversation, used to discover
@@ -975,12 +997,13 @@ export async function runAgentLoop(
   const {
     conversationId,
     workspace,
-    attachments,
+    attachments: initialAttachments,
     userMessage,
     abort,
     taskId,
     skills: selectedSkillNames,
   } = opts
+  const attachments = [...(initialAttachments ?? [])]
   const onEvent: OnEvent = opts.onEvent ?? (() => {})
   const runId = randomUUID()
   const commandCompletionOwner: CommandCompletionOwner = {
@@ -1044,7 +1067,9 @@ export async function runAgentLoop(
   // none of North Star's internal orchestration leaks into the external CLI.
   const defaultLlm = settingsService.getLlm()
   const effectiveAccountId =
-    conversation?.accountId ?? defaultLlm.activeAccountId
+    opts.llmSelectionOverride !== undefined
+      ? (opts.llmSelectionOverride.accountId ?? defaultLlm.activeAccountId)
+      : (conversation?.accountId ?? defaultLlm.activeAccountId)
   const effectiveAccount = effectiveAccountId
     ? getAccount(effectiveAccountId)
     : undefined
@@ -1054,6 +1079,8 @@ export async function runAgentLoop(
   ) {
     if (attachments?.length)
       return { error: "Attachments are not supported by CLI providers." }
+    if (opts.readOnlyTools)
+      return { error: "Read-only turns are not supported by CLI providers." }
     if (opts.bashCommand)
       return { error: "Run code is unavailable for CLI providers." }
     if (!conversation) return { error: "Conversation not found." }
@@ -1088,9 +1115,10 @@ export async function runAgentLoop(
       abort,
       onEvent,
     }
+    const selection = opts.llmSelectionOverride ?? conversation
     const modelId =
-      conversation.modelId ??
-      (conversation.accountId === null ? defaultLlm.activeModelId : null)
+      selection.modelId ??
+      (selection.accountId === null ? defaultLlm.activeModelId : null)
     return effectiveAccount.provider === "claude_code"
       ? runClaudeConversation({
           ...cliTurn,
@@ -1117,11 +1145,15 @@ export async function runAgentLoop(
   // this turn is offered. Re-resolved from disk each turn (definitions are files,
   // not DB rows). Null (no selection, or the file vanished) → the built-in main
   // agent, exactly as before.
+  const selectedAgentName =
+    opts.agentNameOverride !== undefined
+      ? opts.agentNameOverride
+      : conversation?.agentName
   const agent =
     opts.agentOverride !== undefined
       ? opts.agentOverride
-      : conversation?.agentName
-        ? await loadAgent(conversation.agentName, agentDir)
+      : selectedAgentName
+        ? await loadAgent(selectedAgentName, agentDir)
         : null
   const capabilityPolicy = agentCapabilityPolicy(agent)
 
@@ -1177,7 +1209,7 @@ export async function runAgentLoop(
   // This conversation's LLM selection (provider account + model). Null fields
   // fall back to the global default inside resolveLlm, so a session that never
   // picked a model uses the default while one that did keeps its own.
-  const llmSelection: LlmSelection = {
+  const llmSelection: LlmSelection = opts.llmSelectionOverride ?? {
     accountId: conversation?.accountId ?? null,
     modelId: conversation?.modelId ?? null,
   }
@@ -1363,9 +1395,12 @@ export async function runAgentLoop(
               isUniversalTool(d.function.name) ||
               agentToolNames.has(d.function.name)
           )
-    return opts.allowedToolNames
-      ? agentFiltered.filter((d) => opts.allowedToolNames!.has(d.function.name))
-      : agentFiltered
+    return agentFiltered.filter(
+      (d) =>
+        (!opts.allowedToolNames ||
+          opts.allowedToolNames.has(d.function.name)) &&
+        (!opts.readOnlyTools || isReadOnlyTool(d.function.name))
+    )
   }
   const buildTools = () =>
     applyAgentTools([
@@ -1379,10 +1414,10 @@ export async function runAgentLoop(
             // Chat: read_file for attachments and skill:// resources, and the
             // command tools, which run in the conversation's scratch dir
             // (tools/chat_shell.ts).
-            ...(hasAttachments || skills.length > 0
+            ...(attachments.length > 0 || skills.length > 0
               ? [readFileTool.definition]
               : []),
-            ...(hasAttachments && attachedDocuments.length > 0
+            ...(attachments.some((path) => supportedDocumentKind(path) !== null)
               ? [readDocumentTool.definition]
               : []),
             ...(planMode
@@ -2594,6 +2629,57 @@ export async function runAgentLoop(
     // tasks (and the todo list that tracks them) need more than a handful of
     // steps. A turn ends only on a tool-free reply or a thrown error (caught
     // below and surfaced/persisted).
+    if (opts.receiveSteering)
+      validateSteeringWith(conversationId, (input) => {
+        const selected = forcedSkillNames(input.message, input.skills)
+        const unknown = selected.names.find(
+          (name) => !availableSkillNames.has(name)
+        )
+        if (unknown)
+          throw new Error(
+            `No skill named "${unknown}" is available to this agent.`
+          )
+      })
+    const deliverSteering = () =>
+      opts.receiveSteering &&
+      consumeSteering(conversationId, (message) => {
+        for (const path of message.attachments)
+          if (!attachments.includes(path)) attachments.push(path)
+        const selected = forcedSkillNames(message.message, message.skills)
+        for (const name of selected.names) {
+          const skill = skills.find((item) => item.name === name)
+          if (!skill)
+            throw new Error(
+              `No skill named "${name}" is available to this agent.`
+            )
+          registerSkillResourceRootInMap(skillResourceRoots, {
+            name,
+            root: dirname(skill.path),
+          })
+        }
+        let content = message.message
+        if (message.attachments.length)
+          content += `\n\nAttached files: ${message.attachments.map((path) => `${JSON.stringify(path)} (read with ${supportedDocumentKind(path) ? "read_document" : "read_file_tool"})`).join(", ")}`
+        const stored = appendMessage({ conversationId, role: "user", content })
+        messages.push({
+          role: "user",
+          content:
+            (selected.modelMessage ?? message.message) +
+            content.slice(message.message.length) +
+            (selected.names.length
+              ? `\n\nUser-selected skills: ${selected.names.join(", ")}. Call read_skill for their full instructions before proceeding.`
+              : ""),
+        })
+        persistedUserContent = [persistedUserContent, content]
+          .filter(Boolean)
+          .join("\n\n")
+        onEvent({
+          type: "steering_delivered",
+          id: message.id,
+          content,
+          createdAt: stored.createdAt,
+        })
+      })
     while (true) {
       // Stop pressed during the previous step's tool execution: break before
       // starting another model round-trip. (An abort mid-stream is caught by the
@@ -2607,6 +2693,7 @@ export async function runAgentLoop(
         return { stopped: true }
       }
 
+      deliverSteering()
       // Notes that arrived mid-turn join before the next model round.
       for (const note of takeConversationNotes(conversationId)) {
         const content = `${note.source === "user" ? "Note from the user while you work" : "Note while you work"}:\n\n${note.body}`
@@ -2940,6 +3027,28 @@ export async function runAgentLoop(
       }
 
       if (toolCalls.length === 0) {
+        if (opts.receiveSteering) {
+          if (
+            steeringState(conversationId).messages.some(
+              (message) => message.status === "queued"
+            )
+          ) {
+            appendMessage({
+              conversationId,
+              role: "assistant",
+              content: text,
+              nativeAssistant: round.nativeAssistant,
+            })
+            messages.push({
+              role: "assistant",
+              content: text || null,
+              [nativeAssistant]: round.nativeAssistant,
+            })
+            completeModelRequestRetryBudget({ conversationId, logicalRoundId })
+            deliverSteering()
+            continue
+          }
+        }
         if (commandCompletionInbox.hasPending(commandCompletionOwner)) {
           if (text.trim()) {
             appendMessage({
@@ -2951,9 +3060,17 @@ export async function runAgentLoop(
           }
           completeModelRequestRetryBudget({ conversationId, logicalRoundId })
           onEvent({ type: "command_wait", phase: "start" })
-          await commandCompletionInbox.waitForEvent(commandCompletionOwner, {
-            signal: abort.signal,
-          })
+          const waitAbort = new AbortController()
+          const releaseWake = opts.receiveSteering
+            ? setSteeringWake(conversationId, () => waitAbort.abort())
+            : undefined
+          try {
+            await commandCompletionInbox.waitForEvent(commandCompletionOwner, {
+              signal: AbortSignal.any([abort.signal, waitAbort.signal]),
+            })
+          } finally {
+            releaseWake?.()
+          }
           onEvent({ type: "command_wait", phase: "done" })
           if (abort.signal.aborted) {
             appendMessage({
@@ -3069,6 +3186,7 @@ export async function runAgentLoop(
         : undefined
     return failTurn(conversationId, message, retryable, undefined, failure)
   } finally {
+    opts.closeSteering?.()
     // Record the turn for automatic memory on EVERY terminal path, not only the
     // clean final-answer one. Turns that end in a user stop, an output-cap
     // truncation, or a thrown model error still carry durable user-stated facts,
@@ -3124,14 +3242,13 @@ const READ_ONLY_SUBAGENT_EXTRA_TOOLS = new Set([
   "write_plan",
 ])
 
+function isReadOnlyTool(name: string): boolean {
+  if (READ_ONLY_SUBAGENT_EXTRA_TOOLS.has(name)) return true
+  return getToolEffects(name)?.readOnly === true && !name.startsWith("browser_")
+}
+
 function readOnlyChildTools(parentToolNames: Set<string>): Set<string> {
-  return new Set(
-    [...parentToolNames].filter((name) => {
-      if (READ_ONLY_SUBAGENT_EXTRA_TOOLS.has(name)) return true
-      const effects = getToolEffects(name)
-      return effects?.readOnly === true && !name.startsWith("browser_")
-    })
-  )
+  return new Set([...parentToolNames].filter(isReadOnlyTool))
 }
 
 async function childInstructionResource(input: {
@@ -3717,6 +3834,15 @@ export async function runChat(
   return serializeConversationTurn(conversationId, async () => {
     const abort = new AbortController()
     abortControllers.set(conversationId, abort)
+    const accountId =
+      conversation?.accountId ?? settingsService.getLlm().activeAccountId
+    const provider = accountId ? getAccount(accountId)?.provider : undefined
+    const closeSteering =
+      provider !== "claude_code" && provider !== "codex_cli" && !bashCommand
+        ? openSteering(conversationId, randomUUID(), (state) =>
+            onEvent({ type: "steering_state", state })
+          )
+        : undefined
     try {
       return await runAgentLoop({
         conversationId,
@@ -3724,6 +3850,8 @@ export async function runChat(
         attachments,
         skills,
         userMessage: message,
+        receiveSteering: !!closeSteering,
+        closeSteering,
         bashCommand,
         planMode,
         autoMode,
@@ -3737,6 +3865,7 @@ export async function runChat(
         provideBrowser,
       })
     } finally {
+      closeSteering?.()
       // Release this turn's abort controller (only if it's still the current one —
       // defensive against a future overlapping turn replacing it).
       if (abortControllers.get(conversationId) === abort) {

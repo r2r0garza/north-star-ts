@@ -77,6 +77,7 @@ vi.mock("./providers", () => {
 })
 
 import { createConversation } from "../db/repositories/conversations"
+import { queueSteering, steeringState, cancelSteering } from "./steering"
 import { MODEL_STREAM_IDLE } from "./model-request-retry"
 import {
   addConversationNote,
@@ -263,6 +264,107 @@ afterEach(() => {
 })
 
 describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
+  it("delivers steering queued during the final response and continues the same run", async () => {
+    const conversation = createConversation({ mode: "chat" })
+    let queued = false
+    scriptedCompletions.push(() => streamText("Original answer"), (request) => {
+      expect(lastMessage(request, "user").content).toContain("Focus on tests instead")
+      expect(request.messages.some((message) => message.role === "assistant" && message.content === "Original answer")).toBe(true)
+      return streamText("Updated answer")
+    })
+    const result = await runChat({ conversationId: conversation.id, message: "Start" }, (event) => {
+      if (event.type === "token" && !queued) {
+        queued = true
+        const runId = steeringState(conversation.id).runId!
+        queueSteering(conversation.id, runId, { id: "steer-final", message: "Focus on tests instead", attachments: [], skills: [] })
+      }
+    })
+    expect(result.content).toBe("Updated answer")
+    expect(listMessages(conversation.id).filter((message) => message.role === "user").map((message) => message.content)).toEqual(["Start", "Focus on tests instead"])
+    expect(steeringState(conversation.id)).toEqual({ runId: null, messages: [] })
+  })
+
+  it("waits for every parallel tool result before delivering steering", async () => {
+    const workspace = await makeWorkspace()
+    await writeFile(join(workspace, "steering.txt"), "hello")
+    const conversation = createConversation({ mode: "interactive" })
+    let queued = false
+    const done = new Set<string>()
+    scriptedCompletions.push(() => streamToolCalls([
+      { id: "steer-read-1", name: "read_file_tool", arguments: JSON.stringify({ path: "steering.txt" }) },
+      { id: "steer-read-2", name: "read_file_tool", arguments: JSON.stringify({ path: "steering.txt" }) },
+    ]), (request) => {
+      const userIndex = request.messages.findIndex((message) => message.role === "user" && message.content === "New direction")
+      expect(request.messages.slice(0, userIndex).filter((message) => message.role === "tool")).toHaveLength(2)
+      return streamText("Steered after tools")
+    })
+    const result = await runChat({ conversationId: conversation.id, workspace, message: "Read both" }, (event) => {
+      if (event.type === "tool" && event.phase === "start" && !queued) {
+        queued = true
+        queueSteering(conversation.id, steeringState(conversation.id).runId!, { id: "parallel-steer", message: "New direction", attachments: [], skills: [] })
+      }
+      if (event.type === "tool" && event.phase === "done") done.add(event.id)
+      if (event.type === "steering_delivered") expect(done.size).toBe(2)
+    })
+    expect(result.content).toBe("Steered after tools")
+    const stored = listMessages(conversation.id)
+    expect(stored.filter((message) => message.role === "tool")).toHaveLength(2)
+    expect(stored.findIndex((message) => message.content === "New direction")).toBeGreaterThan(stored.findIndex((message) => message.toolCallId === "steer-read-2"))
+  })
+
+  it("wakes an idle background-command wait to deliver steering", async () => {
+    const conversation = createConversation({ mode: "chat" })
+    let queued = false
+    scriptedCompletions.push(
+      () => streamToolCalls([{ id: "steering-background", name: "exec_command", arguments: JSON.stringify({ command: "sleep 10", background: true }) }]),
+      () => streamText("Waiting for command"),
+      (request) => {
+        expect(lastMessage(request, "user").content).toContain("Stop waiting and explain")
+        stopChat(conversation.id)
+        return streamText("Steering received")
+      }
+    )
+    const result = await runChat({ conversationId: conversation.id, message: "Start command", autoMode: true }, (event) => {
+      if (event.type === "command_wait" && event.phase === "start" && !queued) {
+        queued = true
+        queueSteering(conversation.id, steeringState(conversation.id).runId!, { id: "wake-steer", message: "Stop waiting and explain", attachments: [], skills: [] })
+      }
+    })
+    expect(queued).toBe(true)
+    expect(result.stopped).toBe(true)
+    expect(listMessages(conversation.id).some((message) => message.content === "Stop waiting and explain")).toBe(true)
+  })
+
+  it("keeps undelivered steering recoverable when Stop is pressed", async () => {
+    const conversation = createConversation({ mode: "chat" })
+    let queued = false
+    scriptedCompletions.push(() => streamText("Working"))
+    await runChat({ conversationId: conversation.id, message: "Start" }, (event) => {
+      if (event.type === "token" && !queued) {
+        queued = true
+        queueSteering(conversation.id, steeringState(conversation.id).runId!, { id: "stopped-steer", message: "Do not lose this", attachments: [], skills: [] })
+        stopChat(conversation.id)
+      }
+    })
+    expect(steeringState(conversation.id)).toMatchObject({ runId: null, messages: [{ id: "stopped-steer", status: "returned", message: "Do not lose this" }] })
+  })
+
+  it("cancels queued steering without stopping the active run", async () => {
+    const conversation = createConversation({ mode: "chat" })
+    let queued = false
+    scriptedCompletions.push(() => streamText("Unchanged answer"))
+    const result = await runChat({ conversationId: conversation.id, message: "Start" }, (event) => {
+      if (event.type === "token" && !queued) {
+        queued = true
+        const runId = steeringState(conversation.id).runId!
+        queueSteering(conversation.id, runId, { id: "cancel-me", message: "Never deliver", attachments: [], skills: [] })
+        cancelSteering(conversation.id, "cancel-me")
+      }
+    })
+    expect(result.content).toBe("Unchanged answer")
+    expect(listMessages(conversation.id).some((message) => message.content === "Never deliver")).toBe(false)
+  })
+
   it("executes a clicked Bash script once before model interpretation and delivers failure output", async () => {
     const workspace = await makeWorkspace()
     const ws = upsertWorkspace(workspace)
@@ -1288,6 +1390,45 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
           )
       )
     ).toBe(true)
+  })
+
+  it("offers only read-only tools and refuses writes on a read-only turn", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "north_star" })
+
+    scriptedCompletions.push(() =>
+      streamToolCalls([
+        {
+          id: "call_write",
+          name: "write_file_tool",
+          arguments: JSON.stringify({ path: "out.txt", content: "x" }),
+        },
+      ])
+    )
+    scriptedCompletions.push(() => streamText("done"))
+
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "validate",
+      abort: new AbortController(),
+      autoMode: true,
+      unattended: true,
+      readOnlyTools: true,
+      onEvent: () => {},
+    })
+
+    expect(result).toEqual({ content: "done" })
+    expect(completionRequests[0].tools).toContain("read_file_tool")
+    for (const name of [
+      "write_file_tool",
+      "edit_file_tool",
+      "apply_patch_tool",
+      "exec_command",
+      "write_plan",
+    ])
+      expect(completionRequests[0].tools).not.toContain(name)
+    await expect(access(join(workspace, "out.txt"))).rejects.toThrow()
   })
 
   it("retries an empty final model response without persisting a blank assistant message", async () => {

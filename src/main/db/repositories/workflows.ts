@@ -51,6 +51,11 @@ export function importWorkflow(input: unknown): WorkflowDefinition {
       "modelId",
       "agentName",
       "skillName",
+      "validateCompletion",
+      "maxCorrectionLoops",
+      "validatorAccountId",
+      "validatorModelId",
+      "validatorAgentName",
     ])
     if (Object.keys(row).some((key) => !stepKeys.has(key)))
       throw new Error("Invalid workflow")
@@ -113,7 +118,19 @@ export function validateWorkflow(
         (step.agentName != null && typeof step.agentName !== "string") ||
         (step.skillName != null &&
           (typeof step.skillName !== "string" ||
-            !/^[a-z0-9-]+$/.test(step.skillName)))
+            !/^[a-z0-9-]+$/.test(step.skillName))) ||
+        (step.validateCompletion !== undefined &&
+          typeof step.validateCompletion !== "boolean") ||
+        (step.maxCorrectionLoops !== undefined &&
+          (!Number.isInteger(step.maxCorrectionLoops) ||
+            step.maxCorrectionLoops < 0 ||
+            step.maxCorrectionLoops > 10)) ||
+        (step.validatorAccountId != null &&
+          typeof step.validatorAccountId !== "string") ||
+        (step.validatorModelId != null &&
+          typeof step.validatorModelId !== "string") ||
+        (step.validatorAgentName != null &&
+          typeof step.validatorAgentName !== "string")
     ) ||
     new Set(workflow.steps.map((step) => step.id)).size !==
       workflow.steps.length

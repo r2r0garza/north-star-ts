@@ -6,6 +6,11 @@ export interface WorkflowStep {
   modelId?: string | null
   agentName?: string | null
   skillName?: string | null
+  validateCompletion?: boolean
+  maxCorrectionLoops?: number
+  validatorAccountId?: string | null
+  validatorModelId?: string | null
+  validatorAgentName?: string | null
 }
 
 export interface WorkflowDefinition {

@@ -154,6 +154,8 @@ import type {
 // `liveTurns` until the turn settles and reconciles into the persisted timeline.
 // A pending approval lives inside a tools segment (on the matching call's
 // `approval`), so restoring a switched-away turn restores its approval card too.
+import type { SteeringState } from "../../shared/steering"
+
 interface LiveTurn {
   segments: LiveSegment[]
   firstTextAt: number | null
@@ -748,6 +750,39 @@ function App(
   // spinner with no approval card and no way to send (the session-bleed bug).
   // Each entry is dropped when its turn settles (reconciled into `timeline`).
   const [liveTurns, setLiveTurns] = useState<Map<string, LiveTurn>>(new Map())
+  const [steering, setSteering] = useState<Map<string, SteeringState>>(
+    new Map()
+  )
+  const [queueing, setQueueing] = useState(false)
+  const queueingRef = useRef(false)
+  const steeringRef = useRef(steering)
+  steeringRef.current = steering
+  const steeringVersion = useRef(new Map<string, number>())
+  const applySteeringState = (id: string, state: SteeringState) => {
+    steeringVersion.current.set(id, (steeringVersion.current.get(id) ?? 0) + 1)
+    setSteering((previous) => new Map(previous).set(id, state))
+  }
+  async function refreshSteering(id: string) {
+    const version = steeringVersion.current.get(id) ?? 0
+    const state = await window.cowork.chatSteeringState(id)
+    if ((steeringVersion.current.get(id) ?? 0) === version)
+      applySteeringState(id, state)
+  }
+  useEffect(() => {
+    if (!conversationId || !window.cowork.chatSteeringState) return
+    void refreshSteering(conversationId).catch(() => {})
+  }, [conversationId])
+  async function cancelQueuedSteering(id: string) {
+    if (!conversationId) return
+    try {
+      await window.cowork.chatCancelSteering(conversationId, id)
+      await refreshSteering(conversationId)
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not cancel message"
+      )
+    }
+  }
   // Surface the running set to the Shell (for the sidebar's per-row spinner)
   // whenever it changes.
   useEffect(() => {
@@ -985,11 +1020,13 @@ function App(
   // selected folder as well. All views need an LLM selection.
   const canSend =
     !!message.trim() &&
-    !loading &&
+    (!loading ||
+      (!effectiveIsCli && !!steering.get(conversationId ?? "")?.runId)) &&
+    !queueing &&
     hasLlm &&
     (isChat || !!workspace.trim()) &&
     !(effectiveIsCli && attachments.length > 0)
-  const canRunInBackground = canSend && attachments.length === 0
+  const canRunInBackground = canSend && !loading && attachments.length === 0
   const sendUnavailableReason =
     effectiveIsCli && attachments.length > 0
       ? "Attachments are not supported by CLI providers. Choose another model or remove the files."
@@ -1411,6 +1448,27 @@ function App(
     })
   }
 
+  useEffect(() => {
+    function cancelOnEscape(event: globalThis.KeyboardEvent) {
+      if (
+        event.key !== "Escape" ||
+        event.defaultPrevented ||
+        menuOpen ||
+        document.querySelector(
+          '[role="dialog"], [role="alertdialog"], [role="menu"]'
+        )
+      )
+        return
+      const pending = steering.get(conversationId ?? "")?.messages.at(-1)
+      if (pending) {
+        event.preventDefault()
+        void cancelQueuedSteering(pending.id)
+      }
+    }
+    window.addEventListener("keydown", cancelOnEscape)
+    return () => window.removeEventListener("keydown", cancelOnEscape)
+  }, [conversationId, steering, menuOpen])
+
   // Keyboard handling for the composer. When the menu is open, intercept
   // navigation/selection keys BEFORE the Enter-to-send path below; otherwise
   // fall through to the existing send behavior.
@@ -1437,8 +1495,18 @@ function App(
       }
       if (e.key === "Escape") {
         e.preventDefault()
+        e.stopPropagation()
         setMenu(null)
         setMenuActive(null)
+        return
+      }
+    }
+    if (e.key === "Escape") {
+      const pending = steering.get(conversationId ?? "")?.messages.at(-1)
+      if (pending) {
+        e.preventDefault()
+        e.stopPropagation()
+        void cancelQueuedSteering(pending.id)
         return
       }
     }
@@ -1687,6 +1755,39 @@ function App(
         ? `${pickedElements.map(formatPickedElement).join("\n")}\n\n${base}`
         : base
     const sentAttachments = bashBlock ? [] : attachments
+    if (loading && !bashBlock && conversationId) {
+      const runId = steeringRef.current.get(conversationId)?.runId
+      if (!runId || queueingRef.current) return
+      queueingRef.current = true
+      setQueueing(true)
+      const target = conversationId
+      try {
+        await window.cowork.chatSteer(target, runId, {
+          id: crypto.randomUUID(),
+          message: text,
+          attachments: sentAttachments,
+          skills: [...confirmedSkills],
+        })
+        if (viewingRef.current === target) {
+          setMessage((draft) => (draft === message ? "" : draft))
+          setConfirmedSkills(new Set())
+          setConfirmedFiles(new Set())
+          setMenu(null)
+          setMenuActive(null)
+          setAttachments([])
+          setPickedElements([])
+        }
+        await refreshSteering(target)
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : "Could not queue message"
+        )
+      } finally {
+        queueingRef.current = false
+        setQueueing(false)
+      }
+      return
+    }
 
     // Ensure a conversation exists — created lazily on first send. For
     // workspace views, link the picked workspace at creation time.
@@ -1797,7 +1898,22 @@ function App(
         // turn that keeps streaming after the user switches away no longer loses
         // its tokens/tools/approval — they're preserved and restored on return.
         (event) => {
-          if (event.type === "stream_attempt") {
+          if (event.type === "steering_state") {
+            applySteeringState(turnConvoId, event.state)
+          } else if (event.type === "steering_delivered") {
+            liveTokens.flush()
+            updateLive(turnConvoId, (turn) => ({
+              ...turn,
+              segments: [
+                ...turn.segments,
+                {
+                  kind: "user",
+                  text: event.content,
+                  createdAt: event.createdAt,
+                },
+              ],
+            }))
+          } else if (event.type === "stream_attempt") {
             updateLive(turnConvoId, (turn) => applyStreamAttempt(turn, event))
           } else if (event.type === "token") {
             liveTokens.push(turnConvoId, event.delta)
@@ -2982,6 +3098,54 @@ function App(
           ))}
         </AttachmentGroup>
       )}
+      {steering.get(conversationId ?? "")?.messages.map((pending) => (
+        <div
+          key={pending.id}
+          className="mb-2 flex items-start gap-3 rounded-xl border border-input px-3 py-2 text-sm"
+          role="status"
+        >
+          <div className="min-w-0 flex-1">
+            <span className="text-xs text-muted-foreground">
+              {pending.status === "queued"
+                ? "Queued · sends after current tools finish"
+                : "Not sent · agent stopped"}
+            </span>
+            <p className="max-h-24 overflow-auto break-words whitespace-pre-wrap">
+              {pending.message}
+            </p>
+            {pending.status === "returned" && (
+              <button
+                type="button"
+                className="text-xs underline"
+                onClick={() => {
+                  setMessage((draft) =>
+                    [draft, pending.message].filter(Boolean).join("\n\n")
+                  )
+                  setAttachments((files) => [
+                    ...new Set([...files, ...pending.attachments]),
+                  ])
+                  setConfirmedSkills(
+                    (skills) => new Set([...skills, ...pending.skills])
+                  )
+                  void cancelQueuedSteering(pending.id)
+                }}
+              >
+                Restore draft
+              </button>
+            )}
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-6 shrink-0"
+            aria-label="Cancel queued message"
+            onClick={() => void cancelQueuedSteering(pending.id)}
+          >
+            <X className="size-3.5" />
+          </Button>
+        </div>
+      ))}
       <div
         ref={composerSurfaceRef}
         className="relative rounded-2xl border border-input bg-transparent focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50"
@@ -3249,7 +3413,7 @@ function App(
                   </TooltipContent>
                 </Tooltip>
               )}
-            {loading ? (
+            {loading && (!message.trim() || effectiveIsCli) ? (
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
@@ -3262,7 +3426,11 @@ function App(
                     <Square className="size-3.5 fill-current" />
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent>Stop</TooltipContent>
+                <TooltipContent>
+                  {effectiveIsCli && message.trim()
+                    ? "Stop to send a message. This CLI provider does not support safe-boundary steering."
+                    : "Stop"}
+                </TooltipContent>
               </Tooltip>
             ) : (
               <Tooltip>

@@ -21,6 +21,10 @@ export interface WorkflowStepRun extends WorkflowStep {
   error: string | null
   startedAt: number | null
   finishedAt: number | null
+  // Validator correction attempts spent; survives pause/resume and restarts, reset by retry.
+  correctionAttempts?: number
+  // User steering submitted with a retry; sent to this step's worker and validator until it completes.
+  retryFeedback?: string
 }
 export interface WorkflowRun {
   id: string

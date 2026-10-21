@@ -35,6 +35,17 @@ function definition(): WorkflowDefinition {
 beforeEach(() => vi.clearAllMocks())
 
 describe("workflow import validation", () => {
+  it("accepts valid validator settings and rejects invalid correction budgets", () => {
+    const workflow = {
+      id: "source", name: "Test", description: "", defaultObjective: "",
+      steps: [{ id: "one", title: "One", instructions: "Do it", validateCompletion: true, maxCorrectionLoops: 2, validatorAccountId: "acct", validatorModelId: "model", validatorAgentName: "reviewer" }],
+    }
+    expect(importWorkflow(workflow).steps[0]).toMatchObject({
+      validateCompletion: true, maxCorrectionLoops: 2, validatorModelId: "model", validatorAgentName: "reviewer",
+    })
+    expect(() => importWorkflow({ ...workflow, steps: [{ ...workflow.steps[0], maxCorrectionLoops: 11 }] })).toThrow("Invalid workflow")
+  })
+
   it.each([
     [
       "missing step ID",

@@ -21,6 +21,16 @@ import { ScreenHeader } from "@/components/screen-header"
 import { Badge } from "@/components/ui/badge"
 import { Spinner } from "@/components/ui/spinner"
 import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Field, FieldLabel } from "@/components/ui/field"
+import { Textarea } from "@/components/ui/textarea"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
 import type { WorkflowDefinition } from "../../../shared/workflows"
@@ -90,6 +100,11 @@ export function RunDetail({
   const timestamp = new Date(run.createdAt)
   const activities = run.steps
   const [controlling, setControlling] = useState(false)
+  // The control the feedback modal will run when submitted; null while closed.
+  const [feedbackAction, setFeedbackAction] = useState<
+    "retry" | "resume" | null
+  >(null)
+  const [feedback, setFeedback] = useState("")
   const [modelLabels, setModelLabels] = useState<Record<string, string>>({})
   useEffect(() => {
     void window.cowork.providers.listWithModels().then(
@@ -117,10 +132,17 @@ export function RunDetail({
         setLiveText((text) => (text + event.delta).slice(-16000))
     })
   }, [run.taskId, activeStepId])
-  async function control(action: "pause" | "resume" | "cancel" | "retry") {
+  async function control(
+    action: "pause" | "resume" | "cancel" | "retry",
+    feedback?: string
+  ) {
     setControlling(true)
     try {
-      await window.cowork.workflowRuns[action](run.id)
+      if (action === "retry" || action === "resume") {
+        await window.cowork.workflowRuns[action](run.id, feedback)
+        setFeedbackAction(null)
+        setFeedback("")
+      } else await window.cowork.workflowRuns[action](run.id)
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : "Could not update run"
@@ -191,7 +213,7 @@ export function RunDetail({
                     size="sm"
                     variant="outline"
                     disabled={controlling}
-                    onClick={() => void control("resume")}
+                    onClick={() => setFeedbackAction("resume")}
                   >
                     <Play className="size-4" />
                     Resume
@@ -202,12 +224,68 @@ export function RunDetail({
                     size="sm"
                     variant="outline"
                     disabled={controlling}
-                    onClick={() => void control("retry")}
+                    onClick={() => setFeedbackAction("retry")}
                   >
                     <RotateCcw className="size-4" />
                     Retry
                   </Button>
                 )}
+                <Dialog
+                  open={feedbackAction !== null}
+                  onOpenChange={(open) => !open && setFeedbackAction(null)}
+                >
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>
+                        {feedbackAction === "resume" ? "Resume run" : "Retry run"}
+                      </DialogTitle>
+                      <DialogDescription>
+                        Optionally tell the agent what to do differently. Your
+                        feedback is sent to the unfinished step and its validator.
+                      </DialogDescription>
+                    </DialogHeader>
+                    <Field>
+                      <FieldLabel htmlFor="retry-feedback">
+                        Feedback (optional)
+                      </FieldLabel>
+                      <Textarea
+                        id="retry-feedback"
+                        value={feedback}
+                        onChange={(e) => setFeedback(e.target.value)}
+                        placeholder="e.g. Use the existing test setup instead of installing a new runner."
+                        rows={16}
+                        className="field-sizing-fixed resize-none"
+                        autoFocus
+                      />
+                    </Field>
+                    <DialogFooter>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => setFeedbackAction(null)}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        type="button"
+                        disabled={controlling}
+                        onClick={() => void control(feedbackAction!, feedback)}
+                      >
+                        {feedbackAction === "resume" ? (
+                          <>
+                            <Play className="size-4" />
+                            Resume
+                          </>
+                        ) : (
+                          <>
+                            <RotateCcw className="size-4" />
+                            Retry
+                          </>
+                        )}
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
               </div>
             </div>
             <div className="mt-5 grid gap-4 border-t pt-4 sm:grid-cols-2">

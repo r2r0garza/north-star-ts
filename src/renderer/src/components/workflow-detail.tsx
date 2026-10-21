@@ -29,6 +29,7 @@ import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Textarea } from "@/components/ui/textarea"
 import { Switch } from "@/components/ui/switch"
+import { Slider } from "@/components/ui/slider"
 import {
   Tooltip,
   TooltipContent,
@@ -187,6 +188,63 @@ function SortableStep({
                 placeholder="What should this step do?"
                 className="h-36 min-h-36 resize-y overflow-y-auto"
               />
+            </div>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-4">
+                <Label htmlFor={`${step.id}-validate`}>Validate step completion</Label>
+                <Switch
+                  id={`${step.id}-validate`}
+                  checked={step.validateCompletion ?? false}
+                  onCheckedChange={(checked) => {
+                    onChange({ ...step, validateCompletion: checked })
+                    onSave()
+                  }}
+                />
+              </div>
+              {step.validateCompletion && (
+                <>
+                  <div className="space-y-2">
+                    <Label htmlFor={`${step.id}-correction-loops`}>Maximum correction loops</Label>
+                    <Slider
+                      id={`${step.id}-correction-loops`}
+                      min={0}
+                      max={10}
+                      step={1}
+                      value={[step.maxCorrectionLoops ?? 2]}
+                      onValueChange={([value]) => onChange({ ...step, maxCorrectionLoops: value })}
+                      onValueCommit={onSave}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      The validator runs once initially, plus up to {step.maxCorrectionLoops ?? 2} correction attempts.
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="min-w-0 space-y-2">
+                      <Label htmlFor={`${step.id}-validator-model`}>Validator model</Label>
+                      <Combobox
+                        items={groups}
+                        value={groups.flatMap((group) => group.items).find((item) => item.value === `${step.validatorAccountId}::${step.validatorModelId}`) ?? (step.validatorModelId ? { value: `${step.validatorAccountId}::${step.validatorModelId}`, label: step.validatorModelId } : null)}
+                        isItemEqualToValue={(a, b) => a?.value === b?.value}
+                        onValueChange={(item) => {
+                          const separator = item?.value.indexOf("::") ?? -1
+                          onChange({ ...step, validatorAccountId: separator >= 0 ? item!.value.slice(0, separator) : null, validatorModelId: separator >= 0 ? item!.value.slice(separator + 2) : null })
+                          onSave()
+                        }}
+                      >
+                        <ComboboxTrigger id={`${step.id}-validator-model`} className="flex h-9 w-full items-center justify-between rounded-lg border border-input px-3 text-sm"><ComboboxValue placeholder="Use default model" /></ComboboxTrigger>
+                        <ComboboxContent className="min-w-72"><ComboboxInput placeholder="Search models…" showTrigger={false} /><ComboboxList>{(group: { value: string; label: string; items: { value: string; label: string }[] }) => <ComboboxGroup key={group.value} items={group.items}><ComboboxLabel>{group.label}</ComboboxLabel><ComboboxCollection>{(model: { value: string; label: string }) => <ComboboxItem key={model.value} value={model}>{model.label}</ComboboxItem>}</ComboboxCollection></ComboboxGroup>}</ComboboxList></ComboboxContent>
+                      </Combobox>
+                    </div>
+                    <div className="min-w-0 space-y-2">
+                      <Label htmlFor={`${step.id}-validator-agent`}>Validator agent</Label>
+                      <Combobox items={[{ value: "", label: systemAgentName }, ...agents.map((agent) => ({ value: agent.ref ?? agent.name, label: agent.label ?? agent.name }))]} value={[{ value: "", label: systemAgentName }, ...agents.map((agent) => ({ value: agent.ref ?? agent.name, label: agent.label ?? agent.name }))].find((agent) => agent.value === (step.validatorAgentName ?? "")) ?? { value: step.validatorAgentName ?? "", label: step.validatorAgentName ?? systemAgentName }} isItemEqualToValue={(a, b) => a?.value === b?.value} onValueChange={(agent) => { onChange({ ...step, validatorAgentName: agent?.value || null }); onSave() }}>
+                        <ComboboxTrigger id={`${step.id}-validator-agent`} className="flex h-9 w-full items-center justify-between rounded-lg border border-input px-3 text-sm"><ComboboxValue /></ComboboxTrigger>
+                        <ComboboxContent className="min-w-64"><ComboboxInput placeholder="Search agents…" showTrigger={false} /><ComboboxList><ComboboxCollection>{(agent: { value: string; label: string }) => <ComboboxItem key={agent.value || "__system__"} value={agent}>{agent.label}</ComboboxItem>}</ComboboxCollection></ComboboxList></ComboboxContent>
+                      </Combobox>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="min-w-0 space-y-2">
