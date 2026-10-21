@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import {
   CalendarIcon,
   FolderOpen,
@@ -6,19 +6,11 @@ import {
   ListFilter,
   Play,
   Plus,
-  Workflow,
-  Trash2,
 } from "lucide-react"
 import { toast } from "sonner"
 import { ScreenHeader } from "@/components/screen-header"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import {
-  Card,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Calendar } from "@/components/ui/calendar"
 import {
@@ -48,6 +40,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
 import type { Project } from "@/types"
+import { WorkflowLibrary } from "@/components/workflow-library"
 import { WorkflowDetail } from "@/components/workflow-detail"
 import { RunDetail } from "@/components/run-detail"
 import { NewRunDialog } from "@/components/new-run-dialog"
@@ -83,6 +76,30 @@ export function WorkflowsScreen({
   )
   const [deletingWorkflow, setDeletingWorkflow] = useState(false)
   const [workflowsLoaded, setWorkflowsLoaded] = useState(false)
+  const [workflowsLoading, setWorkflowsLoading] = useState(false)
+  const [workflowsError, setWorkflowsError] = useState(false)
+  const [libraryQuery, setLibraryQuery] = useState("")
+  const workflowLoadInFlight = useRef(false)
+
+  const loadWorkflows = useCallback(async () => {
+    if (workflowLoadInFlight.current) return
+    workflowLoadInFlight.current = true
+    setWorkflowsLoading(true)
+    try {
+      setWorkflows(await window.cowork.db.workflows.list())
+      setWorkflowsLoaded(true)
+      setWorkflowsError(false)
+    } catch {
+      setWorkflowsError(true)
+    } finally {
+      workflowLoadInFlight.current = false
+      setWorkflowsLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadWorkflows()
+  }, [loadWorkflows])
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(
     null
   )
@@ -181,20 +198,6 @@ export function WorkflowsScreen({
     }
     void refreshProjects()
     const projectsTimer = setInterval(() => void refreshProjects(), 1000)
-    window.cowork.db.workflows.list().then(
-      (list) => {
-        if (!cancelled) {
-          setWorkflows(list)
-          setWorkflowsLoaded(true)
-        }
-      },
-      () => {
-        if (!cancelled)
-          toast.error(
-            "Could not load workflows. Reopen Workflows to try again."
-          )
-      }
-    )
     return () => {
       cancelled = true
       clearInterval(projectsTimer)
@@ -231,6 +234,7 @@ export function WorkflowsScreen({
     try {
       const workflow = await window.cowork.db.workflows.create()
       setWorkflows((current) => [...current, workflow])
+      setLibraryQuery("")
       setSelectedWorkflowId(workflow.id)
     } catch {
       toast.error("Could not create workflow. Please try again.")
@@ -244,6 +248,7 @@ export function WorkflowsScreen({
       const result = await window.cowork.db.workflows.importFile()
       if (result.canceled || !result.workflow) return
       setWorkflows((current) => [...current, result.workflow!])
+      setLibraryQuery("")
       toast.info("Workflow imported")
     } catch {
       toast.error(
@@ -351,9 +356,9 @@ export function WorkflowsScreen({
             aria-label="Workflow views"
           >
             <TabsTrigger value="runs">Runs</TabsTrigger>
-            <TabsTrigger value="workflows">Workflows</TabsTrigger>
+            <TabsTrigger value="workflows">Library</TabsTrigger>
           </TabsList>
-          <Badge variant="outline">Auto mode</Badge>
+          {activeTab === "runs" && <Badge variant="outline">Auto mode</Badge>}
         </div>
         <TabsContent value="runs" className="min-h-0 overflow-hidden">
           <div className="flex h-full min-h-0 min-w-0">
@@ -606,104 +611,26 @@ export function WorkflowsScreen({
           </div>
         </TabsContent>
         <TabsContent value="workflows" className="min-h-0 overflow-hidden">
-          <ScrollArea className="h-full">
-            <div className="space-y-4 p-4">
-              <div>
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-3">
-                    <h2 className="font-medium">Workflow collection</h2>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={!workflowsLoaded}
-                      onClick={importWorkflow}
-                    >
-                      Import JSON
-                    </Button>
-                  </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={creatingWorkflow || !workflowsLoaded}
-                    onClick={createWorkflow}
-                  >
-                    <Plus className="size-4" />
-                    {creatingWorkflow ? "Creating…" : "New Workflow"}
-                  </Button>
-                </div>
-                <p className="mt-1 text-muted-foreground">
-                  Inspect and edit your saved workflows.
-                </p>
-              </div>
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-                {[...workflows]
-                  .sort((a, b) =>
-                    a.name.trim().localeCompare(b.name.trim(), undefined, {
-                      sensitivity: "base",
-                    })
-                  )
-                  .map((workflow) => (
-                    <Card
-                      key={workflow.id}
-                      size="sm"
-                      className="relative h-full min-w-0 hover:ring-foreground/25"
-                    >
-                      <CardHeader className="h-full min-w-0 grid-cols-1 gap-3">
-                        <div className="flex items-center justify-between gap-2">
-                          <Workflow className="size-5 text-muted-foreground" />
-                          <Badge variant="secondary">Saved</Badge>
-                        </div>
-                        <CardTitle className="min-w-0">
-                          <button
-                            type="button"
-                            className="block max-w-full truncate text-left after:absolute after:inset-0 focus-visible:outline-2 focus-visible:outline-ring"
-                            title={workflow.name}
-                            onClick={() => setSelectedWorkflowId(workflow.id)}
-                          >
-                            {workflow.name}
-                          </button>
-                        </CardTitle>
-                        <CardDescription className="line-clamp-2 min-h-10">
-                          {workflow.description}
-                        </CardDescription>
-                        <div className="relative z-10 mt-auto flex items-center gap-2">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="flex-1"
-                            onClick={() => {
-                              setInitialWorkflowId(workflow.id)
-                              setActiveTab("runs")
-                              setNewRunOpen(true)
-                            }}
-                          >
-                            <Play className="size-4" />
-                            Run workflow
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            aria-label={`Export workflow: ${workflow.name || "Untitled workflow"}`}
-                            onClick={() => void exportWorkflow(workflow)}
-                          >
-                            Export
-                          </Button>
-                          <Button
-                            size="icon-sm"
-                            variant="ghost"
-                            className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                            aria-label={`Delete workflow: ${workflow.name || "Untitled workflow"}`}
-                            onClick={() => setPendingDelete(workflow)}
-                          >
-                            <Trash2 className="size-4" />
-                          </Button>
-                        </div>
-                      </CardHeader>
-                    </Card>
-                  ))}
-              </div>
-            </div>
-          </ScrollArea>
+          <WorkflowLibrary
+            workflows={workflows}
+            loaded={workflowsLoaded}
+            loading={workflowsLoading}
+            error={workflowsError}
+            creating={creatingWorkflow}
+            query={libraryQuery}
+            onQueryChange={setLibraryQuery}
+            onRetry={() => void loadWorkflows()}
+            onCreate={() => void createWorkflow()}
+            onImport={() => void importWorkflow()}
+            onEdit={(workflow) => setSelectedWorkflowId(workflow.id)}
+            onRun={(workflow) => {
+              setInitialWorkflowId(workflow.id)
+              setActiveTab("runs")
+              setNewRunOpen(true)
+            }}
+            onExport={(workflow) => void exportWorkflow(workflow)}
+            onDelete={setPendingDelete}
+          />
         </TabsContent>
       </Tabs>
       <NewRunDialog
@@ -742,7 +669,7 @@ export function WorkflowsScreen({
               disabled={deletingWorkflow}
               onClick={deleteWorkflow}
             >
-              {deletingWorkflow ? "Deleting…" : "Confirm"}
+              {deletingWorkflow ? "Deleting…" : "Delete workflow"}
             </Button>
           </DialogFooter>
         </DialogContent>

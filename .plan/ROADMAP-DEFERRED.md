@@ -101,6 +101,13 @@
   **`045.1` remains**: extract the shared `index_query` service, add its adapter, widen the grant, add
   the CLI-provider UI copy, and close the Codex steering gap (no per-run append flag exists).
 
+- **`117` — Sandboxed HTML and React previews.** Deferred because executable previews require a proven
+  runtime/compiler isolation boundary, resource controls and packaged-platform qualification, not just
+  installed UI components or an iframe. Reuse `115` artifact infrastructure; activate after artifacts ship,
+  real redesign work demonstrates `116`'s fidelity limits, and a dedicated security investigation passes
+  its fail-closed go/no-go gate. Start with inert HTML/CSS; keep executable React deferred if isolation
+  cannot be established. [Plan](117-sandboxed-html-react-previews.md).
+
 ## Dropped — pending re-review (2026-10-11)
 
 Removed from the active roadmap; plan files are kept with status **DROPPED — PENDING RE-REVIEW**.

@@ -6,7 +6,9 @@ import { WorkflowsScreen } from "./workflows-screen"
 import { EXAMPLE_WORKFLOWS } from "../../../main/db/workflow-schema"
 import { toast } from "sonner"
 
-vi.mock("sonner", () => ({ toast: { error: vi.fn(), info: vi.fn() } }))
+vi.mock("sonner", () => ({
+  toast: Object.assign(vi.fn(), { error: vi.fn(), info: vi.fn() }),
+}))
 
 const drag = vi.hoisted(() => ({
   end: undefined as
@@ -192,7 +194,7 @@ it("defaults to Runs and switches between all, unassigned, and project scopes", 
   const onClose = vi.fn()
   await act(async () => root.render(<WorkflowsScreen onClose={onClose} />))
   const tabs = Array.from(container.querySelectorAll('[role="tab"]'))
-  expect(tabs.map((tab) => tab.textContent)).toEqual(["Runs", "Workflows"])
+  expect(tabs.map((tab) => tab.textContent)).toEqual(["Runs", "Library"])
   expect(tabs[0].getAttribute("aria-selected")).toBe("true")
   expect(container.querySelector("h2")?.textContent).toBe("All runs")
   const filters = Array.from(container.querySelectorAll("nav button"))
@@ -249,9 +251,7 @@ it("shows clearly labeled workflow preview cards with enabled run shortcuts", as
   })
   expect(container.querySelector("nav")).toBeNull()
   expect(container.querySelectorAll('[data-slot="card"]')).toHaveLength(3)
-  expect(container.textContent).toContain(
-    "Inspect and edit your saved workflows"
-  )
+  expect(container.textContent).toContain("Workflow library")
   const runButtons = Array.from(container.querySelectorAll("button")).filter(
     (button) => button.textContent?.includes("Run workflow")
   )
@@ -271,17 +271,21 @@ async function openCodeReview() {
 
 function button(text: string) {
   return Array.from(container.querySelectorAll("button")).find(
-    (element) => element.textContent?.trim() === text
+    (element) =>
+      element.textContent?.trim() === text ||
+      element.getAttribute("aria-label")?.replace(/^(\d+)\. /, "$1.") === text
   )!
 }
 
 function stepTitles() {
   return Array.from(
-    container.querySelectorAll("li [data-slot='collapsible-trigger']")
-  ).map((element) => element.textContent)
+    container.querySelectorAll("li button[id^='step-toggle-']")
+  ).map((element) =>
+    element.getAttribute("aria-label")?.replace(/^(\d+)\. /, "$1.")
+  )
 }
 
-it("opens workflow details, appends collapsed steps, and keeps edits when reopening with all steps collapsed", async () => {
+it("opens workflow details, appends expanded steps, and keeps edits when reopening with all steps collapsed", async () => {
   await openCodeReview()
   expect(
     container.querySelector<HTMLInputElement>("#workflow-title")?.value
@@ -289,17 +293,22 @@ it("opens workflow details, appends collapsed steps, and keeps edits when reopen
   expect(
     container.querySelector<HTMLTextAreaElement>("#workflow-description")?.value
   ).toBe("Review changes, identify risks, and summarize findings.")
-  expect(container.querySelectorAll('[aria-expanded="false"]')).toHaveLength(3)
+  expect(
+    container.querySelectorAll(
+      'li > [data-slot="collapsible"] [data-slot="collapsible-trigger"][aria-expanded="false"]'
+    )
+  ).toHaveLength(3)
   expect(container.querySelector("li input")).toBeNull()
-  await act(async () => button("Add Step").click())
+  await act(async () => button("Add step").click())
   expect(stepTitles()).toEqual([
     "1.Review changes",
     "2.Identify risks",
     "3.Summarize findings",
     "4.New step",
   ])
-  expect(container.querySelectorAll('[aria-expanded="false"]')).toHaveLength(4)
-  await act(async () => button("4.New step").click())
+  expect(container.querySelector<HTMLInputElement>("li input")).toBe(
+    document.activeElement
+  )
   const title = container.querySelector<HTMLInputElement>("li input")!
   const instructions =
     container.querySelector<HTMLTextAreaElement>("li textarea")!
@@ -319,14 +328,18 @@ it("opens workflow details, appends collapsed steps, and keeps edits when reopen
   })
   await act(async () =>
     container
-      .querySelector<HTMLButtonElement>('[aria-label="Back to workflows"]')!
+      .querySelector<HTMLButtonElement>('[aria-label="Back to library"]')!
       .click()
   )
   expect(
     container.querySelector('[role="tab"][aria-selected="true"]')?.textContent
-  ).toBe("Workflows")
+  ).toBe("Library")
   await act(async () => button("Code review").click())
-  expect(container.querySelectorAll('[aria-expanded="false"]')).toHaveLength(4)
+  expect(
+    container.querySelectorAll(
+      'li [data-slot="collapsible-trigger"][aria-expanded="false"]'
+    )
+  ).toHaveLength(4)
   expect(container.querySelector("li input")).toBeNull()
   await act(async () => button("4.Check tests").click())
   expect(container.querySelector<HTMLInputElement>("li input")?.value).toBe(
@@ -366,7 +379,7 @@ it("reorders steps after a drop and ignores cancelled or unchanged drops", async
   ])
   await act(async () =>
     container
-      .querySelector<HTMLButtonElement>('[aria-label="Back to workflows"]')!
+      .querySelector<HTMLButtonElement>('[aria-label="Back to library"]')!
       .click()
   )
   await act(async () => button("Project health check").click())
@@ -440,7 +453,7 @@ it("updates workflow title and description in the header and collection", async 
   expect(container.querySelector("h1")?.textContent).toBe("Review my project")
   await act(async () =>
     container
-      .querySelector<HTMLButtonElement>('[aria-label="Back to workflows"]')!
+      .querySelector<HTMLButtonElement>('[aria-label="Back to library"]')!
       .click()
   )
   expect(button("Review my project")).toBeDefined()
@@ -476,7 +489,7 @@ it("deletes collapsed and expanded steps, renumbers the list, and allows adding 
   expect(container.querySelector("li input")).toBeNull()
   await act(async () =>
     container
-      .querySelector<HTMLButtonElement>('[aria-label="Back to workflows"]')!
+      .querySelector<HTMLButtonElement>('[aria-label="Back to library"]')!
       .click()
   )
   await act(async () => button("Code review").click())
@@ -489,14 +502,16 @@ it("deletes collapsed and expanded steps, renumbers the list, and allows adding 
       .click()
   )
   expect(stepTitles()).toEqual([])
-  await act(async () => button("Add Step").click())
+  await act(async () => button("Add step").click())
   expect(stepTitles()).toEqual(["1.New step"])
-  expect(container.querySelectorAll('[aria-expanded="false"]')).toHaveLength(1)
+  expect(container.querySelector<HTMLInputElement>("li input")?.value).toBe(
+    "New step"
+  )
 })
 
 it("loads saved changes after remounting the Workflows screen", async () => {
   await openCodeReview()
-  await act(async () => button("Add Step").click())
+  await act(async () => button("Add step").click())
   expect(window.cowork.db.workflows.update).toHaveBeenCalledOnce()
   await act(async () => root.render(null))
   await openCodeReview()
@@ -513,7 +528,7 @@ it("reports a failed save rather than silently losing changes", async () => {
   vi.mocked(window.cowork.db.workflows.update).mockRejectedValueOnce(
     new Error("disk full")
   )
-  await act(async () => button("Add Step").click())
+  await act(async () => button("Add step").click())
   expect(toast.error).toHaveBeenCalledWith(
     expect.stringContaining("Could not save workflow")
   )
@@ -525,9 +540,16 @@ it("reports workflow load failures", async () => {
     new Error("unavailable")
   )
   await act(async () => root.render(<WorkflowsScreen onClose={() => {}} />))
-  expect(toast.error).toHaveBeenCalledWith(
-    expect.stringContaining("Could not load workflows")
+  await act(async () =>
+    container
+      .querySelector<HTMLElement>('[role="tab"][id$="workflows"]')!
+      .dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }))
   )
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+    "Could not load workflows"
+  )
+  await act(async () => button("Retry").click())
+  expect(container.querySelectorAll('[data-slot="card"]')).toHaveLength(3)
 })
 
 it("places New Run in the header for All and None, and below the empty message for projects", async () => {
@@ -690,12 +712,12 @@ it("creates a saved workflow, opens its editor, and reloads its edits", async ()
   await openCodeReview()
   await act(async () =>
     container
-      .querySelector<HTMLButtonElement>('[aria-label="Back to workflows"]')!
+      .querySelector<HTMLButtonElement>('[aria-label="Back to library"]')!
       .click()
   )
-  const create = button("New Workflow")
-  expect(create.parentElement?.querySelector("h2")?.textContent).toBe(
-    "Workflow collection"
+  const create = button("New workflow")
+  expect(create.closest("header")?.querySelector("h2")?.textContent).toBe(
+    "Workflow library"
   )
   await act(async () => create.click())
   expect(window.cowork.db.workflows.create).toHaveBeenCalledOnce()
@@ -714,12 +736,12 @@ it("creates a saved workflow, opens its editor, and reloads its edits", async ()
     )!.set!.call(title, "My workflow")
     title.dispatchEvent(new Event("input", { bubbles: true }))
   })
-  await act(async () => button("Add Step").click())
+  await act(async () => button("Add step").click())
   await act(async () => root.render(null))
   await openCodeReview()
   await act(async () =>
     container
-      .querySelector<HTMLButtonElement>('[aria-label="Back to workflows"]')!
+      .querySelector<HTMLButtonElement>('[aria-label="Back to library"]')!
       .click()
   )
   await act(async () => button("My workflow").click())
@@ -730,15 +752,15 @@ it("keeps the collection open and reports workflow creation failures", async () 
   await openCodeReview()
   await act(async () =>
     container
-      .querySelector<HTMLButtonElement>('[aria-label="Back to workflows"]')!
+      .querySelector<HTMLButtonElement>('[aria-label="Back to library"]')!
       .click()
   )
   vi.mocked(window.cowork.db.workflows.create).mockRejectedValueOnce(
     new Error("disk full")
   )
-  await act(async () => button("New Workflow").click())
+  await act(async () => button("New workflow").click())
   expect(container.querySelector('[data-slot="workflow-detail"]')).toBeNull()
-  expect(button("New Workflow").disabled).toBe(false)
+  expect(button("New workflow").disabled).toBe(false)
   expect(container.querySelectorAll('[data-slot="card"]')).toHaveLength(3)
   expect(toast.error).toHaveBeenCalledWith(
     expect.stringContaining("Could not create workflow")
@@ -749,7 +771,7 @@ async function openWorkflowCollection() {
   await openCodeReview()
   await act(async () =>
     container
-      .querySelector<HTMLButtonElement>('[aria-label="Back to workflows"]')!
+      .querySelector<HTMLButtonElement>('[aria-label="Back to library"]')!
       .click()
   )
 }
@@ -766,9 +788,9 @@ it("asks before deleting, supports Cancel and outside dismissal, and only delete
   await openWorkflowCollection()
   const trash = () =>
     container.querySelector<HTMLButtonElement>(
-      '[aria-label="Delete workflow: Code review"]'
-    )!
-  await act(async () => trash().click())
+      '[aria-label="Workflow actions: Code review"]'
+    )
+  await workflowMenuAction("Delete")
   expect(container.querySelector('[data-slot="workflow-detail"]')).toBeNull()
   expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
     "Are you sure you want to delete “Code review”? This action cannot be undone."
@@ -776,14 +798,14 @@ it("asks before deleting, supports Cancel and outside dismissal, and only delete
   expect(window.cowork.db.workflows.delete).not.toHaveBeenCalled()
   await act(async () => dialogButton("Cancel").click())
   expect(document.querySelector('[role="dialog"]')).toBeNull()
-  await act(async () => trash().click())
+  await workflowMenuAction("Delete")
   await act(async () =>
     document.querySelector<HTMLElement>('[data-slot="dialog-overlay"]')!.click()
   )
   expect(document.querySelector('[role="dialog"]')).toBeNull()
   expect(window.cowork.db.workflows.delete).not.toHaveBeenCalled()
-  await act(async () => trash().click())
-  await act(async () => dialogButton("Confirm").click())
+  await workflowMenuAction("Delete")
+  await act(async () => dialogButton("Delete workflow").click())
   expect(window.cowork.db.workflows.delete).toHaveBeenCalledWith("code-review")
   expect(document.querySelector('[role="dialog"]')).toBeNull()
   expect(container.querySelectorAll('[data-slot="card"]')).toHaveLength(2)
@@ -803,17 +825,11 @@ it("keeps the card and shows an error if deletion fails", async () => {
   vi.mocked(window.cowork.db.workflows.delete).mockRejectedValueOnce(
     new Error("disk error")
   )
-  await act(async () =>
-    container
-      .querySelector<HTMLButtonElement>(
-        '[aria-label="Delete workflow: Code review"]'
-      )!
-      .click()
-  )
-  await act(async () => dialogButton("Confirm").click())
+  await workflowMenuAction("Delete")
+  await act(async () => dialogButton("Delete workflow").click())
   expect(container.querySelectorAll('[data-slot="card"]')).toHaveLength(3)
   expect(document.querySelector('[role="dialog"]')).not.toBeNull()
-  expect(dialogButton("Confirm").disabled).toBe(false)
+  expect(dialogButton("Delete workflow").disabled).toBe(false)
   expect(toast.error).toHaveBeenCalledWith(
     expect.stringContaining("Could not delete workflow")
   )
@@ -832,7 +848,7 @@ it("sorts workflow cards alphabetically by trimmed title, ignoring capitalizatio
       .dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }))
   )
   expect(
-    Array.from(container.querySelectorAll('[data-slot="card-title"]')).map(
+    Array.from(container.querySelectorAll('[data-slot="card"] h3')).map(
       (element) => element.textContent?.trim()
     )
   ).toEqual(["apple", "Banana", "Zebra"])
@@ -856,6 +872,7 @@ async function editText(selector: string, value: string) {
 it("saves text on blur, not keystrokes, and saves structural changes immediately", async () => {
   await openCodeReview()
   const update = vi.mocked(window.cowork.db.workflows.update)
+  await act(async () => button("Run settings").click())
   for (const [selector, value] of [
     ["#workflow-title", "Review"],
     ["#workflow-description", "Description"],
@@ -887,7 +904,7 @@ it("saves text on blur, not keystrokes, and saves structural changes immediately
     expect(update).toHaveBeenCalledTimes(before + 1)
   }
   let before = update.mock.calls.length
-  await act(async () => button("Add Step").click())
+  await act(async () => button("Add step").click())
   expect(update).toHaveBeenCalledTimes(before + 1)
   before = update.mock.calls.length
   await act(async () =>
@@ -908,21 +925,23 @@ it("saves text on blur, not keystrokes, and saves structural changes immediately
   expect(update).toHaveBeenCalledTimes(before + 1)
 })
 
-it("shows Default Objective below Description and reloads its saved text", async () => {
+it("keeps run settings below steps and reloads the saved default objective", async () => {
   await openCodeReview()
+  await act(async () => button("Run settings").click())
   expect(
     container.querySelector('label[for="workflow-title"]')?.textContent
-  ).toBe("Workflow Title")
+  ).toBe("Name")
   const description = container.querySelector<HTMLTextAreaElement>(
     "#workflow-description"
   )!
   const objective = container.querySelector<HTMLTextAreaElement>(
     "#workflow-default-objective"
   )!
-  expect(description.parentElement!.nextElementSibling).toBe(
-    objective.parentElement
-  )
-  expect(objective.className).toBe(description.className)
+  expect(
+    container
+      .querySelector('[aria-label="Workflow steps"]')!
+      .compareDocumentPosition(objective) & Node.DOCUMENT_POSITION_FOLLOWING
+  ).toBeTruthy()
   expect(objective.value).toBe("")
   const sidebarSwitch = container.querySelector<HTMLButtonElement>(
     "#workflow-view-in-sidebar"
@@ -950,6 +969,7 @@ it("shows Default Objective below Description and reloads its saved text", async
   )
   await act(async () => root.render(null))
   await openCodeReview()
+  await act(async () => button("Run settings").click())
   expect(
     container.querySelector<HTMLTextAreaElement>("#workflow-default-objective")
       ?.value
@@ -978,7 +998,7 @@ it("flushes pending text when leaving the editor and avoids writing an unchanged
   await editText("#workflow-description", "Save when leaving")
   await act(async () =>
     container
-      .querySelector<HTMLButtonElement>('[aria-label="Back to workflows"]')!
+      .querySelector<HTMLButtonElement>('[aria-label="Back to library"]')!
       .click()
   )
   expect(window.cowork.db.workflows.flush).toHaveBeenCalledOnce()
@@ -989,7 +1009,7 @@ it("flushes pending text when leaving the editor and avoids writing an unchanged
   await act(async () => button("Code review").click())
   await act(async () =>
     container
-      .querySelector<HTMLButtonElement>('[aria-label="Back to workflows"]')!
+      .querySelector<HTMLButtonElement>('[aria-label="Back to library"]')!
       .click()
   )
   expect(window.cowork.db.workflows.flush).not.toHaveBeenCalled()
@@ -1651,4 +1671,119 @@ it("preserves confirmed mentions when dismissing and reopening the same workspac
   expect(window.cowork.workflowRuns.start).toHaveBeenCalledWith(
     expect.objectContaining({ objective: "Check src/alpha.ts " })
   )
+})
+
+async function workflowMenuAction(label: string) {
+  await act(async () => {
+    container
+      .querySelector<HTMLButtonElement>(
+        '[aria-label="Workflow actions: Code review"]'
+      )!
+      .dispatchEvent(
+        new MouseEvent("pointerdown", { bubbles: true, button: 0 })
+      )
+  })
+  await act(async () => {
+    Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]'))
+      .find((item) => item.textContent === label)!
+      .click()
+  })
+}
+
+it("shows dirty, pending, saved and failed persistence states with retry", async () => {
+  await openCodeReview()
+  const status = () => container.querySelector('[role="status"]')?.textContent
+  expect(status()).toBe("Saved")
+  const field = await editText("#workflow-title", "Pending review")
+  expect(status()).toBe("Unsaved changes")
+  let resolve!: () => void
+  vi.mocked(window.cowork.db.workflows.update).mockImplementationOnce(
+    () =>
+      new Promise<void>((done) => {
+        resolve = done
+      })
+  )
+  await act(async () =>
+    field.dispatchEvent(new FocusEvent("focusout", { bubbles: true }))
+  )
+  expect(status()).toBe("Saving…")
+  await editText("#workflow-title", "Newer review")
+  await act(async () => resolve())
+  expect(status()).toBe("Unsaved changes")
+  vi.mocked(window.cowork.db.workflows.update).mockRejectedValueOnce(
+    new Error("disk full")
+  )
+  await act(async () =>
+    field.dispatchEvent(new FocusEvent("focusout", { bubbles: true }))
+  )
+  expect(status()).toBe("Could not save")
+  await act(async () => button("Retry").click())
+  expect(status()).toBe("Saved")
+})
+
+it("undoes a deleted step without losing intervening edits and ignores repeated undo", async () => {
+  await openCodeReview()
+  await act(async () =>
+    container
+      .querySelector<HTMLButtonElement>(
+        '[aria-label="Delete step 2: Identify risks"]'
+      )!
+      .click()
+  )
+  const undo = vi.mocked(toast).mock.calls.at(-1)![1]!.action as unknown as {
+    onClick: () => void
+  }
+  await editText("#workflow-title", "Updated workflow")
+  await act(async () => undo.onClick())
+  expect(stepTitles()).toEqual([
+    "1.Review changes",
+    "2.Identify risks",
+    "3.Summarize findings",
+  ])
+  expect(
+    container.querySelector<HTMLInputElement>("#workflow-title")?.value
+  ).toBe("Updated workflow")
+  await act(async () => undo.onClick())
+  expect(stepTitles()).toHaveLength(3)
+  await act(async () =>
+    container
+      .querySelector<HTMLButtonElement>('[aria-label="Back to library"]')!
+      .click()
+  )
+  await act(async () => undo.onClick())
+  expect(button("Updated workflow")).toBeDefined()
+})
+
+it("keeps exact correction counts bounded and retains completion configuration when disabled", async () => {
+  await openCodeReview()
+  await act(async () => button("1.Review changes").click())
+  await act(async () => button("Completion checkOff · Configure").click())
+  await act(async () =>
+    container
+      .querySelector<HTMLButtonElement>("#review-changes-validate")!
+      .click()
+  )
+  const selector = "#review-changes-correction-loops"
+  expect(container.querySelector<HTMLInputElement>(selector)?.value).toBe("2")
+  let field = await editText(selector, "5")
+  await act(async () =>
+    field.dispatchEvent(new FocusEvent("focusout", { bubbles: true }))
+  )
+  expect(
+    vi.mocked(window.cowork.db.workflows.update).mock.calls.at(-1)![0].steps[0]
+      .maxCorrectionLoops
+  ).toBe(5)
+  field = await editText(selector, "11")
+  await act(async () =>
+    field.dispatchEvent(new FocusEvent("focusout", { bubbles: true }))
+  )
+  expect(container.querySelector<HTMLInputElement>(selector)?.value).toBe("5")
+  await act(async () =>
+    container
+      .querySelector<HTMLButtonElement>("#review-changes-validate")!
+      .click()
+  )
+  expect(
+    vi.mocked(window.cowork.db.workflows.update).mock.calls.at(-1)![0].steps[0]
+  ).toMatchObject({ validateCompletion: false, maxCorrectionLoops: 5 })
 })

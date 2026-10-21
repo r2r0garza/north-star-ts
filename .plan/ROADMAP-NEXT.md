@@ -32,3 +32,11 @@
    so `npx playwright test` works for the user; fix stories with capped rounds; the runnable-skeleton
    rule; worktree-local installs on dependency divergence; overlapping stories serialized at planning
    time. [Plan](112.5-wave-gate-and-durable-suite.md).
+6. **`115` — Inline analysis artifacts — charts and tables.** Present validated conversation snapshots
+   using existing shadcn/Recharts presentation, with durable revision-scoped storage, inline live/replay
+   parity, accessible chart/data-table views and bounded schemas. Keep snapshots separate from live
+   dashboard refresh and generated-code execution. [Plan](115-inline-analysis-artifacts.md).
+7. **`116` — Constrained UI concept previews.** After `115`, render approved declarative shadcn
+   compositions with bounded layout tokens, host-defined local interactions and explicit revision-aware
+   feedback. Concepts do not execute generated code, edit workspace files or grant action authority.
+   [Plan](116-ui-concept-previews.md).

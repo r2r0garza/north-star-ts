@@ -12,11 +12,13 @@ export function ScreenHeader({
   onBack,
   backLabel,
   onClose,
+  trailing,
 }: {
   title: ReactNode
   onBack: () => void
   backLabel: string
   onClose: () => void
+  trailing?: ReactNode
 }) {
   return (
     <div className="flex h-11 shrink-0 items-center justify-between gap-2 border-b px-4">
@@ -24,17 +26,21 @@ export function ScreenHeader({
         type="button"
         onClick={onBack}
         aria-label={backLabel}
-        className="group/back flex min-w-0 items-center gap-2 rounded-md text-left"
+        title={backLabel}
+        className="group/back flex min-w-0 flex-1 items-center gap-2 rounded-md text-left"
       >
         <ArrowLeft className="size-4 shrink-0 text-muted-foreground transition-colors group-hover/back:text-foreground" />
         <h1 className="flex min-w-0 items-center gap-2 truncate font-heading text-base font-medium">
           {title}
         </h1>
       </button>
-      <Button variant="ghost" size="icon-sm" onClick={onClose}>
-        <XIcon />
-        <span className="sr-only">Close</span>
-      </Button>
+      <div className="flex shrink-0 items-center gap-2">
+        {trailing}
+        <Button variant="ghost" size="icon-sm" onClick={onClose}>
+          <XIcon />
+          <span className="sr-only">Close</span>
+        </Button>
+      </div>
     </div>
   )
 }

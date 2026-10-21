@@ -31,6 +31,8 @@ describe("startup guide", () => {
       )
     })
     expect(document.body.textContent).toContain("Dashboards")
+    expect(document.body.textContent).toContain("Workflows")
+    expect(document.body.textContent).toContain("Create and save reusable workflows")
     expect(document.body.textContent).not.toContain("Processes")
     expect(document.body.textContent).not.toContain("Mission Control")
   })

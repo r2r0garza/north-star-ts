@@ -55,6 +55,13 @@ function guideItems() {
       description:
         "Dashboards collect live project signals and task outputs into views you can revisit without digging through transcripts.",
     },
+    {
+      key: "workflows",
+      title: "Workflows",
+      icon: WorkflowIcon,
+      description:
+        "Create and save reusable workflows, then start runs and follow their progress across your projects.",
+    },
   ]
 }
 
