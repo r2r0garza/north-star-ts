@@ -20,6 +20,13 @@ import {
   ComboboxTrigger,
 } from "@/components/ui/combobox"
 import { Label } from "@/components/ui/label"
+import { MentionMenu, type MentionItem } from "@/components/mention-menu"
+import {
+  activeMentionToken,
+  expandMentions,
+  segmentMessage,
+  type ConfirmedMentions,
+} from "@/lib/mention-tokens"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -64,9 +71,88 @@ export function NewRunDialog({
   const [pickingWorkspace, setPickingWorkspace] = useState(false)
   const [starting, setStarting] = useState(false)
   const startingRef = useRef(false)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const overlayRef = useRef<HTMLDivElement>(null)
+  const fileRequestRef = useRef(0)
+  const [fileQuery, setFileQuery] = useState<string | null>(null)
+  const [fileItems, setFileItems] = useState<string[]>([])
+  const [activeFile, setActiveFile] = useState<string | null>(null)
+  const [confirmedFiles, setConfirmedFiles] = useState<Set<string>>(new Set())
+  const confirmedMentions: ConfirmedMentions[] = [
+    { kind: "file", values: confirmedFiles },
+  ]
+
+  function closeFileMenu() {
+    fileRequestRef.current++
+    setFileQuery(null)
+    setFileItems([])
+    setActiveFile(null)
+  }
+
+  function replaceObjective(text: string) {
+    setObjective(text)
+    setConfirmedFiles(new Set())
+    closeFileMenu()
+  }
+
+  function editObjective(text: string, caret: number) {
+    setObjective(text)
+    setConfirmedFiles(
+      new Set(
+        segmentMessage(text, confirmedMentions)
+          .filter((segment) => segment.kind === "file")
+          .map((segment) => segment.text.slice(1))
+      )
+    )
+    const token = activeMentionToken(text, caret)
+    closeFileMenu()
+    if (token?.kind === "file" && workspacePath && open) {
+      setFileQuery(token.query)
+      const request = ++fileRequestRef.current
+      window.cowork.files.list(workspacePath, token.query).then(
+        (paths) => {
+          if (fileRequestRef.current !== request) return
+          setFileItems(paths)
+          setActiveFile(paths[0] ?? null)
+        },
+        () => {
+          if (fileRequestRef.current !== request) return
+          setFileItems([])
+          setActiveFile(null)
+        }
+      )
+    }
+  }
+
+  function selectFile(item: MentionItem) {
+    const node = textareaRef.current
+    if (!node || fileQuery === null) return
+    const token = activeMentionToken(objective, node.selectionStart)
+    if (token?.kind !== "file") return
+    const insert = `@${item.value} `
+    setObjective(
+      objective.slice(0, token.start) + insert + objective.slice(token.end)
+    )
+    setConfirmedFiles((current) => new Set(current).add(item.value))
+    closeFileMenu()
+    requestAnimationFrame(() => {
+      if (!node.isConnected) return
+      node.focus()
+      node.setSelectionRange(
+        token.start + insert.length,
+        token.start + insert.length
+      )
+    })
+  }
 
   async function startRun() {
-    if (startingRef.current || !workspaceId || !workflowId || !objective.trim())
+    if (
+      startingRef.current ||
+      !workspaceId ||
+      !workspacePath ||
+      !workflowId ||
+      !objective.trim()
+    )
       return
     startingRef.current = true
     setStarting(true)
@@ -75,7 +161,7 @@ export function NewRunDialog({
         workspaceId,
         projectId,
         workflowId,
-        objective,
+        objective: expandMentions(objective, confirmedMentions),
       })
       onStarted(run)
       onOpenChange(false)
@@ -91,6 +177,24 @@ export function NewRunDialog({
   const project = projects.find((item) => item.id === projectId)
   const workspace = workspaces.find((item) => item.id === workspaceId)
   const workflow = workflows.find((item) => item.id === workflowId)
+  const workspacePath = workspace?.path.trim() ?? ""
+  const menuItems: MentionItem[] = fileItems.map((path) => ({
+    value: path,
+    primary: `@${path.split("/").pop()}`,
+    secondary: path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "",
+  }))
+
+  useEffect(() => {
+    setConfirmedFiles(new Set())
+    closeFileMenu()
+  }, [workspacePath])
+
+  useEffect(() => {
+    if (!open) closeFileMenu()
+    return () => {
+      fileRequestRef.current++
+    }
+  }, [open])
 
   const wasOpen = useRef(false)
   const openedFromShortcut = useRef(false)
@@ -99,11 +203,11 @@ export function NewRunDialog({
       if (initialWorkflowId) {
         const initial = workflows.find((item) => item.id === initialWorkflowId)
         setWorkflowId(initial?.id ?? null)
-        setObjective(initial?.defaultObjective ?? "")
+        replaceObjective(initial?.defaultObjective ?? "")
         setPendingObjective(null)
       } else if (openedFromShortcut.current) {
         setWorkflowId(null)
-        setObjective("")
+        replaceObjective("")
         setPendingObjective(null)
       }
       openedFromShortcut.current = Boolean(initialWorkflowId)
@@ -212,7 +316,7 @@ export function NewRunDialog({
         ) {
           setPendingObjective(defaultObjective)
         } else if (!objective.trim()) {
-          setObjective(defaultObjective.trim() ? defaultObjective : "")
+          replaceObjective(defaultObjective.trim() ? defaultObjective : "")
         }
       },
     },
@@ -222,6 +326,12 @@ export function NewRunDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className="sm:max-w-lg"
+        onEscapeKeyDown={(event) => {
+          if (fileQuery !== null) {
+            event.preventDefault()
+            closeFileMenu()
+          }
+        }}
         onInteractOutside={(event) => {
           if (pendingObjective !== null) event.preventDefault()
         }}
@@ -254,6 +364,7 @@ export function NewRunDialog({
                   id={picker.id}
                   disabled={
                     pickingWorkspace ||
+                    (picker.id === "new-run-workflow" && !workspacePath) ||
                     (Boolean(lockedProject) &&
                       picker.id === "new-run-project") ||
                     (Boolean(lockedProject?.workspaceId) &&
@@ -297,13 +408,92 @@ export function NewRunDialog({
           ))}
           <div className="space-y-2">
             <Label htmlFor="new-run-objective">Objective</Label>
-            <Textarea
-              id="new-run-objective"
-              rows={10}
-              className="field-sizing-fixed overflow-y-auto"
-              value={objective}
-              onChange={(event) => setObjective(event.target.value)}
-            />
+            <div className="relative">
+              {open && fileQuery !== null && workspacePath && (
+                <div onMouseDown={(event) => event.preventDefault()}>
+                  <MentionMenu
+                    items={menuItems}
+                    activeValue={activeFile}
+                    onActiveValueChange={setActiveFile}
+                    onSelect={selectFile}
+                    emptyLabel="No matching files"
+                  />
+                </div>
+              )}
+              <div
+                ref={overlayRef}
+                aria-hidden
+                className="pointer-events-none absolute inset-0 overflow-hidden border border-transparent px-2.5 py-2 text-base break-words whitespace-pre-wrap text-transparent md:text-sm"
+              >
+                {segmentMessage(objective, confirmedMentions).map(
+                  (segment, index) => (
+                    <span
+                      key={index}
+                      className={
+                        segment.kind ? "rounded bg-primary/15" : undefined
+                      }
+                    >
+                      {segment.text}
+                    </span>
+                  )
+                )}
+              </div>
+              <Textarea
+                ref={textareaRef}
+                id="new-run-objective"
+                aria-describedby="new-run-objective-help"
+                disabled={!workspacePath}
+                rows={10}
+                className="relative field-sizing-fixed overflow-y-auto"
+                value={objective}
+                onChange={(event) =>
+                  editObjective(event.target.value, event.target.selectionStart)
+                }
+                onScroll={(event) => {
+                  if (overlayRef.current) {
+                    overlayRef.current.scrollTop = event.currentTarget.scrollTop
+                    overlayRef.current.scrollLeft =
+                      event.currentTarget.scrollLeft
+                  }
+                }}
+                onBlur={closeFileMenu}
+                onKeyDown={(event) => {
+                  if (fileQuery === null || event.nativeEvent.isComposing)
+                    return
+                  if (event.key === "Escape") {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    closeFileMenu()
+                    return
+                  }
+                  if (!menuItems.length) return
+                  const index = menuItems.findIndex(
+                    (item) => item.value === activeFile
+                  )
+                  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                    event.preventDefault()
+                    const direction = event.key === "ArrowDown" ? 1 : -1
+                    setActiveFile(
+                      menuItems[
+                        (index + direction + menuItems.length) %
+                          menuItems.length
+                      ].value
+                    )
+                  } else if (event.key === "Enter" || event.key === "Tab") {
+                    event.preventDefault()
+                    selectFile(menuItems[index] ?? menuItems[0])
+                  }
+                }}
+              />
+            </div>
+            <p
+              id="new-run-objective-help"
+              className="text-xs text-muted-foreground"
+            >
+              {workspacePath
+                ? "Type @ to find and link workspace files."
+                : "Select a project with a workspace, or choose a workspace, to enable Workflow and Objective."}
+            </p>
           </div>
           <p className="text-xs text-muted-foreground">
             {project ? `Project: ${project.name}.` : "This run has no project."}{" "}
@@ -320,7 +510,7 @@ export function NewRunDialog({
               setProjectId(null)
               setWorkspaceId(null)
               setWorkflowId(null)
-              setObjective("")
+              replaceObjective("")
             }}
           >
             Clear fields
@@ -330,7 +520,7 @@ export function NewRunDialog({
           </Button>
           <Button
             disabled={
-              !workspace ||
+              !workspacePath ||
               !workflow?.steps.length ||
               !objective.trim() ||
               pickingWorkspace ||
@@ -364,7 +554,8 @@ export function NewRunDialog({
               <AlertDialogCancel>Keep my objective</AlertDialogCancel>
               <AlertDialogAction
                 onClick={() => {
-                  if (pendingObjective !== null) setObjective(pendingObjective)
+                  if (pendingObjective !== null)
+                    replaceObjective(pendingObjective)
                   setPendingObjective(null)
                 }}
               >

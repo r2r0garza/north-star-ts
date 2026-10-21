@@ -1037,6 +1037,8 @@ it.each([
     const dialog = document.querySelector<HTMLElement>(
       '[data-slot="dialog-content"]'
     )!
+    if (id === "new-run-workflow")
+      await selectRunOption("new-run-workspace", "/projects/north-star")
     const childCount = dialog.children.length
     await act(async () =>
       document.querySelector<HTMLButtonElement>(`#${id}`)!.click()
@@ -1099,10 +1101,21 @@ it("requires workspace, workflow, and nonblank objective, and starts a persisted
   await act(async () => root.render(<WorkflowsScreen onClose={() => {}} />))
   await act(async () => button("New Run").click())
   expect(dialogButton("Start").disabled).toBe(true)
+  expect(
+    document.querySelector<HTMLButtonElement>("#new-run-workflow")!.disabled
+  ).toBe(true)
+  expect(
+    document.querySelector<HTMLTextAreaElement>("#new-run-objective")!.disabled
+  ).toBe(true)
+  await selectRunOption("new-run-project", "North Star")
+  expect(
+    document.querySelector<HTMLButtonElement>("#new-run-workflow")!.disabled
+  ).toBe(false)
+  expect(
+    document.querySelector<HTMLTextAreaElement>("#new-run-objective")!.disabled
+  ).toBe(false)
   await selectRunOption("new-run-workflow", "Code review")
   await editRunObjective("Review this project")
-  expect(dialogButton("Start").disabled).toBe(true)
-  await selectRunOption("new-run-project", "North Star")
   expect(document.querySelector("#new-run-workspace")?.textContent).toContain(
     "/projects/north-star"
   )
@@ -1142,6 +1155,7 @@ it("prefills workflow objectives, preserves dismissed drafts, and clears every f
   vi.mocked(window.cowork.db.workflows.list).mockResolvedValueOnce(workflows)
   await act(async () => root.render(<WorkflowsScreen onClose={() => {}} />))
   await act(async () => button("New Run").click())
+  await selectRunOption("new-run-project", "North Star")
   await selectRunOption("new-run-workflow", "Code review")
   expect(
     document.querySelector<HTMLTextAreaElement>("#new-run-objective")?.value
@@ -1289,14 +1303,21 @@ it.each(["saved workspace", "folder"])(
       document.querySelector<HTMLButtonElement>("#new-run-workspace")!.disabled
     ).toBe(false)
     expect(dialogButton("Choose folder")).toBeDefined()
-    await selectRunOption("new-run-workflow", "Code review")
-    await editRunObjective("Review the website")
+    expect(
+      document.querySelector<HTMLButtonElement>("#new-run-workflow")!.disabled
+    ).toBe(true)
+    expect(
+      document.querySelector<HTMLTextAreaElement>("#new-run-objective")!
+        .disabled
+    ).toBe(true)
     expect(dialogButton("Start").disabled).toBe(true)
     if (selection === "folder")
       await act(async () => dialogButton("Choose folder").click())
     else await selectRunOption("new-run-workspace", "/projects/north-star")
     expect(projectPicker.disabled).toBe(true)
     expect(projectPicker.textContent).toContain("Website")
+    await selectRunOption("new-run-workflow", "Code review")
+    await editRunObjective("Review the website")
     expect(dialogButton("Start").disabled).toBe(false)
     await act(async () => dialogButton("Start").click())
     expect(window.cowork.workflowRuns.start).toHaveBeenCalledWith({
@@ -1462,5 +1483,171 @@ it("opens the clicked workflow in Runs, resets shortcut selections, and starts t
       workflowId: "project-health",
       objective: "Check project health",
     })
+  )
+})
+
+async function openFileObjective() {
+  window.cowork.files = {
+    list: vi.fn(async () => ["src/alpha.ts", "src/beta.ts"]),
+  } as unknown as typeof window.cowork.files
+  await act(async () => root.render(<WorkflowsScreen onClose={() => {}} />))
+  await act(async () => button("New Run").click())
+  await selectRunOption("new-run-workspace", "/projects/north-star")
+  await selectRunOption("new-run-workflow", "Code review")
+}
+
+async function typeFileObjective(text: string, caret = text.length) {
+  const field =
+    document.querySelector<HTMLTextAreaElement>("#new-run-objective")!
+  await act(async () => {
+    field.focus()
+    Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      "value"
+    )!.set!.call(field, text)
+    field.setSelectionRange(caret, caret)
+    field.dispatchEvent(new Event("input", { bubbles: true }))
+  })
+  return field
+}
+
+async function objectiveKey(key: string) {
+  await act(async () => {
+    document
+      .querySelector("#new-run-objective")!
+      .dispatchEvent(
+        new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })
+      )
+  })
+}
+
+it.each(["Enter", "Tab", "mouse"])(
+  "selects workspace file mentions with %s and expands only confirmed tokens",
+  async (selection) => {
+    await openFileObjective()
+    const field = await typeFileObjective("Review @sr and @unpicked", 10)
+    expect(window.cowork.files.list).toHaveBeenLastCalledWith(
+      "/projects/north-star",
+      "sr"
+    )
+    expect(document.body.textContent).toContain("@alpha.ts")
+    expect(document.body.textContent).toContain("@beta.ts")
+    if (selection === "mouse") {
+      const item = document.querySelector<HTMLElement>(
+        '[cmdk-item][data-value="src/beta.ts"]'
+      )!
+      await act(async () => {
+        item.dispatchEvent(
+          new MouseEvent("mousedown", { bubbles: true, cancelable: true })
+        )
+        item.click()
+      })
+    } else {
+      await objectiveKey("ArrowDown")
+      await objectiveKey(selection)
+    }
+    expect(field.value).toBe("Review @src/beta.ts  and @unpicked")
+    expect(document.querySelector("[cmdk-root]")).toBeNull()
+    expect(
+      document.querySelector("[aria-hidden] .bg-primary\\/15")
+    ).not.toBeNull()
+    await act(async () => dialogButton("Start").click())
+    expect(window.cowork.workflowRuns.start).toHaveBeenCalledWith(
+      expect.objectContaining({
+        objective: "Review src/beta.ts  and @unpicked",
+      })
+    )
+  }
+)
+
+it("dismisses empty file menus with Escape without closing New Run and retains multiline editing", async () => {
+  await openFileObjective()
+  vi.mocked(window.cowork.files.list).mockResolvedValue([])
+  await typeFileObjective("@missing")
+  expect(document.body.textContent).toContain("No matching files")
+  await objectiveKey("Escape")
+  expect(document.querySelector('[role="dialog"]')).not.toBeNull()
+  expect(document.querySelector("[cmdk-root]")).toBeNull()
+  const field = await typeFileObjective("Review\nthese files")
+  await objectiveKey("Enter")
+  expect(field.value).toBe("Review\nthese files")
+  expect(window.cowork.workflowRuns.start).not.toHaveBeenCalled()
+})
+
+it("ignores stale file results across queries, workspaces, and dialog closure", async () => {
+  await openFileObjective()
+  const pending: ((paths: string[]) => void)[] = []
+  vi.mocked(window.cowork.files.list).mockImplementation(
+    () => new Promise((resolve) => pending.push(resolve))
+  )
+  await typeFileObjective("@old")
+  await typeFileObjective("@new")
+  await act(async () => pending[1](["new.ts"]))
+  await act(async () => pending[0](["old.ts"]))
+  expect(document.body.textContent).toContain("@new.ts")
+  expect(document.body.textContent).not.toContain("@old.ts")
+  await typeFileObjective("@other")
+  await selectRunOption("new-run-workspace", "/projects/other")
+  await act(async () => pending[2](["wrong-workspace.ts"]))
+  expect(document.querySelector("[cmdk-root]")).toBeNull()
+  await typeFileObjective("@close")
+  expect(window.cowork.files.list).toHaveBeenLastCalledWith(
+    "/projects/other",
+    "close"
+  )
+  await act(async () => dialogButton("Cancel").click())
+  await act(async () => pending[3](["closed.ts"]))
+  await act(async () => button("New Run").click())
+  expect(document.querySelector("[cmdk-root]")).toBeNull()
+})
+
+it.each(["workspace", "delete", "clear", "default"])(
+  "clears confirmed file state after %s changes",
+  async (change) => {
+    const workflows = structuredClone(EXAMPLE_WORKFLOWS)
+    workflows[1].defaultObjective = "Default: @src/alpha.ts"
+    vi.mocked(window.cowork.db.workflows.list).mockResolvedValueOnce(workflows)
+    await openFileObjective()
+    await typeFileObjective("Check @src")
+    await objectiveKey("Enter")
+    if (change === "workspace") {
+      await selectRunOption("new-run-workspace", "/projects/other")
+    } else if (change === "delete") {
+      await typeFileObjective("Check nothing")
+      await typeFileObjective("Check @src/alpha.ts ")
+    } else if (change === "default") {
+      await selectRunOption("new-run-workflow", "Project health check")
+      await act(async () => dialogButton("Use default").click())
+    } else {
+      await act(async () => dialogButton("Clear fields").click())
+      expect(
+        document.querySelector<HTMLTextAreaElement>("#new-run-objective")!
+          .disabled
+      ).toBe(true)
+      expect(
+        document.querySelector<HTMLButtonElement>("#new-run-workflow")!.disabled
+      ).toBe(true)
+      await selectRunOption("new-run-workspace", "/projects/north-star")
+      await selectRunOption("new-run-workflow", "Code review")
+      await typeFileObjective("Check @src/alpha.ts ")
+    }
+    await act(async () => dialogButton("Start").click())
+    expect(window.cowork.workflowRuns.start).toHaveBeenCalledWith(
+      expect.objectContaining({
+        objective: expect.stringContaining("@src/alpha.ts"),
+      })
+    )
+  }
+)
+
+it("preserves confirmed mentions when dismissing and reopening the same workspace draft", async () => {
+  await openFileObjective()
+  await typeFileObjective("Check @src")
+  await objectiveKey("Enter")
+  await act(async () => dialogButton("Cancel").click())
+  await act(async () => button("New Run").click())
+  await act(async () => dialogButton("Start").click())
+  expect(window.cowork.workflowRuns.start).toHaveBeenCalledWith(
+    expect.objectContaining({ objective: "Check src/alpha.ts " })
   )
 })
