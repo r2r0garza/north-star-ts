@@ -1,5 +1,6 @@
 import type { Message as DbMessage } from "@/types"
 import type { ToolMediaReference } from "../../../shared/tool-media"
+import { activityLabel } from "../../../shared/tool-activity"
 import {
   formatSeatMessageEvent,
   isCommandCompletionEvent,
@@ -180,6 +181,8 @@ export function deriveLabel(
   args: Record<string, unknown> | null,
   status: ToolStatus = "done"
 ): string {
+  const activity = activityLabel(args)
+  if (activity) return activity
   const a = args ?? {}
   const path = typeof a.path === "string" ? a.path : ""
   const mutationLabel = (stem: string, fallback: string) => {
@@ -210,10 +213,58 @@ export function deriveLabel(
       if (status === "error") return "Patch failed"
       if (status === "interrupted") return "Patch interrupted"
       return "Applied patch"
-    case "search_tool": {
-      const pat = typeof a.pattern === "string" ? a.pattern : ""
-      return pat ? `Searched "${pat}"` : "Searched"
-    }
+    case "search_tool":
+      return `${status === "running" ? "Searching" : "Searched"} ${path ? `files in ${path}` : "project files"}`
+    case "exec_command":
+    case "run_shell_tool":
+      return status === "running"
+        ? "Running workspace command"
+        : "Ran workspace command"
+    case "poll_command":
+      return "Checking command output"
+    case "write_stdin":
+      return "Sending input to command"
+    case "terminate_command":
+      return "Stopping command"
+    case "run_tests":
+      return status === "running" ? "Running tests" : "Ran tests"
+    case "get_test_results":
+      return "Checking test results"
+    case "workspace_diagnostics":
+      return "Checking workspace diagnostics"
+    case "index_query_tool":
+      return "Looking up workspace information"
+    case "workspace_symbols":
+    case "document_symbols":
+      return "Inspecting code symbols"
+    case "go_to_definition":
+      return "Finding code definition"
+    case "find_references":
+      return "Finding code references"
+    case "hover_type":
+      return "Inspecting code types"
+    case "read_document":
+      return path ? `Reading ${baseName(path)}` : "Reading document"
+    case "web_search":
+      return "Searching the web"
+    case "web_fetch":
+      return "Reading web page"
+    case "browser_navigate":
+      return "Opening browser page"
+    case "browser_snapshot":
+      return "Inspecting browser page"
+    case "browser_screenshot":
+      return "Capturing browser screenshot"
+    case "git_status":
+      return "Checking Git working tree"
+    case "git_diff":
+      return "Reviewing Git changes"
+    case "git_log":
+      return "Reviewing commit history"
+    case "git_show":
+      return "Inspecting commit"
+    case "git_branches":
+      return "Inspecting Git branches"
     case "list_files_tool":
       return `Listed ${path || "files"}`
     case "read_skill": {

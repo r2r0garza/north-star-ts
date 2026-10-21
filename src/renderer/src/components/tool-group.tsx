@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { executionArguments } from "../../../shared/tool-activity"
 import {
   BookOpen,
   Check,
@@ -395,9 +396,12 @@ function ToolUseRow({ use }: { use: ToolUse }) {
       </TraceCollapsibleTrigger>
       <TraceCollapsibleContent className="text-xs">
         <div className="flex max-w-full min-w-0 flex-col gap-2">
+          <p className="font-mono text-muted-foreground">{use.name}</p>
           {(use.args || use.rawArgs) && (
             <pre className="w-full max-w-full min-w-0 overflow-x-auto rounded-md bg-muted px-2 py-1.5 text-muted-foreground">
-              {use.args ? JSON.stringify(use.args, null, 2) : use.rawArgs}
+              {use.args
+                ? JSON.stringify(executionArguments(use.args), null, 2)
+                : use.rawArgs}
             </pre>
           )}
           {delegated ? (

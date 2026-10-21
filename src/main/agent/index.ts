@@ -8,6 +8,11 @@ import {
 import type { SteeringState } from "../../shared/steering"
 import { nativeAssistant } from "./providers/claude-subscription/native-carrier"
 import { randomUUID } from "crypto"
+import {
+  acceptsToolActivity,
+  executionArguments,
+  withToolActivity,
+} from "../../shared/tool-activity"
 import { readFile, stat } from "fs/promises"
 import { basename, dirname, isAbsolute } from "path"
 import { SHUTDOWN_ABORT_REASON, stopNote } from "./abort"
@@ -1371,7 +1376,9 @@ export async function runAgentLoop(
   // ever narrow, never widen (an agent granted `edit` in a bare Chat still gets
   // no filesystem tools; plan mode still drops mutating tools). Universal tools
   // (ask_user_question, read_skill, plan-mode handoff) bypass the allowlist.
-  const applyAgentTools = (defs: { function: { name: string } }[]) => {
+  const applyAgentTools = <T extends { function: { name: string } }>(
+    defs: T[]
+  ): T[] => {
     if (opts.reportOnly) return []
     if (opts.unattended)
       defs = defs.filter(
@@ -1470,13 +1477,15 @@ export async function runAgentLoop(
       // EXCEPT a headless worker with no interactive user to answer.
       ...(opts.suppressUserQuestions ? [] : [askUserQuestionTool.definition]),
       readSkillTool.definition,
-    ]).concat(
-      // MCP tools bypass the built-in-category allowlist (applyAgentTools): MCP
-      // access is governed by the agent's separate `mcpServers` field, already
-      // resolved into `mcpTools`. Withheld in plan mode like spawn (a remote call
-      // is a side effect); regained the moment a plan is approved.
-      planMode ? [] : mcpTools
-    )
+    ])
+      .concat(
+        // MCP tools bypass the built-in-category allowlist (applyAgentTools): MCP
+        // access is governed by the agent's separate `mcpServers` field, already
+        // resolved into `mcpTools`. Withheld in plan mode like spawn (a remote call
+        // is a side effect); regained the moment a plan is approved.
+        planMode ? [] : mcpTools
+      )
+      .map(withToolActivity)
   // The non-droppable base prompt (mode prompt). Everything else is a droppable
   // context SECTION handed to the ContextBuilder, which budgets + composes them
   // into the system block under one global budget with an explicit drop order
@@ -2258,6 +2267,18 @@ export async function runAgentLoop(
           let args: Record<string, unknown>
           try {
             args = JSON.parse(call.arguments || "{}")
+            const definition = buildTools().find(
+              (tool) => tool.function.name === call.name
+            )
+            if (
+              definition &&
+              acceptsToolActivity(definition) &&
+              args &&
+              typeof args === "object" &&
+              !Array.isArray(args)
+            ) {
+              args = executionArguments(args)
+            }
           } catch {
             const errResult =
               "ERROR[bad_tool_arguments]: your tool-call arguments were not valid " +

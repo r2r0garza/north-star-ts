@@ -74,6 +74,27 @@ it.each([
   }
 )
 
+it("shows contextual activity as plain text with the real operation in expanded details", async () => {
+  await render([
+    call({
+      name: "exec_command",
+      label: "Inspecting <prompt> construction",
+      args: {
+        command: "cat prompt.ts",
+        _activity: "Inspecting <prompt> construction",
+      },
+    }),
+  ])
+  expect(buttons()[0].textContent).toContain("Inspecting <prompt> construction")
+  expect(container.querySelector("prompt")).toBeNull()
+  await click(0)
+  expect(container.textContent).toContain("exec_command")
+  expect(container.querySelector("pre")?.textContent).toBe(
+    JSON.stringify({ command: "cat prompt.ts" }, null, 2)
+  )
+  expect(container.querySelector("pre")?.textContent).not.toContain("_activity")
+})
+
 it("summarizes mixed states with running, approval, failure, settled precedence and counts", async () => {
   const mixed = [
     call(),
