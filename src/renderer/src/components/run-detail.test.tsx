@@ -93,10 +93,9 @@ it("keeps tool responses inside their matching collapsed calls, including after 
         />
       )
     )
-    const stepTrigger = container.querySelector<HTMLButtonElement>(
-      'ol [data-slot="trace-collapsible-trigger"]'
-    )!
-    expect(stepTrigger.getAttribute("aria-expanded")).toBe("false")
+    const stepTrigger =
+      container.querySelector<HTMLButtonElement>("nav ol button")!
+    expect(stepTrigger.getAttribute("aria-current")).toBeNull()
     expect(container.querySelector('[aria-label="Step transcript"]')).toBeNull()
     const reads = vi.mocked(window.cowork.db.messages.list).mock.calls.length
     expect(reads).toBe(1)
@@ -110,6 +109,26 @@ it("keeps tool responses inside their matching collapsed calls, including after 
     const transcript = container.querySelector(
       '[aria-label="Step transcript"]'
     )!
+    const scrollArea = container.querySelector<HTMLElement>(
+      '[aria-label="Transcript scroll area"]'
+    )!
+    Object.defineProperties(scrollArea, {
+      scrollHeight: { configurable: true, value: 2000 },
+      clientHeight: { configurable: true, value: 500 },
+    })
+    await act(async () => {
+      scrollArea.scrollTop = 1500
+      scrollArea.dispatchEvent(new Event("scroll"))
+      scrollArea.scrollTop = 300
+      scrollArea.dispatchEvent(new Event("scroll"))
+    })
+    const latest = Array.from(
+      container.querySelectorAll<HTMLButtonElement>("button")
+    ).find((button) => button.textContent === "Jump to latest")!
+    expect(latest).toBeTruthy()
+    await act(async () => latest.click())
+    expect(scrollArea.scrollTop).toBe(2000)
+    expect(container.textContent).not.toContain("Jump to latest")
     const calls = transcript.querySelectorAll<HTMLButtonElement>(
       '[data-slot="trace-collapsible-trigger"]'
     )
@@ -130,14 +149,14 @@ it("keeps tool responses inside their matching collapsed calls, including after 
     expect(transcript.textContent).toContain("Unmatched output")
     expect(transcript.textContent).toContain("Unlinked output")
     expect(transcript.textContent).toContain("Finished checking")
-    for (const [status, mapped, label] of [
-      ["waiting", "pending", "Waiting"],
-      ["active", "running", "Active"],
-      ["completed", null, "Completed"],
-      ["paused", null, "Paused"],
-      ["cancelled", null, "Cancelled"],
-      ["failed", "error", "Failed"],
-      ["interrupted", null, "Interrupted"],
+    for (const [status, label] of [
+      ["waiting", "Waiting"],
+      ["active", "Active"],
+      ["completed", "Completed"],
+      ["paused", "Paused"],
+      ["cancelled", "Cancelled"],
+      ["failed", "Failed"],
+      ["interrupted", "Interrupted"],
     ] as const) {
       await act(async () =>
         root.render(
@@ -149,13 +168,8 @@ it("keeps tool responses inside their matching collapsed calls, including after 
           />
         )
       )
-      expect(stepTrigger.getAttribute("aria-expanded")).toBe("true")
+      expect(stepTrigger.getAttribute("aria-current")).toBe("step")
       expect(stepTrigger.textContent).toContain(label)
-      expect(
-        stepTrigger
-          .querySelector('[data-slot="trace-line"]')
-          ?.getAttribute("data-status")
-      ).toBe(mapped)
       expect(calls[0].getAttribute("aria-expanded")).toBe("true")
       if (status === "active") {
         expect(calls[0].textContent).toContain("Running")
@@ -204,23 +218,30 @@ it("keeps tool responses inside their matching collapsed calls, including after 
     await act(async () => calls[0].click())
     expect(calls[0].getAttribute("aria-expanded")).toBe("false")
     expect(transcript.textContent).not.toContain("First file output")
-    await act(async () => stepTrigger.click())
+    const resultTab = container.querySelector<HTMLButtonElement>(
+      '[role="tab"][id="step-tab-Result"]'
+    )!
+    await act(async () => resultTab.click())
     const closedReads = vi.mocked(window.cowork.db.messages.list).mock.calls
       .length
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1000)
     })
     expect(vi.mocked(window.cowork.db.messages.list).mock.calls.length).toBe(
-      closedReads + 1
+      closedReads
     )
-    await act(async () => stepTrigger.click())
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>("#step-tab-Transcript")!
+        .click()
+    )
     const openReads = vi.mocked(window.cowork.db.messages.list).mock.calls
       .length
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1000)
     })
     expect(vi.mocked(window.cowork.db.messages.list).mock.calls.length).toBe(
-      openReads + 2
+      openReads + 1
     )
     messages = [
       ...messages,
@@ -239,9 +260,6 @@ it("keeps tool responses inside their matching collapsed calls, including after 
     expect(
       container.querySelector('[aria-label="Step transcript"]')?.textContent
     ).toContain("Final saved output")
-    expect(
-      container.querySelector('[aria-label="Run outcome"]')?.textContent
-    ).toContain("Final saved output")
     const completedReads = vi.mocked(window.cowork.db.messages.list).mock.calls
       .length
     await act(async () => {
@@ -250,11 +268,14 @@ it("keeps tool responses inside their matching collapsed calls, including after 
     expect(vi.mocked(window.cowork.db.messages.list).mock.calls.length).toBe(
       completedReads
     )
-    await act(async () => stepTrigger.click())
-    await act(async () => stepTrigger.click())
-    expect(vi.mocked(window.cowork.db.messages.list).mock.calls.length).toBe(
-      completedReads + 1
+    await act(async () =>
+      Array.from(container.querySelectorAll<HTMLButtonElement>("nav button"))
+        .find((button) => button.textContent === "Run outcome")!
+        .click()
     )
+    expect(
+      container.querySelector('[aria-label="Run outcome"]')?.textContent
+    ).toContain("Final saved output")
   } finally {
     act(() => root.unmount())
     container.remove()
@@ -377,6 +398,13 @@ it.each<{
     await act(async () =>
       root.render(<RunDetail run={run} onBack={() => {}} onClose={() => {}} />)
     )
+    if (testCase.status !== "Completed") {
+      await act(async () =>
+        Array.from(container.querySelectorAll<HTMLButtonElement>("nav button"))
+          .find((button) => button.textContent === "Run outcome")!
+          .click()
+      )
+    }
     const outcome = container.querySelector('[aria-label="Run outcome"]')!
     expect(outcome.textContent).toContain(testCase.expected)
     expect(outcome.textContent).not.toContain(

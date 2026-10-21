@@ -1001,9 +1001,10 @@ it("opens persisted run activity and invokes lifecycle controls", async () => {
     'ul[aria-label="Runs"] button'
   )!
   await act(async () => card.click())
-  expect(container.textContent).toContain("Auto mode")
+  expect(container.querySelector('nav[aria-label="Run steps"]')).not.toBeNull()
   expect(container.textContent).not.toContain("Simulated preview")
   expect(container.textContent).toContain("Review changes")
+  await act(async () => button("Details").click())
   expect(container.textContent).toContain("OpenAI · GPT Test")
   await act(async () => button("Pause").click())
   expect(window.cowork.workflowRuns.pause).toHaveBeenCalledWith("active")
