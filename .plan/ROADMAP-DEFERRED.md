@@ -1,5 +1,13 @@
 # Roadmap — Deferred
 
+- **`113` — shadcn Trace adoption.** Standardize agent activity presentation across tool groups,
+  individual calls, live indicators, delegated results, and workflow activity while preserving existing
+  orchestration, approval routing, and transcript semantics. Deferred for now.
+  [Plan](113-shadcn-trace-adoption.md).
+- **`114` — shadcn Code Block adoption.** Reuse a shared code-block presentation for Markdown fences,
+  tool payloads, approval previews, and other code surfaces while retaining existing highlighting,
+  streaming behavior, and specialized file/diff viewers. Deferred for now.
+  [Plan](114-shadcn-code-block-adoption.md).
 - **`110` — Anthropic subscription usage investigation.** Moved from Next on 2026-10-11: Anthropic
   Subscription is hidden in packaged builds and is not the user's daily provider. Revisit only if shipping it
   again is on the table. Start with the cheap discriminating test — the same task through native `claude -p`
