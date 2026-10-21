@@ -58,6 +58,7 @@ import {
 import { renameWorkTerms } from "./work-terms-migration"
 import { ensureWorkflows, ensureWorkflowRuns } from "./workflow-schema"
 import { ensureSteeringMessages } from "./steering-schema"
+import { ensureConversationArtifacts } from "./artifact-schema"
 import {
   ORCHESTRATION_TABLES,
   retireOrchestration,
@@ -221,6 +222,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
       "INTEGER NOT NULL DEFAULT 0 CHECK(view_in_conversation_sidebar IN (0, 1))"
     ),
   ensureSteeringMessages,
+  ensureConversationArtifacts,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -692,6 +694,7 @@ export function runMigrations(
       ensureWorkingDirectoryColumns(db)
       ensureNativeAssistantColumn(db)
       ensureToolMedia(db)
+      ensureConversationArtifacts(db)
       addColumnIfMissing(db, "workspaces", "command_checks", "TEXT")
       // After ensureSubscriptionProviderConstraints: its V65 table rebuild
       // predates this column and would drop it.

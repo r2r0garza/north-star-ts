@@ -48,6 +48,7 @@ export interface ToolUse {
   rawArgs: string // original JSON string (shown verbatim if parse failed)
   result?: string // tool output (undefined while running)
   media?: ToolMediaReference[]
+  artifact?: import("../../../shared/conversation-artifacts").ArtifactReference
   resultMessageId?: string
   conversationId?: string
   status: ToolStatus
@@ -386,6 +387,7 @@ export function buildTimeline(rows: DbMessage[]): TimelineItem[] {
       if (use) {
         use.result = m.content ?? ""
         use.media = m.media
+        use.artifact = m.artifact
         use.resultMessageId = m.id
         use.conversationId = m.conversationId
         use.status = isErrorResult(use.result) ? "error" : "done"

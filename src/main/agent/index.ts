@@ -109,6 +109,9 @@ import {
 } from "./subagents/worktrees"
 import { containerNameForConversation } from "./env/container"
 import { dashboardWriteTool } from "./tools/dashboard_write"
+import { presentChartTool } from "./tools/present_chart"
+import { presentTableTool } from "./tools/present_table"
+import type { ArtifactPresentation } from "../../shared/conversation-artifacts"
 import { dashboardReadTool } from "./tools/dashboard_read"
 import { loadSystemPrompt } from "./system-prompt"
 import { logSystemPrompt } from "./prompt-log"
@@ -811,6 +814,7 @@ export type ChatEvent =
       result: string
       messageId?: string
       media?: import("../../shared/tool-media").ToolMediaReference[]
+      artifact?: import("../../shared/conversation-artifacts").ArtifactReference
     }
   // The agent wants to perform a gated action and needs the human to decide.
   // `id` is the tool-call id so the renderer can attach the approval card to the
@@ -1457,6 +1461,11 @@ export async function runAgentLoop(
       // todo_write), withheld in plan mode as a side-effecting save. Subject to
       // the agent tool allowlist via its `dashboard` category.
       ...(showTodos && !planMode ? [dashboardWriteTool.definition] : []),
+      // Snapshots write conversation state, not workspace files. Native Chat
+      // supports them too; read-only and custom-agent filters still apply.
+      ...(!planMode
+        ? [presentChartTool.definition, presentTableTool.definition]
+        : []),
       // dashboard_read (plan 033.4): same modes as dashboard_write but kept in
       // plan mode — it only reads cached widget data. Subject to the allowlist
       // via the `dashboard` or `dashboard_read` category.
@@ -2146,6 +2155,7 @@ export async function runAgentLoop(
           } else {
             const lifecycle = markToolCallSettled({
               images: settled.images,
+              presentationArtifact: settled.presentationArtifact,
               conversationId,
               toolCallId: call.id,
               state:
@@ -2167,7 +2177,7 @@ export async function runAgentLoop(
               toolCallId: call.id,
               toolName: call.name,
             })
-            if (storedResult.media?.length)
+            if (storedResult.media?.length || storedResult.artifact)
               onEvent({
                 type: "tool",
                 phase: "done",
@@ -2176,6 +2186,7 @@ export async function runAgentLoop(
                 result,
                 messageId: storedResult.id,
                 media: storedResult.media,
+                artifact: storedResult.artifact,
               })
             if (call.name === "exec_command") {
               const sessionId = parseCommandSessionId(result)
@@ -2243,6 +2254,7 @@ export async function runAgentLoop(
             markToolCallStarted({ conversationId, toolCallId: call.id })
           )
           const callImages: ToolImage[] = []
+          let presentationArtifact: ArtifactPresentation | undefined
           let acceptingImages = true
           const unavailable = unavailableToolResult(call.name, offeredNames)
           if (unavailable) return { result: unavailable }
@@ -2252,7 +2264,11 @@ export async function runAgentLoop(
             callName: call.name,
             effects: effectsForCall(call.name),
           })
-          if (reconciled !== undefined) return { result: reconciled }
+          if (
+            reconciled !== undefined &&
+            !["present_chart", "present_table"].includes(call.name)
+          )
+            return { result: reconciled }
           // The model's streamed tool-call arguments are occasionally malformed JSON
           // even when the turn wasn't length-truncated (a mid-stream glitch, or an
           // unescaped character in a large blob — e.g. a big write_file_tool payload).
@@ -2467,6 +2483,15 @@ export async function runAgentLoop(
                     callImages.push({ ...image })
                 }
               : undefined,
+            emitArtifact: (snapshot: ArtifactPresentation) => {
+              callSignal.throwIfAborted()
+              if (
+                !["present_chart", "present_table"].includes(call.name) ||
+                presentationArtifact
+              )
+                throw new Error("Invalid chart emission")
+              presentationArtifact = snapshot
+            },
             skillResourceRoots,
             // present_plan calls this on approval; the selected backend is already
             // running, so the next loop iteration can safely unlock mutations.
@@ -2586,7 +2611,11 @@ export async function runAgentLoop(
             }
             // Keep the actual gate result, including recovered successes and the
             // reason for a block, instead of a tool's generic blocked message.
-            return { result: gatedResult ?? result, images: callImages }
+            return {
+              result: gatedResult ?? result,
+              images: callImages,
+              presentationArtifact,
+            }
           } finally {
             acceptingImages = false
           }

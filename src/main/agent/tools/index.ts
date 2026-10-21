@@ -74,6 +74,8 @@ import { spawnSubagentTool } from "./spawn_subagent"
 import { spawnSubagentsTool } from "./spawn_subagents"
 import { dashboardWriteTool } from "./dashboard_write"
 import { dashboardReadTool } from "./dashboard_read"
+import { presentChartTool } from "./present_chart"
+import { presentTableTool } from "./present_table"
 
 // Workspace-gated tools — offered only when the agent has a workspace (they
 // touch the filesystem). Add a new filesystem tool by importing it and listing
@@ -142,6 +144,8 @@ const otherTools: Tool[] = [
   // dashboard_write: offered by runChat in interactive modes (plan 033.2 —
   // gated on showTodos like todo_write). Writes only its own tables; not gated.
   dashboardWriteTool,
+  presentChartTool,
+  presentTableTool,
   // dashboard_read: offered by runChat in interactive modes, INCLUDING plan mode
   // (plan 033.4 — read-only over cached widget data; never refreshes).
   dashboardReadTool,

@@ -125,6 +125,11 @@ mark[data-conversation-find-match][data-active="true"] {
     --chart-5: oklch(0.269 0 0);
     /* Mission Control health (plan 106.8): progress vs ceremony series,
        validated for CVD separation on the light surface. */
+    --artifact-series-1: #1d4ed8;
+    --artifact-series-2: #0f766e;
+    --artifact-series-3: #a16207;
+    --artifact-series-4: #b91c1c;
+    --artifact-series-5: #7e22ce;
     --health-progress: #2a78d6;
     --health-ceremony: #eb6834;
     --radius: 0.625rem;
@@ -163,6 +168,11 @@ mark[data-conversation-find-match][data-active="true"] {
     --chart-3: oklch(0.439 0 0);
     --chart-4: oklch(0.371 0 0);
     --chart-5: oklch(0.269 0 0);
+    --artifact-series-1: #93c5fd;
+    --artifact-series-2: #5eead4;
+    --artifact-series-3: #fcd34d;
+    --artifact-series-4: #fca5a5;
+    --artifact-series-5: #d8b4fe;
     --health-progress: #3987e5;
     --health-ceremony: #d95926;
     --sidebar: oklch(0.205 0 0);

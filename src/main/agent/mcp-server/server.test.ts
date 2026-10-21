@@ -351,3 +351,35 @@ describe("Claude system-prompt steering", () => {
     injection.revoke()
   })
 })
+
+it.each(["claude_code", "codex_cli"] as const)(
+  "%s bridge rejects presentation without a durable completion adapter",
+  async (provider) => {
+    const injection = await grantCliMcpAccess({
+      conversationId: "artifact-test",
+      workingDirectory: "/tmp",
+      workspace: null,
+      provider,
+      tools: ["present_chart", "present_table"] as unknown as CliMcpToolName[],
+    })
+    const client = await connect(injection.token, injection.url)
+    try {
+      expect((await client.listTools()).tools).toEqual([])
+      expect(injection.allowedTools).toEqual([])
+      for (const name of ["present_chart", "present_table"]) {
+        const result = await client.callTool({
+          name,
+          arguments: { title: "Spoof", conversationId: "other" },
+        })
+        expect(result.isError).toBe(true)
+        expect(result.content).toEqual([
+          { type: "text", text: `Unknown tool: ${name}` },
+        ])
+      }
+    } finally {
+      await client.close()
+      injection.revoke()
+      await closeCliMcpBridge()
+    }
+  }
+)

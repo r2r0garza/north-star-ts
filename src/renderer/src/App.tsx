@@ -274,6 +274,14 @@ function sourceModelToken(agent: AgentSummary): string | null {
 // event was also a tool (back-to-back calls in one round group together, like
 // buildTimeline groups an assistant message's calls), else opens a new group.
 function addLiveToolStart(turn: LiveTurn, call: ToolUse): LiveTurn {
+  if (
+    turn.segments.some(
+      (segment) =>
+        segment.kind === "tools" &&
+        segment.calls.some((existing) => existing.id === call.id)
+    )
+  )
+    return turn
   const last = turn.segments[turn.segments.length - 1]
   if (last?.kind === "tools") {
     return {
@@ -1937,8 +1945,9 @@ function App(
               updateLiveTool(turn, event.id, (t) => ({
                 ...t,
                 result: event.result,
-                media: event.media,
-                resultMessageId: event.messageId,
+                media: event.media ?? t.media,
+                artifact: event.artifact ?? t.artifact,
+                resultMessageId: event.messageId ?? t.resultMessageId,
                 conversationId: turnConvoId,
                 status: isErrorResult(event.result) ? "error" : "done",
                 label: deriveLabel(

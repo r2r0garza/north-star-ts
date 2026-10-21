@@ -157,3 +157,20 @@ describe("isUniversalTool", () => {
     expect(isUniversalTool("run_shell_tool")).toBe(false)
   })
 })
+
+it("opts into snapshot presentation without granting dashboards or source-data access", () => {
+  const allowed = agentToolAllowlist(agent(["presentation"]))!
+  for (const name of ["present_chart", "present_table"]) {
+    expect(allowed.has(name)).toBe(true)
+    expect(agentToolAllowlist(agent([]))!.has(name)).toBe(false)
+    expect(agentToolAllowlist(agent(["dashboard"]))!.has(name)).toBe(false)
+    expect(isUniversalTool(name)).toBe(false)
+  }
+  for (const name of [
+    "dashboard_write",
+    "exec_command",
+    "web_fetch",
+    "write_file_tool",
+  ])
+    expect(allowed.has(name)).toBe(false)
+})

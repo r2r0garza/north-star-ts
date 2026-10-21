@@ -159,6 +159,7 @@ export interface ConversationSearchResult {
 }
 
 export interface Message {
+  artifact?: import("../../shared/conversation-artifacts").ArtifactReference
   media?: import("../../shared/tool-media").ToolMediaReference[]
   nativeAssistant?: import("../agent/providers/claude-subscription/native-carrier").NativeAssistantCarrier
   id: string

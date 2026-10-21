@@ -140,6 +140,7 @@ export type ChatEvent =
       name: string
       result: string
       media?: ToolMediaReference[]
+      artifact?: import("../shared/conversation-artifacts").ArtifactReference
       messageId?: string
     }
   | {
@@ -1037,6 +1038,18 @@ const api = {
           releaseConversationSubscription()
         }
       },
+    },
+    artifacts: {
+      read: (conversationId: string, artifactId: string, revision: number) =>
+        ipcRenderer.invoke(
+          "artifacts:read",
+          conversationId,
+          artifactId,
+          revision
+        ) as Promise<{
+          artifact?: import("../shared/conversation-artifacts").ArtifactEnvelope
+          error?: string
+        }>,
     },
     messages: {
       readMedia: (conversationId: string, messageId: string, mediaId: string) =>

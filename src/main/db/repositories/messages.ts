@@ -4,6 +4,7 @@ import {
   type NativeAssistantCarrier,
 } from "../../agent/providers/claude-subscription/native-carrier"
 import { randomUUID } from "crypto"
+import { toolArtifactReference } from "./conversation-artifacts"
 import { messageMedia, cleanupToolMedia } from "../../media/tool-media"
 import { getDb } from "../connection"
 import {
@@ -37,7 +38,14 @@ function readCarrier(raw: string) {
 }
 
 function toMessage(row: MessageRow): Message {
+  const artifact =
+    row.role === "tool" &&
+    row.tool_call_id &&
+    ["present_chart", "present_table"].includes(row.tool_name ?? "")
+      ? toolArtifactReference(row.conversation_id, row.tool_call_id)
+      : undefined
   return {
+    ...(artifact ? { artifact } : {}),
     ...(row.role === "assistant" && row.native_assistant
       ? { nativeAssistant: readCarrier(row.native_assistant) }
       : {}),

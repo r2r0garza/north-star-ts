@@ -11,6 +11,7 @@ import { readFile, writeFile, unlink, mkdir, rm } from "fs/promises"
 import { existsSync } from "fs"
 import { config as loadEnv } from "dotenv"
 import { readMessageMedia } from "./media/tool-media"
+import { readConversationArtifact } from "./db/repositories/conversation-artifacts"
 import { saveFileLink } from "./files/save-link"
 
 // Load .env.local before anything reads process.env. Provider API keys are
@@ -313,6 +314,30 @@ function createWindow(): void {
 // IPC handlers — the renderer reaches these through the preload bridge.
 // `chat` runs the agentic loop and streams events back to the calling renderer
 // over the "chat:event" channel; the invoke resolves with the final result.
+ipcMain.handle(
+  "artifacts:read",
+  (event, conversationId: unknown, artifactId: unknown, revision: unknown) => {
+    const contents = mainWindow?.webContents
+    if (
+      !contents ||
+      event.sender !== contents ||
+      event.senderFrame !== contents.mainFrame ||
+      ![conversationId, artifactId].every(
+        (id) => typeof id === "string" && /^[a-zA-Z0-9_-]{1,128}$/.test(id)
+      ) ||
+      typeof revision !== "number" ||
+      !Number.isSafeInteger(revision) ||
+      revision < 1
+    )
+      return { error: "Artifact unavailable." }
+    return readConversationArtifact(
+      conversationId as string,
+      artifactId as string,
+      revision
+    )
+  }
+)
+
 ipcMain.handle(
   "media:read-message",
   async (

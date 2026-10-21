@@ -13,24 +13,9 @@ import {
 import GridLayout, { WidthProvider, type Layout } from "react-grid-layout"
 import "react-grid-layout/css/styles.css"
 import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Line,
-  LineChart,
-  Area,
-  AreaChart,
-  XAxis,
-  YAxis,
-} from "recharts"
-import {
-  ChartContainer,
-  ChartTooltip,
-  ChartTooltipContent,
-  ChartLegend,
-  ChartLegendContent,
-  type ChartConfig,
-} from "@/components/ui/chart"
+  CartesianChart as ChartWidget,
+  type ChartWidgetConfig,
+} from "@/components/cartesian-chart"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
@@ -81,28 +66,6 @@ const ROW_HEIGHT = 40
 // manual Refresh button always forces a full re-run (maxAgeMs = 0).
 const ON_OPEN_MAX_AGE_MS = 60_000
 
-// A palette for chart series — CSS vars would be ideal, but a small fixed set
-// reads fine in both themes and keeps a manually-authored widget zero-config.
-const SERIES_COLORS = [
-  "var(--chart-1, #2563eb)",
-  "var(--chart-2, #16a34a)",
-  "var(--chart-3, #d97706)",
-  "var(--chart-4, #dc2626)",
-  "var(--chart-5, #7c3aed)",
-]
-
-// ── config shapes (parsed from the widget's JSON `config` blob) ───────────────
-
-interface ChartSeries {
-  key: string
-  label?: string
-  color?: string
-}
-interface ChartWidgetConfig {
-  chartKind?: "line" | "bar" | "area"
-  xKey?: string
-  series?: ChartSeries[]
-}
 interface StatWidgetConfig {
   valueKey?: string
   unit?: string
@@ -163,91 +126,6 @@ function waitForTask(taskId: string): Promise<void> {
 }
 
 // ── widget renderers ──────────────────────────────────────────────────────────
-
-function ChartWidget({
-  config,
-  rows,
-}: {
-  config: ChartWidgetConfig
-  rows: Array<Record<string, unknown>>
-}) {
-  const xKey = config.xKey ?? "name"
-  const series: ChartSeries[] =
-    config.series && config.series.length > 0
-      ? config.series
-      : // Infer numeric series from the first row when none declared.
-        Object.keys(rows[0] ?? {})
-          .filter((k) => k !== xKey && typeof rows[0]?.[k] === "number")
-          .map((key) => ({ key }))
-
-  const chartConfig: ChartConfig = Object.fromEntries(
-    series.map((s, i) => [
-      s.key,
-      {
-        label: s.label ?? s.key,
-        color: s.color ?? SERIES_COLORS[i % SERIES_COLORS.length],
-      },
-    ])
-  )
-
-  const kind = config.chartKind ?? "line"
-  const common = { data: rows }
-
-  return (
-    <ChartContainer config={chartConfig} className="h-full w-full">
-      {kind === "bar" ? (
-        <BarChart {...common}>
-          <CartesianGrid vertical={false} />
-          <XAxis dataKey={xKey} tickLine={false} axisLine={false} />
-          <YAxis tickLine={false} axisLine={false} width={36} />
-          <ChartTooltip content={<ChartTooltipContent />} />
-          <ChartLegend content={<ChartLegendContent />} />
-          {series.map((s, i) => (
-            <Bar
-              key={s.key}
-              dataKey={s.key}
-              fill={s.color ?? SERIES_COLORS[i % SERIES_COLORS.length]}
-              radius={4}
-            />
-          ))}
-        </BarChart>
-      ) : kind === "area" ? (
-        <AreaChart {...common}>
-          <CartesianGrid vertical={false} />
-          <XAxis dataKey={xKey} tickLine={false} axisLine={false} />
-          <YAxis tickLine={false} axisLine={false} width={36} />
-          <ChartTooltip content={<ChartTooltipContent />} />
-          <ChartLegend content={<ChartLegendContent />} />
-          {series.map((s, i) => (
-            <Area
-              key={s.key}
-              dataKey={s.key}
-              stroke={s.color ?? SERIES_COLORS[i % SERIES_COLORS.length]}
-              fill={s.color ?? SERIES_COLORS[i % SERIES_COLORS.length]}
-              fillOpacity={0.2}
-            />
-          ))}
-        </AreaChart>
-      ) : (
-        <LineChart {...common}>
-          <CartesianGrid vertical={false} />
-          <XAxis dataKey={xKey} tickLine={false} axisLine={false} />
-          <YAxis tickLine={false} axisLine={false} width={36} />
-          <ChartTooltip content={<ChartTooltipContent />} />
-          <ChartLegend content={<ChartLegendContent />} />
-          {series.map((s, i) => (
-            <Line
-              key={s.key}
-              dataKey={s.key}
-              stroke={s.color ?? SERIES_COLORS[i % SERIES_COLORS.length]}
-              dot={false}
-            />
-          ))}
-        </LineChart>
-      )}
-    </ChartContainer>
-  )
-}
 
 function StatWidget({
   config,

@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { toast } from "sonner"
+import { ConversationArtifact } from "@/components/conversation-artifact"
 import type { Message } from "../../../main/db/types"
 import type {
   WorkflowRun,
@@ -944,39 +945,56 @@ function WorkflowToolCall({
     isErrorResult(response.content ?? "")
   )
   const running = active && responses.length === 0
+  const artifactResponse = responses.find((response) => response.artifact)
+  const presentation = ["present_chart", "present_table"].includes(call.name)
   return (
-    <Trace className="mt-2">
-      <TraceCollapsible open={open} onOpenChange={setOpen}>
-        <TraceCollapsibleTrigger>
-          <TraceLine
-            status={failed ? "error" : running ? "running" : undefined}
-          >
-            <TraceIcon>
-              <Wrench />
-            </TraceIcon>
-            <TraceTitle>{call.name}</TraceTitle>
-            {(failed || running) && (
-              <TraceDescription>
-                {failed ? "Failed" : "Running"}
-              </TraceDescription>
-            )}
-          </TraceLine>
-        </TraceCollapsibleTrigger>
-        <TraceCollapsibleContent className="space-y-2">
-          <p className="font-medium">Arguments</p>
-          <pre className="break-words whitespace-pre-wrap">
-            {call.arguments}
-          </pre>
-          {responses.map((response) => (
-            <div key={response.id} className="space-y-1 border-t pt-2">
-              <p className="font-medium">Response</p>
-              <pre className="break-words whitespace-pre-wrap">
-                {response.content}
-              </pre>
-            </div>
-          ))}
-        </TraceCollapsibleContent>
-      </TraceCollapsible>
-    </Trace>
+    <>
+      <Trace className="mt-2">
+        <TraceCollapsible open={open} onOpenChange={setOpen}>
+          <TraceCollapsibleTrigger>
+            <TraceLine
+              status={failed ? "error" : running ? "running" : undefined}
+            >
+              <TraceIcon>
+                <Wrench />
+              </TraceIcon>
+              <TraceTitle>{call.name}</TraceTitle>
+              {(failed || running) && (
+                <TraceDescription>
+                  {failed ? "Failed" : "Running"}
+                </TraceDescription>
+              )}
+            </TraceLine>
+          </TraceCollapsibleTrigger>
+          <TraceCollapsibleContent className="space-y-2">
+            <p className="font-medium">Arguments</p>
+            <pre className="break-words whitespace-pre-wrap">
+              {call.arguments}
+            </pre>
+            {responses.map((response) => (
+              <div key={response.id} className="space-y-1 border-t pt-2">
+                <p className="font-medium">Response</p>
+                <pre className="break-words whitespace-pre-wrap">
+                  {response.content}
+                </pre>
+              </div>
+            ))}
+          </TraceCollapsibleContent>
+        </TraceCollapsible>
+      </Trace>
+      {presentation &&
+        !failed &&
+        responses.length > 0 &&
+        (artifactResponse?.artifact ? (
+          <ConversationArtifact
+            reference={artifactResponse.artifact}
+            conversationId={artifactResponse.conversationId}
+          />
+        ) : (
+          <p role="status" className="my-2 text-sm text-muted-foreground">
+            Artifact unavailable: no supported saved reference.
+          </p>
+        ))}
+    </>
   )
 }

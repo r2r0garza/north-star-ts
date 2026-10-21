@@ -3078,6 +3078,218 @@ describe.skipIf(!sqliteLoads)("tool batch durability and cancellation", () => {
     ])
   })
 
+  it.each([
+    ["present_chart", "interactive"],
+    ["present_table", "interactive"],
+    ["present_chart", "chat"],
+    ["present_table", "chat"],
+  ] as const)(
+    "persists %s in %s with activity metadata and replays an equivalent invocation",
+    async (toolName, mode) => {
+      const conversation = createConversation({ mode })
+      const args = {
+        " _activity": "Presenting observed results",
+        title: "Observed results",
+        ...(toolName === "present_chart"
+          ? {
+              chartKind: "line",
+              xKey: "period",
+              series: [{ key: "value", label: "Value" }],
+            }
+          : {
+              columns: [
+                { key: "period", label: "Period", valueType: "string" },
+                { key: "value", label: "Value", valueType: "number" },
+              ],
+            }),
+        data: [
+          { period: "Jan", value: 0 },
+          { period: "Feb", value: null },
+        ],
+      }
+      let acknowledgement: string | undefined
+      const artifacts: unknown[] = []
+      scriptedCompletions.push(
+        (request) => {
+          expect(request.tools).toContain(toolName)
+          return streamToolCalls([
+            {
+              id: "chart-first",
+              name: toolName,
+              arguments: JSON.stringify(args),
+            },
+          ])
+        },
+        (request) => {
+          acknowledgement = lastMessage(request, "tool")?.content as string
+          expect(JSON.parse(acknowledgement)).toMatchObject({
+            status: "saved_for_presentation",
+            revision: 1,
+            rowCount: 2,
+          })
+          return streamToolCalls([
+            {
+              id: "chart-retry",
+              name: toolName,
+              arguments: JSON.stringify(args),
+            },
+          ])
+        },
+        (request) => {
+          expect(lastMessage(request, "tool")?.content).toBe(acknowledgement)
+          return streamText("Chart saved.")
+        }
+      )
+      const result = await runAgentLoop({
+        conversationId: conversation.id,
+        userMessage: "Present the observations",
+        abort: new AbortController(),
+        onEvent: (event) => {
+          if (event.type === "tool" && event.phase === "done" && event.artifact)
+            artifacts.push(event.artifact)
+        },
+      })
+      expect(result).toEqual({ content: "Chart saved." })
+      expect(artifacts).toHaveLength(2)
+      expect(artifacts[0]).toEqual(artifacts[1])
+      expect(
+        listMessages(conversation.id)
+          .filter((row) => row.artifact)
+          .map((row) => row.artifact)
+      ).toEqual(artifacts)
+      expect(contentsByCallId(conversation.id).get("chart-first")).toBe(
+        acknowledgement
+      )
+      expect(contentsByCallId(conversation.id).get("chart-retry")).toBe(
+        acknowledgement
+      )
+    }
+  )
+
+  it.each([
+    {
+      mode: "chat" as const,
+      workspace: false,
+      planMode: false,
+      readOnlyTools: false,
+      expected: true,
+    },
+    {
+      mode: "interactive" as const,
+      workspace: false,
+      planMode: false,
+      readOnlyTools: false,
+      expected: true,
+    },
+    {
+      mode: "north_star" as const,
+      workspace: true,
+      planMode: false,
+      readOnlyTools: false,
+      expected: true,
+    },
+    {
+      mode: "interactive" as const,
+      workspace: true,
+      planMode: true,
+      readOnlyTools: false,
+      expected: false,
+    },
+    {
+      mode: "north_star" as const,
+      workspace: true,
+      planMode: false,
+      readOnlyTools: true,
+      expected: false,
+    },
+  ])(
+    "qualifies snapshot tool availability: $mode workspace=$workspace plan=$planMode readOnly=$readOnlyTools",
+    async (scenario) => {
+      const conversation = createConversation({ mode: scenario.mode })
+      scriptedCompletions.push((request) => {
+        for (const name of ["present_chart", "present_table"])
+          expect(request.tools.includes(name)).toBe(scenario.expected)
+        return streamText("Qualified.")
+      })
+      expect(
+        await runAgentLoop({
+          conversationId: conversation.id,
+          workspace: scenario.workspace ? await makeWorkspace() : undefined,
+          userMessage: "Present results",
+          planMode: scenario.planMode,
+          readOnlyTools: scenario.readOnlyTools,
+          abort: new AbortController(),
+          onEvent: () => {},
+        })
+      ).toEqual({ content: "Qualified." })
+    }
+  )
+
+  it.each(["presentation", "read", "dashboard"])(
+    "qualifies restricted custom-agent snapshot permissions: %s",
+    async (category) => {
+      const workspace = await makeWorkspace()
+      const agentsDir = join(workspace, ".cowork", "agents")
+      await mkdir(agentsDir, { recursive: true })
+      await writeFile(
+        join(agentsDir, "presenter.agent.md"),
+        `---\nname: presenter\ndescription: Presents results.\ntools: [${category}]\n---\nPresent the supplied data.`
+      )
+      const conversation = createConversation({
+        mode: "interactive",
+        agentName: "presenter",
+      })
+      scriptedCompletions.push((request) => {
+        for (const name of ["present_chart", "present_table"])
+          expect(request.tools.includes(name)).toBe(category === "presentation")
+        return streamText("Qualified.")
+      })
+      expect(
+        await runAgentLoop({
+          conversationId: conversation.id,
+          workspace,
+          agentDir: workspace,
+          userMessage: "Present",
+          abort: new AbortController(),
+          onEvent: () => {},
+        })
+      ).toEqual({ content: "Qualified." })
+    }
+  )
+
+  it("rejects an unoffered snapshot call on read-only turns without exposing a reference", async () => {
+    const conversation = createConversation({ mode: "north_star" })
+    scriptedCompletions.push(
+      () =>
+        streamToolCalls([
+          {
+            id: "blocked-artifact",
+            name: "present_table",
+            arguments: JSON.stringify({
+              title: "Blocked",
+              columns: [{ key: "value", label: "Value", valueType: "number" }],
+              data: [{ value: 1 }],
+            }),
+          },
+        ]),
+      () => streamText("Not saved.")
+    )
+    expect(
+      await runAgentLoop({
+        conversationId: conversation.id,
+        userMessage: "Present",
+        readOnlyTools: true,
+        abort: new AbortController(),
+        onEvent: () => {},
+      })
+    ).toEqual({ content: "Not saved." })
+    const result = listMessages(conversation.id).find(
+      (message) => message.toolCallId === "blocked-artifact"
+    )!
+    expect(result.content).toContain("ERROR[tool_unavailable]")
+    expect(result.artifact).toBeUndefined()
+  })
+
   it("offers read_document alongside read_file_tool for a Chat document attachment", async () => {
     const dir = await mkdtemp(join(tmpdir(), "north-star-attach-"))
     const pdf = join(dir, "report.pdf")

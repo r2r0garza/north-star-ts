@@ -59,6 +59,16 @@ vi.mock("@/components/conversation-find-text", () => ({
     return <span data-query={query}>{text}</span>
   },
 }))
+vi.mock("@/components/conversation-artifact", () => ({
+  ConversationArtifact: ({
+    reference,
+  }: {
+    reference: { artifactId: string }
+  }) => {
+    bump(`artifact:${reference.artifactId}`)
+    return <figure data-testid="artifact">Chart {reference.artifactId}</figure>
+  },
+}))
 vi.mock("@/components/tool-group", () => ({
   ToolGroup: ({ calls }: { calls: ToolUse[] }) => {
     bump(`tools:${calls.map((c) => c.id).join(",")}`)
@@ -194,6 +204,111 @@ function anchors() {
 }
 
 describe("transcript render boundaries", () => {
+  it("keeps prose/chart/prose and adjacent charts identical live and settled, outside traces", () => {
+    const chart = (id: string): ToolUse => ({
+      ...toolCall(id),
+      name: "present_chart",
+      artifact: {
+        schemaVersion: 1,
+        artifactId: id,
+        revision: 1,
+        title: id,
+        kind: "chart",
+        rowCount: 2,
+      },
+    })
+    const calls = [chart("first"), chart("second")]
+    const live: LiveSegment[] = [
+      { kind: "text", text: "Before" },
+      { kind: "tools", calls },
+      { kind: "text", text: "After" },
+    ]
+    render({ settled: [], live })
+    const order = () =>
+      Array.from(
+        container.querySelectorAll(
+          '[data-testid="markdown"], [data-testid="artifact"]'
+        )
+      ).map((node) => node.textContent)
+    expect(order()).toEqual(["Before", "Chart first", "Chart second", "After"])
+    expect(
+      container.querySelector(
+        '[data-testid="tool-group"] [data-testid="artifact"]'
+      )
+    ).toBeNull()
+    const before = renders.byKey.get("artifact:first")
+    render({
+      settled: [],
+      live: [...live.slice(0, 2), { kind: "text", text: "After more text" }],
+    })
+    expect(renders.byKey.get("artifact:first")).toBe(before)
+    render({
+      live: null,
+      settled: [
+        {
+          kind: "text",
+          key: "before",
+          role: "assistant",
+          content: "Before",
+          createdAt: 1,
+        },
+        { kind: "tools", key: "tools", calls },
+        {
+          kind: "text",
+          key: "after",
+          role: "assistant",
+          content: "After",
+          createdAt: 2,
+        },
+      ],
+    })
+    expect(order()).toEqual(["Before", "Chart first", "Chart second", "After"])
+  })
+  it("deduplicates replayed calls and does not interpret unrelated tool text as an artifact", () => {
+    const chart: ToolUse = {
+      ...toolCall("chart"),
+      name: "present_chart",
+      artifact: {
+        schemaVersion: 1,
+        artifactId: "saved",
+        revision: 1,
+        title: "Saved",
+        kind: "chart",
+        rowCount: 1,
+      },
+    }
+    render({
+      settled: [],
+      live: [
+        {
+          kind: "tools",
+          calls: [
+            chart,
+            chart,
+            {
+              ...toolCall("unrelated"),
+              result: JSON.stringify(chart.artifact),
+            },
+          ],
+        },
+      ],
+    })
+    expect(container.querySelectorAll('[data-testid="artifact"]')).toHaveLength(
+      1
+    )
+    render({
+      settled: [],
+      live: [{ kind: "tools", calls: [{ ...chart, status: "error" }] }],
+    })
+    expect(container.querySelectorAll('[data-testid="artifact"]')).toHaveLength(
+      0
+    )
+    render({
+      settled: [],
+      live: [{ kind: "tools", calls: [{ ...chart, artifact: undefined }] }],
+    })
+    expect(container.textContent).toContain("Chart unavailable")
+  })
   it("offers Run only on settled assistant rows and forwards their persisted message identity", async () => {
     const onRunBash = vi.fn().mockResolvedValue(undefined)
     render({

@@ -37,6 +37,24 @@ it("decorates built-in and MCP schemas without mutation or changing required arg
   }
 })
 
+it("strips whitespace variants of activity metadata without normalizing data keys", () => {
+  const args = {
+    " _activity": "Preparing a comparison chart",
+    "_activity ": "Preparing another label",
+    " title": "Keep this invalid artifact field",
+    data: [{ " _activity": "A real row key" }],
+  }
+  expect(executionArguments(args)).toEqual({
+    " title": "Keep this invalid artifact field",
+    data: [{ " _activity": "A real row key" }],
+  })
+  expect(activityLabel(args)).toBe("Preparing a comparison chart")
+  expect(args[" _activity"]).toBe("Preparing a comparison chart")
+  expect(activityLabel({ ...args, _activity: "Canonical title" })).toBe(
+    "Canonical title"
+  )
+})
+
 it("leaves conflicting and unsupported schemas unchanged", () => {
   for (const parameters of [
     { type: "object", properties: { _activity: { type: "number" } } },

@@ -152,6 +152,10 @@ export interface ToolContext {
   // Attach an image to the current turn for the vision model (see ToolImage /
   // EmitImage). Used by browser_screenshot; absent where images can't be shown.
   emitImage?: EmitImage
+  // Staged until the host atomically commits successful tool completion.
+  emitArtifact?: (
+    snapshot: import("../../../shared/conversation-artifacts").ArtifactPresentation
+  ) => void
   // Read-only auxiliary roots registered by read_skill during this turn. Keys
   // are skill names; values are absolute host paths to the selected skill folder.
   skillResourceRoots?: Record<string, string>

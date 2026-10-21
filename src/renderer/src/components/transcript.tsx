@@ -7,7 +7,7 @@ import { ConversationFindText } from "@/components/conversation-find-text"
 import { Bubble, BubbleContent } from "@/components/ui/bubble"
 import { Trace, TraceLine, TraceIcon, TraceTitle } from "@/components/ui/trace"
 import { Activity } from "lucide-react"
-import { ToolGroup } from "@/components/tool-group"
+import { TranscriptTools } from "@/components/transcript-tools"
 import { ChangedFilesBar } from "@/components/changed-files-bar"
 import type { TimelineItem, ToolUse } from "@/lib/timeline"
 import { cn } from "@/lib/utils"
@@ -112,7 +112,10 @@ const SettledTranscriptRow = memo(function SettledTranscriptRow({
       <MessageScrollerItem scrollAnchor={scrollAnchor}>
         <Message align="start">
           <MessageContent>
-            <ToolGroup calls={item.calls} />
+            <TranscriptTools
+              calls={item.calls}
+              conversationId={conversationId}
+            />
             <ChangedFilesBar
               calls={item.calls}
               workspace={workspace}
@@ -281,7 +284,10 @@ const LiveTranscriptSegment = memo(function LiveTranscriptSegment({
   if (segment.kind === "tools") {
     return (
       <div>
-        <ToolGroup calls={segment.calls} />
+        <TranscriptTools
+          calls={segment.calls}
+          conversationId={conversationId}
+        />
         <ChangedFilesBar
           calls={segment.calls}
           workspace={workspace}

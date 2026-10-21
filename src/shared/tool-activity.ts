@@ -6,7 +6,9 @@ const DESCRIPTION =
 export function activityLabel(
   args: Record<string, unknown> | null
 ): string | undefined {
-  const value = args?.[ACTIVITY_FIELD]
+  const field =
+    args && Object.keys(args).find((key) => key.trim() === ACTIVITY_FIELD)
+  const value = args?.[ACTIVITY_FIELD] ?? (field ? args?.[field] : undefined)
   if (typeof value !== "string") return undefined
   const label = value.replace(/\s+/g, " ").trim()
   if (!label || label.length > MAX_ACTIVITY_LENGTH) return undefined
@@ -16,8 +18,9 @@ export function activityLabel(
 export function executionArguments(
   args: Record<string, unknown>
 ): Record<string, unknown> {
-  const { [ACTIVITY_FIELD]: _activity, ...rest } = args
-  return rest
+  return Object.fromEntries(
+    Object.entries(args).filter(([key]) => key.trim() !== ACTIVITY_FIELD)
+  )
 }
 
 interface Definition {
