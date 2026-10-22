@@ -1,6 +1,15 @@
 # PR123: Google API provider
 
-> Status: **Proposed — not implemented.** Prerequisite for [PR118: in-turn context compaction](118-in-turn-context-compaction.md). Follows [PR122: Anthropic API provider](122-anthropic-api-provider.md) and reuses its generalized native carrier and context-window catalog.
+> Status: **Implemented (2026-10-22): steps 1–5; step 6 (PR118 contract tests) and step 7 (live verification) pending.** Adapter in `src/main/agent/providers/google.ts`, on `@google/genai` 2.29.1.
+>
+> Implementation notes:
+> - **Step 1 decision:** Interactions API with `store: false`. Google's Interactions page states it is Generally Available (checked 2026-10-22).
+> - **Thought replay:** thought steps are stored in the shared carrier as `thinking` blocks (summary text + signature) and replayed whenever the assistant's visible text and tool calls still match. Model and prefix are *not* checked, because Google requires resending thoughts even after a model switch. The prefix fingerprint is still stored for PR118.
+> - **Context windows:** kept in a Google-specific catalog (`googleContextWindowFor`). PR118 should merge it with Anthropic's `contextWindowFor`.
+> - **Effort:** there is no composer picker for Google; Gemini's per-model thinking levels are not listed by the Models API. Small auxiliary caps (< 4096) send `thinking_level: "low"`; everything else uses the model's default level.
+> - **Assumptions to confirm live:** the mid-stream `error` event codes (gRPC names), whether `total_output_tokens` excludes thought tokens, and how safety blocks surface (mapped from `failed` status or `model_output.error` text).
+>
+> Original status: **Proposed.** Prerequisite for [PR118: in-turn context compaction](118-in-turn-context-compaction.md). Follows [PR122: Anthropic API provider](122-anthropic-api-provider.md) and reuses its generalized native carrier and context-window catalog.
 
 ## Objective and recommendation
 

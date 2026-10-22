@@ -92,16 +92,17 @@ const PROVIDERS: Array<{ value: Provider; label: string; enabled: boolean }> = [
   { value: "codex_cli", label: "Codex CLI - Experimental", enabled: true },
   { value: "portkey", label: "Portkey - API", enabled: true },
   { value: "anthropic", label: "Anthropic - API", enabled: true },
-  { value: "google", label: "Google", enabled: false },
+  { value: "google", label: "Google - API", enabled: true },
   { value: "azure_openai", label: "Azure OpenAI", enabled: false },
 ]
 
-// Native OpenAI and Anthropic can omit a base URL (their SDKs default to the
-// vendor API); every other wired provider is a gateway that requires one.
+// Native OpenAI, Anthropic and Google can omit a base URL (their SDKs default
+// to the vendor API); every other wired provider is a gateway that requires one.
 function requiresBaseUrl(provider: Provider): boolean {
   return (
     provider !== "openai" &&
     provider !== "anthropic" &&
+    provider !== "google" &&
     provider !== "codex_subscription" &&
     provider !== "claude_subscription" &&
     !isCliProvider(provider)
@@ -461,6 +462,18 @@ function AccountCard({
     )
   }
 
+  async function debugModels() {
+    setBusy(true)
+    setError(null)
+    const result = await window.cowork.providers.debugModels(account.id)
+    setBusy(false)
+    if (!result.ok) {
+      setError(result.error ?? "Models debug probe failed.")
+      return
+    }
+    toast.success(`Models response saved to ${result.paths?.join(", ")}.`)
+  }
+
   async function startCodexSubscriptionAuth() {
     setBusy(true)
     setError(null)
@@ -601,7 +614,9 @@ function AccountCard({
                       ? "https://gateway.example.com/v1"
                       : account.provider === "anthropic"
                         ? "Leave blank for api.anthropic.com"
-                        : "Leave blank for api.openai.com"
+                        : account.provider === "google"
+                          ? "Leave blank for generativelanguage.googleapis.com"
+                          : "Leave blank for api.openai.com"
                 }
               />
             </Field>
@@ -739,6 +754,20 @@ function AccountCard({
                 </FieldDescription>
               )}
             </Field>
+            {!window.cowork.isPackaged &&
+              (account.provider === "anthropic" ||
+                account.provider === "google") && (
+                <div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={debugModels}
+                    disabled={busy || !account.hasKey}
+                  >
+                    Log models response
+                  </Button>
+                </div>
+              )}
             {isCodexSubscription(account.provider) && (
               <div className="flex flex-col gap-2 rounded-md bg-muted px-3 py-2 text-xs">
                 <div className="flex flex-wrap gap-2">
@@ -897,7 +926,9 @@ function NewAccountForm({
                   ? "https://gateway.example.com/v1"
                   : provider === "anthropic"
                     ? "Leave blank for api.anthropic.com"
-                    : "Leave blank for api.openai.com"
+                    : provider === "google"
+                      ? "Leave blank for generativelanguage.googleapis.com"
+                      : "Leave blank for api.openai.com"
             }
           />
           {isCodexSubscription(provider) && (

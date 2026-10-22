@@ -227,8 +227,16 @@ describe("translateRequest", () => {
     // Both results, then the demoted mid-history system text, in ONE user message.
     expect(params.messages).toHaveLength(3)
     expect(params.messages[2].content).toEqual([
-      { type: "tool_result", tool_use_id: "t1", content: [{ type: "text", text: "A" }] },
-      { type: "tool_result", tool_use_id: "t2", content: [{ type: "text", text: "B" }] },
+      {
+        type: "tool_result",
+        tool_use_id: "t1",
+        content: [{ type: "text", text: "A" }],
+      },
+      {
+        type: "tool_result",
+        tool_use_id: "t2",
+        content: [{ type: "text", text: "B" }],
+      },
       {
         type: "text",
         text: "Plan mode is on.",
@@ -241,7 +249,8 @@ describe("translateRequest", () => {
       block_binding: { prefix_mismatch_behavior: "drop_block" },
     })
     expect(params.betas).toEqual(["thinking-binding-controls-2026-08-01"])
-    expect(params.output_config).toEqual({ effort: "high" })
+    // No pick: medium, whatever the model's own default.
+    expect(params.output_config).toEqual({ effort: "medium" })
     expect(JSON.stringify(params)).not.toContain("budget_tokens")
   })
 
@@ -259,19 +268,31 @@ describe("translateRequest", () => {
       },
     } as any
     expect(effortLevels(levelled)).toEqual(["low", "high"])
+    // Level names come from the API, not a fixed list.
+    expect(
+      effortLevels({
+        capabilities: {
+          effort: {
+            supported: true,
+            medium: { supported: true },
+            ultra: { supported: true },
+          },
+        },
+      } as any)
+    ).toEqual(["medium", "ultra"])
     const body = (reasoning_effort: string) => ({
       model,
       max_tokens: 64000,
       reasoning_effort,
       messages: [{ role: "user", content: "hi" }],
     })
-    expect(translateRequest(body("low"), levelled).params.output_config).toEqual(
-      { effort: "low" }
-    )
+    expect(
+      translateRequest(body("low"), levelled).params.output_config
+    ).toEqual({ effort: "low" })
     // Unlisted for this model: falls back to the default.
-    expect(translateRequest(body("max"), levelled).params.output_config).toEqual(
-      { effort: "high" }
-    )
+    expect(
+      translateRequest(body("max"), levelled).params.output_config
+    ).toEqual({ effort: "high" })
   })
 
   it("never forces a tool and skips thinking where adaptive is unsupported", () => {
@@ -286,7 +307,10 @@ describe("translateRequest", () => {
       {
         ...info,
         capabilities: {
-          thinking: { supported: true, types: { adaptive: { supported: false } } },
+          thinking: {
+            supported: true,
+            types: { adaptive: { supported: false } },
+          },
           effort: { supported: false },
         },
       } as any
@@ -359,8 +383,7 @@ describe("thinking replay", () => {
       },
     ]
     const info = vi.spyOn(console, "info").mockImplementation(() => {})
-    for (const body of changed)
-      expect(followUp(body)).toEqual(blocks.slice(1))
+    for (const body of changed) expect(followUp(body)).toEqual(blocks.slice(1))
     expect(info).toHaveBeenCalledTimes(3)
     expect(info).toHaveBeenCalledWith("[anthropic] thinking not replayed", {
       model,
@@ -421,7 +444,6 @@ describe("buildAnthropicClient", () => {
     )
     expect(sent.body.max_tokens).toBe(64000)
     expect(contextWindowFor("acct", model)).toBe(1000000)
-
   })
 
   it("replays the carrier on the following round's request", async () => {
@@ -552,7 +574,11 @@ describe("buildAnthropicClient", () => {
     const outcome = async (respond: () => Response) => {
       serve(respond)
       return (
-        client().chat.completions.create(body, undefined, {}) as Promise<unknown>
+        client().chat.completions.create(
+          body,
+          undefined,
+          {}
+        ) as Promise<unknown>
       )
         .then(collect)
         .then(
@@ -569,12 +595,18 @@ describe("buildAnthropicClient", () => {
         true
       )
     const long = await outcome(
-      failure(400, "invalid_request_error", "prompt is too long: 1200000 tokens > 1000000 maximum")
+      failure(
+        400,
+        "invalid_request_error",
+        "prompt is too long: 1200000 tokens > 1000000 maximum"
+      )
     )
     expect(long).toBeInstanceOf(ContextOverflowError)
     expect(isTransientError(long)).toBe(false)
     expect(
-      await outcome(failure(413, "request_too_large", "Request exceeds the maximum size"))
+      await outcome(
+        failure(413, "request_too_large", "Request exceeds the maximum size")
+      )
     ).toBeInstanceOf(ContextOverflowError)
     const auth = await outcome(
       failure(401, "authentication_error", "invalid x-api-key")
@@ -616,7 +648,9 @@ describe("buildAnthropicClient", () => {
         async () =>
           new Response(
             JSON.stringify({
-              data: [{ ...info, id: "claude-sonnet-5-5", max_input_tokens: 500000 }],
+              data: [
+                { ...info, id: "claude-sonnet-5-5", max_input_tokens: 500000 },
+              ],
               has_more: false,
               first_id: "claude-sonnet-5-5",
               last_id: "claude-sonnet-5-5",

@@ -21,7 +21,7 @@
    compositions with bounded layout tokens, host-defined local interactions and explicit revision-aware
    feedback. Concepts do not execute generated code, edit workspace files or grant action authority.
    [Plan](116-ui-concept-previews.md).
-4. **`123` — Google API provider.** Wire the reserved `google` provider as an API-key account on
+4. **`123` — Google API provider (IMPLEMENTED — live verification and PR118 contract tests pending).** Wire the reserved `google` provider as an API-key account on
    `@google/genai`, stateless (Interactions API with `store: false`, or `generateContent` if Interactions
    is not GA), replaying thought signatures through the shared native carrier.
    [Plan](123-google-api-provider.md).

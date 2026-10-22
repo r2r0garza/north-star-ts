@@ -3,7 +3,7 @@ import { cleanupToolMedia } from "../../media/tool-media"
 import { getDb } from "../connection"
 import type { Conversation, ConversationSearchResult, Mode } from "../types"
 import {
-  REASONING_EFFORTS,
+  REASONING_EFFORT_PATTERN,
   type ReasoningEffort,
 } from "../../../shared/reasoning-effort"
 
@@ -58,10 +58,11 @@ function publishConversationChange(conversationIds: string[]): void {
   }
 }
 
-// Renderer-supplied effort: only known levels are stored, anything else is null.
+// Renderer-supplied effort: only level-shaped names are stored, anything else
+// is null. Adapters check the name against the model's own list.
 function reasoningEffort(value: unknown): ReasoningEffort | null {
-  return REASONING_EFFORTS.includes(value as ReasoningEffort)
-    ? (value as ReasoningEffort)
+  return typeof value === "string" && REASONING_EFFORT_PATTERN.test(value)
+    ? value
     : null
 }
 

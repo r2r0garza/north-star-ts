@@ -9,7 +9,8 @@ import {
 import { replayToolCallArguments } from "../tool-call-arguments"
 import type { LlmClient } from "./index"
 import {
-  REASONING_EFFORTS,
+  effortOrDefault,
+  REASONING_EFFORT_PATTERN,
   type ReasoningEffort,
 } from "../../../shared/reasoning-effort"
 
@@ -50,27 +51,22 @@ export class ContextOverflowError extends Error {
 // Per-account model catalog, filled by models.list (import) and lazily by
 // models.retrieve on first use, so context windows survive an app restart.
 const catalogs = new Map<string, Map<string, ModelInfo>>()
-// Each account's capability lookup, for the composer's effort picker.
-const infoLookups = new Map<
-  string,
-  (model: string) => Promise<ModelInfo | undefined>
->()
-
-// The effort levels the Models API says this model accepts, lowest first.
+// The effort levels the Models API says this model accepts, in its order
+// (lowest first). Level names are the capability's keys, not a fixed list.
 export function effortLevels(info?: ModelInfo): ReasoningEffort[] {
   const effort = info?.capabilities?.effort as
-    | (Record<string, { supported?: boolean }> & { supported?: boolean })
+    | Record<string, { supported?: boolean } | boolean | undefined>
     | undefined
-  return effort?.supported
-    ? REASONING_EFFORTS.filter((level) => effort[level]?.supported)
-    : []
-}
-
-export async function anthropicEffortLevels(
-  accountId: string,
-  modelId: string
-): Promise<ReasoningEffort[]> {
-  return effortLevels(await infoLookups.get(accountId)?.(modelId))
+  if (!effort || effort.supported !== true) return []
+  return Object.entries(effort)
+    .filter(
+      ([level, value]) =>
+        level !== "supported" &&
+        REASONING_EFFORT_PATTERN.test(level) &&
+        typeof value === "object" &&
+        value?.supported === true
+    )
+    .map(([level]) => level)
 }
 
 export function contextWindowFor(
@@ -118,13 +114,11 @@ export function translateRequest(
   info?: ModelInfo
 ): { params: Record<string, any>; prefix: string } {
   const model = String(body.model)
-  const tools = (Array.isArray(body.tools) ? body.tools : []).map(
-    (t: any) => ({
-      name: t.function.name,
-      description: t.function.description ?? "",
-      input_schema: t.function.parameters ?? { type: "object" },
-    })
-  )
+  const tools = (Array.isArray(body.tools) ? body.tools : []).map((t: any) => ({
+    name: t.function.name,
+    description: t.function.description ?? "",
+    input_schema: t.function.parameters ?? { type: "object" },
+  }))
   const system: string[] = []
   const messages: Message[] = []
   const push = (role: "user" | "assistant", blocks: Block[]) => {
@@ -180,7 +174,8 @@ export function translateRequest(
       ]
       if (!canonical.length) continue
       // The Messages API requires a leading user turn.
-      if (!messages.length) push("user", [{ type: "text", text: "(continued)" }])
+      if (!messages.length)
+        push("user", [{ type: "text", text: "(continued)" }])
       const at = prefix()
       const replayed = replayCarrier(
         m[nativeAssistant],
@@ -218,10 +213,7 @@ export function translateRequest(
   const adaptive =
     info?.capabilities?.thinking?.types?.adaptive?.supported !== false
   const effort = info?.capabilities?.effort?.supported
-  // The composer's pick when this model accepts it; otherwise the default.
-  const picked = effortLevels(info).find(
-    (level) => level === body.reasoning_effort
-  )
+  const levels = effortLevels(info)
   const maxTokens = Number(body.max_tokens ?? body.max_completion_tokens)
   const params: Record<string, any> = {
     model,
@@ -256,12 +248,18 @@ export function translateRequest(
           betas: [BINDING_BETA],
         }
       : {}),
-    // Defaults differ by model, so set effort explicitly. Small caps are
-    // auxiliary calls (titles, commit messages) that must not think them away.
+    // Defaults differ by model, so set effort explicitly: the composer's pick,
+    // else medium. Small caps are auxiliary calls (titles, commit messages)
+    // that must not think them away.
     ...(effort
       ? {
           output_config: {
-            effort: picked ?? (maxTokens < 4096 ? "low" : "high"),
+            effort:
+              !body.reasoning_effort &&
+              maxTokens < 4096 &&
+              levels.includes("low")
+                ? "low"
+                : (effortOrDefault(body.reasoning_effort, levels) ?? "medium"),
           },
         }
       : {}),
@@ -510,7 +508,6 @@ export function buildAnthropicClient(options: {
     }
     return lookup
   }
-  infoLookups.set(options.accountId, info)
 
   return {
     compatibilityProbes: false,
@@ -530,7 +527,11 @@ export function buildAnthropicClient(options: {
           try {
             await stream.withResponse()
             if (!body.stream)
-              return completion(await stream.finalMessage(), params.model, prefix)
+              return completion(
+                await stream.finalMessage(),
+                params.model,
+                prefix
+              )
           } catch (error) {
             throw mapError(error)
           }
@@ -538,6 +539,7 @@ export function buildAnthropicClient(options: {
         },
       },
     },
+    effortLevels: async (model) => effortLevels(await info(model)),
     models: {
       list: async () => {
         const data: ModelInfo[] = []

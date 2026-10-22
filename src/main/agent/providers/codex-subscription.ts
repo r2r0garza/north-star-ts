@@ -1,5 +1,9 @@
 import type { LlmClient } from "./index"
-import type { ReasoningEffort } from "../../../shared/reasoning-effort"
+import {
+  effortOrDefault,
+  REASONING_EFFORT_PATTERN,
+  type ReasoningEffort,
+} from "../../../shared/reasoning-effort"
 
 export const CODEX_SUBSCRIPTION_BASE_URL =
   "https://chatgpt.com/backend-api/codex"
@@ -28,6 +32,8 @@ interface BuildRequestInput {
   model: string
   maxOutputTokens: number
   body: Record<string, unknown>
+  // The model's catalog levels; the composer's pick must be one of them.
+  efforts?: ReasoningEffort[]
 }
 
 interface CodexSubscriptionSecret {
@@ -111,13 +117,10 @@ function responsesTools(
   return converted.length > 0 ? converted : undefined
 }
 
-// shortcut: one effort list for every Codex model, as the catalog parser keeps
-// only model ids; read per-model levels from the catalog if a model rejects one.
-export const CODEX_EFFORTS: ReasoningEffort[] = ["low", "medium", "high"]
-
 export function buildCodexSubscriptionRequest({
   model,
   body,
+  efforts = [],
 }: BuildRequestInput): Record<string, unknown> {
   const messages = Array.isArray(body.messages)
     ? (body.messages as ChatMessage[])
@@ -193,13 +196,13 @@ export function buildCodexSubscriptionRequest({
     input,
     stream: true,
     store: false,
-    // The composer's effort, else the Codex CLI's default: without an effort,
-    // newer models answer without reasoning; without a summary request, none
-    // is sent to show.
+    // The composer's effort when the model lists it, else medium: without an
+    // effort, newer models answer without reasoning; without a summary
+    // request, none is sent to show.
     reasoning: {
-      effort: CODEX_EFFORTS.includes(body.reasoning_effort as ReasoningEffort)
-        ? body.reasoning_effort
-        : "medium",
+      effort:
+        effortOrDefault(body.reasoning_effort as ReasoningEffort, efforts) ??
+        "medium",
       summary: "auto",
     },
   }
@@ -477,7 +480,10 @@ async function* codexSseToChatStream(
       }
       continue
     }
-    if (type === "response.output_item.done" && event.item?.type === "reasoning") {
+    if (
+      type === "response.output_item.done" &&
+      event.item?.type === "reasoning"
+    ) {
       seen.items++
       // The finished item carries the summary too; use it when none streamed.
       const text = (Array.isArray(event.item.summary) ? event.item.summary : [])
@@ -860,6 +866,32 @@ export function parseCodexSubscriptionModels(json: unknown): string[] {
     collectFallbackModelIds(json, ids)
   }
   return [...ids].sort((a, b) => a.localeCompare(b))
+}
+
+// Each listed model's reasoning levels, in catalog order.
+export function parseCodexReasoningLevels(
+  json: unknown
+): Map<string, ReasoningEffort[]> {
+  const models = (json as { models?: unknown } | null)?.models
+  return new Map(
+    (Array.isArray(models) ? models : []).flatMap(
+      (m): Array<[string, ReasoningEffort[]]> =>
+        typeof m?.slug === "string" &&
+        Array.isArray(m.supported_reasoning_levels)
+          ? [
+              [
+                m.slug.trim(),
+                m.supported_reasoning_levels
+                  .map((l: any) => l?.effort)
+                  .filter(
+                    (e: unknown): e is string =>
+                      typeof e === "string" && REASONING_EFFORT_PATTERN.test(e)
+                  ),
+              ],
+            ]
+          : []
+    )
+  )
 }
 
 export async function preflightCodexSubscriptionBackend(input: {
@@ -1250,7 +1282,18 @@ export function buildCodexSubscriptionClient(input: {
       error.status = probe.status
       throw error
     }
+    levels = parseCodexReasoningLevels(json)
     return { data: parseCodexSubscriptionModels(json).map((id) => ({ id })) }
+  }
+  // Levels from the last catalog fetch; fetched once on demand otherwise.
+  let levels: Map<string, ReasoningEffort[]> | undefined
+  let loading: Promise<unknown> | undefined
+  const effortLevels = async (model: string) => {
+    if (!levels) {
+      loading ??= listModels().catch(() => (loading = undefined))
+      await loading
+    }
+    return levels?.get(model.trim()) ?? []
   }
   const create = async (body: Record<string, unknown>, ...rest: unknown[]) => {
     const opts = rest[1] as { signal?: AbortSignal } | undefined
@@ -1267,6 +1310,8 @@ export function buildCodexSubscriptionClient(input: {
       model,
       maxOutputTokens,
       body,
+      // Only a pick needs checking; without one the default applies.
+      efforts: body.reasoning_effort ? await effortLevels(model) : [],
     })
     const clientVersion = await resolveClientVersion()
     const send = async (accessToken: string) => {
@@ -1325,5 +1370,6 @@ export function buildCodexSubscriptionClient(input: {
   return {
     chat: { completions: { create } },
     models: { list: listModels },
+    effortLevels,
   }
 }

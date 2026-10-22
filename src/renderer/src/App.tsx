@@ -156,7 +156,10 @@ import type {
 // A pending approval lives inside a tools segment (on the matching call's
 // `approval`), so restoring a switched-away turn restores its approval card too.
 import type { SteeringState } from "../../shared/steering"
-import type { ReasoningEffort } from "../../shared/reasoning-effort"
+import {
+  effortOrDefault,
+  type ReasoningEffort,
+} from "../../shared/reasoning-effort"
 
 interface LiveTurn {
   segments: LiveSegment[]
@@ -240,13 +243,11 @@ function appendLiveText(turn: LiveTurn, delta: string): LiveTurn {
   }
 }
 
-// Composer label for a reasoning effort (null = the provider's default).
-function effortLabel(effort: ReasoningEffort | null): string {
-  return effort === null
-    ? "Default effort"
-    : effort === "xhigh"
-      ? "Extra high"
-      : effort[0].toUpperCase() + effort.slice(1)
+// Composer label for a provider-named reasoning effort.
+function effortLabel(effort: ReasoningEffort): string {
+  return effort === "xhigh"
+    ? "Extra high"
+    : effort[0].toUpperCase() + effort.slice(1)
 }
 
 // Append streamed reasoning, coalescing into a trailing reasoning segment the
@@ -976,6 +977,8 @@ function App(
   const effectiveIsCli =
     effectiveAccount?.account.provider === "claude_code" ||
     effectiveAccount?.account.provider === "codex_cli"
+  // The level requests will use, as the adapters resolve it.
+  const shownEffort = effortOrDefault(selEffort, effortLevels)
   useEffect(() => {
     setEffortLevels([])
     if (!effAccountId || !effModelId) return
@@ -2717,9 +2720,10 @@ function App(
       })
     }
   }
-  // Pick this conversation's reasoning effort (null = provider default).
-  // Persisted like the model; carried into create() on first send otherwise.
-  async function selectEffort(effort: ReasoningEffort | null) {
+  // Pick this conversation's reasoning effort (unset = medium, see
+  // effortOrDefault). Persisted like the model; carried into create() on first
+  // send otherwise.
+  async function selectEffort(effort: ReasoningEffort) {
     setSelEffort(effort)
     if (conversationId) {
       await window.cowork.db.conversations.update(conversationId, { effort })
@@ -3356,19 +3360,19 @@ function App(
             )}
             {!rightPanelOpen && modelPicker}
             {rightPanelOpen && modelPickerCompact}
-            {!effectiveIsCli && effortLevels.length > 0 && (
+            {!effectiveIsCli && shownEffort && (
               <DropdownMenu>
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <DropdownMenuTrigger asChild>
                       <button
                         type="button"
-                        aria-label={`Reasoning effort: ${effortLabel(selEffort)}`}
+                        aria-label={`Reasoning effort: ${effortLabel(shownEffort)}`}
                         className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                       >
                         <Gauge className="size-4" />
                         {!rightPanelOpen && (
-                          <span>{effortLabel(selEffort)}</span>
+                          <span>{effortLabel(shownEffort)}</span>
                         )}
                         <ChevronDown className="size-3 shrink-0 opacity-60" />
                       </button>
@@ -3377,12 +3381,12 @@ function App(
                   <TooltipContent>Reasoning effort</TooltipContent>
                 </Tooltip>
                 <DropdownMenuContent align="start">
-                  {[null, ...effortLevels].map((level) => (
+                  {effortLevels.map((level) => (
                     <DropdownMenuItem
-                      key={level ?? "default"}
+                      key={level}
                       onClick={() => void selectEffort(level)}
                       className={cn(
-                        level === selEffort && "bg-accent font-medium"
+                        level === shownEffort && "bg-accent font-medium"
                       )}
                     >
                       {effortLabel(level)}

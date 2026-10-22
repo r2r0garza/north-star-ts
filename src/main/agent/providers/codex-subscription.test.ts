@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
   buildCodexSubscriptionRequest,
+  parseCodexReasoningLevels,
   completeCodexSubscriptionDeviceAuth,
   codexSubscriptionResponseToChat,
   buildCodexSubscriptionClient,
@@ -117,21 +118,40 @@ describe("codex subscription adapter", () => {
     expect(request).not.toHaveProperty("max_output_tokens")
   })
 
-  it("sends the composer's effort, defaulting to medium", () => {
-    const effort = (reasoning_effort?: string) =>
+  it("sends the composer's effort when the model lists it, else medium", () => {
+    const efforts = parseCodexReasoningLevels({
+      models: [
+        {
+          slug: "gpt-6.1-sol",
+          supported_reasoning_levels: [
+            { effort: "low", description: "Fast responses" },
+            { effort: "medium", description: "Balanced" },
+            { effort: "high", description: "Deeper" },
+            { effort: "xhigh", description: "Extra high" },
+            { effort: "max", description: "Maximum" },
+            { effort: "ultra", description: "Delegates" },
+          ],
+        },
+      ],
+    }).get("gpt-6.1-sol")
+    expect(efforts).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"])
+    const effort = (reasoning_effort?: string, levels = efforts) =>
       (
         buildCodexSubscriptionRequest({
-          model: "gpt-5.5",
+          model: "gpt-6.1-sol",
           maxOutputTokens: 123,
+          efforts: levels,
           body: {
             messages: [{ role: "user", content: "hi" }],
             reasoning_effort,
           },
         }).reasoning as { effort: string }
       ).effort
-    expect(effort("high")).toBe("high")
+    expect(effort("ultra")).toBe("ultra")
     expect(effort()).toBe("medium")
-    expect(effort("max")).toBe("medium")
+    // A stale pick another model listed falls back to the default.
+    expect(effort("ultra", ["low", "medium", "high"])).toBe("medium")
+    expect(effort("high", [])).toBe("medium")
   })
 
   it("preserves canonical tool images and attribution in Responses input", () => {
@@ -760,6 +780,37 @@ describe("codex subscription adapter", () => {
       data: [{ id: "gpt-5.6-sol" }],
     })
     expect(persisted).toHaveLength(1)
+  })
+
+  it("reads per-model effort levels from one catalog fetch", async () => {
+    let catalogCalls = 0
+    const client = buildCodexSubscriptionClient({
+      clientVersion: "0.151.0",
+      bearerToken: jwtWithExp(Math.floor(Date.now() / 1000) + 3600),
+      fetchImpl: async () => {
+        catalogCalls += 1
+        return Response.json({
+          models: [
+            {
+              slug: "gpt-6.1-sol",
+              visibility: "list",
+              supported_reasoning_levels: [
+                { effort: "low" },
+                { effort: "medium" },
+                { effort: "ultra" },
+              ],
+            },
+          ],
+        })
+      },
+    })
+    expect(await client.effortLevels?.("gpt-6.1-sol")).toEqual([
+      "low",
+      "medium",
+      "ultra",
+    ])
+    expect(await client.effortLevels?.("gpt-6-luna")).toEqual([])
+    expect(catalogCalls).toBe(1)
   })
 
   it("classifies preflight auth failures without exposing tokens", async () => {
