@@ -1,6 +1,11 @@
 # PR113: Adopt shadcn Trace for agent activity
 
-> Status: **Proposed — not implemented.** Renderer-only adoption of the installed Trace primitives. Companion: [PR114: Code Block adoption](114-shadcn-code-block-adoption.md).
+> Status: **In progress.** Renderer-only adoption of the installed Trace primitives. The implementation was already partially present when this plan was reviewed; progress is recorded below. Companion: [PR114: Code Block adoption](114-shadcn-code-block-adoption.md).
+>
+> **Implementation progress (reviewed 2026-10-21):**
+> - **Completed in source:** installed Trace primitives; tool-group and individual tool disclosures; live Thinking/retry/background-command indicators; delegated-agent result summaries; workflow tool-call disclosures retaining the existing response-pairing adapter; shared read-only todo rows for active and historical task transcripts.
+> - **Remaining:** migrate Trace presentation to ordered workflow step activity while preserving its metadata hierarchy and existing open-state behavior; complete the plan's targeted regression matrix (including workflow refresh/pairing and media/approval/transcript regressions); run repository typecheck, full tests and build; perform the specified manual Electron accessibility, layout, theme, motion and interaction checks.
+> - **Verification note:** the source review confirmed the listed compositions, but did not execute tests, typecheck, build, or manual Electron checks. This checklist is a progress snapshot, not a claim of acceptance.
 
 ## Objective and recommendation
 

@@ -1,12 +1,12 @@
-# PR119: First-class Electron application launch and control
+# PR119: Electron development-app launch and control for the coding agent
 
 > Status: **PLANNED — not implemented.** Drafted 2026-10-21. This document proposes a capability; it does not authorize launching apps, installing dependencies, or implementing the tools.
 
 ## Objective
 
-Give North Star agents a first-class capability to launch a real Electron application, inspect its windows, capture screenshots, interact with its UI, read bounded diagnostics, and stop it. Launching North Star itself in an isolated test instance is a primary acceptance case. Agents should not need to generate temporary Electron main-process scripts or drive an entire qualification session through `exec_command`.
+Give North Star's coding agent a first-class capability to launch a workspace-backed Electron application under development, inspect its windows, capture screenshots, interact with its UI, read bounded diagnostics, and stop it. Launching North Star itself from development sources in an isolated test instance is a primary acceptance case. Agents should not need to generate temporary Electron main-process scripts or drive an entire qualification session through `exec_command`.
 
-This is application automation, not an Electron window embedded inside the agent browser. The target runs as a separate process with its own native windows. A successful component fixture is not evidence that the full application works, and a successful development run is not evidence that the packaged app works.
+This is a coding-agent development and verification capability, not general computer use or an Electron window embedded inside the agent browser. The target runs as a separate process with its own native windows. A successful component fixture is not evidence that the full application works. Bundled/packaged target launch and qualification are deferred to [PR120](120-bundled-electron-application-control.md), not prerequisites for this plan.
 
 The user asked for a new launch capability, not implementation yet. This plan includes the minimum companion controls needed to make launch useful for testing; they share one managed application session rather than introducing a general desktop-control system.
 
@@ -22,9 +22,9 @@ The existing agent browser has conversation-owned sessions, per-turn abortable h
 
 ## Scope and boundaries
 
-Initial support is for agent-owned launches of an explicitly identified local Electron development app or packaged executable. Include multiple target windows, navigation/reload invalidation, diagnostics, screenshots, deterministic cleanup and a human handoff. Start with workspace-backed local North Star mode; do not silently offer host execution to Chat without a workspace, remote/container workspaces, or unsupported provider bridges.
+Initial support is for agent-owned launches of an explicitly identified local Electron development app from a workspace, using a resolved development Electron runtime and explicit app entry. Include multiple target windows, navigation/reload invalidation, diagnostics, screenshots, deterministic cleanup and a human handoff. Start with workspace-backed local North Star mode; do not silently offer host execution to Chat without a workspace, remote/container workspaces, or unsupported provider bridges.
 
-Attaching to an already running personal app, controlling the live North Star host, arbitrary CDP endpoints/PIDs, general OS desktop automation, native menus/dialog automation, dependency installation, automatic app building and persistent unattended app services are out of scope. Native dialogs may require a handoff. Unsupported packaged apps return a precise capability error rather than silently relaunching with weakened security flags.
+Bundled/packaged target executables, attaching to an already running personal app, controlling the live North Star host, arbitrary CDP endpoints/PIDs, general OS desktop automation, native menus/dialog automation, dependency installation, automatic app building and persistent unattended app services are out of scope. Native dialogs may require a handoff. Packaged target requests return a precise unsupported-capability error; they are deferred to PR120.
 
 A target application executes code with the user's OS privileges. Its main process, preload, IPC and dependencies can access host resources. A new user-data directory prevents accidental profile reuse only when the target actually honors it; it is not a filesystem or network sandbox. Do not claim otherwise. Default tests must use controlled accounts/data and avoid real external mutations.
 
@@ -34,7 +34,7 @@ Use a dedicated `electron_*` family rather than overloading `browser_*`. Names a
 
 | Tool | Contract |
 | --- | --- |
-| `electron_launch` | Launch one approved executable with an argument array, explicit launch mode and optional workspace-relative cwd. Return host-owned `sessionId`, launch/profile status and current windows, or a bounded startup error. No shell command string. |
+| `electron_launch` | Launch one approved development Electron runtime with an explicit workspace app entry, argument array and optional workspace-relative cwd. Packaged target mode is unsupported. Return host-owned `sessionId`, launch/profile status and current windows, or a bounded startup error. No shell command string. |
 | `electron_status` | List this conversation's sessions or inspect one session's lifecycle, windows, selected target, exit information and bounded startup diagnostics. Must not launch or reconnect to arbitrary processes. |
 | `electron_select_window` | Select an owned `windowId` obtained from status; return title, URL and new target generation. Never guess the first window when several are eligible. |
 | `electron_snapshot` | Return a bounded accessibility-oriented outline with actionable refs scoped to session, window and document/snapshot generation. |
@@ -47,19 +47,19 @@ Use a dedicated `electron_*` family rather than overloading `browser_*`. Names a
 
 Every window operation supplies a `sessionId`; selection is session-local and conversation-owned. Returned refs are opaque and do not act as selectors in unrelated windows. A stale or detached target requires a fresh inventory/snapshot rather than fallback to another visible window. Discover the main UI, splash screens, settings windows and popups without treating every Chromium target as an eligible renderer.
 
-Launch inputs are bounded and normalized. Validate executable identity, cwd, argument count/length, timeouts and supported modes before approval. Dev mode may use a resolved Electron executable plus an explicit app entry; packaged mode uses the resolved app executable (including platform-specific bundle resolution). Do not guess app arguments or run package scripts as a hidden launch step. Report missing builds/dependencies as actionable errors; build/install remains a separate approved operation.
+Launch inputs are bounded and normalized. Validate executable identity, cwd, argument count/length, timeouts and supported modes before approval. Use a resolved development Electron executable plus an explicit workspace app entry; do not resolve installed application bundles or accept packaged target mode. Do not guess app arguments or run package scripts as a hidden launch step. Report missing builds/dependencies as actionable errors; build/install remains a separate approved operation.
 
 Do not expose arbitrary main-process evaluation, Node evaluation, IPC invocation, preload installation, raw debugging protocol forwarding, unrestricted environment inheritance, or free-form JavaScript evaluation in the initial tools. If advanced evaluation is later justified, give it a separate design, permission and approval boundary; the browser's page-only guarantees do not transfer to Electron renderers with Node/preload access.
 
 ## Backend decision gate
 
-Create a main-process-owned Electron application session manager with a narrow automation adapter. Investigate pinned Playwright Electron support first, including its experimental/version-sensitive limitations. Compare renderer-only CDP connection if necessary; do not conflate a renderer connection with control of the Electron application lifecycle. Choose one supported backend after demonstrating development and packaged launches, not by assuming Playwright is already bundled.
+Create a main-process-owned Electron application session manager with a narrow automation adapter. Investigate pinned Playwright Electron support first, including its experimental/version-sensitive limitations. Compare renderer-only CDP connection if necessary; do not conflate a renderer connection with control of the Electron application lifecycle. Choose one supported backend after demonstrating development launches, not by assuming Playwright is already bundled. Packaged target compatibility is a separate PR120 decision gate.
 
 Keep privileged application handles inside trusted host code. Model arguments can only address operations in the narrow contract; they cannot invoke the backend's Electron main-process evaluation API. Treat launch/debugging access as authority over the target, never as a safe read-only attachment.
 
 Prove transport ownership and locality. Prefer an owned pipe/private transport when supported. If loopback debugging is necessary, validate connection to the process launched by this session, minimize its lifetime and document local-process exposure. No public debugging listener, model-supplied endpoint, inherited debug flags, arbitrary process discovery, or attachment to the controlling North Star instance. Reject unsupported unsafe launch flag combinations rather than disabling Chromium sandboxing or web security to make a test pass.
 
-Resolve automation dependencies in the packaged host explicitly. Do not require global Node or download a second browser runtime just to automate an app's own Electron. Qualify ASAR/resource paths, subprocess execution, native modules, signed/packaged executable restrictions, macOS application bundles, Windows process trees and Linux display requirements. Publish a supported-version/platform matrix and explicit unsupported states.
+Resolve automation dependencies in the packaged host explicitly. Do not require global Node or download a second browser runtime just to automate an app's own Electron. Qualify the controlling host's ASAR/resource paths, subprocess execution and native modules as applicable, plus development-target Windows process trees and Linux display requirements. Target bundle resolution, signing restrictions and packaged-target compatibility belong to PR120. Shipping the controller in packaged form does not imply support for packaged target apps. Publish a supported-version/platform matrix and explicit unsupported states.
 
 ## Launch approval and profile isolation
 
@@ -101,7 +101,7 @@ Do not add a full QA dashboard or recipe editor in this PR. The initial visible 
 
 ### Phase A: Runtime and isolation spike
 
-Choose and pin the automation backend only after a small fixture and a full North Star dev instance demonstrate launch, window inventory, renderer snapshot/capture, real automation input and teardown. Establish North Star's test-profile startup contract. Record which flags/transports are required, privilege exposure, packaging constraints and the OS/version support matrix. Verify no access to the controller window or default user profile. No production tool exposure until this gate passes.
+Choose and pin the automation backend only after a small fixture and a full North Star dev instance demonstrate launch, window inventory, renderer snapshot/capture, real automation input and teardown. Establish North Star's test-profile startup contract. Record which flags/transports are required, privilege exposure, controller runtime/dependency constraints and the development-target OS/version support matrix. Verify no access to the controller window or default user profile. No production tool exposure until this gate passes.
 
 ### Phase B: Managed launch, ownership and diagnostics
 
@@ -113,7 +113,7 @@ Add selected-window snapshots, stale-safe refs, screenshot media emission, discr
 
 ### Phase D: Capability exposure and end-to-end qualification
 
-Wire explicit tool permissions, supported modes/providers, prompt guidance, context state and transcript representation. Qualify the full North Star app and at least one independent Electron fixture, then packaged targets on supported platforms. Document unsupported native UI and apps that cannot establish isolated launch. Ship behind an opt-in feature flag until qualification passes; disable launch independently of historical evidence rendering.
+Wire explicit tool permissions, supported modes/providers, prompt guidance, context state and transcript representation. Qualify the full North Star development app and at least one independent Electron development fixture on supported platforms. Do not gate this coding-agent capability on packaged target support. Document unsupported native UI and apps that cannot establish isolated launch. Ship behind an opt-in feature flag until qualification passes; disable launch independently of historical evidence rendering.
 
 ## Verification and acceptance criteria
 
@@ -123,10 +123,10 @@ Use a real multi-window Electron fixture to verify popup/child discovery, naviga
 
 The full North Star smoke path launches a second instance with a verified disposable profile, demonstrates no normal conversation/settings/database reuse, observes its actual primary window, navigates a local no-provider flow, captures evidence, opens/closes another window when available, closes the test instance and verifies resource cleanup without disturbing the controller. External model/provider actions are a separate opt-in test using controlled credentials and explicit authorization. A component fixture alone cannot satisfy this acceptance case.
 
-Repeat the supported smoke path against a packaged target, including full quit/relaunch and persistence limited to the test profile. Verify dev and packaged controller execution separately. Run targeted unit/integration suites, `pnpm typecheck`, `pnpm test` and `pnpm build` during implementation; record unrelated failures without claiming a clean full suite. Qualification records include OS, host/target/backend versions, launch mode, input method, pass/fail/unverified checks and cleanup results.
+Repeat the development-target smoke path through full quit/relaunch and verify persistence is limited to the test profile. Verify development and packaged controller execution separately when claiming those host distributions are supported; packaged target qualification is deferred to PR120. Run targeted unit/integration suites, `pnpm typecheck`, `pnpm test` and `pnpm build` during implementation; record unrelated failures without claiming a clean full suite. Qualification records include OS, host/target/backend versions, launch mode, input method, pass/fail/unverified checks and cleanup results.
 
-Done means an authorized agent can launch the real supported app, see and target its windows, inspect/capture/interact, hand control to the user and close it without generated shell automation scripts, cross-conversation access or accidental use of the personal profile. Report launch success, rendered readiness, exercised UI behavior and packaged qualification as separate facts.
+Done means an authorized coding agent can launch the real supported development app, see and target its windows, inspect/capture/interact, hand control to the user and close it without generated shell automation scripts, cross-conversation access or accidental use of the personal profile. Report launch success, rendered readiness and exercised UI behavior as separate facts. Do not claim bundled/packaged target qualification from development evidence.
 
 ## Deferred follow-ups
 
-Existing-process attachment and personal profiles require a separate consent/ownership design. Native desktop controls, main-process debugging, arbitrary evaluation, generalized environment/service orchestration, PR112 recipe integration and durable QA proof suites are separate work. Backend-specific support decisions are resolved by Phase A and recorded here before implementation proceeds beyond the spike.
+Bundled/packaged Electron target launch and qualification are deferred to [PR120](120-bundled-electron-application-control.md), listed in the deferred roadmap. Existing-process attachment and personal profiles require a separate consent/ownership design. Native desktop controls, main-process debugging, arbitrary evaluation, generalized environment/service orchestration, PR112 recipe integration and durable QA proof suites are separate work. Backend-specific support decisions are resolved by Phase A and recorded here before implementation proceeds beyond the spike.
