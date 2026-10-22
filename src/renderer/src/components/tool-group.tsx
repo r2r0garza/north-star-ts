@@ -1,4 +1,12 @@
-import { useState } from "react"
+import { useLayoutEffect, useRef, useState } from "react"
+import { CommandOutput } from "@/components/command-output"
+import {
+  commandPresentation,
+  isCommandTool,
+  snapshotOutcome,
+  snapshotLabel,
+} from "@/lib/command-presentation"
+import { projectCommandOutcomes } from "@/lib/command-outcomes"
 import { executionArguments } from "../../../shared/tool-activity"
 import {
   BookOpen,
@@ -53,6 +61,7 @@ const ICONS: Record<string, LucideIcon> = {
   list_files_tool: FolderOpen,
   read_skill: BookOpen,
   run_shell_tool: Terminal,
+  exec_command: Terminal,
   spawn_subagent: Users,
   spawn_subagents: Users,
 }
@@ -153,8 +162,11 @@ function browserApprovalDetails(
 }
 
 // Approval waits are not execution. Aggregate precedence: running, approval, failure, settled.
-export function ToolGroup({ calls }: { calls: ToolUse[] }) {
-  const [open, setOpen] = useState(false)
+export function ToolGroup({ calls: originalCalls }: { calls: ToolUse[] }) {
+  const calls = projectCommandOutcomes(originalCalls)
+  const [open, setOpen] = useState(() =>
+    calls.some((call) => isCommandTool(call.name) && call.status === "running")
+  )
   if (calls.length === 1) {
     return (
       <Trace>
@@ -166,9 +178,29 @@ export function ToolGroup({ calls }: { calls: ToolUse[] }) {
     (call) => call.approval?.status === "pending"
   ).length
   const running = calls.filter(
-    (call) => call.status === "running" && call.approval?.status !== "pending"
+    (call) =>
+      (call.status === "running" ||
+        (!!call.commandLive &&
+          commandPresentation(call.name, call.commandLive)?.outcome ===
+            "reported_running")) &&
+      !["pending", "denied"].includes(call.approval?.status ?? "")
   ).length
-  const failed = calls.filter((call) => call.status === "error").length
+  const failed = calls.filter(
+    (call) =>
+      call.status === "error" ||
+      (call.commandOutcome
+        ? snapshotOutcome(call.commandOutcome)
+        : commandPresentation(call.name, call.commandLive ?? call.result)
+            ?.outcome) === "failure"
+  ).length
+  const unknown = calls.filter((call) =>
+    ["unknown", "reported_running"].includes(
+      (call.commandOutcome
+        ? snapshotOutcome(call.commandOutcome)
+        : commandPresentation(call.name, call.commandLive ?? call.result)
+            ?.outcome) ?? ""
+    )
+  ).length
   const interrupted = calls.filter(
     (call) => call.status === "interrupted"
   ).length
@@ -184,6 +216,7 @@ export function ToolGroup({ calls }: { calls: ToolUse[] }) {
     awaiting && `${awaiting} awaiting approval`,
     failed && `${failed} failed`,
     interrupted && `${interrupted} interrupted`,
+    unknown && `${unknown} final outcome unavailable`,
   ]
     .filter(Boolean)
     .join(", ")
@@ -347,33 +380,87 @@ function subagentStatus(status: string) {
   return undefined
 }
 
-function ToolUseRow({ use }: { use: ToolUse }) {
+export function ActiveCommand({ call }: { call: ToolUse }) {
+  const ref = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const surface = ref.current
+    return () => {
+      if (!surface?.contains(document.activeElement)) return
+      const parent = surface.parentElement
+      queueMicrotask(() => {
+        if (document.activeElement !== document.body) return
+        parent
+          ?.querySelector<HTMLButtonElement>(
+            '[data-slot="trace-collapsible-trigger"]'
+          )
+          ?.focus({ preventScroll: true })
+      })
+    }
+  }, [])
+  return (
+    <Trace ref={ref} data-slot="active-command">
+      <ToolUseRow use={call} standalone />
+    </Trace>
+  )
+}
+
+function ToolUseRow({
+  use,
+  standalone = false,
+}: {
+  use: ToolUse
+  standalone?: boolean
+}) {
   const [open, setOpen] = useState(false)
   const Icon = iconFor(use.name)
-  const error = use.status === "error"
+  const originalCommand = commandPresentation(
+    use.name,
+    use.commandLive ?? use.result
+  )
+  const command =
+    originalCommand && use.commandOutcome
+      ? {
+          ...originalCommand,
+          outcome: snapshotOutcome(use.commandOutcome),
+          label: snapshotLabel(use.commandOutcome),
+          snapshots: [use.commandOutcome],
+        }
+      : originalCommand
+  const liveRunning =
+    !!use.commandLive && command?.outcome === "reported_running"
+  const error = use.status === "error" || command?.outcome === "failure"
   const interrupted = use.status === "interrupted"
   const awaiting = use.approval?.status === "pending"
   const delegated =
     use.name === "spawn_subagents" ? subagentResults(use.result) : null
   const status = awaiting
     ? "pending"
-    : use.status === "running"
+    : (liveRunning || use.status === "running") &&
+        use.approval?.status !== "denied"
       ? "running"
       : error
         ? "error"
         : undefined
   const label = awaiting
     ? "Awaiting approval"
-    : error
-      ? "Failed"
-      : interrupted
-        ? "Interrupted"
-        : use.status === "running"
+    : use.approval?.status === "denied"
+      ? "Approval denied"
+      : command && use.status !== "interrupted"
+        ? liveRunning
           ? "Running"
-          : undefined
+          : command.label
+        : error
+          ? "Failed"
+          : interrupted
+            ? "Interrupted"
+            : use.status === "running"
+              ? "Running"
+              : undefined
+  const Header = standalone ? "div" : TraceCollapsibleTrigger
+  const Content = standalone ? "div" : TraceCollapsibleContent
   return (
-    <TraceCollapsible open={open} onOpenChange={setOpen}>
-      <TraceCollapsibleTrigger>
+    <TraceCollapsible open={standalone || open} onOpenChange={setOpen}>
+      <Header>
         <TraceLine status={status}>
           <TraceIcon>{interrupted ? <CircleSlash /> : <Icon />}</TraceIcon>
           <TraceTitle>{use.label || use.name}</TraceTitle>
@@ -382,29 +469,41 @@ function ToolUseRow({ use }: { use: ToolUse }) {
               {label}
             </TraceDescription>
           )}
-          {use.status === "done" && (
-            <TraceIcon>
-              <Check />
-            </TraceIcon>
-          )}
+          {use.status === "done" &&
+            !error &&
+            (!command || command.outcome === "success") && (
+              <TraceIcon>
+                <Check />
+              </TraceIcon>
+            )}
           {error && (
             <TraceIcon>
               <CircleAlert />
             </TraceIcon>
           )}
         </TraceLine>
-      </TraceCollapsibleTrigger>
-      <TraceCollapsibleContent className="text-xs">
+      </Header>
+      <Content className="text-xs">
         <div className="flex max-w-full min-w-0 flex-col gap-2">
           <p className="font-mono text-muted-foreground">{use.name}</p>
-          {(use.args || use.rawArgs) && (
+          {!command && !standalone && (use.args || use.rawArgs) && (
             <pre className="w-full max-w-full min-w-0 overflow-x-auto rounded-md bg-muted px-2 py-1.5 text-muted-foreground">
               {use.args
                 ? JSON.stringify(executionArguments(use.args), null, 2)
                 : use.rawArgs}
             </pre>
           )}
-          {delegated ? (
+          {command || standalone ? (
+            <CommandOutput
+              name={use.name}
+              args={use.args}
+              rawArgs={use.rawArgs}
+              result={use.result}
+              presentation={command}
+              pending={standalone && !command}
+              live={!!use.commandLive && !use.commandOutcome}
+            />
+          ) : delegated ? (
             <SubagentResults results={delegated} />
           ) : (
             use.result !== undefined && (
@@ -437,7 +536,7 @@ function ToolUseRow({ use }: { use: ToolUse }) {
             </Bubble>
           )}
         </div>
-      </TraceCollapsibleContent>
+      </Content>
     </TraceCollapsible>
   )
 }

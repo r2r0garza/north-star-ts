@@ -1,6 +1,6 @@
 # PR121: Specialized terminal rendering for command tools
 
-> Status: **Proposed — not implemented.** Renderer-only command output presentation built on the existing Trace and Code Block primitives. Related: PR113 Trace adoption, proposed PR114 Code Block adoption, and PR74/75 command completion retention/UI.
+> Status: **Complete (2026-10-21), at the user's direction following manual Electron verification.** Command presentation uses existing Trace and Code Block primitives connected to bounded runtime session updates. Active conversation command launches appear outside tool-use groups, then fold back into their local group on process completion. The dated follow-ups below supersede the original renderer-only/no-streaming and disclosure/scrolling restrictions. Related: PR113 Trace adoption, proposed PR114 Code Block adoption, and PR74/75 command completion retention/UI.
 
 ## Objective
 
@@ -9,6 +9,10 @@ Adopt the [shadcn Terminal pattern](https://ui.shadcn.com/docs/ai-elements/base/
 The existing xterm drawer serves a different purpose and must remain untouched: no changes to its component, terminal sessions, IPC, keyboard behavior, mounting, dependencies or backend. Do not route agent commands through xterm or substitute this component for the drawer.
 
 The documented Terminal is a composition of Trace and Code Block, not a required new package. Reuse installed primitives; do not add an AI SDK dependency or its data-part transport.
+
+## Original implementation brief
+
+The brief through “Deferred follow-up” records the initial snapshot-only design, not the complete current contract. The dated implementation and user-requested follow-up sections below take precedence where they change transport, disclosure defaults, scrolling or conversation grouping. Earlier verification counts describe their respective implementation stages, not a single cumulative test run.
 
 ## Current contracts and evidence
 
@@ -91,3 +95,59 @@ Run the repository's current supported typecheck/test/build commands, checking p
 ## Deferred follow-up
 
 Continuous live stdout/stderr presentation would be a separate proposal addressing bounded event delivery, throttling, ownership, persistence/replay, cleanup and user-controlled scrolling. This plan neither adds that transport nor couples command execution to the xterm drawer.
+
+## Implementation and verification — 2026-10-21
+
+Added pure renderer adapters for structured command snapshots, individually validated completion entries and the exact legacy provenance envelope/generated status line. The shared command payload uses installed Code Block primitives for literal command/output, displayed-only copy, independent 4,000-character UI clipping, source-loss metadata, cleanup diagnostics, bounded output height and an initial five-event limit with explicit expansion. Original argument strings and bounded raw results remain in a secondary disclosure. ToolGroup and workflow disclosures reuse this payload; generic tools, media and workflow response pairing remain intact.
+
+Available tool snapshots and wait completions project terminal outcomes by conversation/session identity across live/replayed chat groups and task history. Original results are never rewritten or concatenated. Conflicting final snapshots remain neutral; identical command text is not a join key. The projection does not use a global cache or wall-clock precedence.
+
+Limitation: automatic completion notifications are persisted as hidden runtime system context and do not reach live transcript segments through the current event contract. They remain hidden on replay and in workflow transcripts. This implementation deliberately does not project these hidden-only events, avoiding replay/live divergence or new transport. A launch without a visible authoritative tool snapshot retains “Running when reported” and “Final outcome unavailable in this snapshot.” Workflow calls likewise retain their individual response snapshots rather than merging sessions across calls. Continuous output, output fetching and execution controls remain deferred.
+
+Verification: 78 focused adapter/lifecycle/renderer/timeline/workflow tests pass; `pnpm typecheck` and `pnpm build` pass. The repository-wide `pnpm test` attempt reports 2,521 passed, 2 failed and 77 skipped, plus nine worker-exit errors. Both failed assertions are in the unchanged main-process `tool-error-feedback.integration.test.ts` Chat attachment/read_document cases; the full suite is not green, and these failures have not been baseline-qualified. Existing transcript tests emit React act-environment warnings. No main-process, preload, execution contract, dependency or xterm drawer file was modified. Interactive Electron light/dark/narrow-layout, keyboard and independent drawer smoke qualification was not performed in this session and remains pending.
+
+## User-requested live-output follow-up — 2026-10-21
+
+The original snapshot-only scope did not meet the expected running-command experience. This follow-up supersedes the no-streaming restrictions above: the existing command session producer emits an immediate session snapshot, cumulative bounded output at most once per 200 ms, and an immediate final snapshot (clearing any pending timer). Delivery uses a dedicated `command_output` ChatEvent through the existing event bridge, associated with the launching tool-call ID; no execution gate, process lifetime, model result format, dependency or xterm drawer changes. Task live ticks are ephemeral rather than repeatedly persisted in the event log.
+
+At this stage, chat command blocks used current session output and status together, opened running command disclosures by default, and retained the user's disclosure state on updates. The standalone-running-command follow-up below replaces that chat disclosure default with a directly visible active surface and closed command details after folding. Original arguments/results stay in raw details. Workflow disclosures also receive live task command events. No cursor-delta concatenation is performed: each live update is a producer-owned cumulative bounded snapshot. Existing source truncation metadata and the separate UI output cap remain visible.
+
+Hidden persisted background completion envelopes are parsed only as data and projected by conversation/session identity on replay, without surfacing runtime context as human prose. The final output replaces the empty launch snapshot in the main block rather than showing a completed heading above an obsolete running body. Unknown historical sessions still remain neutral. Live updates are not a full terminal emulator, do not interpret ANSI/HTML, and do not add stdin/rerun/terminate controls. Reopening a workflow reader mid-command relies on subsequent updates; there is no new session fetch/reconnect API.
+
+Verification: 210 tests pass across nine command-session, completion-inbox, presentation, command-renderer, timeline, workflow-renderer/service and task-runner test files. `pnpm typecheck`, `pnpm build` and `git diff --check` pass. Regression tests cover output before foreground return, background output coalescing, immediate final flush, no post-settlement duplicate tick, approval denial, same-block final output, raw snapshot preservation, hidden-completion replay and workflow live updates. Interactive Electron visual/keyboard qualification remains pending; the full repository suite was not rerun for this follow-up.
+
+## User-requested output auto-follow — 2026-10-21
+
+Command output Code Blocks now follow new displayed output while the reader is at the bottom. Scrolling up pauses following; returning within 24 pixels of the bottom resumes it. Initial output opens at the bottom, and the final output update follows the same rule rather than overriding manual scrollback. Only output panels follow: command text and original raw-result disclosures do not. This behavior lives in the shared payload, so chat and workflow output use the same implementation. The existing 4,000-character UI clipping policy remains unchanged; auto-follow does not fetch or expose omitted output.
+
+Verification: 46 focused command-output, workflow-renderer, command-presentation and command-outcome tests pass, including three output-scrolling regressions; TypeScript checks pass. These are DOM-level tests, not visual Electron qualification.
+
+## User-requested standalone running commands — 2026-10-21
+
+### Conversation presentation contract
+
+Active `exec_command` and legacy `run_shell_tool` launches render directly in the conversation outside the “X tool uses” disclosure. Their contextual activity heading, exact command and bounded live output are visible without expanding the group. Before the first snapshot arrives, the surface shows the command and “Waiting for output…” without inventing a session ID, exit code or other process metadata. The standalone heading is noninteractive rather than an extra disclosure users must open.
+
+When the process completes, exits nonzero, times out or terminates, the standalone surface disappears and its original call returns to the ordinary local tool group. Completion means the process reached a final state, not merely that the launching tool returned: a background launch remains standalone while its live session snapshot is running. Final output and error details remain inspectable after folding. Group counts exclude active standalone calls and include them again after folding; every tool call appears once.
+
+Ordinary calls form contiguous runs around active launches. Once a launch finishes, adjacent ordinary runs coalesce within the same artifact-bounded tool segment. Preserve original call order and the preceding group's user-selected open/closed state; folded command details default closed. If no preceding group exists, the completed call returns to the existing single-call disclosure or joins adjacent ordinary calls. Do not merge across assistant/user text, chart/table artifacts or existing timeline boundaries. Multiple active commands each retain a separate surface and stable identity while other commands finish.
+
+### Lifecycle and interaction safeguards
+
+The extraction predicate requires a command launch that is still in flight or has a current live running snapshot. Final projected outcomes, interrupted/error tool states and pending/denied approvals take precedence. Historical “Running when reported” results without live execution evidence stay in normal groups and must not become perpetual active terminals after reload. Approval waits keep the existing approval presentation rather than appearing as process execution.
+
+`poll_command`, `write_stdin`, `terminate_command` and `wait_for_events` remain ordinary tool calls; they do not create duplicate standalone surfaces for the launching session. Apply conversation/session outcome projection before extracting active launches. Keep original arguments and results, source-loss metadata, output limits, copy semantics and output auto-follow/manual scrollback behavior unchanged.
+
+When a focused standalone terminal folds, focus returns to a local tool disclosure without scrolling the page. Do not steal focus from the composer or any other element outside the removed surface. Preserve message-scroller anchors and existing memoized transcript boundaries.
+
+### Implementation surfaces and scope
+
+`src/renderer/src/lib/command-tool-segments.ts` provides pure active-launch classification and ordered group/command segmentation. `transcript-tools.tsx` applies it inside the existing deduplicated artifact segments, after outcome projection, so live and settled transcript consumers share the same presentation entry point. Canonical timeline data is not rearranged or rewritten.
+
+`ActiveCommand` in `tool-group.tsx` reuses the command row/payload rendering with an explicitly visible standalone mode; normal grouped command details default closed. `command-output.tsx` supports a pending pre-snapshot launch without fabricating process state. Changed-file pills still consume the original calls. Workflow run-detail grouping remains unchanged; only the shared output auto-follow applies there. No execution, event transport, persistence/schema, dependency or xterm drawer changes were needed for this follow-up.
+
+### Verification and manual qualification
+
+The latest focused run passes 90 tests across nine files: command segmentation, transcript-tools integration, transcript render boundaries, command output, workflow run detail, timeline, command outcomes, command presentation and transcript scrolling. Coverage includes background return before process completion, concurrent command identity, completion folding and final-output inspection, preserved prior-group disclosure state, failure summaries, approval waits, historical snapshots, artifact boundaries/deduplication and focus preservation. Existing transcript render-boundary tests still emit React act-environment warnings. TypeScript, formatting and `git diff --check` pass. The full repository suite and production build were not rerun for this presentation-only follow-up.
+
+Manual Electron qualification completed by the user on 2026-10-21: “I've manually verified Electron, it's working as designed.” This closes the pending manual qualification for the implemented experience. The user did not provide a per-scenario checklist; this confirmation should not be read as separate evidence for every theme, layout, lifecycle edge case or independent drawer smoke test described in the original QA guidance. Earlier pending-verification notes above record the state at those implementation stages and are superseded by this user confirmation.

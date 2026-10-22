@@ -29,7 +29,3 @@
    launches of workspace Electron apps, with window inspection, screenshots, UI interaction, bounded
    diagnostics and cleanup. Keep development targets separate from bundled/packaged app support deferred
    to `120`; no general desktop control. [Plan](119-electron-application-control.md).
-6. **`121` — Specialized terminal rendering for command tools.** Compose existing Trace and Code Block
-   primitives for command/output presentation, with truthful foreground/background states, bounded output
-   and safe legacy-result fallbacks. Preserve execution guardrails and the independent xterm drawer;
-   defer continuous live streaming. [Plan](121-command-terminal-rendering.md).

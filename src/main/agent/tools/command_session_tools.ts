@@ -65,6 +65,8 @@ interface AgentCommandSession {
   didSettle: boolean
   completionInbox?: CommandCompletionInbox
   completionOwner?: CommandCompletionOwner
+  emitOutput?: (result: string) => void
+  outputTimer?: NodeJS.Timeout
 }
 
 interface RenderedOutput {
@@ -493,6 +495,7 @@ async function startCommand(
     handle,
     maxOutputBytes,
     timeoutMs,
+    emitOutput: ctx.emitCommandOutput,
     completion:
       opts.background && ctx.commandCompletions && ctx.commandCompletionOwner
         ? {
@@ -551,6 +554,7 @@ function createSession(input: {
   handle: CommandSessionHandle
   maxOutputBytes: number
   timeoutMs: number
+  emitOutput?: (result: string) => void
   completion?: {
     inbox: CommandCompletionInbox
     owner: CommandCompletionOwner
@@ -582,6 +586,7 @@ function createSession(input: {
     didSettle: false,
     completionInbox: input.completion?.inbox,
     completionOwner: input.completion?.owner,
+    emitOutput: input.emitOutput,
     timeout: setTimeout(() => {
       session.timedOut = true
       session.status = "timed_out"
@@ -596,6 +601,7 @@ function createSession(input: {
     appendOutput(session, chunk.stream, chunk.data)
   )
   input.handle.onExit((exit) => settleSession(session, exit))
+  emitSessionOutput(session)
   return session
 }
 
@@ -633,6 +639,21 @@ function appendOutput(
     bytesToDrop =
       session.totalBytes - session.droppedBytes - session.maxOutputBytes
   }
+  if (session.emitOutput && !session.outputTimer) {
+    session.outputTimer = setTimeout(() => {
+      session.outputTimer = undefined
+      emitSessionOutput(session)
+    }, 200)
+  }
+}
+
+function emitSessionOutput(session: AgentCommandSession): void {
+  if (!session.emitOutput) return
+  session.emitOutput(
+    renderCommandResult(session, renderSince(session, 0), {
+      includeSessionId: true,
+    })
+  )
 }
 
 function settleSession(session: AgentCommandSession, exit: CommandExit): void {
@@ -643,6 +664,10 @@ function settleSession(session: AgentCommandSession, exit: CommandExit): void {
   session.signal = exit.signal
   session.cleanupError = exit.cleanupError
   if (session.status === "running") session.status = "completed"
+  if (session.outputTimer) clearTimeout(session.outputTimer)
+  session.outputTimer = undefined
+  emitSessionOutput(session)
+  session.emitOutput = undefined
   session.resolveSettled()
   if (session.completionInbox && session.completionOwner) {
     const output = renderSince(session, 0)
@@ -1002,6 +1027,7 @@ export const testCommandSessions = {
   clear(): void {
     for (const session of sessions.values()) {
       clearTimeout(session.timeout)
+      if (session.outputTimer) clearTimeout(session.outputTimer)
       if (session.cleanup) clearTimeout(session.cleanup)
       session.handle.kill()
     }

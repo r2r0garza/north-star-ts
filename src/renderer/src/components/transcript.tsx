@@ -9,7 +9,11 @@ import { Trace, TraceLine, TraceIcon, TraceTitle } from "@/components/ui/trace"
 import { Activity } from "lucide-react"
 import { TranscriptTools } from "@/components/transcript-tools"
 import { ChangedFilesBar } from "@/components/changed-files-bar"
-import type { TimelineItem, ToolUse } from "@/lib/timeline"
+import {
+  projectTimelineCommandOutcomes,
+  type TimelineItem,
+  type ToolUse,
+} from "@/lib/timeline"
 import { cn } from "@/lib/utils"
 
 // Transcript render boundaries (plan 097). The settled timeline and the live,
@@ -63,7 +67,7 @@ export const SettledTranscript = memo(function SettledTranscript({
   onRunBash,
   runDisabled,
 }: SettledTranscriptProps) {
-  return items.map((item, i) => (
+  return projectTimelineCommandOutcomes(items).map((item, i) => (
     <SettledTranscriptRow
       key={item.key}
       item={item}
@@ -215,7 +219,7 @@ export function LiveTranscriptTurn({
     <MessageScrollerItem scrollAnchor>
       <Message align="start" tabIndex={hasText ? 0 : undefined}>
         <MessageContent>
-          {segments.map((segment, index) => (
+          {projectTimelineCommandOutcomes(segments).map((segment, index) => (
             <LiveTranscriptSegment
               // Segments only append or update in place, so position is a
               // stable identity for the turn's lifetime.

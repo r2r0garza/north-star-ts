@@ -1,4 +1,5 @@
 import type { Message as DbMessage } from "@/types"
+import { projectCommandOutcomes } from "./command-outcomes"
 import type { ToolMediaReference } from "../../../shared/tool-media"
 import { activityLabel } from "../../../shared/tool-activity"
 import {
@@ -52,6 +53,8 @@ export interface ToolUse {
   resultMessageId?: string
   conversationId?: string
   status: ToolStatus
+  commandLive?: string
+  commandOutcome?: import("./command-presentation").CommandSnapshot
   approval?: ToolApproval // set while a gated action awaits a human decision
 }
 
@@ -340,8 +343,32 @@ export function toToolUse(call: {
 export function buildTimeline(rows: DbMessage[]): TimelineItem[] {
   const items: TimelineItem[] = []
   const callById = new Map<string, ToolUse>()
+  const completions: ToolUse[] = []
 
   for (const m of rows) {
+    if (isCommandCompletionEvent(m.content)) {
+      const body = (m.content ?? "")
+        .split("\n")
+        .filter((line) => line.startsWith("DATA: "))
+        .map((line) => line.slice(6))
+        .join("\n")
+      try {
+        const parsed = JSON.parse(body)
+        completions.push({
+          id: m.id,
+          name: "wait_for_events",
+          label: "",
+          args: null,
+          rawArgs: "",
+          status: "done",
+          conversationId: m.conversationId,
+          result: JSON.stringify({ ...parsed, status: "completed" }),
+        })
+      } catch {
+        // A malformed runtime envelope must not break transcript replay.
+      }
+      continue
+    }
     if (m.role === "user") {
       // Compatibility for events persisted before runtime context switched from
       // the user role to the system role. They were never human-authored entries.
@@ -411,5 +438,38 @@ export function buildTimeline(rows: DbMessage[]): TimelineItem[] {
     }
   }
 
-  return items
+  const projected = projectCommandOutcomes([
+    ...callById.values(),
+    ...completions,
+  ])
+  const byId = new Map(projected.map((call) => [call.id, call]))
+  return projectTimelineCommandOutcomes(
+    items.map((item) =>
+      item.kind === "tools"
+        ? {
+            ...item,
+            calls: item.calls.map((call) => byId.get(call.id) ?? call),
+          }
+        : item
+    )
+  )
+}
+
+export function projectTimelineCommandOutcomes<
+  T extends { kind: string; calls?: ToolUse[] },
+>(items: T[]): T[] {
+  const originals = items.flatMap((item) =>
+    item.kind === "tools" ? (item.calls ?? []) : []
+  )
+  const projected = projectCommandOutcomes(originals)
+  const byCall = new Map(
+    originals.map((call, index) => [call, projected[index]])
+  )
+  return items.map((item) => {
+    if (item.kind !== "tools" || !item.calls) return item
+    const calls = item.calls.map((call) => byCall.get(call) ?? call)
+    return calls.some((call, index) => call !== item.calls![index])
+      ? { ...item, calls }
+      : item
+  })
 }

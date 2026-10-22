@@ -1938,6 +1938,13 @@ function App(
                 })
               )
             )
+          } else if (event.type === "command_output") {
+            updateLive(turnConvoId, (turn) =>
+              updateLiveTool(turn, event.id, (tool) => ({
+                ...tool,
+                commandLive: event.result,
+              }))
+            )
           } else if (event.type === "tool" && event.phase === "done") {
             // Its result arrived — attach it, clear any approval card, and flip
             // status (matched by id, wherever its segment is).

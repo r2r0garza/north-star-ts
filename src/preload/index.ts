@@ -108,6 +108,7 @@ import type {
 
 // Streaming events emitted during a chat turn (mirrors ChatEvent in the agent).
 export type ChatEvent =
+  | { type: "command_output"; id: string; result: string }
   | {
       type: "steering_state"
       state: import("../shared/steering").SteeringState

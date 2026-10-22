@@ -212,9 +212,56 @@ it("keeps tool responses inside their matching collapsed calls, including after 
       "ERROR[extra]: additional response"
     )
     expect(calls[0].textContent).toContain("Failed")
+    messages = [
+      ...messages,
+      message("command-call", {
+        toolCalls: [
+          {
+            id: "cmd",
+            name: "exec_command",
+            arguments:
+              '{ "command": "echo exact", "_activity": "Checking command" }',
+          },
+        ],
+      }),
+      message("cmd-result", {
+        role: "tool",
+        toolCallId: "cmd",
+        content: JSON.stringify({
+          status: "completed",
+          exitCode: 4,
+          signal: null,
+          output: "Command output",
+        }),
+      }),
+      message("cmd-extra", {
+        role: "tool",
+        toolCallId: "cmd",
+        content: "Historical extra response",
+      }),
+    ]
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+    const commandTrigger = [
+      ...transcript.querySelectorAll<HTMLButtonElement>(
+        '[data-slot="trace-collapsible-trigger"]'
+      ),
+    ].find((button) => button.textContent?.includes("Checking command"))!
+    expect(commandTrigger.textContent).toContain("Exited with code 4")
+    await act(async () => commandTrigger.click())
+    const commandBody = commandTrigger.closest(
+      '[data-slot="trace-collapsible"]'
+    )!
+    expect(
+      commandBody.querySelector('[data-slot="code-block-code"]')?.textContent
+    ).toBe("echo exact")
+    expect(commandBody.textContent).toContain("Command output")
+    expect(commandBody.textContent).toContain("Historical extra response")
+    expect(transcript.textContent).toContain("Unmatched output")
     expect(callContent(1).textContent).not.toContain("First file output")
-    expect(transcript.children).toHaveLength(4)
-    expect(transcript.querySelectorAll("pre")).toHaveLength(5)
+    expect(transcript.children).toHaveLength(5)
+    expect(transcript.querySelectorAll("pre")).toHaveLength(10)
     await act(async () => calls[0].click())
     expect(calls[0].getAttribute("aria-expanded")).toBe("false")
     expect(transcript.textContent).not.toContain("First file output")
@@ -504,3 +551,118 @@ it.each([
     }
   }
 )
+
+it("shows live workflow command output in its existing disclosure and retains the final result", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
+  const workflow = EXAMPLE_WORKFLOWS[0]
+  const listeners = new Set<(payload: any) => void>()
+  const run: WorkflowRun = {
+    id: "live-run",
+    taskId: "task",
+    workflowId: workflow.id,
+    workflow,
+    title: "Live run",
+    objective: "Check files",
+    workspaceId: "workspace",
+    workspacePath: "/project",
+    projectId: null,
+    projectName: null,
+    accountId: "account",
+    modelId: "model",
+    status: "Active",
+    error: null,
+    createdAt: 0,
+    updatedAt: 0,
+    steps: [
+      {
+        ...workflow.steps[0],
+        status: "active",
+        conversationId: "conversation",
+        result: null,
+        error: null,
+        startedAt: 0,
+        finishedAt: null,
+      },
+    ],
+  }
+  vi.stubGlobal("cowork", {
+    providers: { listWithModels: async () => [] },
+    tasks: {
+      onEvent: (listener: (payload: any) => void) => {
+        listeners.add(listener)
+        return () => listeners.delete(listener)
+      },
+    },
+    db: {
+      messages: {
+        list: async () => [
+          {
+            id: "assistant",
+            role: "assistant",
+            conversationId: "conversation",
+            content: null,
+            toolCalls: [
+              {
+                id: "launch",
+                name: "exec_command",
+                arguments: '{"command":"echo hello"}',
+              },
+            ],
+          },
+        ],
+      },
+    },
+  })
+  const container = document.createElement("div")
+  document.body.append(container)
+  const root = createRoot(container)
+  try {
+    await act(async () =>
+      root.render(<RunDetail run={run} onBack={() => {}} onClose={() => {}} />)
+    )
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '[data-slot="trace-collapsible-trigger"]'
+    )!
+    await act(async () => trigger.click())
+    const update = async (
+      status: string,
+      output: string,
+      exitCode: number | null
+    ) =>
+      act(async () => {
+        for (const listener of listeners)
+          listener({
+            taskId: "task",
+            event: {
+              type: "command_output",
+              id: "launch",
+              result: JSON.stringify({
+                status,
+                output,
+                exitCode,
+                signal: null,
+                sessionId: "s",
+              }),
+            },
+          })
+      })
+    await update("running", "hello\n", null)
+    expect(
+      container.querySelectorAll('[data-slot="code-block-code"]')[1].textContent
+    ).toBe("hello\n")
+    expect(trigger.textContent).toContain("Running")
+    await update("completed", "hello\ndone\n", 0)
+    expect(trigger.getAttribute("aria-expanded")).toBe("true")
+    expect(trigger.textContent).toContain("Completed successfully")
+    expect(
+      container.querySelectorAll('[data-slot="code-block-code"]')[1].textContent
+    ).toBe("hello\ndone\n")
+    expect(container.textContent).not.toContain(
+      "Final outcome unavailable in this snapshot"
+    )
+  } finally {
+    act(() => root.unmount())
+    container.remove()
+    vi.unstubAllGlobals()
+  }
+})

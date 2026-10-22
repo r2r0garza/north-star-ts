@@ -1118,6 +1118,7 @@ export class TaskRunner {
     if (
       event.type !== "token" &&
       event.type !== "stream_attempt" &&
+      event.type !== "command_output" &&
       event.type !== "process_command_output"
     ) {
       eventId = appendEvent({ taskId, type: event.type, payload: event }).id

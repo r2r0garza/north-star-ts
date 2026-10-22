@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { toast } from "sonner"
 import { ConversationArtifact } from "@/components/conversation-artifact"
+import { isCommandCompletionEvent } from "../../../shared/runtime-messages"
 import type { Message } from "../../../main/db/types"
 import type {
   WorkflowRun,
@@ -18,6 +19,7 @@ import {
   Play,
   RotateCcw,
   Wrench,
+  Terminal,
 } from "lucide-react"
 import { ScreenHeader } from "@/components/screen-header"
 import { Badge } from "@/components/ui/badge"
@@ -45,7 +47,15 @@ import {
   TraceCollapsibleTrigger,
   TraceCollapsibleContent,
 } from "@/components/ui/trace"
-import { isErrorResult } from "@/lib/timeline"
+import {
+  buildTimeline,
+  deriveLabel,
+  isErrorResult,
+  parseArgs,
+} from "@/lib/timeline"
+import type { CommandSnapshot } from "@/lib/command-presentation"
+import { CommandOutput } from "@/components/command-output"
+import { commandPresentation, isCommandTool } from "@/lib/command-presentation"
 import { transcriptShouldFollow } from "@/lib/transcript-scroll"
 import type {
   WorkflowStep,
@@ -545,6 +555,7 @@ function RunDetailView({
               <StepReader
                 key={`${selectedStep.id}:${tab}`}
                 activity={selectedStep}
+                taskId={run.taskId}
                 tab={tab}
                 definition={workflow?.steps.find(
                   (step) => step.id === selectedId
@@ -660,6 +671,7 @@ function OutcomeSection({
 
 function StepReader({
   activity,
+  taskId,
   definition,
   modelLabel,
   liveText,
@@ -668,6 +680,7 @@ function StepReader({
   onFollowingChange,
 }: {
   activity: WorkflowStepRun
+  taskId: string | null
   definition?: WorkflowStep
   modelLabel: string
   liveText: string
@@ -676,6 +689,20 @@ function StepReader({
   onFollowingChange: (following: boolean) => void
 }) {
   const { messages, loaded } = useStepMessages(activity, tab === "Transcript")
+  const [commandUpdates, setCommandUpdates] = useState<Record<string, string>>(
+    {}
+  )
+  useEffect(() => {
+    setCommandUpdates({})
+    return window.cowork.tasks.onEvent(({ taskId: source, event }) => {
+      if (source === taskId && event.type === "command_output") {
+        setCommandUpdates((updates) => ({
+          ...updates,
+          [event.id]: event.result,
+        }))
+      }
+    })
+  }, [taskId, activity.id])
   const restored = useRef(false)
   const viewport = useRef<HTMLDivElement>(null)
   const content = useRef<HTMLDivElement>(null)
@@ -759,6 +786,7 @@ function StepReader({
             <>
               {messages.length ? (
                 <StepTranscript
+                  commandUpdates={commandUpdates}
                   messages={messages}
                   active={activity.status === "active"}
                 />
@@ -889,10 +917,19 @@ function useStepMessages(step: WorkflowStepRun, open: boolean) {
 function StepTranscript({
   messages,
   active,
+  commandUpdates,
 }: {
   messages: Message[]
   active: boolean
+  commandUpdates: Record<string, string>
 }) {
+  const outcomes = new Map(
+    buildTimeline(messages).flatMap((item) =>
+      item.kind === "tools"
+        ? item.calls.map((call) => [call.id, call.commandOutcome] as const)
+        : []
+    )
+  )
   const callIds = new Set(
     messages.flatMap(
       (message) => message.toolCalls?.map((call) => call.id) ?? []
@@ -907,9 +944,10 @@ function StepTranscript({
   }
   const transcript = messages.filter(
     (message) =>
-      message.role !== "tool" ||
-      !message.toolCallId ||
-      !callIds.has(message.toolCallId)
+      !isCommandCompletionEvent(message.content) &&
+      (message.role !== "tool" ||
+        !message.toolCallId ||
+        !callIds.has(message.toolCallId))
   )
   return (
     <div className="space-y-3" aria-label="Step transcript">
@@ -922,6 +960,8 @@ function StepTranscript({
               key={call.id}
               call={call}
               responses={responses.get(call.id) ?? []}
+              commandLive={commandUpdates[call.id]}
+              finalOutcome={outcomes.get(call.id)}
               active={active}
             />
           ))}
@@ -935,16 +975,34 @@ function WorkflowToolCall({
   call,
   responses,
   active,
+  commandLive,
+  finalOutcome,
 }: {
   call: NonNullable<Message["toolCalls"]>[number]
   responses: Message[]
   active: boolean
+  commandLive?: string
+  finalOutcome?: CommandSnapshot
 }) {
   const [open, setOpen] = useState(false)
-  const failed = responses.some((response) =>
-    isErrorResult(response.content ?? "")
-  )
-  const running = active && responses.length === 0
+  const currentResult =
+    commandLive ?? (finalOutcome ? JSON.stringify(finalOutcome) : undefined)
+  const commands =
+    currentResult !== undefined
+      ? [commandPresentation(call.name, currentResult)]
+      : responses.map((response) =>
+          commandPresentation(call.name, response.content ?? "")
+        )
+  const command =
+    commands.find((value) => value?.outcome === "failure") ?? commands.at(-1)
+  const args = parseArgs(call.arguments)
+  const failed =
+    responses.some((response) => isErrorResult(response.content ?? "")) ||
+    commands.some((value) => value?.outcome === "failure")
+  const running =
+    active &&
+    (command?.outcome === "reported_running" ||
+      (!command && responses.length === 0))
   const artifactResponse = responses.find((response) => response.artifact)
   const presentation = ["present_chart", "present_table"].includes(call.name)
   return (
@@ -956,29 +1014,66 @@ function WorkflowToolCall({
               status={failed ? "error" : running ? "running" : undefined}
             >
               <TraceIcon>
-                <Wrench />
+                {call.name === "exec_command" ||
+                call.name === "run_shell_tool" ? (
+                  <Terminal />
+                ) : (
+                  <Wrench />
+                )}
               </TraceIcon>
-              <TraceTitle>{call.name}</TraceTitle>
-              {(failed || running) && (
+              <TraceTitle>
+                {isCommandTool(call.name)
+                  ? deriveLabel(call.name, args)
+                  : call.name}
+              </TraceTitle>
+              {(failed || running || command) && (
                 <TraceDescription>
-                  {failed ? "Failed" : "Running"}
+                  {failed
+                    ? (command?.label ?? "Failed")
+                    : running
+                      ? "Running"
+                      : command?.label}
                 </TraceDescription>
               )}
             </TraceLine>
           </TraceCollapsibleTrigger>
           <TraceCollapsibleContent className="space-y-2">
-            <p className="font-medium">Arguments</p>
-            <pre className="break-words whitespace-pre-wrap">
-              {call.arguments}
-            </pre>
-            {responses.map((response) => (
-              <div key={response.id} className="space-y-1 border-t pt-2">
-                <p className="font-medium">Response</p>
+            {!command && (
+              <>
+                <p className="font-medium">Arguments</p>
                 <pre className="break-words whitespace-pre-wrap">
-                  {response.content}
+                  {call.arguments}
                 </pre>
-              </div>
-            ))}
+              </>
+            )}
+            {currentResult !== undefined && command ? (
+              <CommandOutput
+                name={call.name}
+                args={args}
+                rawArgs={call.arguments}
+                result={responses.at(-1)?.content ?? undefined}
+                presentation={command}
+                live={!!commandLive}
+              />
+            ) : (
+              responses.map((response) => (
+                <div key={response.id} className="space-y-1 border-t pt-2">
+                  <p className="font-medium">Response</p>
+                  {commandPresentation(call.name, response.content ?? "") ? (
+                    <CommandOutput
+                      name={call.name}
+                      args={args}
+                      rawArgs={call.arguments}
+                      result={response.content ?? ""}
+                    />
+                  ) : (
+                    <pre className="break-words whitespace-pre-wrap">
+                      {response.content}
+                    </pre>
+                  )}
+                </div>
+              ))
+            )}
           </TraceCollapsibleContent>
         </TraceCollapsible>
       </Trace>

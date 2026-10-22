@@ -1,5 +1,7 @@
 import { Fragment, memo } from "react"
-import { ToolGroup } from "@/components/tool-group"
+import { ActiveCommand, ToolGroup } from "@/components/tool-group"
+import { commandToolSegments } from "@/lib/command-tool-segments"
+import { projectCommandOutcomes } from "@/lib/command-outcomes"
 import { ConversationArtifact } from "@/components/conversation-artifact"
 import type { ToolUse } from "@/lib/timeline"
 
@@ -33,11 +35,17 @@ export const TranscriptTools = memo(function TranscriptTools({
   calls: ToolUse[]
   conversationId?: string
 }) {
-  return artifactToolSegments(calls).map((segment) => {
+  return artifactToolSegments(projectCommandOutcomes(calls)).map((segment) => {
     const call = segment.artifactCall
     return (
       <Fragment key={segment.key}>
-        <ToolGroup calls={segment.calls} />
+        {commandToolSegments(segment.calls).map((part) =>
+          part.kind === "command" ? (
+            <ActiveCommand key={part.key} call={part.call} />
+          ) : (
+            <ToolGroup key={part.key} calls={part.calls} />
+          )
+        )}
         {call?.status === "done" &&
           (call.artifact ? (
             <ConversationArtifact

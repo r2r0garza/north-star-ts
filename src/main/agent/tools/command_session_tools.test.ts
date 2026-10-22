@@ -1542,3 +1542,65 @@ describe("command session tools", () => {
     expect(events.status).toBe("empty")
   })
 })
+
+describe("live command presentation updates", () => {
+  it("emits throttled cumulative output and immediately flushes final status for background sessions", async () => {
+    const handle = new ControllableCommandHandle()
+    const updates: Record<string, unknown>[] = []
+    const result = parseResult(
+      await execCommandTool.execute(
+        { command: "echo test", background: true },
+        ctx({
+          env: controllableEnv(handle),
+          emitCommandOutput: (value) => updates.push(parseResult(value)),
+        })
+      )
+    )
+    expect(updates).toHaveLength(1)
+    expect(updates[0]).toMatchObject({
+      sessionId: result.sessionId,
+      status: "running",
+      output: "",
+    })
+    handle.emitData("first\n")
+    handle.emitData("second\n")
+    expect(updates).toHaveLength(1)
+    await vi.waitFor(() => expect(updates).toHaveLength(2))
+    expect(updates[1]).toMatchObject({
+      status: "running",
+      output: "first\nsecond\n",
+    })
+    handle.emitData("last\n")
+    handle.emitExit({ exitCode: 3, signal: null })
+    expect(updates.at(-1)).toMatchObject({
+      status: "completed",
+      exitCode: 3,
+      output: "first\nsecond\nlast\n",
+    })
+    await new Promise((resolve) => setTimeout(resolve, 250))
+    expect(updates).toHaveLength(3)
+  })
+
+  it("streams foreground output before the tool returns and emits nothing for denied commands", async () => {
+    const handle = new ControllableCommandHandle()
+    const emit = vi.fn()
+    const pending = execCommandTool.execute(
+      { command: "echo test" },
+      ctx({ env: controllableEnv(handle), emitCommandOutput: emit })
+    )
+    await vi.waitFor(() => expect(emit).toHaveBeenCalledTimes(1))
+    handle.emitData("hello")
+    handle.emitExit({ exitCode: 0, signal: null })
+    await pending
+    expect(parseResult(emit.mock.calls.at(-1)![0])).toMatchObject({
+      status: "completed",
+      output: "hello",
+    })
+    emit.mockClear()
+    await execCommandTool.execute(
+      { command: "echo denied" },
+      ctx({ gate: async () => "denied", emitCommandOutput: emit })
+    )
+    expect(emit).not.toHaveBeenCalled()
+  })
+})

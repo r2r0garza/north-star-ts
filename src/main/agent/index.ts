@@ -784,6 +784,7 @@ function reconcileSideEffectingToolAction(input: {
 // tool-call `id` joins start↔done (and matches the persisted toolCallId), so the
 // live markers render identically to the ones rebuilt from storage on reload.
 export type ChatEvent =
+  | { type: "command_output"; id: string; result: string }
   | { type: "steering_state"; state: SteeringState }
   | {
       type: "steering_delivered"
@@ -2483,6 +2484,9 @@ export async function runAgentLoop(
                     callImages.push({ ...image })
                 }
               : undefined,
+            emitCommandOutput: (result: string) => {
+              onEvent({ type: "command_output", id: call.id, result })
+            },
             emitArtifact: (snapshot: ArtifactPresentation) => {
               callSignal.throwIfAborted()
               if (
