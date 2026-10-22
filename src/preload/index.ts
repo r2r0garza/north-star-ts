@@ -982,6 +982,7 @@ const api = {
         title?: string | null
         accountId?: string | null
         modelId?: string | null
+        effort?: string | null
         agentName?: string | null
       }) =>
         ipcRenderer.invoke(
@@ -1009,6 +1010,7 @@ const api = {
           projectId?: string | null
           accountId?: string | null
           modelId?: string | null
+          effort?: string | null
           agentName?: string | null
         }
       ) =>
@@ -1505,6 +1507,13 @@ const api = {
         "providers:secureStorageAvailable"
       ) as Promise<boolean>,
     list: () => ipcRenderer.invoke("providers:list") as Promise<AccountView[]>,
+    // Reasoning effort levels the model accepts, lowest first (empty: no picker).
+    effortLevels: (accountId: string, modelId: string) =>
+      ipcRenderer.invoke(
+        "providers:effortLevels",
+        accountId,
+        modelId
+      ) as Promise<import("../shared/reasoning-effort").ReasoningEffort[]>,
     create: (input: CreateAccountInput) =>
       ipcRenderer.invoke("providers:create", input) as Promise<AccountView>,
     update: (

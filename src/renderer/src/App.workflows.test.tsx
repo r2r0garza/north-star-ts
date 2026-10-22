@@ -64,6 +64,7 @@ beforeEach(() => {
     platform: "darwin",
     system: () => ({ mainAgentName: "North Star", displayName: "North Star" }),
     providers: {
+      effortLevels: async () => [],
       listWithModels: async () => [],
       getDefault: async () => ({}),
       onModelsChanged: noop,
@@ -284,6 +285,7 @@ it("ignores picker results after changing conversations", async () => {
 for (const view of ["Chat", "Interactive", "North Star"] as const) {
   it(`sends attachments with the foreground message in ${view}`, async () => {
     Object.assign(window.cowork.providers, {
+      effortLevels: async () => [],
       listWithModels: async () => [
         {
           account: {
@@ -341,6 +343,7 @@ for (const view of ["Chat", "Interactive", "North Star"] as const) {
 
 it("prevents silently dropping files with a CLI provider", async () => {
   Object.assign(window.cowork.providers, {
+    effortLevels: async () => [],
     listWithModels: async () => [
       {
         account: {
@@ -377,6 +380,7 @@ it("prevents silently dropping files with a CLI provider", async () => {
 for (const view of ["Chat", "Interactive", "North Star"] as const) {
   it(`queues steering and cancels it with Escape or X in ${view}`, async () => {
     Object.assign(window.cowork.providers, {
+      effortLevels: async () => [],
       listWithModels: async () => [
         {
           account: {

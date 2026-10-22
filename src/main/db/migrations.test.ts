@@ -120,7 +120,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(78)
+    expect(db.pragma("user_version", { simple: true })).toBe(79)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
@@ -410,9 +410,12 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
             "SELECT * FROM external_agent_model_mappings ORDER BY destination_account_id"
           )
           .all(),
-        conversations: db
-          .prepare("SELECT * FROM conversations ORDER BY id")
-          .all(),
+        // effort is also added later.
+        conversations: (
+          db
+            .prepare("SELECT * FROM conversations ORDER BY id")
+            .all() as Array<Record<string, unknown>>
+        ).map(({ effort: _effort, ...conversation }) => conversation),
         messages: db
           .prepare(
             "SELECT id, conversation_id, seq, role, content, tool_calls, tool_call_id, tool_name, token_estimate, created_at FROM messages ORDER BY id"
@@ -431,7 +434,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
           .all()
       ).toEqual([{ value: 1 }])
       expect(db.pragma("user_version", { simple: true })).toBe(
-        version === 999 ? 999 : 78
+        version === 999 ? 999 : 79
       )
       expect(db.pragma("foreign_keys", { simple: true })).toBe(1)
       expect(db.pragma("foreign_key_check")).toEqual([])

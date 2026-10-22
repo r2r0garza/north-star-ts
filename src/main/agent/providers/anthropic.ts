@@ -8,6 +8,10 @@ import {
 } from "./native-carrier"
 import { replayToolCallArguments } from "../tool-call-arguments"
 import type { LlmClient } from "./index"
+import {
+  REASONING_EFFORTS,
+  type ReasoningEffort,
+} from "../../../shared/reasoning-effort"
 
 // The Anthropic API provider (plan 122). The agent loop speaks chat-completions
 // (`chat.completions.create`); this adapter translates each request into a
@@ -46,6 +50,28 @@ export class ContextOverflowError extends Error {
 // Per-account model catalog, filled by models.list (import) and lazily by
 // models.retrieve on first use, so context windows survive an app restart.
 const catalogs = new Map<string, Map<string, ModelInfo>>()
+// Each account's capability lookup, for the composer's effort picker.
+const infoLookups = new Map<
+  string,
+  (model: string) => Promise<ModelInfo | undefined>
+>()
+
+// The effort levels the Models API says this model accepts, lowest first.
+export function effortLevels(info?: ModelInfo): ReasoningEffort[] {
+  const effort = info?.capabilities?.effort as
+    | (Record<string, { supported?: boolean }> & { supported?: boolean })
+    | undefined
+  return effort?.supported
+    ? REASONING_EFFORTS.filter((level) => effort[level]?.supported)
+    : []
+}
+
+export async function anthropicEffortLevels(
+  accountId: string,
+  modelId: string
+): Promise<ReasoningEffort[]> {
+  return effortLevels(await infoLookups.get(accountId)?.(modelId))
+}
 
 export function contextWindowFor(
   accountId: string,
@@ -192,6 +218,10 @@ export function translateRequest(
   const adaptive =
     info?.capabilities?.thinking?.types?.adaptive?.supported !== false
   const effort = info?.capabilities?.effort?.supported
+  // The composer's pick when this model accepts it; otherwise the default.
+  const picked = effortLevels(info).find(
+    (level) => level === body.reasoning_effort
+  )
   const maxTokens = Number(body.max_tokens ?? body.max_completion_tokens)
   const params: Record<string, any> = {
     model,
@@ -229,7 +259,11 @@ export function translateRequest(
     // Defaults differ by model, so set effort explicitly. Small caps are
     // auxiliary calls (titles, commit messages) that must not think them away.
     ...(effort
-      ? { output_config: { effort: maxTokens < 4096 ? "low" : "high" } }
+      ? {
+          output_config: {
+            effort: picked ?? (maxTokens < 4096 ? "low" : "high"),
+          },
+        }
       : {}),
   }
   return { params, prefix: responsePrefix }
@@ -476,6 +510,7 @@ export function buildAnthropicClient(options: {
     }
     return lookup
   }
+  infoLookups.set(options.accountId, info)
 
   return {
     compatibilityProbes: false,

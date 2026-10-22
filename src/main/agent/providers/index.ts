@@ -7,8 +7,12 @@ import * as modelsRepo from "../../db/repositories/models"
 import * as settingsService from "../../settings/service"
 import { getApiKey, setApiKey } from "../../settings/secrets"
 import type { ApiMode, Provider, ProviderAccount } from "../../db/types"
-import { buildCodexSubscriptionClient } from "./codex-subscription"
-import { buildAnthropicClient } from "./anthropic"
+import {
+  buildCodexSubscriptionClient,
+  CODEX_EFFORTS,
+} from "./codex-subscription"
+import { anthropicEffortLevels, buildAnthropicClient } from "./anthropic"
+import type { ReasoningEffort } from "../../../shared/reasoning-effort"
 
 // The LLM routing layer. Resolves a provider account + model — either an explicit
 // per-conversation selection or the global default (the settings `llm` blob) —
@@ -345,6 +349,25 @@ export function hasActiveProvider(): boolean {
   } catch {
     return false
   }
+}
+
+// The reasoning effort levels the composer offers for a model, lowest first;
+// empty when the provider takes no effort from the app. Never throws.
+export async function modelEffortLevels(
+  accountId: string,
+  modelId: string
+): Promise<ReasoningEffort[]> {
+  try {
+    const account = providerAccountsRepo.getAccount(accountId)
+    if (account?.provider === "anthropic") {
+      buildClient(account)
+      return await anthropicEffortLevels(account.id, modelId)
+    }
+    if (account?.provider === "codex_subscription") return CODEX_EFFORTS
+  } catch {
+    // No key, no client: no picker.
+  }
+  return []
 }
 
 // Build a transient client for an account by id — used by the gateway model

@@ -3,6 +3,7 @@ import {
   buildAnthropicClient,
   contextWindowFor,
   ContextOverflowError,
+  effortLevels,
   translateRequest,
 } from "./anthropic"
 import { isTransientError } from "./index"
@@ -242,6 +243,35 @@ describe("translateRequest", () => {
     expect(params.betas).toEqual(["thinking-binding-controls-2026-08-01"])
     expect(params.output_config).toEqual({ effort: "high" })
     expect(JSON.stringify(params)).not.toContain("budget_tokens")
+  })
+
+  it("sends the composer's effort only when the model lists that level", () => {
+    const levelled = {
+      ...info,
+      capabilities: {
+        ...info.capabilities,
+        effort: {
+          supported: true,
+          low: { supported: true },
+          high: { supported: true },
+          max: { supported: false },
+        },
+      },
+    } as any
+    expect(effortLevels(levelled)).toEqual(["low", "high"])
+    const body = (reasoning_effort: string) => ({
+      model,
+      max_tokens: 64000,
+      reasoning_effort,
+      messages: [{ role: "user", content: "hi" }],
+    })
+    expect(translateRequest(body("low"), levelled).params.output_config).toEqual(
+      { effort: "low" }
+    )
+    // Unlisted for this model: falls back to the default.
+    expect(translateRequest(body("max"), levelled).params.output_config).toEqual(
+      { effort: "high" }
+    )
   })
 
   it("never forces a tool and skips thinking where adaptive is unsupported", () => {

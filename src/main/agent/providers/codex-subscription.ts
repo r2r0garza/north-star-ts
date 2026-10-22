@@ -1,4 +1,5 @@
 import type { LlmClient } from "./index"
+import type { ReasoningEffort } from "../../../shared/reasoning-effort"
 
 export const CODEX_SUBSCRIPTION_BASE_URL =
   "https://chatgpt.com/backend-api/codex"
@@ -110,6 +111,10 @@ function responsesTools(
   return converted.length > 0 ? converted : undefined
 }
 
+// shortcut: one effort list for every Codex model, as the catalog parser keeps
+// only model ids; read per-model levels from the catalog if a model rejects one.
+export const CODEX_EFFORTS: ReasoningEffort[] = ["low", "medium", "high"]
+
 export function buildCodexSubscriptionRequest({
   model,
   body,
@@ -188,9 +193,15 @@ export function buildCodexSubscriptionRequest({
     input,
     stream: true,
     store: false,
-    // Matches the Codex CLI's defaults: without an effort, newer models answer
-    // without reasoning; without a summary request, none is sent to show.
-    reasoning: { effort: "medium", summary: "auto" },
+    // The composer's effort, else the Codex CLI's default: without an effort,
+    // newer models answer without reasoning; without a summary request, none
+    // is sent to show.
+    reasoning: {
+      effort: CODEX_EFFORTS.includes(body.reasoning_effort as ReasoningEffort)
+        ? body.reasoning_effort
+        : "medium",
+      summary: "auto",
+    },
   }
   const tools = responsesTools(body.tools)
   if (tools) request.tools = tools

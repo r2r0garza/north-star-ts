@@ -80,6 +80,7 @@ export function registerDbHandlers(
         title?: string | null
         accountId?: string | null
         modelId?: string | null
+        effort?: string | null
         agentName?: string | null
       }
     ) => {
@@ -113,6 +114,7 @@ export function registerDbHandlers(
         projectId?: string | null
         accountId?: string | null
         modelId?: string | null
+        effort?: string | null
         agentName?: string | null
       }
     ) => {

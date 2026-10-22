@@ -2971,6 +2971,12 @@ export async function runAgentLoop(
                     tools,
                     stream: true,
                     ...(streamOptions ? { stream_options: streamOptions } : {}),
+                    // The composer's pick; only these adapters offer one.
+                    ...(conversation?.effort &&
+                    (llm.provider === "anthropic" ||
+                      llm.provider === "codex_subscription")
+                      ? { reasoning_effort: conversation.effort }
+                      : {}),
                   },
                   [
                     undefined,

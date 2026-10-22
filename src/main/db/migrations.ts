@@ -72,6 +72,11 @@ function ensureNativeAssistantColumn(db: Database.Database): void {
   addColumnIfMissing(db, "messages", "native_assistant", "TEXT")
 }
 
+// The composer's per-conversation reasoning effort (null = adapter default).
+function ensureConversationEffortColumn(db: Database.Database): void {
+  addColumnIfMissing(db, "conversations", "effort", "TEXT")
+}
+
 // Model reasoning shown collapsed in the transcript (never sent to a model).
 function ensureMessageReasoningColumn(db: Database.Database): void {
   addColumnIfMissing(db, "messages", "reasoning", "TEXT")
@@ -229,6 +234,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureSteeringMessages,
   ensureConversationArtifacts,
   ensureMessageReasoningColumn,
+  ensureConversationEffortColumn,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -700,6 +706,7 @@ export function runMigrations(
       ensureWorkingDirectoryColumns(db)
       ensureNativeAssistantColumn(db)
       ensureMessageReasoningColumn(db)
+      ensureConversationEffortColumn(db)
       ensureToolMedia(db)
       ensureConversationArtifacts(db)
       addColumnIfMissing(db, "workspaces", "command_checks", "TEXT")

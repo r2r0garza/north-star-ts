@@ -17,6 +17,7 @@ import {
   fetchGatewayModelIds,
   hasActiveProvider,
   invalidate as invalidateProviderClient,
+  modelEffortLevels,
 } from "../agent/providers"
 import type { CreateAccountInput } from "../db/repositories/provider-accounts"
 import type { AddModelInput } from "../db/repositories/models"
@@ -214,6 +215,12 @@ export function registerProviderHandlers(): void {
   // Whether secure key storage is usable — the UI checks before offering to save.
   ipcMain.handle("providers:secureStorageAvailable", () =>
     secrets.isSecureStorageAvailable()
+  )
+  // The composer's effort picker: levels the selected model accepts.
+  ipcMain.handle(
+    "providers:effortLevels",
+    (_e, accountId: string, modelId: string) =>
+      modelEffortLevels(String(accountId), String(modelId))
   )
 
   // ── Accounts ──────────────────────────────────────────────────────────────

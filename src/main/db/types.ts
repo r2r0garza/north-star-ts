@@ -133,6 +133,9 @@ export interface Conversation {
   // model's gateway id string (not the models.id row id).
   accountId: string | null
   modelId: string | null
+  // Reasoning effort picked in the composer for this conversation's model.
+  // Null = the provider adapter's default.
+  effort?: import("../../shared/reasoning-effort").ReasoningEffort | null
   // The custom agent selected for this conversation (SCHEMA_V13), by name — the
   // on-disk identifier of a `<name>.agent.md` definition. Null = the built-in
   // main agent (default behavior). Re-resolved from disk per turn.

@@ -17,6 +17,7 @@ import {
   Bot,
   BrainCircuit,
   ChevronDown,
+  Gauge,
   ChevronUp,
   ClipboardList,
   FileText,
@@ -155,6 +156,7 @@ import type {
 // A pending approval lives inside a tools segment (on the matching call's
 // `approval`), so restoring a switched-away turn restores its approval card too.
 import type { SteeringState } from "../../shared/steering"
+import type { ReasoningEffort } from "../../shared/reasoning-effort"
 
 interface LiveTurn {
   segments: LiveSegment[]
@@ -236,6 +238,15 @@ function appendLiveText(turn: LiveTurn, delta: string): LiveTurn {
     firstTextAt,
     segments: [...turn.segments, { kind: "text", text: delta }],
   }
+}
+
+// Composer label for a reasoning effort (null = the provider's default).
+function effortLabel(effort: ReasoningEffort | null): string {
+  return effort === null
+    ? "Default effort"
+    : effort === "xhigh"
+      ? "Extra high"
+      : effort[0].toUpperCase() + effort.slice(1)
 }
 
 // Append streamed reasoning, coalescing into a trailing reasoning segment the
@@ -909,6 +920,10 @@ function App(
   // create() on first send. Null fields fall back to the default.
   const [selAccountId, setSelAccountId] = useState<string | null>(null)
   const [selModelId, setSelModelId] = useState<string | null>(null)
+  // This conversation's reasoning effort (null = the provider's default), and
+  // the levels the effective model accepts (empty = no effort picker).
+  const [selEffort, setSelEffort] = useState<ReasoningEffort | null>(null)
+  const [effortLevels, setEffortLevels] = useState<ReasoningEffort[]>([])
 
   const reloadLlm = useCallback(async () => {
     const [list, dflt] = await Promise.all([
@@ -961,6 +976,17 @@ function App(
   const effectiveIsCli =
     effectiveAccount?.account.provider === "claude_code" ||
     effectiveAccount?.account.provider === "codex_cli"
+  useEffect(() => {
+    setEffortLevels([])
+    if (!effAccountId || !effModelId) return
+    let cancelled = false
+    void window.cowork.providers
+      .effortLevels(effAccountId, effModelId)
+      .then((levels) => !cancelled && setEffortLevels(levels))
+    return () => {
+      cancelled = true
+    }
+  }, [effAccountId, effModelId])
 
   // The conversation the panel is currently showing. Updated synchronously when
   // the prop changes (in the load effect) so streaming callbacks can tell, at the
@@ -1132,6 +1158,7 @@ function App(
       // A fresh conversation starts from the default selection (null = inherit).
       setSelAccountId(null)
       setSelModelId(null)
+      setSelEffort(null)
       // No custom agent by default (null = built-in main agent).
       setSelAgentName(null)
       // If starting in a project that has a directory, adopt + lock it; otherwise
@@ -1178,6 +1205,7 @@ function App(
         // Restore the conversation's own model selection (null falls back to default).
         setSelAccountId(convo?.accountId ?? null)
         setSelModelId(convo?.modelId ?? null)
+        setSelEffort(convo?.effort ?? null)
         // Restore the conversation's selected custom agent (null = main agent).
         setSelAgentName(convo?.agentName ?? null)
         // If the conversation belongs to a project with a directory, that directory
@@ -1856,6 +1884,7 @@ function App(
         // the default" — only store an explicit pick that differs from default.
         accountId: selAccountId,
         modelId: selModelId,
+        effort: selEffort,
         // Persist the selected custom agent (null = built-in main agent).
         agentName: effectiveIsCli ? null : selAgentName,
       })
@@ -2231,6 +2260,7 @@ function App(
         projectId: pendingProjectId,
         accountId: selAccountId,
         modelId: selModelId,
+        effort: selEffort,
         agentName: effectiveIsCli ? null : selAgentName,
       })
       convoId = convo.id
@@ -2668,6 +2698,8 @@ function App(
   async function selectModel(accountId: string, modelId: string) {
     setSelAccountId(accountId)
     setSelModelId(modelId)
+    // Levels differ per model; a new model starts at its default.
+    setSelEffort(null)
     const cli = accountsWithModels.find(
       (entry) => entry.account.id === accountId
     )?.account.provider
@@ -2680,8 +2712,17 @@ function App(
       await window.cowork.db.conversations.update(conversationId, {
         accountId,
         modelId,
+        effort: null,
         ...(isCli ? { agentName: null } : {}),
       })
+    }
+  }
+  // Pick this conversation's reasoning effort (null = provider default).
+  // Persisted like the model; carried into create() on first send otherwise.
+  async function selectEffort(effort: ReasoningEffort | null) {
+    setSelEffort(effort)
+    if (conversationId) {
+      await window.cowork.db.conversations.update(conversationId, { effort })
     }
   }
   // Select the custom agent for this conversation (null = built-in main agent).
@@ -3315,6 +3356,41 @@ function App(
             )}
             {!rightPanelOpen && modelPicker}
             {rightPanelOpen && modelPickerCompact}
+            {!effectiveIsCli && effortLevels.length > 0 && (
+              <DropdownMenu>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        aria-label={`Reasoning effort: ${effortLabel(selEffort)}`}
+                        className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                      >
+                        <Gauge className="size-4" />
+                        {!rightPanelOpen && (
+                          <span>{effortLabel(selEffort)}</span>
+                        )}
+                        <ChevronDown className="size-3 shrink-0 opacity-60" />
+                      </button>
+                    </DropdownMenuTrigger>
+                  </TooltipTrigger>
+                  <TooltipContent>Reasoning effort</TooltipContent>
+                </Tooltip>
+                <DropdownMenuContent align="start">
+                  {[null, ...effortLevels].map((level) => (
+                    <DropdownMenuItem
+                      key={level ?? "default"}
+                      onClick={() => void selectEffort(level)}
+                      className={cn(
+                        level === selEffort && "bg-accent font-medium"
+                      )}
+                    >
+                      {effortLabel(level)}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
             {!effectiveIsCli && !rightPanelOpen && agentPicker}
             {!effectiveIsCli && rightPanelOpen && agentPickerCompact}
             {/* Agent mode dropdown. Per-conversation for this app session.

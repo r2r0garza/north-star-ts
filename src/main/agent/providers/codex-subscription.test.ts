@@ -117,6 +117,23 @@ describe("codex subscription adapter", () => {
     expect(request).not.toHaveProperty("max_output_tokens")
   })
 
+  it("sends the composer's effort, defaulting to medium", () => {
+    const effort = (reasoning_effort?: string) =>
+      (
+        buildCodexSubscriptionRequest({
+          model: "gpt-5.5",
+          maxOutputTokens: 123,
+          body: {
+            messages: [{ role: "user", content: "hi" }],
+            reasoning_effort,
+          },
+        }).reasoning as { effort: string }
+      ).effort
+    expect(effort("high")).toBe("high")
+    expect(effort()).toBe("medium")
+    expect(effort("max")).toBe("medium")
+  })
+
   it("preserves canonical tool images and attribution in Responses input", () => {
     const urls = [
       "data:image/jpeg;base64,/9j/AA==",
