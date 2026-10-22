@@ -1,6 +1,6 @@
 # PR122: Anthropic API provider
 
-> Status: **Implemented (steps 1–6) — awaiting live verification (step 7).** Adapter in `src/main/agent/providers/anthropic.ts`; shared carrier in `src/main/agent/providers/native-carrier.ts`. Open questions still open: no refusal fallbacks, thinking display left at the default (`omitted`), effort fixed at `high` (`low` below a 4096-token cap). Prerequisite for [PR118: in-turn context compaction](118-in-turn-context-compaction.md). The existing Claude subscription provider is out of scope and unchanged; it is being reworked separately. [PR123: Google API provider](123-google-api-provider.md) reuses the shared pieces this plan introduces.
+> Status: **Complete (2026-10-22), at the user's direction following live verification.** Adapter in `src/main/agent/providers/anthropic.ts`; shared carrier in `src/main/agent/providers/native-carrier.ts`. See [Completion record](#completion-record-2026-10-22) for what was verified, what was not, and the follow-ups that landed with it. Prerequisite for [PR118: in-turn context compaction](118-in-turn-context-compaction.md). The existing Claude subscription provider is out of scope and unchanged; it is being reworked separately. [PR123: Google API provider](123-google-api-provider.md) reuses the shared pieces this plan introduces.
 
 ## Objective and recommendation
 
@@ -119,9 +119,26 @@ Options:
 - No server tools (web search, web fetch, code execution), Managed Agents, Message Batches or Files API.
 - No database schema change for model capabilities.
 
+## Completion record (2026-10-22)
+
+Steps 1–6 and the follow-ups below landed in `efa43d1`, except the effort picker (`fb8d566`).
+
+**Live verification (user, step 7):**
+
+- Multi-round tool turns (file reads, listings, a pytest run, todo updates) on Sonnet 5.5, Haiku 5.5 and Haiku 4.5, plus a second turn after a rebuilt system prompt; parallel tool results in one user message; background title generation at `low` effort.
+- Prompt caching: from round 2 of a turn nearly the whole prompt is a cache read, and after the follow-up below a new turn's first round reads ~99% from cache.
+- Thinking replay on Sonnet 5.5: the first request carrying a saved thinking block logged neither `[anthropic] thinking not replayed` nor `[anthropic] input_transformation`, so the block was sent and accepted.
+- Haiku 4.5 (no adaptive thinking) runs without a thinking parameter.
+
+**Not done:** the strict run with `prefix_mismatch_behavior: "error"` (requests always send `drop_block`). The exact prompt-too-long error text was not confirmed live; overflow is matched on `prompt is too long`, `context window` or `too many tokens`, and on 413.
+
+**Follow-ups that landed with it:**
+
+- Cache and replay signals: `[ctx]` lines and `context-usage.jsonl` report cache reads/writes; the adapter logs `[anthropic] thinking not replayed` with the reason (`prefix`, `model`, `content`).
+- System-prompt stability: the environment section no longer carries the time, git status or recent commits, and the todo list is injected only when no `todo_write` result is in the history being sent (after a summary, or a seeded background task). This is a partial step toward option B, not option B itself.
+- Reasoning in the transcript: the loop forwards `reasoning_content`/`reasoning` deltas, stores them in `messages.reasoning` (display only, never replayed), and Trace shows them open while streaming and collapsed afterward. Anthropic requests `display: "summarized"`; the Codex bridge requests summaries with effort `medium` and maps both streamed and finished-item summaries.
+- Effort picker: a per-conversation effort (`conversations.effort`) chosen in the composer, offered only for models that accept one (Anthropic per the Models API, Codex a fixed `low`/`medium`/`high`), sent as `reasoning_effort`. No thinking toggle: the API does not say whether or how a model can turn thinking off.
+
 ## Open questions
 
-- Whether to enable server-side refusal fallbacks (`fallbacks: "default"`, beta `server-side-fallback-2026-07-01`) for models that support them, and how a fallback should appear in the transcript.
-- Thinking display: `summarized` for visible reasoning, or the default `omitted`. This affects what Trace can show.
-- Whether option B's append-only context assembly should become the default for every provider, since it also improves prompt caching elsewhere.
-- Which effort level to default to per model, given that defaults differ (`medium` on Opus 5.5, `high` on Sonnet 5.5).
+Resolved by the follow-ups: thinking display is `summarized`, shown in the transcript; effort defaults to `high` (`low` below a 4096-token cap) and is otherwise the conversation's pick. The questions still open are tracked in [ROADMAP-OPEN-DECISIONS.md](ROADMAP-OPEN-DECISIONS.md).
