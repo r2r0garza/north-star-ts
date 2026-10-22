@@ -39,6 +39,8 @@ export function TodoTraceList({
                 <TraceTitle
                   className={cn(
                     "overflow-visible break-words text-clip whitespace-pre-wrap",
+                    todo.status === "in_progress" &&
+                      "trace-shimmer text-muted-foreground motion-reduce:trace-shimmer-none",
                     (todo.status === "cancelled" ||
                       (strikeCompleted && todo.status === "completed")) &&
                       "line-through",

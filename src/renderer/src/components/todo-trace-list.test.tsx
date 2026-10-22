@@ -33,6 +33,12 @@ it("keeps full multiline content, semantic read-only lists and distinct statuses
       expect(titles[index].textContent).toBe(todo.content)
       expect(titles[index].className).toContain("whitespace-pre-wrap")
       expect(titles[index].className).not.toContain("truncate")
+      expect(titles[index].className.split(/\s+/)).toContain(
+        todo.status === "in_progress" ? "trace-shimmer" : "motion-reduce:trace-shimmer-none"
+      )
+      if (todo.status !== "in_progress") {
+        expect(titles[index].className.split(/\s+/)).not.toContain("trace-shimmer")
+      }
     })
     expect(titles[2].className).toContain("line-through")
     expect(titles[3].className).toContain("line-through")
