@@ -1,11 +1,11 @@
 # PR113: Adopt shadcn Trace for agent activity
 
-> Status: **In progress.** Renderer-only adoption of the installed Trace primitives. The implementation was already partially present when this plan was reviewed; progress is recorded below. Companion: [PR114: Code Block adoption](114-shadcn-code-block-adoption.md).
+> Status: **Done.** Renderer-only adoption of the installed Trace primitives for conversation and task activity. Ordered workflow step activity is tracked separately in [PR124: Workflow Trace presentation](124-workflow-trace-presentation.md). Companion: [PR114: Code Block adoption](114-shadcn-code-block-adoption.md).
 >
-> **Implementation progress (reviewed 2026-10-21):**
-> - **Completed in source:** installed Trace primitives; tool-group and individual tool disclosures; live Thinking/retry/background-command indicators; delegated-agent result summaries; workflow tool-call disclosures retaining the existing response-pairing adapter; shared read-only todo rows for active and historical task transcripts.
-> - **Remaining:** migrate Trace presentation to ordered workflow step activity while preserving its metadata hierarchy and existing open-state behavior; complete the plan's targeted regression matrix (including workflow refresh/pairing and media/approval/transcript regressions); run repository typecheck, full tests and build; perform the specified manual Electron accessibility, layout, theme, motion and interaction checks.
-> - **Verification note:** the source review confirmed the listed compositions, but did not execute tests, typecheck, build, or manual Electron checks. This checklist is a progress snapshot, not a claim of acceptance.
+> **Implementation and verification record (2026-10-22):**
+> - **Completed:** installed Trace primitives; tool-group and individual tool disclosures; live Thinking/retry/background-command indicators; delegated-agent result summaries; workflow tool-call disclosures retaining the existing response-pairing adapter; shared read-only todo rows for active and historical task transcripts.
+> - **Manual verification completed:** conversations in Chat, Interactive, and North Star modes.
+> - **Out of scope / follow-up:** ordered workflow step activity presentation is split into PR124. This status records the requested conversation-mode manual verification; it does not claim unrecorded repository test, typecheck, build, or workflow UI verification.
 
 ## Objective and recommendation
 

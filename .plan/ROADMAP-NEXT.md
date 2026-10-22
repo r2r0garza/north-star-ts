@@ -9,28 +9,27 @@
 > Mission Control, so Process UX investment remains worthwhile. `092.1` and `110`
 > moved to Deferred; low-value deferred plans were marked *dropped — pending re-review* in their own files.
 
-1. **`113` — shadcn Trace adoption (IN PROGRESS).** Standardize agent activity presentation across tool groups,
-   individual calls, live indicators, delegated results, workflow activity and read-only todos while preserving
-   orchestration, approval routing, transcript semantics and workflow response pairing. Existing implementation
-   and remaining work are tracked in the [plan](113-shadcn-trace-adoption.md).
-2. **`115` — Inline analysis artifacts — charts and tables (IN PROGRESS).** Present validated conversation snapshots
-   using existing shadcn/Recharts presentation, with durable revision-scoped storage, inline live/replay
-   parity, accessible chart/data-table views and bounded schemas. Keep snapshots separate from live
-   dashboard refresh and generated-code execution. [Plan](115-inline-analysis-artifacts.md).
-3. **`116` — Constrained UI concept previews.** After `115`, render approved declarative shadcn
+1. **`124` — Workflow Trace presentation.** Migrate ordered workflow step activity to the installed Trace
+   presentation while preserving workflow metadata, active-step/open-state behavior, response pairing,
+   transcript order and refresh semantics. [Plan](124-workflow-trace-presentation.md).
+2. **`116` — Constrained UI concept previews.** After `115`, render approved declarative shadcn
    compositions with bounded layout tokens, host-defined local interactions and explicit revision-aware
    feedback. Concepts do not execute generated code, edit workspace files or grant action authority.
    [Plan](116-ui-concept-previews.md).
-4. **`123` — Google API provider (IMPLEMENTED — live verification and PR118 contract tests pending).** Wire the reserved `google` provider as an API-key account on
+3. **`123` — Google API provider (IMPLEMENTED — live verification and PR118 contract tests pending).** Wire the reserved `google` provider as an API-key account on
    `@google/genai`, stateless (Interactions API with `store: false`, or `generateContent` if Interactions
    is not GA), replaying thought signatures through the shared native carrier.
    [Plan](123-google-api-provider.md).
-5. **`118` — In-turn context compaction.** Bound a single long agent turn's request at the model-round
+4. **`118` — In-turn context compaction.** Bound a single long agent turn's request at the model-round
    boundary: clear old tool-result bodies first, then fall back to a work-state summary and rebuild. The
    persisted transcript stays complete; instructions are pinned and a tool-record work ledger survives
    compaction. Blocked on `123`.
    [Plan](118-in-turn-context-compaction.md).
-6. **`119` — Electron development-app launch and control.** Give the coding agent managed, approval-aware
+5. **`119` — Electron development-app launch and control.** Give the coding agent managed, approval-aware
    launches of workspace Electron apps, with window inspection, screenshots, UI interaction, bounded
    diagnostics and cleanup. Keep development targets separate from bundled/packaged app support deferred
    to `120`; no general desktop control. [Plan](119-electron-application-control.md).
+6. **`115` — Inline analysis artifacts — charts and tables (IN PROGRESS).** Present validated conversation snapshots
+   using existing shadcn/Recharts presentation, with durable revision-scoped storage, inline live/replay
+   parity, accessible chart/data-table views and bounded schemas. Keep snapshots separate from live
+   dashboard refresh and generated-code execution. [Plan](115-inline-analysis-artifacts.md).
