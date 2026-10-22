@@ -21,11 +21,20 @@
    compositions with bounded layout tokens, host-defined local interactions and explicit revision-aware
    feedback. Concepts do not execute generated code, edit workspace files or grant action authority.
    [Plan](116-ui-concept-previews.md).
-4. **`118` — In-turn context compaction.** Bound a single long agent turn's request at the model-round
+4. **`122` — Anthropic API provider.** Wire the reserved `anthropic` provider as an API-key account on the
+   official SDK, translating the loop's chat-completions shape to Messages API content blocks. Replay
+   thinking signatures only over an unchanged prefix, with a `drop_block` safety net; record each model's
+   context window. Claude subscription unchanged. [Plan](122-anthropic-api-provider.md).
+5. **`123` — Google API provider.** Wire the reserved `google` provider as an API-key account on
+   `@google/genai`, stateless (Interactions API with `store: false`, or `generateContent` if Interactions
+   is not GA), replaying thought signatures through the shared native carrier.
+   [Plan](123-google-api-provider.md).
+6. **`118` — In-turn context compaction.** Bound a single long agent turn's request at the model-round
    boundary: clear old tool-result bodies first, then fall back to a work-state summary and rebuild. The
-   persisted transcript stays complete; summary upserts become monotonic.
+   persisted transcript stays complete; instructions are pinned and a tool-record work ledger survives
+   compaction. Blocked on `122` and `123`.
    [Plan](118-in-turn-context-compaction.md).
-5. **`119` — Electron development-app launch and control.** Give the coding agent managed, approval-aware
+7. **`119` — Electron development-app launch and control.** Give the coding agent managed, approval-aware
    launches of workspace Electron apps, with window inspection, screenshots, UI interaction, bounded
    diagnostics and cleanup. Keep development targets separate from bundled/packaged app support deferred
    to `120`; no general desktop control. [Plan](119-electron-application-control.md).
