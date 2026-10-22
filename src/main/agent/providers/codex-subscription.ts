@@ -188,6 +188,9 @@ export function buildCodexSubscriptionRequest({
     input,
     stream: true,
     store: false,
+    // Matches the Codex CLI's defaults: without an effort, newer models answer
+    // without reasoning; without a summary request, none is sent to show.
+    reasoning: { effort: "medium", summary: "auto" },
   }
   const tools = responsesTools(body.tools)
   if (tools) request.tools = tools
@@ -420,6 +423,10 @@ async function* codexSseToChatStream(
   let emittedOutput = false
   let toolIndex = 0
   let terminal: any = null
+  let summaryPart: string | undefined
+  // Reasoning items whose summary streamed, and what arrived (for the log line).
+  const summarized = new Set<string>()
+  const seen = { deltas: 0, items: 0, itemSummaries: 0 }
 
   for await (const event of readSseEvents(body)) {
     const type = typeof event?.type === "string" ? event.type : ""
@@ -434,6 +441,48 @@ async function* codexSseToChatStream(
       yield {
         _request_id: requestId,
         choices: [{ delta: { content: event.delta } }],
+      }
+      continue
+    }
+    if (
+      type === "response.reasoning_summary_text.delta" &&
+      typeof event.delta === "string"
+    ) {
+      // Separate summary parts (and reasoning items) with a blank line.
+      const part = `${event.item_id}:${event.summary_index}`
+      const gap = summaryPart !== undefined && summaryPart !== part
+      summaryPart = part
+      summarized.add(String(event.item_id))
+      seen.deltas++
+      yield {
+        _request_id: requestId,
+        choices: [
+          {
+            delta: {
+              reasoning_content: gap ? `\n\n${event.delta}` : event.delta,
+            },
+          },
+        ],
+      }
+      continue
+    }
+    if (type === "response.output_item.done" && event.item?.type === "reasoning") {
+      seen.items++
+      // The finished item carries the summary too; use it when none streamed.
+      const text = (Array.isArray(event.item.summary) ? event.item.summary : [])
+        .map((part: any) => (typeof part?.text === "string" ? part.text : ""))
+        .filter(Boolean)
+        .join("\n\n")
+      if (text) seen.itemSummaries++
+      if (text && !summarized.has(String(event.item.id))) {
+        const gap = summaryPart !== undefined
+        summaryPart = `${event.item.id}:done`
+        yield {
+          _request_id: requestId,
+          choices: [
+            { delta: { reasoning_content: gap ? `\n\n${text}` : text } },
+          ],
+        }
       }
       continue
     }
@@ -483,6 +532,9 @@ async function* codexSseToChatStream(
     }
   }
 
+  // shortcut: diagnostic for the reasoning-summary rollout; drop once Codex
+  // reasoning is confirmed showing in the transcript.
+  console.debug("[codex] reasoning", seen)
   if (!terminal) {
     throw new Error(
       emittedOutput

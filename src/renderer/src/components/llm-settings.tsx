@@ -91,16 +91,17 @@ const PROVIDERS: Array<{ value: Provider; label: string; enabled: boolean }> = [
   },
   { value: "codex_cli", label: "Codex CLI - Experimental", enabled: true },
   { value: "portkey", label: "Portkey - API", enabled: true },
-  { value: "anthropic", label: "Anthropic", enabled: false },
+  { value: "anthropic", label: "Anthropic - API", enabled: true },
   { value: "google", label: "Google", enabled: false },
   { value: "azure_openai", label: "Azure OpenAI", enabled: false },
 ]
 
-// Native OpenAI can omit a base URL (the SDK defaults to api.openai.com); every
-// other wired provider is a gateway that requires one.
+// Native OpenAI and Anthropic can omit a base URL (their SDKs default to the
+// vendor API); every other wired provider is a gateway that requires one.
 function requiresBaseUrl(provider: Provider): boolean {
   return (
     provider !== "openai" &&
+    provider !== "anthropic" &&
     provider !== "codex_subscription" &&
     provider !== "claude_subscription" &&
     !isCliProvider(provider)
@@ -584,7 +585,10 @@ function AccountCard({
               </p>
             )}
             <Field>
-              <FieldLabel htmlFor={`base-${account.id}`}>Base URL</FieldLabel>
+              <FieldLabel htmlFor={`base-${account.id}`}>
+                Base URL
+                {requiresBaseUrl(account.provider) ? "" : " (optional)"}
+              </FieldLabel>
               <Input
                 id={`base-${account.id}`}
                 value={baseUrl}
@@ -593,7 +597,11 @@ function AccountCard({
                 placeholder={
                   isCodexSubscription(account.provider)
                     ? "Default: https://chatgpt.com/backend-api/codex"
-                    : "https://gateway.example.com/v1"
+                    : requiresBaseUrl(account.provider)
+                      ? "https://gateway.example.com/v1"
+                      : account.provider === "anthropic"
+                        ? "Leave blank for api.anthropic.com"
+                        : "Leave blank for api.openai.com"
                 }
               />
             </Field>
@@ -887,7 +895,9 @@ function NewAccountForm({
                 ? "Leave blank for chatgpt.com/backend-api/codex"
                 : needsBaseUrl
                   ? "https://gateway.example.com/v1"
-                  : "Leave blank for api.openai.com"
+                  : provider === "anthropic"
+                    ? "Leave blank for api.anthropic.com"
+                    : "Leave blank for api.openai.com"
             }
           />
           {isCodexSubscription(provider) && (

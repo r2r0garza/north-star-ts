@@ -161,7 +161,9 @@ export interface ConversationSearchResult {
 export interface Message {
   artifact?: import("../../shared/conversation-artifacts").ArtifactReference
   media?: import("../../shared/tool-media").ToolMediaReference[]
-  nativeAssistant?: import("../agent/providers/claude-subscription/native-carrier").NativeAssistantCarrier
+  nativeAssistant?: import("../agent/providers/native-carrier").NativeAssistantCarrier
+  // Assistant reasoning for the transcript UI; context assembly ignores it.
+  reasoning?: string
   id: string
   conversationId: string
   seq: number

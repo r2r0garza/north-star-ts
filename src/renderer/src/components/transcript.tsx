@@ -9,6 +9,7 @@ import { Trace, TraceLine, TraceIcon, TraceTitle } from "@/components/ui/trace"
 import { Activity } from "lucide-react"
 import { TranscriptTools } from "@/components/transcript-tools"
 import { ChangedFilesBar } from "@/components/changed-files-bar"
+import { ReasoningTrace } from "@/components/reasoning-trace"
 import {
   projectTimelineCommandOutcomes,
   type TimelineItem,
@@ -30,6 +31,7 @@ import { cn } from "@/lib/utils"
 // the settled transcript.
 export type LiveSegment =
   | { kind: "text"; text: string }
+  | { kind: "reasoning"; text: string }
   | { kind: "user"; text: string; createdAt: number }
   | { kind: "tools"; calls: ToolUse[] }
 
@@ -111,6 +113,20 @@ const SettledTranscriptRow = memo(function SettledTranscriptRow({
   onRunBash,
   runDisabled,
 }: SettledTranscriptRowProps) {
+  if (item.kind === "reasoning") {
+    return (
+      <MessageScrollerItem scrollAnchor={scrollAnchor}>
+        <Message align="start">
+          <MessageContent>
+            <ReasoningTrace
+              text={item.content}
+              conversationId={conversationId}
+            />
+          </MessageContent>
+        </Message>
+      </MessageScrollerItem>
+    )
+  }
   if (item.kind === "tools") {
     return (
       <MessageScrollerItem scrollAnchor={scrollAnchor}>
@@ -225,6 +241,7 @@ export function LiveTranscriptTurn({
               // stable identity for the turn's lifetime.
               key={`s${index}`}
               segment={segment}
+              tail={index === segments.length - 1}
               findQuery={findQuery}
               workspace={workspace}
               conversationId={conversationId}
@@ -274,17 +291,28 @@ export function LiveTranscriptTurn({
 
 interface LiveTranscriptSegmentProps extends ChangedFilesCallbacks {
   segment: LiveSegment
+  // Whether this is the turn's latest segment (reasoning still streaming).
+  tail: boolean
   findQuery: string
 }
 
 const LiveTranscriptSegment = memo(function LiveTranscriptSegment({
   segment,
+  tail,
   findQuery,
   workspace,
   conversationId,
   onOpenHtml,
   onReviewFiles,
 }: LiveTranscriptSegmentProps) {
+  if (segment.kind === "reasoning")
+    return (
+      <ReasoningTrace
+        text={segment.text}
+        live={tail}
+        conversationId={conversationId}
+      />
+    )
   if (segment.kind === "tools") {
     return (
       <div>

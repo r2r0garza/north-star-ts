@@ -11,6 +11,7 @@ import { Message, MessageContent } from "@/components/ui/message"
 import { Bubble, BubbleContent } from "@/components/ui/bubble"
 import { Markdown } from "@/components/markdown"
 import { TranscriptTools } from "@/components/transcript-tools"
+import { ReasoningTrace } from "@/components/reasoning-trace"
 import { buildTimeline } from "@/lib/timeline"
 import { cn } from "@/lib/utils"
 import type { Task, TodoStatus } from "@/types"
@@ -105,6 +106,18 @@ export function TaskTranscriptSheet({
                     <MessageContent>
                       <TranscriptTools
                         calls={item.calls}
+                        conversationId={task?.conversationId}
+                      />
+                    </MessageContent>
+                  </Message>
+                )
+              }
+              if (item.kind === "reasoning") {
+                return (
+                  <Message key={item.key} align="start">
+                    <MessageContent>
+                      <ReasoningTrace
+                        text={item.content}
                         conversationId={task?.conversationId}
                       />
                     </MessageContent>

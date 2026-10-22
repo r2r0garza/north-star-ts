@@ -1,6 +1,6 @@
 # PR122: Anthropic API provider
 
-> Status: **Proposed — not implemented.** Prerequisite for [PR118: in-turn context compaction](118-in-turn-context-compaction.md). The existing Claude subscription provider is out of scope and unchanged; it is being reworked separately. [PR123: Google API provider](123-google-api-provider.md) reuses the shared pieces this plan introduces.
+> Status: **Implemented (steps 1–6) — awaiting live verification (step 7).** Adapter in `src/main/agent/providers/anthropic.ts`; shared carrier in `src/main/agent/providers/native-carrier.ts`. Open questions still open: no refusal fallbacks, thinking display left at the default (`omitted`), effort fixed at `high` (`low` below a 4096-token cap). Prerequisite for [PR118: in-turn context compaction](118-in-turn-context-compaction.md). The existing Claude subscription provider is out of scope and unchanged; it is being reworked separately. [PR123: Google API provider](123-google-api-provider.md) reuses the shared pieces this plan introduces.
 
 ## Objective and recommendation
 

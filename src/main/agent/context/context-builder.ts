@@ -1,7 +1,7 @@
 import {
   nativeAssistant,
   type NativeAssistantCarrier,
-} from "../providers/claude-subscription/native-carrier"
+} from "../providers/native-carrier"
 import {
   listMessages,
   listMessagesAfterSeq,

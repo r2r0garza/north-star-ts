@@ -1,7 +1,7 @@
 import {
   nativeAssistant,
   validateCarrier,
-} from "./providers/claude-subscription/native-carrier"
+} from "./providers/native-carrier"
 import type { ToolCallDelta } from "./tool-stream"
 import { modelRequestPermits } from "./model-permits"
 import type { ApiMode, ModelRequestRetryBudget } from "../db/types"
@@ -162,9 +162,11 @@ async function* idleGuarded<T>(
 }
 
 export interface CompletionRound {
-  nativeAssistant?: import("./providers/claude-subscription/native-carrier").NativeAssistantCarrier
+  nativeAssistant?: import("./providers/native-carrier").NativeAssistantCarrier
   refusal?: string
   text: string
+  // Model reasoning shown in the transcript only; never sent back as content.
+  reasoning: string
   toolFragments: ToolCallDelta[]
   finishReason: string | null
   diagnostics: ModelResponseAttemptDiagnostics
@@ -173,6 +175,7 @@ export interface CompletionRound {
 export type CompletionAttemptEvent =
   | { type: "start"; attemptId: string; attempt: number }
   | { type: "text"; attemptId: string; delta: string }
+  | { type: "reasoning"; attemptId: string; delta: string }
   | { type: "commit"; attemptId: string }
   | {
       type: "rollback"
@@ -241,6 +244,9 @@ export interface ModelResponseAttemptDiagnostics {
     promptTokens?: number
     completionTokens?: number
     totalTokens?: number
+    // Of promptTokens: read from / written to the provider's prompt cache.
+    cachedTokens?: number
+    cacheWriteTokens?: number
   } | null
 }
 
@@ -380,6 +386,9 @@ function usageFromChunk(chunk: any): ModelResponseAttemptDiagnostics["usage"] {
   const completionTokens =
     finiteNumber(usage.completion_tokens) ?? finiteNumber(usage.output_tokens)
   const totalTokens = finiteNumber(usage.total_tokens)
+  const details = usage.prompt_tokens_details
+  const cachedTokens = finiteNumber(details?.cached_tokens)
+  const cacheWriteTokens = finiteNumber(details?.cache_creation_tokens)
   if (
     promptTokens === undefined &&
     completionTokens === undefined &&
@@ -387,7 +396,13 @@ function usageFromChunk(chunk: any): ModelResponseAttemptDiagnostics["usage"] {
   ) {
     return null
   }
-  return { promptTokens, completionTokens, totalTokens }
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens,
+    ...(cachedTokens !== undefined ? { cachedTokens } : {}),
+    ...(cacheWriteTokens !== undefined ? { cacheWriteTokens } : {}),
+  }
 }
 
 function providerRequestIdFromChunk(chunk: any): string | null {
@@ -468,6 +483,7 @@ async function consumeCompletionStream(
   }
 ): Promise<CompletionRound> {
   let text = ""
+  let reasoning = ""
   let nativeMetadata: CompletionRound["nativeAssistant"]
   let refusal = ""
   const toolFragments: ToolCallDelta[] = []
@@ -503,6 +519,22 @@ async function consumeCompletionStream(
       Object.prototype.hasOwnProperty.call(delta, "reasoning_content")
     ) {
       reasoningFieldRecognized = true
+      // `reasoning_content` (vLLM, DeepSeek, our Anthropic adapter) or a plain
+      // string `reasoning` (OpenRouter-style); structured variants are skipped.
+      const thought =
+        typeof delta.reasoning_content === "string"
+          ? delta.reasoning_content
+          : typeof delta.reasoning === "string"
+            ? delta.reasoning
+            : ""
+      if (thought) {
+        reasoning += thought
+        input.onAttemptEvent?.({
+          type: "reasoning",
+          attemptId: input.attemptId,
+          delta: thought,
+        })
+      }
     }
 
     const piece = contentToText(delta.content)
@@ -546,6 +578,7 @@ async function consumeCompletionStream(
     ...(refused ? { refusal } : {}),
     nativeAssistant: nativeMetadata,
     text,
+    reasoning,
     toolFragments: refused ? [] : toolFragments,
     finishReason,
     diagnostics: {

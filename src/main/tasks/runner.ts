@@ -1110,13 +1110,14 @@ export class TaskRunner {
   }
 
   // Persist an event to the durable log and forward it to live subscribers.
-  // Token deltas, attempt checkpoints, and command-output ticks are ephemeral;
-  // the durable transcript lives in `messages` (and command receipts on their
-  // phase-runs), so stream state only belongs on the live tail.
+  // Token and reasoning deltas, attempt checkpoints, and command-output ticks
+  // are ephemeral; the durable transcript lives in `messages` (and command
+  // receipts on their phase-runs), so stream state only belongs on the live tail.
   private emit(taskId: string, event: TaskEventPayload): void {
     let eventId = 0
     if (
       event.type !== "token" &&
+      event.type !== "reasoning" &&
       event.type !== "stream_attempt" &&
       event.type !== "command_output" &&
       event.type !== "process_command_output"

@@ -120,6 +120,7 @@ export type ChatEvent =
       createdAt: number
     }
   | { type: "token"; delta: string; attemptId?: string }
+  | { type: "reasoning"; delta: string; attemptId?: string }
   | {
       type: "stream_attempt"
       phase: "start" | "commit" | "rollback"

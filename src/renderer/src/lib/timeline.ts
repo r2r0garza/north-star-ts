@@ -78,6 +78,8 @@ export type TimelineItem =
       notice?: "refocus"
     }
   | { kind: "tools"; key: string; calls: ToolUse[] }
+  // A round's model reasoning, shown collapsed before its text and tools.
+  | { kind: "reasoning"; key: string; content: string }
 
 export function latestAssistantTextKey(items: TimelineItem[]): string | null {
   for (let i = items.length - 1; i >= 0; i--) {
@@ -390,6 +392,13 @@ export function buildTimeline(rows: DbMessage[]): TimelineItem[] {
       continue
     }
     if (m.role === "assistant") {
+      if (m.reasoning?.trim()) {
+        items.push({
+          kind: "reasoning",
+          key: `${m.id}:reasoning`,
+          content: m.reasoning,
+        })
+      }
       if (m.content?.trim()) {
         items.push({
           kind: "text",

@@ -8,6 +8,7 @@ import * as settingsService from "../../settings/service"
 import { getApiKey, setApiKey } from "../../settings/secrets"
 import type { ApiMode, Provider, ProviderAccount } from "../../db/types"
 import { buildCodexSubscriptionClient } from "./codex-subscription"
+import { buildAnthropicClient } from "./anthropic"
 
 // The LLM routing layer. Resolves a provider account + model — either an explicit
 // per-conversation selection or the global default (the settings `llm` blob) —
@@ -21,6 +22,8 @@ import { buildCodexSubscriptionClient } from "./codex-subscription"
 //
 // Two SDKs back the wired providers, chosen by provider type:
 //   • portkey                     → the Portkey SDK (routes via x-portkey-* headers).
+//   • anthropic                   → the Anthropic SDK, translated to the
+//                                   chat-completions shape in ./anthropic.
 //   • openai, openai_compatible   → the OpenAI SDK (Authorization: Bearer on EVERY
 //                                   request — chat AND models — which is what a plain
 //                                   OpenAI-compatible gateway like Copilot Bridge
@@ -151,6 +154,7 @@ function buildClient(account: ProviderAccount): LlmClient {
     account.provider !== "portkey" &&
     account.provider !== "openai_compatible" &&
     account.provider !== "openai" &&
+    account.provider !== "anthropic" &&
     account.provider !== "codex_subscription"
   ) {
     throw new NoActiveProviderError(
@@ -163,11 +167,12 @@ function buildClient(account: ProviderAccount): LlmClient {
       `The provider "${account.displayName}" has no API key set. Add one in Settings.`
     )
   }
-  // A base URL is required for the two gateway providers; native `openai` may omit
-  // it (the SDK defaults to api.openai.com).
+  // A base URL is required for the two gateway providers; native `openai` and
+  // `anthropic` may omit it (their SDKs default to the vendor API).
   if (
     !account.baseUrl &&
     account.provider !== "openai" &&
+    account.provider !== "anthropic" &&
     account.provider !== "codex_subscription"
   ) {
     throw new NoActiveProviderError(
@@ -184,6 +189,12 @@ function buildClient(account: ProviderAccount): LlmClient {
         setApiKey(account.id, secret)
         clientCache.delete(account.id)
       },
+    })
+  } else if (account.provider === "anthropic") {
+    client = buildAnthropicClient({
+      accountId: account.id,
+      apiKey,
+      baseUrl: account.baseUrl,
     })
   } else if (account.provider === "portkey") {
     const portkey = new Portkey({ baseURL: account.baseUrl!, apiKey })
@@ -318,6 +329,7 @@ export function hasActiveProvider(): boolean {
       if (
         !account.baseUrl &&
         account.provider !== "openai" &&
+        account.provider !== "anthropic" &&
         account.provider !== "codex_subscription"
       ) {
         return false

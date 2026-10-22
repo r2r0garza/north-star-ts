@@ -21,7 +21,7 @@
    compositions with bounded layout tokens, host-defined local interactions and explicit revision-aware
    feedback. Concepts do not execute generated code, edit workspace files or grant action authority.
    [Plan](116-ui-concept-previews.md).
-4. **`122` — Anthropic API provider.** Wire the reserved `anthropic` provider as an API-key account on the
+4. **`122` — Anthropic API provider (IMPLEMENTED — live verification pending).** Wire the reserved `anthropic` provider as an API-key account on the
    official SDK, translating the loop's chat-completions shape to Messages API content blocks. Replay
    thinking signatures only over an unchanged prefix, with a `drop_block` safety net; record each model's
    context window. Claude subscription unchanged. [Plan](122-anthropic-api-provider.md).

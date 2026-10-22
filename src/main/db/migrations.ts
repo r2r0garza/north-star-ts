@@ -72,6 +72,11 @@ function ensureNativeAssistantColumn(db: Database.Database): void {
   addColumnIfMissing(db, "messages", "native_assistant", "TEXT")
 }
 
+// Model reasoning shown collapsed in the transcript (never sent to a model).
+function ensureMessageReasoningColumn(db: Database.Database): void {
+  addColumnIfMissing(db, "messages", "reasoning", "TEXT")
+}
+
 // v68: per-account image input. Defaults on so existing accounts keep sending
 // tool images; text-only gateways turn it off in Settings.
 function ensureProviderImageInputColumn(db: Database.Database): void {
@@ -223,6 +228,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
     ),
   ensureSteeringMessages,
   ensureConversationArtifacts,
+  ensureMessageReasoningColumn,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -693,6 +699,7 @@ export function runMigrations(
       ensureSubagentArtifactsTable(db)
       ensureWorkingDirectoryColumns(db)
       ensureNativeAssistantColumn(db)
+      ensureMessageReasoningColumn(db)
       ensureToolMedia(db)
       ensureConversationArtifacts(db)
       addColumnIfMissing(db, "workspaces", "command_checks", "TEXT")

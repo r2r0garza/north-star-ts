@@ -129,5 +129,14 @@ describe("context usage log", () => {
         })
       )
     ).toBe("[ctx] round 17 · 46.0k in (est) · stalled")
+    expect(
+      formatContextUsageLine(
+        entry({
+          request: { ...entry().request, cached: 46000, cacheWrite: 1200 },
+        })
+      )
+    ).toBe(
+      "[ctx] round 17 · 48.2k in (reported, 46.0k cached, 1.2k cache write) · 0.8k out"
+    )
   })
 })

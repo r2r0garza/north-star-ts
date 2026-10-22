@@ -6,7 +6,7 @@ import {
   validateCarrier,
   MAX_CARRIER_BYTES,
 } from "./native-carrier"
-import { translateHistory } from "./history"
+import { translateHistory } from "./claude-subscription/history"
 
 const model = "claude-sonnet-4-6"
 const user = { role: "user", content: "inspect" }
@@ -111,7 +111,13 @@ describe("native assistant carrier", () => {
   })
   it("invalidates deletions, summaries and protected/unknown block additions", () => {
     expect(
-      replayCarrier(carrier, model, historyFingerprint([]), blocks)
+      replayCarrier(
+        carrier,
+        "claude_subscription",
+        model,
+        historyFingerprint([]),
+        blocks
+      )
     ).toBeUndefined()
     expect(
       validateCarrier({
@@ -137,6 +143,17 @@ describe("native assistant carrier", () => {
         blocks: [{ type: "text", text: "x".repeat(MAX_CARRIER_BYTES) }],
       })
     ).toBeUndefined()
+  })
+  it("replays only the provider's own carriers", () => {
+    expect(validateCarrier({ ...carrier, provider: "anthropic" })).toBeTruthy()
+    expect(
+      replayCarrier(carrier, "anthropic", model, prefix, blocks)
+    ).toBeUndefined()
+    const foreign = { ...assistant, [nativeAssistant]: { ...carrier, provider: "anthropic" } }
+    expect(
+      translateHistory([user, foreign, result], undefined, model)
+        .frames[1].message.content.some((b) => b.type === "thinking")
+    ).toBe(false)
   })
   it("hashes canonical projections, not signature carriers or replay query flags", () => {
     const before = translateHistory(

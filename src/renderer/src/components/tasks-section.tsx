@@ -340,7 +340,12 @@ export function TasksSection({
       ) {
         setCommandWaits((w) => ({ ...w, [taskId]: false }))
       }
-      if (event.type === "token" || event.type === "stream_attempt") return
+      if (
+        event.type === "token" ||
+        event.type === "reasoning" ||
+        event.type === "stream_attempt"
+      )
+        return
       void refetchRef.current()
     })
     return unsubscribe

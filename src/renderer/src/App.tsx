@@ -238,6 +238,22 @@ function appendLiveText(turn: LiveTurn, delta: string): LiveTurn {
   }
 }
 
+// Append streamed reasoning, coalescing into a trailing reasoning segment the
+// same way text does; a text or tool event in between starts a new one.
+function appendLiveReasoning(turn: LiveTurn, delta: string): LiveTurn {
+  const last = turn.segments[turn.segments.length - 1]
+  return {
+    ...turn,
+    segments:
+      last?.kind === "reasoning"
+        ? [
+            ...turn.segments.slice(0, -1),
+            { kind: "reasoning", text: last.text + delta },
+          ]
+        : [...turn.segments, { kind: "reasoning", text: delta }],
+  }
+}
+
 function externalSourceKind(value: string): ExternalSourceKind | null {
   return value === "github" ||
     value === "copilot" ||
@@ -830,10 +846,30 @@ function App(
     []
   )
   useEffect(() => () => liveTokens.dispose(), [liveTokens])
+  // Reasoning is batched the same way. Each batcher is flushed before the other
+  // takes a delta, so reasoning and text keep their arrival order.
+  const liveReasoning = useMemo(
+    () =>
+      createTokenBatcher((batch) =>
+        setLiveTurns((prev) => {
+          const next = new Map(prev)
+          for (const [convoId, text] of batch) {
+            next.set(
+              convoId,
+              appendLiveReasoning(prev.get(convoId) ?? EMPTY_LIVE, text)
+            )
+          }
+          return next
+        })
+      ),
+    []
+  )
+  useEffect(() => () => liveReasoning.dispose(), [liveReasoning])
   // Mutate one conversation's live turn immutably; seeds an empty turn if absent.
   // Buffered tokens land first so every other update keeps its stream order.
   const updateLive = useCallback(
     (convoId: string, fn: (prev: LiveTurn) => LiveTurn) => {
+      liveReasoning.flush()
       liveTokens.flush()
       setLiveTurns((prev) => {
         const next = new Map(prev)
@@ -841,12 +877,13 @@ function App(
         return next
       })
     },
-    [liveTokens]
+    [liveTokens, liveReasoning]
   )
   // Drop one conversation's live turn (its content has been reconciled into the
   // persisted transcript, or the turn is being restarted).
   const clearLive = useCallback(
     (convoId: string) => {
+      liveReasoning.flush()
       liveTokens.flush()
       setLiveTurns((prev) => {
         if (!prev.has(convoId)) return prev
@@ -855,7 +892,7 @@ function App(
         return next
       })
     },
-    [liveTokens]
+    [liveTokens, liveReasoning]
   )
 
   // All providers + their models (for the composer's grouped picker) and the
@@ -967,6 +1004,9 @@ function App(
           reportTokens.push(id, payload.event.delta)
           return
         }
+        // Completion reports show only their text.
+        if (payload.type !== "started" && payload.event.type === "reasoning")
+          return
         reportTokens.flush()
         if (payload.type === "started") {
           reportGenerationRef.current.set(
@@ -1863,6 +1903,7 @@ function App(
     setTranscriptScroll((prev) => resetTranscriptScroll(prev, turnConvoId))
     // Start this conversation's live turn from a clean slate (its buffers are
     // keyed by conversation, so this never touches another conversation's turn).
+    liveReasoning.flush()
     liveTokens.flush()
     setLiveTurns((prev) => {
       const next = new Map(prev)
@@ -1924,7 +1965,11 @@ function App(
           } else if (event.type === "stream_attempt") {
             updateLive(turnConvoId, (turn) => applyStreamAttempt(turn, event))
           } else if (event.type === "token") {
+            liveReasoning.flush()
             liveTokens.push(turnConvoId, event.delta)
+          } else if (event.type === "reasoning") {
+            liveTokens.flush()
+            liveReasoning.push(turnConvoId, event.delta)
           } else if (event.type === "tool" && event.phase === "start") {
             // A tool started — add a running row (label derived from its args) to
             // the current tools segment, or open a new one after streamed text.

@@ -2,7 +2,7 @@ import {
   nativeAssistant,
   replayCarrier,
   historyFingerprint,
-} from "./native-carrier"
+} from "../native-carrier"
 import { replayToolCallArguments } from "../../tool-call-arguments"
 import { invalid, object, onlyKeys } from "./errors"
 
@@ -188,6 +188,7 @@ export function translateHistory(
       blocks =
         replayCarrier(
           (message as any)[nativeAssistant],
+          "claude_subscription",
           model,
           historyFingerprint(frames),
           blocks

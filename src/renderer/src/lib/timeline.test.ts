@@ -23,6 +23,29 @@ function message(
 }
 
 describe("buildTimeline", () => {
+  it("shows an assistant row's reasoning before its text and tools", () => {
+    const assistant = {
+      ...message("a", "assistant", "Reading."),
+      reasoning: "Need the file first.",
+      toolCalls: [{ id: "c", name: "read_file_tool", arguments: "{}" }],
+    }
+    const timeline = buildTimeline([
+      assistant,
+      message("b", "assistant", "No thoughts here."),
+    ])
+    expect(timeline.map((item) => item.kind)).toEqual([
+      "reasoning",
+      "text",
+      "tools",
+      "text",
+    ])
+    expect(timeline[0]).toEqual({
+      kind: "reasoning",
+      key: "a:reasoning",
+      content: "Need the file first.",
+    })
+  })
+
   it("attaches typed artifact references in declared call order despite reverse result completion", () => {
     const assistant = message("assistant", "assistant", "Before")
     assistant.toolCalls = ["first", "second"].map((id) => ({

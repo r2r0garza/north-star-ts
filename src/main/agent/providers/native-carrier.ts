@@ -4,9 +4,12 @@ import { isDeepStrictEqual } from "util"
 // Symbols keep private replay metadata off foreign providers' JSON wires.
 export const nativeAssistant = Symbol("nativeAssistant")
 export const MAX_CARRIER_BYTES = 4 * 1024 * 1024
+// Providers whose assistant blocks replay through this carrier. Each provider
+// replays only its own carriers; a foreign one falls back to canonical blocks.
+export type CarrierProvider = "claude_subscription" | "anthropic"
 export interface NativeAssistantCarrier {
   version: 1
-  provider: "claude_subscription"
+  provider: CarrierProvider
   model: string
   prefix: string
   blocks: Record<string, any>[]
@@ -49,7 +52,7 @@ export function validateCarrier(
     const c = value as NativeAssistantCarrier
     if (
       c.version !== 1 ||
-      c.provider !== "claude_subscription" ||
+      (c.provider !== "claude_subscription" && c.provider !== "anthropic") ||
       typeof c.model !== "string" ||
       !/^claude-[a-z0-9.-]+$/.test(c.model) ||
       !/^[a-f0-9]{64}$/.test(c.prefix) ||
@@ -99,13 +102,15 @@ export function validateCarrier(
 
 export function replayCarrier(
   value: unknown,
+  provider: CarrierProvider,
   model: string,
   prefix: string,
   canonical: Record<string, any>[]
 ) {
   const c = validateCarrier(value)
   if (
-    c?.model === model &&
+    c?.provider === provider &&
+    c.model === model &&
     c.prefix === prefix &&
     isDeepStrictEqual(projection(c.blocks), projection(canonical))
   )

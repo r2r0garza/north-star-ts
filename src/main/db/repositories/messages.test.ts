@@ -13,7 +13,7 @@ import { ContextBuilder } from "../../agent/context/context-builder"
 import {
   nativeAssistant,
   historyFingerprint,
-} from "../../agent/providers/claude-subscription/native-carrier"
+} from "../../agent/providers/native-carrier"
 import { translateHistory } from "../../agent/providers/claude-subscription/history"
 
 function insertConversation(id: string): void {
@@ -108,6 +108,29 @@ describe.skipIf(!sqliteLoads)("messages repository", () => {
     expect(
       translateHistory(edited, undefined, model).frames[1].message.content
     ).toEqual([{ type: "text", text: "edited" }])
+  })
+
+  it("stores assistant reasoning for the UI but never replays it to a model", () => {
+    insertConversation("thoughts")
+    appendMessage({ conversationId: "thoughts", role: "user", content: "q" })
+    const saved = appendMessage({
+      conversationId: "thoughts",
+      role: "assistant",
+      content: "answer",
+      reasoning: "private chain",
+    })
+    const user = appendMessage({
+      conversationId: "thoughts",
+      role: "user",
+      content: "next",
+      reasoning: "ignored on non-assistant rows",
+    })
+    expect(getMessage(saved.id)?.reasoning).toBe("private chain")
+    expect(getMessage(user.id)?.reasoning).toBeUndefined()
+    const messages = new ContextBuilder({ log: () => {} }).build("thoughts", {
+      baseSystemPrompt: "system",
+    })
+    expect(JSON.stringify(messages)).not.toContain("private chain")
   })
 
   it("ignores malformed persisted carriers", () => {

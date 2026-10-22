@@ -6,7 +6,7 @@ import {
   validateSteeringWith,
 } from "./steering"
 import type { SteeringState } from "../../shared/steering"
-import { nativeAssistant } from "./providers/claude-subscription/native-carrier"
+import { nativeAssistant } from "./providers/native-carrier"
 import { randomUUID } from "crypto"
 import {
   acceptsToolActivity,
@@ -61,7 +61,7 @@ import {
 } from "../db/repositories/todos"
 import { createTask, updateTask } from "../db/repositories/tasks"
 import { todoSeed, finishedTodoTitle } from "../tasks/todo-run"
-import { buildTodoListPrompt } from "./todo-prompt"
+import { buildTodoListPrompt, todoListInHistory } from "./todo-prompt"
 import { loadSkills } from "./skills/loader"
 import { buildSkillsPrompt } from "./skills/prompt"
 import { createReadSkillTool } from "./skills/tool"
@@ -171,6 +171,7 @@ import { replayToolMedia } from "../media/tool-media"
 import {
   appendMessage,
   listMessages,
+  listMessagesAfterSeq,
   getMaxMessageSeq,
   getMessage,
 } from "../db/repositories/messages"
@@ -793,6 +794,9 @@ export type ChatEvent =
       createdAt: number
     }
   | { type: "token"; delta: string; attemptId?: string }
+  // Model reasoning for the transcript, in the same attempt as its tokens: a
+  // rolled-back attempt's reasoning is discarded with its text.
+  | { type: "reasoning"; delta: string; attemptId?: string }
   | {
       type: "stream_attempt"
       phase: "start" | "commit" | "rollback"
@@ -1663,8 +1667,17 @@ export async function runAgentLoop(
     })
   }
 
-  // Todo list: re-injected each turn so a multi-step plan survives context
-  // compression and tool round-trips (see todo_write). Mode-gated.
+  // Rolling conversation summary (plan 019), read up front because its boundary
+  // decides whether the todo list needs re-injecting (below).
+  const summary = summarySection(conversationId)
+
+  // Todo list: mode-gated, and injected only when the history being sent no
+  // longer shows it — a summary replaced the todo_write calls, or the list was
+  // seeded without one (a handed-off background task). Every successful
+  // todo_write result carries the full list, so while one is still in history
+  // the system-prompt copy would only repeat it, and each list change would
+  // rewrite the prompt prefix: a full prompt-cache miss and dropped thinking on
+  // the next turn.
   if (showTodos) {
     // On a genuine new user turn (not a durable-task resume, which passes no
     // userMessage), clear a FINISHED list so the next task plans from scratch.
@@ -1690,7 +1703,13 @@ export async function runAgentLoop(
         replaceTodos(conversationId, [])
       }
     }
-    const todoPrompt = buildTodoListPrompt(listTodos(conversationId))
+    const visible =
+      summary?.replacesHistoryThrough === undefined
+        ? listMessages(conversationId)
+        : listMessagesAfterSeq(conversationId, summary.replacesHistoryThrough)
+    const todoPrompt = todoListInHistory(visible)
+      ? null
+      : buildTodoListPrompt(listTodos(conversationId))
     if (todoPrompt) {
       sections.push({
         name: "todos",
@@ -1728,7 +1747,6 @@ export async function runAgentLoop(
   // decides where verbatim history resumes.
   // Highest-priority section (last dropped). Conversation memory applies to
   // every mode, including Chat, independently of the available toolset.
-  const summary = summarySection(conversationId)
   if (summary) sections.push(summary)
 
   // Workspace-index summary (plan 008): cheap structured orientation. Advisory,
@@ -2046,6 +2064,8 @@ export async function runAgentLoop(
           seat: null,
           request: {
             reported,
+            cached: input.diagnostics?.usage?.cachedTokens ?? null,
+            cacheWrite: input.diagnostics?.usage?.cacheWriteTokens ?? null,
             estimated: size.total,
             estimator: REQUEST_SIZE_ESTIMATOR,
             ratio:
@@ -2074,7 +2094,8 @@ export async function runAgentLoop(
       text: string,
       logicalRoundId: string,
       offeredNames: Set<string>,
-      carrier?: CompletionRound["nativeAssistant"]
+      carrier?: CompletionRound["nativeAssistant"],
+      reasoning?: string
     ) => {
       // Record the assistant turn (text + the tool calls it requested) so the
       // follow-up request has the full context — both in-memory and persisted.
@@ -2096,6 +2117,7 @@ export async function runAgentLoop(
         role: "assistant",
         content: text || null,
         nativeAssistant: carrier,
+        reasoning,
         toolCalls: toolCalls.map((c) => ({
           id: c.id,
           name: c.name,
@@ -2855,6 +2877,14 @@ export async function runAgentLoop(
                   })
                   return
                 }
+                if (event.type === "reasoning") {
+                  onEvent({
+                    type: "reasoning",
+                    delta: event.delta,
+                    attemptId: event.attemptId,
+                  })
+                  return
+                }
                 if (event.type === "text") {
                   attemptText += event.delta
                   const trimmed = attemptText.trimStart()
@@ -3034,6 +3064,7 @@ export async function runAgentLoop(
           content: text
             ? `${text}\n\n${stopNote(abort.signal)}`
             : stopNote(abort.signal),
+          reasoning: round.reasoning,
         })
         return { stopped: true }
       }
@@ -3044,6 +3075,7 @@ export async function runAgentLoop(
           role: "assistant",
           content: text,
           nativeAssistant: round.nativeAssistant,
+          reasoning: round.reasoning,
         })
         completeModelRequestRetryBudget({ conversationId, logicalRoundId })
         return { content: text, ...(hasTurnUsage ? { usage: turnUsage } : {}) }
@@ -3092,6 +3124,7 @@ export async function runAgentLoop(
               role: "assistant",
               content: text,
               nativeAssistant: round.nativeAssistant,
+              reasoning: round.reasoning,
             })
             messages.push({
               role: "assistant",
@@ -3110,6 +3143,7 @@ export async function runAgentLoop(
               role: "assistant",
               content: text,
               nativeAssistant: round.nativeAssistant,
+              reasoning: round.reasoning,
             })
           }
           completeModelRequestRetryBudget({ conversationId, logicalRoundId })
@@ -3149,6 +3183,7 @@ export async function runAgentLoop(
           role: "assistant",
           content: text,
           nativeAssistant: round.nativeAssistant,
+          reasoning: round.reasoning,
         })
         completeModelRequestRetryBudget({ conversationId, logicalRoundId })
         return {
@@ -3163,7 +3198,8 @@ export async function runAgentLoop(
           text,
           logicalRoundId,
           offeredNames,
-          round.nativeAssistant
+          round.nativeAssistant,
+          round.reasoning
         ))
       ) {
         return failTurn(

@@ -1,4 +1,4 @@
-import type { Todo, TodoStatus } from "../db/types"
+import type { Message, Todo, TodoStatus } from "../db/types"
 
 // Compact status markers for the re-injected list, so the model sees progress
 // at a glance without re-doing finished work.
@@ -30,4 +30,20 @@ export function buildTodoListPrompt(todos: Todo[]): string | null {
     "",
     ...lines,
   ].join("\n")
+}
+
+// Whether `history` (the messages about to be sent) holds a successful
+// todo_write result. Each one carries the full list, so the latest is a
+// complete copy and re-injecting the list into the system prompt is redundant.
+// shortcut: assumes tool results are sent verbatim; revisit when in-turn
+// compaction (plan 118) starts clearing old tool-result bodies.
+export function todoListInHistory(history: Message[]): boolean {
+  return history.some((m) => {
+    if (m.role !== "tool" || m.toolName !== "todo_write") return false
+    try {
+      return Array.isArray(JSON.parse(m.content ?? "").todos)
+    } catch {
+      return false
+    }
+  })
 }
