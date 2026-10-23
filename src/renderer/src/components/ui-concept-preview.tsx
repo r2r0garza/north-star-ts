@@ -318,8 +318,9 @@ export function UiConceptPreview({
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
         <p className="w-full">
-          Design concept with sample content. Controls are local demos and do
-          not change your app.
+          Visual reference only: built with North Star&apos;s own components and
+          sample content, not your project&apos;s components. Controls are local
+          demos and change nothing.
         </p>
         {concept.states && (
           <>

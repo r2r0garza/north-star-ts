@@ -28,7 +28,7 @@ describe("UiConceptPreview", () => {
   it("renders semantic, labelled, non-operational controls", async () => {
     await act(async () => root.render(<UiConceptPreview concept={concept} />))
     expect(container.querySelector("h4")?.textContent).toBe("Notifications")
-    expect(container.textContent).toContain("sample content")
+    expect(container.textContent).toContain("not your project's components")
     const labels = container.querySelectorAll("label")
     expect(labels.length).toBeGreaterThan(0)
     for (const label of labels)
