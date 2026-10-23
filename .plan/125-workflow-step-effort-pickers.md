@@ -1,6 +1,6 @@
 # PR125: Workflow step model effort pickers
 
-> Status: **Proposed.** Add effort selection beside every model picker in a workflow step, including the worker and completion validator.
+> Status: **Done.** Completed 2026-10-23 at the user's direction. Add effort selection beside every model picker in a workflow step, including the worker and completion validator. Automated verification passed (full suite's 3 failures pre-existing); the manual save/reopen/run check and live-provider verification were not performed.
 
 ## Objective
 
