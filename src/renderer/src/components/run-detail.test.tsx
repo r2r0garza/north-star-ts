@@ -149,14 +149,14 @@ it("keeps tool responses inside their matching collapsed calls, including after 
     expect(transcript.textContent).toContain("Unmatched output")
     expect(transcript.textContent).toContain("Unlinked output")
     expect(transcript.textContent).toContain("Finished checking")
-    for (const [status, label] of [
-      ["waiting", "Waiting"],
-      ["active", "Active"],
-      ["completed", "Completed"],
-      ["paused", "Paused"],
-      ["cancelled", "Cancelled"],
-      ["failed", "Failed"],
-      ["interrupted", "Interrupted"],
+    for (const [status, label, traceStatus] of [
+      ["waiting", "Waiting", "pending"],
+      ["active", "Active", "running"],
+      ["completed", "Completed", null],
+      ["paused", "Paused", null],
+      ["cancelled", "Cancelled", null],
+      ["failed", "Failed", "error"],
+      ["interrupted", "Interrupted", null],
     ] as const) {
       await act(async () =>
         root.render(
@@ -170,6 +170,11 @@ it("keeps tool responses inside their matching collapsed calls, including after 
       )
       expect(stepTrigger.getAttribute("aria-current")).toBe("step")
       expect(stepTrigger.textContent).toContain(label)
+      expect(
+        stepTrigger
+          .querySelector('[data-slot="trace-line"]')!
+          .getAttribute("data-status")
+      ).toBe(traceStatus)
       expect(calls[0].getAttribute("aria-expanded")).toBe("true")
       if (status === "active") {
         expect(calls[0].textContent).toContain("Running")
@@ -660,6 +665,107 @@ it("shows live workflow command output in its existing disclosure and retains th
     expect(container.textContent).not.toContain(
       "Final outcome unavailable in this snapshot"
     )
+  } finally {
+    act(() => root.unmount())
+    container.remove()
+    vi.unstubAllGlobals()
+  }
+})
+
+it("never labels an unanswered mutation as successful after its step stops", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
+  const workflow = EXAMPLE_WORKFLOWS[0]
+  const messages: Message[] = [
+    {
+      id: "assistant",
+      conversationId: "conversation",
+      seq: 0,
+      role: "assistant",
+      content: null,
+      toolCalls: [
+        {
+          id: "write",
+          name: "write_file_tool",
+          arguments: '{"path":"unfinished.ts"}',
+        },
+        { id: "patch", name: "apply_patch_tool", arguments: "{}" },
+      ],
+      toolCallId: null,
+      toolName: null,
+      tokenEstimate: null,
+      createdAt: 0,
+    },
+  ]
+  vi.stubGlobal("cowork", {
+    providers: { listWithModels: vi.fn(async () => []) },
+    tasks: { onEvent: () => () => {} },
+    db: { messages: { list: vi.fn(async () => messages) } },
+  })
+  const run = (
+    status: WorkflowRun["steps"][number]["status"]
+  ): WorkflowRun => ({
+    id: "run",
+    taskId: "task",
+    workflowId: workflow.id,
+    workflow,
+    title: "Test run",
+    objective: "Write files",
+    workspaceId: "workspace",
+    workspacePath: "/project",
+    projectId: null,
+    projectName: null,
+    accountId: "account",
+    modelId: "model",
+    status: status === "active" ? "Active" : "Paused",
+    error: null,
+    createdAt: 0,
+    updatedAt: 0,
+    steps: [
+      {
+        ...workflow.steps[0],
+        status,
+        conversationId: "conversation",
+        result: null,
+        error: null,
+        startedAt: 0,
+        finishedAt: 0,
+      },
+    ],
+  })
+  const container = document.createElement("div")
+  document.body.append(container)
+  const root = createRoot(container)
+  const labels = () =>
+    Array.from(
+      container.querySelectorAll('[data-slot="trace-collapsible-trigger"]'),
+      (trigger) => trigger.textContent
+    )
+  try {
+    for (const [status, expected] of [
+      ["active", ["Writing unfinished.ts", "Applying patch"]],
+      ["interrupted", ["Write interrupted unfinished.ts", "Patch interrupted"]],
+      ["paused", ["Write interrupted unfinished.ts", "Patch interrupted"]],
+      ["cancelled", ["Write interrupted unfinished.ts", "Patch interrupted"]],
+      ["completed", ["Write interrupted unfinished.ts", "Patch interrupted"]],
+    ] as const) {
+      await act(async () =>
+        root.render(
+          <RunDetail
+            run={run(status)}
+            workflow={workflow}
+            onBack={() => {}}
+            onClose={() => {}}
+          />
+        )
+      )
+      const step = container.querySelector<HTMLButtonElement>("nav ol button")!
+      await act(async () => step.click())
+      const current = labels()
+      expected.forEach((label, index) =>
+        expect(current[index]).toContain(label)
+      )
+      expect(current.join(" ")).not.toMatch(/Wrote|Applied patch/)
+    }
   } finally {
     act(() => root.unmount())
     container.remove()

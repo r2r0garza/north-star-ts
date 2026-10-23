@@ -55,7 +55,7 @@ import {
 } from "@/lib/timeline"
 import type { CommandSnapshot } from "@/lib/command-presentation"
 import { CommandOutput } from "@/components/command-output"
-import { commandPresentation, isCommandTool } from "@/lib/command-presentation"
+import { commandPresentation } from "@/lib/command-presentation"
 import { transcriptShouldFollow } from "@/lib/transcript-scroll"
 import type {
   WorkflowStep,
@@ -71,11 +71,21 @@ const STATUS_STYLE: Record<string, string> = {
   Cancelled: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
 }
 
-const ACTIVITY_STYLE = {
+// Paused/cancelled/interrupted keep their label but no Trace status, so they never animate.
+const ACTIVITY_STYLE: Record<
+  WorkflowStepRun["status"],
+  {
+    label: string
+    className: string
+    Icon: typeof Activity
+    trace?: "running" | "error" | "pending"
+  }
+> = {
   active: {
     label: "Active",
     className: STATUS_STYLE.Active,
     Icon: Activity,
+    trace: "running",
   },
   completed: {
     label: "Completed",
@@ -92,7 +102,12 @@ const ACTIVITY_STYLE = {
     className: STATUS_STYLE.Paused,
     Icon: CirclePause,
   },
-  failed: { label: "Failed", className: STATUS_STYLE.Cancelled, Icon: CircleX },
+  failed: {
+    label: "Failed",
+    className: STATUS_STYLE.Cancelled,
+    Icon: CircleX,
+    trace: "error",
+  },
   interrupted: {
     label: "Interrupted",
     className: STATUS_STYLE.Paused,
@@ -102,6 +117,7 @@ const ACTIVITY_STYLE = {
     label: "Waiting",
     className: "bg-muted text-muted-foreground",
     Icon: Clock3,
+    trace: "pending",
   },
 }
 
@@ -410,23 +426,34 @@ function RunDetailView({
                         : "hover:bg-muted"
                     )}
                   >
-                    <Icon
-                      className={cn(
-                        "mt-0.5 size-4 shrink-0",
-                        step.status === "active" && "text-primary"
-                      )}
-                    />
-                    <span className="min-w-0">
-                      <span className="block font-medium break-words">
+                    <TraceLine
+                      status={display.trace}
+                      className="w-full flex-wrap items-start gap-x-2 gap-y-0 text-inherit"
+                    >
+                      <TraceIcon className="mt-0.5">
+                        <Icon
+                          className={cn(
+                            step.status === "active" && "text-primary"
+                          )}
+                        />
+                      </TraceIcon>
+                      {/* Plain span, not TraceTitle: shimmer is invisible on foreground text, so the muted label carries it. */}
+                      <span className="min-w-0 flex-1 font-medium break-words">
                         {index + 1}.{" "}
                         {workflow?.steps.find(
                           (definition) => definition.id === step.id
                         )?.title ?? `Step ${index + 1}`}
                       </span>
-                      <span className="text-xs text-muted-foreground">
+                      <TraceDescription
+                        className={cn(
+                          "basis-full pl-6 text-xs text-muted-foreground",
+                          display.trace === "running" &&
+                            "trace-shimmer motion-reduce:trace-shimmer-none"
+                        )}
+                      >
                         {display.label}
-                      </span>
-                    </span>
+                      </TraceDescription>
+                    </TraceLine>
                   </button>
                 </li>
               )
@@ -1022,9 +1049,17 @@ function WorkflowToolCall({
                 )}
               </TraceIcon>
               <TraceTitle>
-                {isCommandTool(call.name)
-                  ? deriveLabel(call.name, args)
-                  : call.name}
+                {deriveLabel(
+                  call.name,
+                  args,
+                  failed
+                    ? "error"
+                    : running
+                      ? "running"
+                      : !command && responses.length === 0
+                        ? "interrupted"
+                        : "done"
+                )}
               </TraceTitle>
               {(failed || running || command) && (
                 <TraceDescription>

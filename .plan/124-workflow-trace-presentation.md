@@ -1,6 +1,13 @@
 # PR124: Workflow Trace presentation
 
-> Status: **Proposed.** Complete the workflow step-activity portion split from [PR113: shadcn Trace adoption](113-shadcn-trace-adoption.md). PR113 covers conversation and task activity; this plan focuses on ordered workflow steps and their existing lifecycle behavior.
+> Status: **Done.** Completed 2026-10-23 at the user's direction. Complete the workflow step-activity portion split from [PR113: shadcn Trace adoption](113-shadcn-trace-adoption.md). PR113 covers conversation and task activity; this plan focuses on ordered workflow steps and their existing lifecycle behavior.
+>
+> **Implementation and verification record (2026-10-23):**
+> - Tool-call disclosures already used Trace (PR113) with the response-pairing adapter, stable per-call open state and existing coverage for reversed/multiple/missing/orphan/unlinked responses and refresh while open.
+> - The ordered step list (`nav ol`) renders each step as a TraceLine: waiting → `pending`, active → `running`, completed → none, failed → `error`; paused/cancelled/interrupted → none with their explicit domain label. Titles wrap. The muted status label carries the running shimmer (title shimmer was invisible on foreground text) and honors reduced motion.
+> - Follow-ups from the user's manual run: every workflow tool call now uses the conversation `deriveLabel` labels instead of raw tool names. From a self-review workflow run: an unanswered call on a stopped step is labeled interrupted (e.g. "Write interrupted unfinished.ts"), never as a success; it shows as running only while the step is active.
+> - Tests: `run-detail.test.tsx` asserts the Trace status for every step state and adds a regression test for unanswered `write_file_tool`/`apply_patch_tool` calls across active, interrupted, paused, cancelled and completed steps (confirmed failing without the fix). Typecheck and build passed; the full suite had 3 pre-existing main-process failures (`tool-error-feedback.integration`, `conversations` reasoning effort) that also fail without this change.
+> - Manual: the user ran workflows in Electron and reported the shimmer and label issues fixed above. The full manual checklist under Verification (keyboard/focus, reduced motion, narrow widths, themes, every state) is not recorded as passed.
 
 ## Objective
 
