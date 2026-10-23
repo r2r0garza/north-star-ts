@@ -1,6 +1,6 @@
 # PR119: Electron development-app launch and control for the coding agent
 
-> Status: **IMPLEMENTED (2026-10-23) — all phases done; qualified on macOS (arm64) for development targets; controlled by Settings → Browser → "Let the agent launch Electron apps" (default on since 2026-10-23; replaced the `COWORK_ELECTRON_APPS` env flag). Windows/Linux not yet qualified.** Drafted 2026-10-21. This document proposes a capability; it does not authorize launching apps, installing dependencies, or implementing the tools.
+> Status: **COMPLETED (2026-10-23)** — all phases done and qualified on macOS (arm64) for development targets; controlled by Settings → Browser (default on). **Deferred:** Windows qualification → [PR128](128-electron-app-control-windows-qualification.md), Linux qualification → [PR129](129-electron-app-control-linux-qualification.md). Drafted 2026-10-21.
 
 ## Objective
 

@@ -9,17 +9,19 @@
 > Mission Control, so Process UX investment remains worthwhile. `092.1` and `110`
 > moved to Deferred; low-value deferred plans were marked *dropped — pending re-review* in their own files.
 
-1. **`119` — Electron development-app launch and control (IMPLEMENTED 2026-10-23 — macOS-qualified, on by default via Settings → Browser; Windows/Linux qualification pending).** Managed, approval-aware
-   launches of workspace Electron apps with window inspection, screenshots, real-input interaction, waits,
-   handoff, `electron_run` declarative checks and cleanup; qualify with `node scripts/qualify-electron-apps.mjs`.
-   Bundled/packaged targets deferred to `120`. [Plan](119-electron-application-control.md).
-2. **`126` — Workflow command steps.** Run Python scripts or ordinary commands directly without an
+1. **`126` — Workflow command steps.** Run Python scripts or ordinary commands directly without an
    agent call, using existing execution policy and durable bounded results for subsequent steps.
    [Plan](126-workflow-command-steps.md).
-3. **`127` — Workflow command iteration.** After `126`, run a command sequentially for each item in an
+2. **`127` — Workflow command iteration.** After `126`, run a command sequentially for each item in an
    earlier step's JSON array, with safe argument bindings, bounded per-item receipts and explicit recovery.
    [Plan](127-workflow-command-iteration.md).
-4. **`123` — Google API provider (IMPLEMENTED — live verification pending; PR118 contract tests done).** Wire the reserved `google` provider as an API-key account on
+3. **`123` — Google API provider (IMPLEMENTED — live verification pending; PR118 contract tests done).** Wire the reserved `google` provider as an API-key account on
    `@google/genai`, stateless (Interactions API with `store: false`, or `generateContent` if Interactions
    is not GA), replaying thought signatures through the shared native carrier.
    [Plan](123-google-api-provider.md).
+4. **`128` — Qualify Electron app control on Windows.** Run PR119's qualification on Windows 11 and fix
+   what it requires: owned process-tree teardown, pipe transport, test-profile paths, child env and
+   path handling. [Plan](128-electron-app-control-windows-qualification.md).
+5. **`129` — Qualify Electron app control on Linux.** Run PR119's qualification on X11, Wayland and Xvfb
+   and fix what it requires: display detection, Chromium sandbox failures as actionable errors (never
+   `--no-sandbox`), child env and teardown. [Plan](129-electron-app-control-linux-qualification.md).
