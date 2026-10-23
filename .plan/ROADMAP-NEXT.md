@@ -16,20 +16,15 @@
    compositions with bounded layout tokens, host-defined local interactions and explicit revision-aware
    feedback. Concepts do not execute generated code, edit workspace files or grant action authority.
    [Plan](116-ui-concept-previews.md).
-3. **`123` — Google API provider (IMPLEMENTED — live verification and PR118 contract tests pending).** Wire the reserved `google` provider as an API-key account on
+3. **`123` — Google API provider (IMPLEMENTED — live verification pending; PR118 contract tests done).** Wire the reserved `google` provider as an API-key account on
    `@google/genai`, stateless (Interactions API with `store: false`, or `generateContent` if Interactions
    is not GA), replaying thought signatures through the shared native carrier.
    [Plan](123-google-api-provider.md).
-4. **`118` — In-turn context compaction (IMPLEMENTED — verified in North Star on Codex and Anthropic; workflow step on Codex pending; Google not verified live).** Bound a single long agent turn's request at the model-round
-   boundary: clear old tool-result bodies first, then fall back to a work-state summary and rebuild. The
-   persisted transcript stays complete; instructions are pinned and a tool-record work ledger survives
-   compaction.
-   [Plan](118-in-turn-context-compaction.md).
-5. **`119` — Electron development-app launch and control.** Give the coding agent managed, approval-aware
+4. **`119` — Electron development-app launch and control.** Give the coding agent managed, approval-aware
    launches of workspace Electron apps, with window inspection, screenshots, UI interaction, bounded
    diagnostics and cleanup. Keep development targets separate from bundled/packaged app support deferred
    to `120`; no general desktop control. [Plan](119-electron-application-control.md).
-6. **`115` — Inline analysis artifacts — charts and tables (IN PROGRESS).** Present validated conversation snapshots
+5. **`115` — Inline analysis artifacts — charts and tables (IN PROGRESS).** Present validated conversation snapshots
    using existing shadcn/Recharts presentation, with durable revision-scoped storage, inline live/replay
    parity, accessible chart/data-table views and bounded schemas. Keep snapshots separate from live
    dashboard refresh and generated-code execution. [Plan](115-inline-analysis-artifacts.md).
