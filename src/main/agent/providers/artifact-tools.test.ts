@@ -1,14 +1,15 @@
 import { expect, it, vi } from "vitest"
 import { presentChartTool } from "../tools/present_chart"
 import { presentTableTool } from "../tools/present_table"
+import { presentUiTool } from "../tools/present_ui"
 import { withToolActivity } from "../../../shared/tool-activity"
 import { buildCodexSubscriptionRequest } from "./codex-subscription"
 import { validateRequest } from "./claude-subscription/request"
 import { createCompletion, type LlmClient } from "./index"
 
 it("preserves artifact schemas and bounded acknowledgements across native transports", async () => {
-  const tools = [presentChartTool, presentTableTool].map((tool) =>
-    withToolActivity(tool.definition)
+  const tools = [presentChartTool, presentTableTool, presentUiTool].map(
+    (tool) => withToolActivity(tool.definition)
   )
   const acknowledgement = JSON.stringify({
     artifactId: "owned-id",
@@ -46,15 +47,18 @@ it("preserves artifact schemas and bounded acknowledgements across native transp
   expect(converted.map((tool) => tool.name)).toEqual([
     "present_chart",
     "present_table",
+    "present_ui",
   ])
   expect(converted[1].parameters).toEqual(tools[1].function.parameters)
+  expect(converted[2].parameters).toEqual(tools[2].function.parameters)
   expect(JSON.stringify(codex.input)).toContain("saved_for_presentation")
   const claude = validateRequest({
     model: "claude-sonnet-4-5",
     max_tokens: 1000,
     ...body,
   })
-  expect(claude.tools).toHaveLength(2)
+  expect(claude.tools).toHaveLength(3)
+  expect(JSON.stringify(claude)).toContain("goTo")
   expect(JSON.stringify(claude)).toContain("expectedBaseRevision")
   expect(JSON.stringify(claude)).toContain("saved_for_presentation")
   const create = vi.fn().mockResolvedValue("ok")

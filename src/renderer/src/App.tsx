@@ -75,6 +75,8 @@ import {
   SettledTranscript,
   type LiveSegment,
 } from "@/components/transcript"
+import { ArtifactChoiceContext } from "@/components/conversation-artifact"
+import { uiConceptChoiceNote } from "../../shared/conversation-artifacts"
 import { QuestionPanel } from "@/components/question-panel"
 import { applyStreamAttempt } from "@/lib/live-stream"
 import { createTokenBatcher } from "@/lib/token-batcher"
@@ -1410,6 +1412,21 @@ function App(
       node.setSelectionRange(end, end)
     })
   }, [])
+
+  const appendArtifactChoice = useCallback(
+    (choice: { artifactId: string; revision: number }) => {
+      const block = uiConceptChoiceNote(choice.artifactId, choice.revision)
+      setMessage((prev) =>
+        prev.includes(block)
+          ? prev
+          : prev.trim()
+            ? `${prev}\n\n${block}`
+            : block
+      )
+      requestAnimationFrame(() => textareaRef.current?.focus())
+    },
+    []
+  )
 
   const appendFileSelection = useCallback(
     (selection: {
@@ -3911,33 +3928,35 @@ function App(
               ref={transcriptContentRef}
               className="mx-auto w-full max-w-[min(90%,72rem)] gap-4 px-4 py-6"
             >
-              <SettledTranscript
-                items={displayTimeline}
-                anchorLast={!loading && !suppressSettledAnchor}
-                findQuery={activeConversationFindQuery}
-                latestAssistantKey={latestSettledAssistantKey}
-                onRunBash={effectiveIsCli ? undefined : runTranscriptBash}
-                runDisabled={loading || !hasLlm || agentMode === "plan"}
-                workspace={transcriptWorkspace}
-                conversationId={conversationId ?? undefined}
-                onOpenHtml={openTranscriptHtml}
-                onReviewFiles={reviewTranscriptFiles}
-              />
-              {loading && (
-                <LiveTranscriptTurn
-                  key="live"
-                  segments={liveSegments}
-                  content={liveContent}
-                  firstTextAt={liveTurn?.firstTextAt ?? null}
-                  commandWait={liveTurn?.commandWait ?? false}
-                  streamRetrying={liveTurn?.streamRetrying ?? false}
+              <ArtifactChoiceContext.Provider value={appendArtifactChoice}>
+                <SettledTranscript
+                  items={displayTimeline}
+                  anchorLast={!loading && !suppressSettledAnchor}
                   findQuery={activeConversationFindQuery}
+                  latestAssistantKey={latestSettledAssistantKey}
+                  onRunBash={effectiveIsCli ? undefined : runTranscriptBash}
+                  runDisabled={loading || !hasLlm || agentMode === "plan"}
                   workspace={transcriptWorkspace}
                   conversationId={conversationId ?? undefined}
                   onOpenHtml={openTranscriptHtml}
                   onReviewFiles={reviewTranscriptFiles}
                 />
-              )}
+                {loading && (
+                  <LiveTranscriptTurn
+                    key="live"
+                    segments={liveSegments}
+                    content={liveContent}
+                    firstTextAt={liveTurn?.firstTextAt ?? null}
+                    commandWait={liveTurn?.commandWait ?? false}
+                    streamRetrying={liveTurn?.streamRetrying ?? false}
+                    findQuery={activeConversationFindQuery}
+                    workspace={transcriptWorkspace}
+                    conversationId={conversationId ?? undefined}
+                    onOpenHtml={openTranscriptHtml}
+                    onReviewFiles={reviewTranscriptFiles}
+                  />
+                )}
+              </ArtifactChoiceContext.Provider>
             </MessageScrollerContent>
           </MessageScrollerViewport>
           {/* Scroll-to-bottom button — self-manages its visibility. */}

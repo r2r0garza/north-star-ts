@@ -1,11 +1,21 @@
-import { memo, useEffect, useId, useMemo, useState } from "react"
+import {
+  createContext,
+  memo,
+  useContext,
+  useEffect,
+  useId,
+  useMemo,
+  useState,
+} from "react"
 import {
   validateArtifactSnapshot,
   type ConversationArtifact as ArtifactSnapshot,
   type TableColumn,
   type ArtifactReference,
   type ChartSnapshot,
+  type TableSnapshot,
 } from "../../../shared/conversation-artifacts"
+import { UiConceptPreview } from "@/components/ui-concept-preview"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -24,6 +34,19 @@ import {
   TableCaption,
 } from "@/components/ui/table"
 import { CartesianChart } from "@/components/cartesian-chart"
+
+// Provided only where a composer exists (the main conversation view). Choosing
+// a direction drafts a host-tagged note for the user to send; it never sends,
+// approves or edits anything itself.
+export const ArtifactChoiceContext = createContext<
+  ((choice: { artifactId: string; revision: number }) => void) | undefined
+>(undefined)
+
+const KIND_LABEL: Record<ArtifactReference["kind"], string> = {
+  chart: "Chart",
+  table: "Table",
+  ui_concept: "UI concept",
+}
 
 const SNAPSHOT_COLORS = Array.from(
   { length: 5 },
@@ -106,10 +129,10 @@ export const ConversationArtifact = memo(function ConversationArtifact({
     if (
       !conversationId ||
       schemaVersion !== 1 ||
-      !["chart", "table"].includes(kind)
+      !Object.hasOwn(KIND_LABEL, kind)
     ) {
       setState({
-        error: `${kind === "table" ? "Table" : "Chart"} unavailable: missing conversation or unsupported version.`,
+        error: `${KIND_LABEL[kind] ?? "Artifact"} unavailable: missing conversation or unsupported version.`,
       })
       return
     }
@@ -136,14 +159,14 @@ export const ConversationArtifact = memo(function ConversationArtifact({
           setState({ snapshot: validateArtifactSnapshot(artifact.snapshot) })
         } catch {
           setState({
-            error: `${kind === "table" ? "Table" : "Chart"} unavailable: stored content is missing or unsupported.`,
+            error: `${KIND_LABEL[kind]} unavailable: stored content is missing or unsupported.`,
           })
         }
       })
       .catch(() => {
         if (active)
           setState({
-            error: `${kind === "table" ? "Table" : "Chart"} unavailable: could not load the saved snapshot.`,
+            error: `${KIND_LABEL[kind]} unavailable: could not load the saved snapshot.`,
           })
       })
     return () => {
@@ -170,19 +193,22 @@ export const ConversationArtifact = memo(function ConversationArtifact({
           {snapshot?.description ??
             (snapshot
               ? snapshotDescription(snapshot)
-              : `Saved ${kind} snapshot.`)}
+              : `Saved ${KIND_LABEL[kind]?.toLowerCase() ?? "artifact"}.`)}
         </p>
         {snapshot?.kind === "chart" && snapshot.unit && (
           <p className="text-xs break-words text-muted-foreground">
             Unit: {snapshot.unit}
           </p>
         )}
-        {snapshot?.source && (
+        {snapshot?.kind === "ui_concept" && (
+          <p className="text-xs text-muted-foreground">Revision {revision}</p>
+        )}
+        {snapshot?.kind !== "ui_concept" && snapshot?.source && (
           <p className="text-xs break-words text-muted-foreground">
             Source: {snapshot.source}
           </p>
         )}
-        {snapshot?.dataAsOf && (
+        {snapshot?.kind !== "ui_concept" && snapshot?.dataAsOf && (
           <p className="text-xs break-words text-muted-foreground">
             Data as of: {snapshot.dataAsOf}
           </p>
@@ -193,8 +219,12 @@ export const ConversationArtifact = memo(function ConversationArtifact({
           {state.error}
         </p>
       ) : snapshot ? (
-        snapshot.data.length ? (
-          <SnapshotPresentation snapshot={snapshot} />
+        snapshot.kind === "ui_concept" || snapshot.data.length ? (
+          <SnapshotPresentation
+            snapshot={snapshot}
+            artifactId={artifactId}
+            revision={revision}
+          />
         ) : (
           <p className="py-8 text-sm text-muted-foreground">
             No observations supplied.
@@ -205,7 +235,7 @@ export const ConversationArtifact = memo(function ConversationArtifact({
           role="status"
           className="flex h-72 items-center justify-center text-sm text-muted-foreground"
         >
-          Loading saved {kind}…
+          Loading saved {KIND_LABEL[kind]?.toLowerCase() ?? "artifact"}…
         </p>
       )}
     </figure>
@@ -217,11 +247,17 @@ function snapshotDescription(snapshot: ArtifactSnapshot): string {
     snapshot.description ??
     (snapshot.kind === "chart"
       ? `${snapshot.chartKind} chart of ${snapshot.series.map((s) => s.label).join(", ")} by ${snapshot.xKey}.`
-      : `Table with ${snapshot.data.length} rows and ${snapshot.columns.length} columns.`)
+      : snapshot.kind === "table"
+        ? `Table with ${snapshot.data.length} rows and ${snapshot.columns.length} columns.`
+        : "UI concept mockup.")
   )
 }
 
-export function SnapshotData({ snapshot }: { snapshot: ArtifactSnapshot }) {
+export function SnapshotData({
+  snapshot,
+}: {
+  snapshot: ChartSnapshot | TableSnapshot
+}) {
   const [sort, setSort] = useState<{ key: string; descending: boolean } | null>(
     null
   )
@@ -348,11 +384,17 @@ export function SnapshotData({ snapshot }: { snapshot: ArtifactSnapshot }) {
 
 const SnapshotPresentation = memo(function SnapshotPresentation({
   snapshot,
+  artifactId,
+  revision,
 }: {
   snapshot: ArtifactSnapshot
+  artifactId: string
+  revision: number
 }) {
   const [dataView, setDataView] = useState(snapshot.kind === "table")
   const [expanded, setExpanded] = useState(false)
+  const choose = useContext(ArtifactChoiceContext)
+  const [chosen, setChosen] = useState(false)
   const controls = (
     <div className="mb-3 flex flex-wrap gap-2">
       {snapshot.kind === "chart" && (
@@ -365,10 +407,25 @@ const SnapshotPresentation = memo(function SnapshotPresentation({
           {dataView ? "Show chart" : "View data"}
         </Button>
       )}
+      {snapshot.kind === "ui_concept" && choose && (
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={chosen}
+          onClick={() => {
+            setChosen(true)
+            choose({ artifactId, revision })
+          }}
+        >
+          {chosen ? "Added to your message" : "Use this direction"}
+        </Button>
+      )}
     </div>
   )
-  const content = () =>
-    dataView ? (
+  const content = (inDialog = false) =>
+    snapshot.kind === "ui_concept" ? (
+      <UiConceptPreview concept={snapshot} viewportPresets={inDialog} />
+    ) : dataView ? (
       <SnapshotData snapshot={snapshot} />
     ) : snapshot.kind === "chart" ? (
       <SnapshotChart snapshot={snapshot} />
@@ -390,12 +447,12 @@ const SnapshotPresentation = memo(function SnapshotPresentation({
             <DialogDescription className="break-words">
               {snapshotDescription(snapshot)}
             </DialogDescription>
-            {snapshot.source && (
+            {snapshot.kind !== "ui_concept" && snapshot.source && (
               <p className="text-xs break-words text-muted-foreground">
                 Source: {snapshot.source}
               </p>
             )}
-            {snapshot.dataAsOf && (
+            {snapshot.kind !== "ui_concept" && snapshot.dataAsOf && (
               <p className="text-xs break-words text-muted-foreground">
                 Data as of: {snapshot.dataAsOf}
               </p>
@@ -406,7 +463,7 @@ const SnapshotPresentation = memo(function SnapshotPresentation({
               </p>
             )}
             {controls}
-            {expanded && content()}
+            {expanded && content(true)}
           </DialogContent>
         </Dialog>
       </div>

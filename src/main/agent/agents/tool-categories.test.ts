@@ -160,7 +160,7 @@ describe("isUniversalTool", () => {
 
 it("opts into snapshot presentation without granting dashboards or source-data access", () => {
   const allowed = agentToolAllowlist(agent(["presentation"]))!
-  for (const name of ["present_chart", "present_table"]) {
+  for (const name of ["present_chart", "present_table", "present_ui"]) {
     expect(allowed.has(name)).toBe(true)
     expect(agentToolAllowlist(agent([]))!.has(name)).toBe(false)
     expect(agentToolAllowlist(agent(["dashboard"]))!.has(name)).toBe(false)

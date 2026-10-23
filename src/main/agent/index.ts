@@ -111,7 +111,11 @@ import { containerNameForConversation } from "./env/container"
 import { dashboardWriteTool } from "./tools/dashboard_write"
 import { presentChartTool } from "./tools/present_chart"
 import { presentTableTool } from "./tools/present_table"
-import type { ArtifactPresentation } from "../../shared/conversation-artifacts"
+import { presentUiTool } from "./tools/present_ui"
+import {
+  isPresentationTool,
+  type ArtifactPresentation,
+} from "../../shared/conversation-artifacts"
 import { dashboardReadTool } from "./tools/dashboard_read"
 import { loadSystemPrompt } from "./system-prompt"
 import { logSystemPrompt } from "./prompt-log"
@@ -1519,7 +1523,11 @@ export async function runAgentLoop(
       // Snapshots write conversation state, not workspace files. Native Chat
       // supports them too; read-only and custom-agent filters still apply.
       ...(!planMode
-        ? [presentChartTool.definition, presentTableTool.definition]
+        ? [
+            presentChartTool.definition,
+            presentTableTool.definition,
+            presentUiTool.definition,
+          ]
         : []),
       // dashboard_read (plan 033.4): same modes as dashboard_write but kept in
       // plan mode — it only reads cached widget data. Subject to the allowlist
@@ -2340,10 +2348,7 @@ export async function runAgentLoop(
             callName: call.name,
             effects: effectsForCall(call.name),
           })
-          if (
-            reconciled !== undefined &&
-            !["present_chart", "present_table"].includes(call.name)
-          )
+          if (reconciled !== undefined && !isPresentationTool(call.name))
             return { result: reconciled }
           // The model's streamed tool-call arguments are occasionally malformed JSON
           // even when the turn wasn't length-truncated (a mid-stream glitch, or an
@@ -2564,10 +2569,7 @@ export async function runAgentLoop(
             },
             emitArtifact: (snapshot: ArtifactPresentation) => {
               callSignal.throwIfAborted()
-              if (
-                !["present_chart", "present_table"].includes(call.name) ||
-                presentationArtifact
-              )
+              if (!isPresentationTool(call.name) || presentationArtifact)
                 throw new Error("Invalid chart emission")
               presentationArtifact = snapshot
             },

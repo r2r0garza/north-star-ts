@@ -360,13 +360,17 @@ it.each(["claude_code", "codex_cli"] as const)(
       workingDirectory: "/tmp",
       workspace: null,
       provider,
-      tools: ["present_chart", "present_table"] as unknown as CliMcpToolName[],
+      tools: [
+        "present_chart",
+        "present_table",
+        "present_ui",
+      ] as unknown as CliMcpToolName[],
     })
     const client = await connect(injection.token, injection.url)
     try {
       expect((await client.listTools()).tools).toEqual([])
       expect(injection.allowedTools).toEqual([])
-      for (const name of ["present_chart", "present_table"]) {
+      for (const name of ["present_chart", "present_table", "present_ui"]) {
         const result = await client.callTool({
           name,
           arguments: { title: "Spoof", conversationId: "other" },

@@ -4,11 +4,18 @@ import {
   ARTIFACT_LIMITS,
   validateArtifactSnapshot,
   validateArtifactPresentation,
+  artifactRowCount,
+  isPresentationTool,
+  PRESENTATION_TOOLS,
   type ArtifactEnvelope,
   type ArtifactReference,
   type ArtifactPresentation,
 } from "../../../shared/conversation-artifacts"
 import type { ToolCallLifecycle } from "../types"
+
+const PRESENTATION_TOOL_SQL = Object.keys(PRESENTATION_TOOLS)
+  .map((name) => `'${name}'`)
+  .join(", ")
 
 export class ArtifactQuotaError extends Error {}
 export class ArtifactRevisionConflictError extends Error {}
@@ -24,8 +31,7 @@ function envelope(row: RevisionRow): ArtifactEnvelope {
   if (Buffer.byteLength(row.snapshot) > ARTIFACT_LIMITS.bytes)
     throw new Error("Oversized artifact")
   const raw = JSON.parse(row.snapshot)
-  if (raw.schemaVersion !== 1 || !["chart", "table"].includes(raw.kind))
-    throw new Error("Unsupported artifact version or kind")
+  if (raw.schemaVersion !== 1) throw new Error("Unsupported artifact version")
   const snapshot = validateArtifactSnapshot(raw)
   return {
     schemaVersion: 1,
@@ -37,7 +43,7 @@ function envelope(row: RevisionRow): ArtifactEnvelope {
       revision: row.revision,
       kind: snapshot.kind,
       title: snapshot.title,
-      rowCount: snapshot.data.length,
+      rowCount: artifactRowCount(snapshot),
     },
     snapshot,
   }
@@ -52,7 +58,7 @@ export function persistConversationArtifact(
   if (
     !db.inTransaction ||
     owner.state !== "started" ||
-    !["present_chart", "present_table"].includes(owner.toolName) ||
+    !isPresentationTool(owner.toolName) ||
     !owner.assistantMessageId
   )
     throw new Error(
@@ -75,7 +81,7 @@ export function persistConversationArtifact(
     throw new Error("Artifact invocation owner is unavailable.")
   const validated = validateArtifactPresentation(
     input,
-    owner.toolName === "present_chart" ? "chart" : "table"
+    PRESENTATION_TOOLS[owner.toolName]
   )
   const { artifactId, expectedBaseRevision, ...spec } = validated
   const snapshot = validateArtifactSnapshot(spec)
@@ -178,7 +184,7 @@ export function readConversationArtifact(
         AND EXISTS (SELECT 1 FROM json_each(coalesce(m.tool_calls, '[]')) c
           WHERE json_extract(c.value, '$.id') = l.tool_call_id
             AND json_extract(c.value, '$.name') = l.tool_name
-            AND l.tool_name IN ('present_chart', 'present_table')))`
+            AND l.tool_name IN (${PRESENTATION_TOOL_SQL})))`
       )
       .get(conversationId, artifactId, revision) as RevisionRow | undefined
     return row

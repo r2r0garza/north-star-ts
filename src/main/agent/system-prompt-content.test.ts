@@ -55,6 +55,10 @@ it.each([
       "expectedBaseRevision",
       "confirms storage",
       "Markdown-table alternative",
+      "`present_ui`",
+      "controls are demo-only",
+      "`<user_design_choice>`",
+      "not as approval",
     ])
       expect(prompt).toContain(phrase)
   }

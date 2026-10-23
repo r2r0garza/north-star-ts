@@ -23,6 +23,7 @@ import {
   type ArtifactPresentation,
   validateTableSnapshot,
   validateChartSnapshot,
+  validateUiConceptSnapshot,
 } from "../../../shared/conversation-artifacts"
 import { presentChartTool } from "../../agent/tools/present_chart"
 import { runToolCallBatches } from "../../agent/tool-batch-scheduler"
@@ -410,5 +411,50 @@ describe.skipIf(!sqliteLoads)("table storage and revision conflicts", () => {
     expect(
       readConversationArtifact(c, ref.artifactId, 1).artifact?.snapshot
     ).toEqual(snapshot)
+  })
+})
+
+describe.skipIf(!sqliteLoads)("UI concept storage", () => {
+  const concept = validateUiConceptSnapshot({
+    title: "Settings concept",
+    tree: { type: "stack", children: [{ type: "text", text: "Draft" }] },
+  })
+  function complete(id: string, toolCallId: string, artifact: unknown) {
+    return markToolCallSettled({
+      conversationId: id,
+      toolCallId,
+      state: "settled_success",
+      presentationArtifact: artifact as ArtifactPresentation,
+    })!
+  }
+  it("stores concepts through the shared revision path and rejects cross-kind updates", () => {
+    const c = createConversation({ mode: "chat" }).id
+    start(c, "ui-1", concept, "present_ui")
+    complete(c, "ui-1", concept)
+    const ref = toolArtifactReference(c, "ui-1")!
+    expect(ref).toMatchObject({ kind: "ui_concept", revision: 1, rowCount: 0 })
+    const revised = {
+      ...concept,
+      title: "Settings concept v2",
+      artifactId: ref.artifactId,
+      expectedBaseRevision: 1,
+    }
+    start(c, "ui-2", revised, "present_ui")
+    complete(c, "ui-2", revised)
+    expect(toolArtifactReference(c, "ui-2")).toMatchObject({ revision: 2 })
+    expect(
+      readConversationArtifact(c, ref.artifactId, 1).artifact?.snapshot
+    ).toEqual(concept)
+    // A chart cannot revise a concept, and a concept tool cannot save a chart.
+    const asChart = {
+      ...snapshot,
+      artifactId: ref.artifactId,
+      expectedBaseRevision: 2,
+    }
+    start(c, "chart-x", asChart)
+    expect(complete(c, "chart-x", asChart).state).toBe("settled_error")
+    start(c, "ui-x", snapshot, "present_ui")
+    expect(() => complete(c, "ui-x", snapshot)).toThrow()
+    expect(count()).toBe(2)
   })
 })

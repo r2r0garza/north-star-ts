@@ -9,7 +9,7 @@
 > Mission Control, so Process UX investment remains worthwhile. `092.1` and `110`
 > moved to Deferred; low-value deferred plans were marked *dropped — pending re-review* in their own files.
 
-1. **`116` — Constrained UI concept previews.** After `115`, render approved declarative shadcn
+1. **`116` — Constrained UI concept previews (IMPLEMENTED — Phases A–D; qualification limitations in plan).** After `115`, render approved declarative shadcn
    compositions with bounded layout tokens, host-defined local interactions and explicit revision-aware
    feedback. Concepts do not execute generated code, edit workspace files or grant action authority.
    [Plan](116-ui-concept-previews.md).

@@ -3083,6 +3083,8 @@ describe.skipIf(!sqliteLoads)("tool batch durability and cancellation", () => {
     ["present_table", "interactive"],
     ["present_chart", "chat"],
     ["present_table", "chat"],
+    ["present_ui", "interactive"],
+    ["present_ui", "chat"],
   ] as const)(
     "persists %s in %s with activity metadata and replays an equivalent invocation",
     async (toolName, mode) => {
@@ -3090,22 +3092,40 @@ describe.skipIf(!sqliteLoads)("tool batch durability and cancellation", () => {
       const args = {
         " _activity": "Presenting observed results",
         title: "Observed results",
-        ...(toolName === "present_chart"
+        ...(toolName === "present_ui"
           ? {
-              chartKind: "line",
-              xKey: "period",
-              series: [{ key: "value", label: "Value" }],
+              tree: {
+                type: "stack",
+                children: [{ type: "button", text: "Open", goTo: "detail" }],
+              },
+              states: [
+                {
+                  id: "detail",
+                  label: "Detail",
+                  tree: { type: "text", text: "Detail" },
+                },
+              ],
             }
+          : toolName === "present_chart"
+            ? {
+                chartKind: "line",
+                xKey: "period",
+                series: [{ key: "value", label: "Value" }],
+              }
+            : {
+                columns: [
+                  { key: "period", label: "Period", valueType: "string" },
+                  { key: "value", label: "Value", valueType: "number" },
+                ],
+              }),
+        ...(toolName === "present_ui"
+          ? {}
           : {
-              columns: [
-                { key: "period", label: "Period", valueType: "string" },
-                { key: "value", label: "Value", valueType: "number" },
+              data: [
+                { period: "Jan", value: 0 },
+                { period: "Feb", value: null },
               ],
             }),
-        data: [
-          { period: "Jan", value: 0 },
-          { period: "Feb", value: null },
-        ],
       }
       let acknowledgement: string | undefined
       const artifacts: unknown[] = []
@@ -3125,7 +3145,7 @@ describe.skipIf(!sqliteLoads)("tool batch durability and cancellation", () => {
           expect(JSON.parse(acknowledgement)).toMatchObject({
             status: "saved_for_presentation",
             revision: 1,
-            rowCount: 2,
+            rowCount: toolName === "present_ui" ? 0 : 2,
           })
           return streamToolCalls([
             {
@@ -3207,7 +3227,7 @@ describe.skipIf(!sqliteLoads)("tool batch durability and cancellation", () => {
     async (scenario) => {
       const conversation = createConversation({ mode: scenario.mode })
       scriptedCompletions.push((request) => {
-        for (const name of ["present_chart", "present_table"])
+        for (const name of ["present_chart", "present_table", "present_ui"])
           expect(request.tools.includes(name)).toBe(scenario.expected)
         return streamText("Qualified.")
       })
@@ -3240,7 +3260,7 @@ describe.skipIf(!sqliteLoads)("tool batch durability and cancellation", () => {
         agentName: "presenter",
       })
       scriptedCompletions.push((request) => {
-        for (const name of ["present_chart", "present_table"])
+        for (const name of ["present_chart", "present_table", "present_ui"])
           expect(request.tools.includes(name)).toBe(category === "presentation")
         return streamText("Qualified.")
       })

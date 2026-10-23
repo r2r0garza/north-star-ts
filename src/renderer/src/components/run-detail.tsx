@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { toast } from "sonner"
 import { ConversationArtifact } from "@/components/conversation-artifact"
+import { isPresentationTool } from "../../../shared/conversation-artifacts"
 import { isCommandCompletionEvent } from "../../../shared/runtime-messages"
 import type { Message } from "../../../main/db/types"
 import type {
@@ -1031,7 +1032,7 @@ function WorkflowToolCall({
     (command?.outcome === "reported_running" ||
       (!command && responses.length === 0))
   const artifactResponse = responses.find((response) => response.artifact)
-  const presentation = ["present_chart", "present_table"].includes(call.name)
+  const presentation = isPresentationTool(call.name)
   return (
     <>
       <Trace className="mt-2">

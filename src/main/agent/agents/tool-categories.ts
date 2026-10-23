@@ -62,7 +62,7 @@ export const CATEGORY_TOOLS: Record<string, string[]> = {
   // let a tool-restricted agent opt in.
   dashboard: ["dashboard_write", "dashboard_read"],
   dashboard_read: ["dashboard_read"],
-  presentation: ["present_chart", "present_table"],
+  presentation: ["present_chart", "present_table", "present_ui"],
   // `agent` → the subagent-spawn tool. Its OFFERING has an extra gate (children
   // must also be present) applied in buildTools; this mapping just records the
   // name so an agent-scoped allowlist admits it.

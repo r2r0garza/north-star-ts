@@ -1,6 +1,6 @@
 # PR116: Constrained UI concept previews in conversation
 
-> Status: **Proposed — not implemented.** Next up after [PR115: inline analysis artifacts](115-inline-analysis-artifacts.md), whose durable artifact, revision and transcript contracts this plan reuses. Higher-fidelity code previews are separately [deferred in PR117](117-sandboxed-html-react-previews.md).
+> Status: **Phases A–D implemented; qualification limitations recorded below.** Next up after [PR115: inline analysis artifacts](115-inline-analysis-artifacts.md), whose durable artifact, revision and transcript contracts this plan reuses. Higher-fidelity code previews are separately [deferred in PR117](117-sandboxed-html-react-previews.md).
 
 ## Objective and recommendation
 
@@ -96,17 +96,55 @@ Do not let tree nodes supply arbitrary feedback text, message roles, approval to
 
 Extend the shared PR115 artifact union and validators with the UI-concept kind. Implement a small registry near the artifact renderer, using installed primitives and explicit prop construction rather than unrestricted prop spreading. Start with layout/text/card/button/table and one form group; prove tree validation, scoping and visible failure states end-to-end before adding controls.
 
+Phase A implementation notes (2026-10-23):
+
+`shared/conversation-artifacts.ts` adds the `ui_concept` kind, a strict recursive validator and `PRESENTATION_TOOLS`, which every presentation seam (settlement, reads, message projection, scheduler reconciliation, transcript/run readers) now checks instead of repeating tool-name lists. The vocabulary is stack/row/grid/text/separator/card/badge/button/table/field/tabs; `input` (no password type), native `select` and `switch` exist only as a field's `control`, so unlabelled controls and nested buttons cannot be expressed. Each node copies only declared fields; unknown fields/types are precise errors. Limits: 200 nodes, depth 12, 500-character text, 20 select options, 2–6 tabs, 12×50 table cells, plus the shared 256 KiB/quota bounds. Concepts carry no sample/model IDs; field associations use host `useId`. Storage, revisions, conflicts (including cross-kind) and retries reuse the PR115 repository unchanged; references report `rowCount: 0`.
+
+`present_ui` is registered next to the other presentation tools (same modes, plan-mode withholding, `presentation` custom-agent category, CLI bridges still excluded) with mode-prompt guidance. `ui-concept-preview.tsx` maps validated tokens to literal class maps over installed shadcn primitives; no supplied text becomes a class, style, id or prop. Buttons are `type="button"`, there is no `<form>`, no portaled overlay, and keydown (except Escape) stops at the preview root so app shortcuts do not fire. Concepts reuse the existing figure and Expand dialog; the grid responds to a container query, so the expanded dialog shows wider layouts. Local control state is uncontrolled and resets on reload/revision.
+
+Not yet done at the time: viewport presets, density/typography tokens, feedback and Electron keyboard/theme qualification (see later phase notes). Verification: `pnpm typecheck`, `pnpm build`, new validator/tool/repository/renderer tests. Full suite: 2,712 passing, 95 skipped, 3 failing — the two known attachment-prompt assertions and `conversations.test.ts` reasoning-effort, which also fails without this change. A throwaway browser build of the real components at 420px and 1200px confirmed tab switching, the narrow grid stacking, and the two-pane expanded layout (light theme only).
+
 ### Phase B: Tool and local state
 
 Register `present_ui` through the existing availability/effect/provider contracts. Carry server-owned identities through the shared artifact service. Add tabs, demo controls and bounded declared-state navigation using a small deterministic host reducer. Keep action capabilities out of this reducer.
+
+Phase B implementation notes (2026-10-23):
+
+`present_ui` registration landed with Phase A. Snapshots may declare up to 8 alternate `states` ({id, label, tree}); the snapshot `tree` is the reserved `initial` state. Buttons may carry `goTo`, validated up front against declared ids, and the 200-node budget is shared across all screens. The renderer's pure `conceptStateAfter` reducer only moves to declared ids (anything else is a no-op); a button's only possible behavior is that local transition. A host-owned header outside the concept frame announces the current state (`aria-live`) and offers "Reset preview". Each screen remounts on transition, so demo values and tabs start fresh; state is never persisted or sent to the agent, and a revision or reload resets to `initial`.
+
+Verification: `pnpm typecheck`, `pnpm build`, new validator/reducer/renderer state tests. Full suite: 2,714 passing, 95 skipped, the same 3 pre-existing failures. A throwaway browser build confirmed a list/detail → reply → cancel flow at 420px; the state header was moved below the disclaimer after it crowded the note at narrow width.
 
 ### Phase C: Expanded preview and revision workflow
 
 Add host-owned viewport presets, theme/density token handling and revision-aware rendering. Reuse existing artifact expansion rather than adding another panel system. Verify that live and restored UI concepts are identical apart from explicitly ephemeral local state. Add the optional explicit feedback action only with an existing safe user-turn delivery path or a narrowly tested extension.
 
+Phase C implementation notes (2026-10-23):
+
+Snapshots accept bounded `density` (compact/comfortable/spacious) and `typeScale` (sm/md/lg) tokens, and cards accept `surface` (default/muted). Tokens map to literal classes that override Tailwind's `--spacing` and `--text-*` variables on the preview frame only, so every spacing/text utility inside the concept rescales without touching app styles. The existing Expand dialog adds host-owned Fit/Mobile (375px)/Tablet (768px)/Desktop (1024px) width presets; the grid's container query follows the chosen width. The figure caption shows the exact revision. Reloaded and live concepts take the same exact-revision read path, so they render the same apart from ephemeral local state.
+
+"Use this direction" uses the existing safe user-turn path instead of a new dispatch channel. `ArtifactChoiceContext` is provided only by the main conversation view. The button appends a host-authored `<user_design_choice artifact_id=… revision=…>` note to the composer, the same mechanism as terminal/file selections, and the user still sends it. The note carries only host-known identifiers and no concept text. It is deduplicated in the composer, and the button disables itself after use. Task/workflow readers have no provider and show no button. Mode prompts tell the agent this block is a chosen direction, not approval for edits or commands; later revisions still go through `present_ui` revision ownership checks.
+
+Verification: `pnpm typecheck`, `pnpm build`, new token/preset/revision/choice tests. Full suite: 2,718 passing, 95 skipped, the same 3 pre-existing failures. A throwaway browser build confirmed the computed compact spacing (12.8px vs 16px) and small type (13px), the Mobile preset stacking the grid in the dialog, and the choice callback receiving the exact id/revision. Light theme only; no real-Electron keyboard pass yet.
+
 ### Phase D: Compatibility and usability qualification
 
 Test representative settings, list/detail and dashboard redesign concepts. Compare whether the schema communicates meaningful alternatives, not just whether nodes render. Record cases that need code-preview fidelity rather than adding arbitrary escape hatches. Verify supported conversation/task/run readers and provider bridge exposure using PR115's compatibility rules; fallback must remain honest where the full renderer is unavailable.
+
+Phase D implementation notes (2026-10-23):
+
+Compatibility uses PR115's rules, extended to `present_ui`. OpenAI-compatible, Codex subscription and Claude subscription conversions preserve the concept schema (including `goTo`) and acknowledgements. The existing Gemini subset test already covers every built-in tool schema. Claude Code/Codex CLI bridges still reject presentation tools with explicit unknown-tool errors, so no CLI parity is claimed. Custom agents need the `presentation` category. Task and workflow readers render the exact concept revision outside collapsed traces. Real agent-loop tests persist and replay `present_ui` (with declared states) in Interactive and Chat modes with live/reload reference parity. Availability matches charts/tables in Chat, Interactive and North Star, and is withheld in plan mode, read-only turns and agents without the presentation category.
+
+Repeatable real-Electron qualification: `node scripts/qualify-ui-concepts-electron.mjs` (set `UI_CONCEPT_SCREENSHOTS=<dir>` to keep screenshots). It builds real components and app CSS into a temporary directory and uses temporary user data. It renders representative settings (tabs, switch, input, select), list/detail (declared states), dashboard (grid of cards) and long-content concepts, plus an original and revised dashboard at 360px. Its 19 checks pass on Electron 37.10.3:
+- layout: no page overflow at narrow width, with 500-character unbroken text, or at 125% root text; original revision still viewable beside its revision; type-scale token applied.
+- local interaction: tabs, switch and demo-state survival across tabs; no `<form>`, navigation or transcript scroll change from local interaction; native arrow-key tab switching and native typing via `sendInputEvent`; keys never reach a window-level listener.
+- states and dialog: declared-state transitions; Mobile preset width; dialog initial focus, Escape and focus return.
+- feedback and themes: "Use this direction" reports the exact id/revision once; no re-reads during interaction; ≥4.5:1 text contrast in every concept in both light and dark themes.
+
+Qualification found and fixed one defect: Radix unmounts inactive tab panels, so demo values reset on tab switch. Panels are now force-mounted and hidden.
+
+Usability assessment: the vocabulary communicated the three representative redesigns. Separate artifacts plus revisions worked for alternatives, and declared states covered list→detail and form→confirmation flows. Cases that would need more fidelity (candidates for PR117 rather than schema growth): icons and images/avatars, sidebars and app-chrome navigation, overlays (menus, popovers, dialogs), brand colors/typefaces, per-breakpoint layout changes beyond the responsive grid, progress/meter visuals, and embedding PR115 charts (planned but not implemented, since no representative case needed it).
+
+Qualification limitations: this is an isolated component check, not a packaged-app restart or live authenticated-provider campaign. Model-authored concept quality was not measured against live models. The shared `Switch` primitive mixed px track and rem thumb sizes, so its thumb overflowed at 125% root text app-wide; the track now uses rem sizes (identical at the default root size) and the qualification script checks thumb-in-track geometry at 100% and 125% in both states. Pointer hover/tooltip behavior and screen-reader output were not certified. Full suite: 2,723 passing, 95 skipped, the same 3 pre-existing failures; `pnpm typecheck`, `pnpm build` and `git diff --check` pass.
 
 Likely new files are a UI-concept schema/validator and a registry/renderer/state adapter adjacent to PR115 modules, with narrow changes to the tool catalog, availability, prompts and artifact renderer. Names are proposed. No migration duplicating artifact storage and no edits to unrelated workspace screens are expected.
 

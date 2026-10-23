@@ -25,9 +25,14 @@ vi.mock("@/components/conversation-artifact", () => ({
   ),
 }))
 
-it.each(["task", "workflow"])(
-  "renders exact %s snapshots outside collapsed traces without duplicating results",
-  async (reader) => {
+it.each([
+  ["task", "present_table", "table"],
+  ["workflow", "present_table", "table"],
+  ["task", "present_ui", "ui_concept"],
+  ["workflow", "present_ui", "ui_concept"],
+] as const)(
+  "renders exact %s %s snapshots outside collapsed traces without duplicating results",
+  async (reader, toolName, kind) => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
     const message = (id: string, fields: Partial<Message>): Message => ({
       id,
@@ -46,19 +51,19 @@ it.each(["task", "workflow"])(
       schemaVersion: 1 as const,
       artifactId: "saved-table",
       revision: 2,
-      kind: "table" as const,
+      kind,
       title: "Results",
-      rowCount: 2,
+      rowCount: kind === "table" ? 2 : 0,
     }
     const messages = [
       message("before", {
         content: "Before",
-        toolCalls: [{ id: "present", name: "present_table", arguments: "{}" }],
+        toolCalls: [{ id: "present", name: toolName, arguments: "{}" }],
       }),
       message("result", {
         role: "tool",
         toolCallId: "present",
-        toolName: "present_table",
+        toolName,
         content: "saved_for_presentation",
         artifact: reference,
       }),

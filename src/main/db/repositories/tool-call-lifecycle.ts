@@ -8,6 +8,7 @@ import {
 } from "./conversation-artifacts"
 import {
   artifactAcknowledgement,
+  isPresentationTool,
   type ArtifactPresentation,
 } from "../../../shared/conversation-artifacts"
 import type { ToolImage } from "../../agent/tools/types"
@@ -284,7 +285,7 @@ export function markToolCallSettled(input: {
     const current = getToolCallLifecycle(input.conversationId, input.toolCallId)
     if (
       current &&
-      ["present_chart", "present_table"].includes(current.toolName) &&
+      isPresentationTool(current.toolName) &&
       current.state === "started" &&
       input.state === "settled_success"
     ) {

@@ -44,7 +44,105 @@ export interface TableSnapshot {
   columns: TableColumn[]
   data: Array<Record<string, string | number | boolean | null>>
 }
-export type ConversationArtifact = ChartSnapshot | TableSnapshot
+// Declarative UI concept (PR116): host-rendered data, never code or raw props.
+export const UI_CONCEPT_LIMITS = {
+  nodes: 200,
+  depth: 12,
+  text: 500,
+  options: 20,
+  tabs: 6,
+  tableColumns: 12,
+  tableRows: 50,
+  states: 8,
+} as const
+// The snapshot's own tree is always reachable under this state id.
+export const UI_INITIAL_STATE = "initial"
+export type UiGap = "none" | "sm" | "md" | "lg"
+export type UiControlNode =
+  | {
+      type: "input"
+      inputType?: "text" | "email" | "number" | "search"
+      placeholder?: string
+      defaultValue?: string
+    }
+  | { type: "select"; options: string[]; defaultValue?: string }
+  | { type: "switch"; defaultChecked?: boolean }
+export type UiNode =
+  | {
+      type: "stack"
+      gap?: UiGap
+      align?: "start" | "center" | "end" | "stretch"
+      children: UiNode[]
+    }
+  | {
+      type: "row"
+      gap?: UiGap
+      align?: "start" | "center" | "end" | "stretch"
+      justify?: "start" | "center" | "end" | "between"
+      wrap?: boolean
+      children: UiNode[]
+    }
+  | { type: "grid"; columns: 1 | 2 | 3 | 4; gap?: UiGap; children: UiNode[] }
+  | {
+      type: "text"
+      text: string
+      role?: "heading" | "subheading" | "body" | "muted"
+      emphasis?: "normal" | "strong"
+    }
+  | { type: "separator" }
+  | {
+      type: "card"
+      title?: string
+      description?: string
+      surface?: "default" | "muted"
+      children: UiNode[]
+    }
+  | {
+      type: "badge"
+      text: string
+      variant?: "default" | "secondary" | "outline" | "destructive"
+    }
+  | {
+      type: "button"
+      text: string
+      variant?: "default" | "secondary" | "outline" | "ghost" | "destructive"
+      size?: "sm" | "default"
+      goTo?: string
+    }
+  | { type: "table"; caption?: string; columns: string[]; rows: string[][] }
+  | {
+      type: "field"
+      label: string
+      description?: string
+      orientation?: "vertical" | "horizontal"
+      control: UiControlNode
+    }
+  | { type: "tabs"; tabs: Array<{ label: string; children: UiNode[] }> }
+export interface UiConceptSnapshot {
+  kind: "ui_concept"
+  schemaVersion: 1
+  title: string
+  description?: string
+  density?: "compact" | "comfortable" | "spacious"
+  typeScale?: "sm" | "md" | "lg"
+  tree: UiNode
+  states?: Array<{ id: string; label: string; tree: UiNode }>
+}
+export type ConversationArtifact =
+  | ChartSnapshot
+  | TableSnapshot
+  | UiConceptSnapshot
+// Tool name → artifact kind; the single list every presentation seam checks.
+export const PRESENTATION_TOOLS = {
+  present_chart: "chart",
+  present_table: "table",
+  present_ui: "ui_concept",
+} as const satisfies Record<string, ConversationArtifact["kind"]>
+export function isPresentationTool(
+  name: string | null | undefined
+): name is keyof typeof PRESENTATION_TOOLS {
+  return !!name && Object.hasOwn(PRESENTATION_TOOLS, name)
+}
 export interface ArtifactRevisionInput {
   artifactId?: string
   expectedBaseRevision?: number
@@ -356,11 +454,410 @@ export function validateTableSnapshot(input: unknown): TableSnapshot {
   return snapshot
 }
 
+function choice<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  path: string
+): T | undefined {
+  if (value === undefined) return undefined
+  if (!allowed.includes(value as T))
+    throw new Error(`${path} must be one of ${allowed.join(", ")}.`)
+  return value as T
+}
+function uiText(value: unknown, path: string): string {
+  return text(value, path, UI_CONCEPT_LIMITS.text)
+}
+// Copies only declared fields, so nothing unvalidated can reach a component.
+function optional<T extends object>(target: T, extra: Record<string, unknown>) {
+  for (const [k, v] of Object.entries(extra))
+    if (v !== undefined) (target as Record<string, unknown>)[k] = v
+  return target
+}
+const GAPS = ["none", "sm", "md", "lg"] as const
+const ALIGN = ["start", "center", "end", "stretch"] as const
+
+export function validateUiConceptSnapshot(input: unknown): UiConceptSnapshot {
+  const value = object(input, "ui_concept")
+  fields(
+    value,
+    [
+      "kind",
+      "schemaVersion",
+      "title",
+      "description",
+      "density",
+      "typeScale",
+      "tree",
+      "states",
+    ],
+    "ui_concept"
+  )
+  if (value.kind !== undefined && value.kind !== "ui_concept")
+    throw new Error("Unsupported artifact kind.")
+  if (value.schemaVersion !== undefined && value.schemaVersion !== 1)
+    throw new Error("Unsupported artifact schema version.")
+  let nodes = 0
+  const targets: Array<{ goTo: string; path: string }> = []
+  const children = (list: unknown, path: string, depth: number) => {
+    if (!Array.isArray(list))
+      throw new Error(`${path}.children must be an array.`)
+    return list.map((item, i) => node(item, `${path}.children[${i}]`, depth))
+  }
+  const control = (input: unknown, path: string): UiControlNode => {
+    const c = object(input, path)
+    if (++nodes > UI_CONCEPT_LIMITS.nodes)
+      throw new Error(`Tree exceeds ${UI_CONCEPT_LIMITS.nodes} nodes.`)
+    if (c.type === "input") {
+      fields(c, ["type", "inputType", "placeholder", "defaultValue"], path)
+      return optional({ type: "input" } as UiControlNode, {
+        inputType: choice(
+          c.inputType,
+          ["text", "email", "number", "search"],
+          `${path}.inputType`
+        ),
+        placeholder:
+          c.placeholder === undefined
+            ? undefined
+            : uiText(c.placeholder, `${path}.placeholder`),
+        defaultValue:
+          c.defaultValue === undefined
+            ? undefined
+            : uiText(c.defaultValue, `${path}.defaultValue`),
+      })
+    }
+    if (c.type === "select") {
+      fields(c, ["type", "options", "defaultValue"], path)
+      if (
+        !Array.isArray(c.options) ||
+        !c.options.length ||
+        c.options.length > UI_CONCEPT_LIMITS.options
+      )
+        throw new Error(
+          `${path}.options must list 1–${UI_CONCEPT_LIMITS.options} choices.`
+        )
+      const options = c.options.map((o, i) =>
+        uiText(o, `${path}.options[${i}]`)
+      )
+      if (new Set(options).size !== options.length)
+        throw new Error(`${path}.options must be unique.`)
+      if (
+        c.defaultValue !== undefined &&
+        !options.includes(c.defaultValue as string)
+      )
+        throw new Error(`${path}.defaultValue must be one of its options.`)
+      return optional({ type: "select", options } as UiControlNode, {
+        defaultValue: c.defaultValue,
+      })
+    }
+    if (c.type === "switch") {
+      fields(c, ["type", "defaultChecked"], path)
+      if (
+        c.defaultChecked !== undefined &&
+        typeof c.defaultChecked !== "boolean"
+      )
+        throw new Error(`${path}.defaultChecked must be boolean.`)
+      return optional({ type: "switch" } as UiControlNode, {
+        defaultChecked: c.defaultChecked,
+      })
+    }
+    throw new Error(`${path}: field control must be input, select or switch.`)
+  }
+  const node = (input: unknown, path: string, depth: number): UiNode => {
+    if (depth > UI_CONCEPT_LIMITS.depth)
+      throw new Error(`Tree exceeds nesting depth ${UI_CONCEPT_LIMITS.depth}.`)
+    const n = object(input, path)
+    if (++nodes > UI_CONCEPT_LIMITS.nodes)
+      throw new Error(`Tree exceeds ${UI_CONCEPT_LIMITS.nodes} nodes.`)
+    const next = depth + 1
+    switch (n.type) {
+      case "stack":
+        fields(n, ["type", "gap", "align", "children"], path)
+        return optional(
+          {
+            type: "stack",
+            children: children(n.children, path, next),
+          } as UiNode,
+          {
+            gap: choice(n.gap, GAPS, `${path}.gap`),
+            align: choice(n.align, ALIGN, `${path}.align`),
+          }
+        )
+      case "row":
+        fields(n, ["type", "gap", "align", "justify", "wrap", "children"], path)
+        if (n.wrap !== undefined && typeof n.wrap !== "boolean")
+          throw new Error(`${path}.wrap must be boolean.`)
+        return optional(
+          { type: "row", children: children(n.children, path, next) } as UiNode,
+          {
+            gap: choice(n.gap, GAPS, `${path}.gap`),
+            align: choice(n.align, ALIGN, `${path}.align`),
+            justify: choice(
+              n.justify,
+              ["start", "center", "end", "between"],
+              `${path}.justify`
+            ),
+            wrap: n.wrap,
+          }
+        )
+      case "grid":
+        fields(n, ["type", "columns", "gap", "children"], path)
+        if (![1, 2, 3, 4].includes(n.columns as number))
+          throw new Error(`${path}.columns must be 1, 2, 3 or 4.`)
+        return optional(
+          {
+            type: "grid",
+            columns: n.columns,
+            children: children(n.children, path, next),
+          } as UiNode,
+          { gap: choice(n.gap, GAPS, `${path}.gap`) }
+        )
+      case "text":
+        fields(n, ["type", "text", "role", "emphasis"], path)
+        return optional(
+          { type: "text", text: uiText(n.text, `${path}.text`) } as UiNode,
+          {
+            role: choice(
+              n.role,
+              ["heading", "subheading", "body", "muted"],
+              `${path}.role`
+            ),
+            emphasis: choice(
+              n.emphasis,
+              ["normal", "strong"],
+              `${path}.emphasis`
+            ),
+          }
+        )
+      case "separator":
+        fields(n, ["type"], path)
+        return { type: "separator" }
+      case "card":
+        fields(n, ["type", "title", "description", "surface", "children"], path)
+        return optional(
+          {
+            type: "card",
+            children: children(n.children ?? [], path, next),
+          } as UiNode,
+          {
+            title:
+              n.title === undefined
+                ? undefined
+                : uiText(n.title, `${path}.title`),
+            description:
+              n.description === undefined
+                ? undefined
+                : uiText(n.description, `${path}.description`),
+            surface: choice(n.surface, ["default", "muted"], `${path}.surface`),
+          }
+        )
+      case "badge":
+        fields(n, ["type", "text", "variant"], path)
+        return optional(
+          { type: "badge", text: uiText(n.text, `${path}.text`) } as UiNode,
+          {
+            variant: choice(
+              n.variant,
+              ["default", "secondary", "outline", "destructive"],
+              `${path}.variant`
+            ),
+          }
+        )
+      case "button":
+        fields(n, ["type", "text", "variant", "size", "goTo"], path)
+        if (n.goTo !== undefined)
+          targets.push({ goTo: key(n.goTo, `${path}.goTo`), path })
+        return optional(
+          { type: "button", text: uiText(n.text, `${path}.text`) } as UiNode,
+          {
+            variant: choice(
+              n.variant,
+              ["default", "secondary", "outline", "ghost", "destructive"],
+              `${path}.variant`
+            ),
+            size: choice(n.size, ["sm", "default"], `${path}.size`),
+            goTo: n.goTo,
+          }
+        )
+      case "table": {
+        fields(n, ["type", "caption", "columns", "rows"], path)
+        if (
+          !Array.isArray(n.columns) ||
+          !n.columns.length ||
+          n.columns.length > UI_CONCEPT_LIMITS.tableColumns
+        )
+          throw new Error(
+            `${path}.columns must list 1–${UI_CONCEPT_LIMITS.tableColumns} headers.`
+          )
+        const columns = n.columns.map((c, i) =>
+          uiText(c, `${path}.columns[${i}]`)
+        )
+        if (
+          !Array.isArray(n.rows) ||
+          n.rows.length > UI_CONCEPT_LIMITS.tableRows
+        )
+          throw new Error(
+            `${path}.rows must have at most ${UI_CONCEPT_LIMITS.tableRows} rows.`
+          )
+        const rows = n.rows.map((row, r) => {
+          if (!Array.isArray(row) || row.length !== columns.length)
+            throw new Error(`${path}.rows[${r}] must have one cell per column.`)
+          // Empty cells are allowed in a mockup table.
+          return row.map((cell, c) => {
+            if (
+              typeof cell !== "string" ||
+              cell.length > UI_CONCEPT_LIMITS.text
+            )
+              throw new Error(`${path}.rows[${r}][${c}] must be short text.`)
+            return cell
+          })
+        })
+        return optional({ type: "table", columns, rows } as UiNode, {
+          caption:
+            n.caption === undefined
+              ? undefined
+              : uiText(n.caption, `${path}.caption`),
+        })
+      }
+      case "field":
+        fields(
+          n,
+          ["type", "label", "description", "orientation", "control"],
+          path
+        )
+        return optional(
+          {
+            type: "field",
+            label: uiText(n.label, `${path}.label`),
+            control: control(n.control, `${path}.control`),
+          } as UiNode,
+          {
+            description:
+              n.description === undefined
+                ? undefined
+                : uiText(n.description, `${path}.description`),
+            orientation: choice(
+              n.orientation,
+              ["vertical", "horizontal"],
+              `${path}.orientation`
+            ),
+          }
+        )
+      case "tabs": {
+        fields(n, ["type", "tabs"], path)
+        if (
+          !Array.isArray(n.tabs) ||
+          n.tabs.length < 2 ||
+          n.tabs.length > UI_CONCEPT_LIMITS.tabs
+        )
+          throw new Error(
+            `${path}.tabs must list 2–${UI_CONCEPT_LIMITS.tabs} tabs.`
+          )
+        const tabs = n.tabs.map((item, i) => {
+          const tab = object(item, `${path}.tabs[${i}]`)
+          fields(tab, ["label", "children"], `${path}.tabs[${i}]`)
+          return {
+            label: uiText(tab.label, `${path}.tabs[${i}].label`),
+            children: children(tab.children, `${path}.tabs[${i}]`, next),
+          }
+        })
+        if (new Set(tabs.map((t) => t.label)).size !== tabs.length)
+          throw new Error(`${path}.tabs labels must be unique.`)
+        return { type: "tabs", tabs }
+      }
+      default:
+        throw new Error(
+          `${path}: unsupported node type ${String(n.type).slice(0, 32)}. Controls (input, select, switch) belong inside a field.`
+        )
+    }
+  }
+  const snapshot: UiConceptSnapshot = {
+    kind: "ui_concept",
+    schemaVersion: 1,
+    title: text(value.title, "title", ARTIFACT_LIMITS.label),
+    tree: node(value.tree, "tree", 1),
+  }
+  if (value.description !== undefined)
+    snapshot.description = text(
+      value.description,
+      "description",
+      ARTIFACT_LIMITS.description
+    )
+  optional(snapshot, {
+    density: choice(
+      value.density,
+      ["compact", "comfortable", "spacious"],
+      "density"
+    ),
+    typeScale: choice(value.typeScale, ["sm", "md", "lg"], "typeScale"),
+  })
+  if (value.states !== undefined) {
+    if (
+      !Array.isArray(value.states) ||
+      !value.states.length ||
+      value.states.length > UI_CONCEPT_LIMITS.states
+    )
+      throw new Error(
+        `states must list 1–${UI_CONCEPT_LIMITS.states} alternate screens.`
+      )
+    const ids = new Set([UI_INITIAL_STATE])
+    snapshot.states = value.states.map((item, i) => {
+      const path = `states[${i}]`
+      const state = object(item, path)
+      fields(state, ["id", "label", "tree"], path)
+      const id = key(state.id, `${path}.id`)
+      if (ids.has(id))
+        throw new Error(
+          `${path}.id must be unique and not "${UI_INITIAL_STATE}".`
+        )
+      ids.add(id)
+      return {
+        id,
+        label: text(state.label, `${path}.label`, ARTIFACT_LIMITS.label),
+        tree: node(state.tree, `${path}.tree`, 1),
+      }
+    })
+  }
+  const stateIds = new Set([
+    UI_INITIAL_STATE,
+    ...(snapshot.states ?? []).map((state) => state.id),
+  ])
+  for (const target of targets)
+    if (!stateIds.has(target.goTo))
+      throw new Error(
+        `${target.path}.goTo must name a declared state (or "${UI_INITIAL_STATE}").`
+      )
+  if (
+    new TextEncoder().encode(JSON.stringify(snapshot)).length >
+    ARTIFACT_LIMITS.bytes
+  )
+    throw new Error("UI concept exceeds serialized byte limit.")
+  return snapshot
+}
+
+// Host-authored composer note for "Use this direction". The tag marks it as a
+// UI selection rather than typed prose; it names an exact revision only.
+export function uiConceptChoiceNote(artifactId: string, revision: number) {
+  return `<user_design_choice artifact_id=${JSON.stringify(artifactId)} revision=${JSON.stringify(revision)}>Chose this UI concept direction via the "Use this direction" button.</user_design_choice>`
+}
+
+const VALIDATORS: {
+  [K in ConversationArtifact["kind"]]: (input: unknown) => ConversationArtifact
+} = {
+  chart: validateChartSnapshot,
+  table: validateTableSnapshot,
+  ui_concept: validateUiConceptSnapshot,
+}
+
 export function validateArtifactSnapshot(input: unknown): ConversationArtifact {
   const value = object(input, "artifact")
-  if (value.kind === "chart") return validateChartSnapshot(value)
-  if (value.kind === "table") return validateTableSnapshot(value)
-  throw new Error("Unsupported artifact kind.")
+  if (!Object.hasOwn(VALIDATORS, value.kind as string))
+    throw new Error("Unsupported artifact kind.")
+  return VALIDATORS[value.kind as ConversationArtifact["kind"]](value)
+}
+
+// Rows for data artifacts; rendered nodes are not rows, so concepts report 0.
+export function artifactRowCount(snapshot: ConversationArtifact): number {
+  return snapshot.kind === "ui_concept" ? 0 : snapshot.data.length
 }
 
 export function validateArtifactPresentation(
@@ -369,8 +866,7 @@ export function validateArtifactPresentation(
 ): ArtifactPresentation {
   const value = object(input, kind)
   const { artifactId, expectedBaseRevision, ...spec } = value
-  const snapshot =
-    kind === "chart" ? validateChartSnapshot(spec) : validateTableSnapshot(spec)
+  const snapshot = VALIDATORS[kind](spec)
   if (artifactId === undefined && expectedBaseRevision === undefined)
     return snapshot
   if (

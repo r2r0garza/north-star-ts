@@ -3,6 +3,7 @@ import { ActiveCommand, ToolGroup } from "@/components/tool-group"
 import { commandToolSegments } from "@/lib/command-tool-segments"
 import { projectCommandOutcomes } from "@/lib/command-outcomes"
 import { ConversationArtifact } from "@/components/conversation-artifact"
+import { isPresentationTool } from "../../../shared/conversation-artifacts"
 import type { ToolUse } from "@/lib/timeline"
 
 export function artifactToolSegments(calls: ToolUse[]) {
@@ -17,7 +18,7 @@ export function artifactToolSegments(calls: ToolUse[]) {
     if (seen.has(call.id)) continue
     seen.add(call.id)
     pending.push(call)
-    if (["present_chart", "present_table"].includes(call.name)) {
+    if (isPresentationTool(call.name)) {
       segments.push({ key: pending[0].id, calls: pending, artifactCall: call })
       pending = []
     }
@@ -55,8 +56,12 @@ export const TranscriptTools = memo(function TranscriptTools({
             />
           ) : (
             <p role="status" className="my-2 text-sm text-muted-foreground">
-              {call.name === "present_table" ? "Table" : "Chart"} unavailable:
-              no supported saved reference.
+              {call.name === "present_table"
+                ? "Table"
+                : call.name === "present_ui"
+                  ? "UI concept"
+                  : "Chart"}{" "}
+              unavailable: no supported saved reference.
             </p>
           ))}
       </Fragment>

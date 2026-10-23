@@ -4,7 +4,7 @@
 
 ## Objective
 
-Give North Star's coding agent a first-class capability to launch a workspace-backed Electron application under development, inspect its windows, capture screenshots, interact with its UI, read bounded diagnostics, and stop it. Launching North Star itself from development sources in an isolated test instance is a primary acceptance case. Agents should not need to generate temporary Electron main-process scripts or drive an entire qualification session through `exec_command`.
+Give North Star's coding agent a first-class capability to launch a workspace-backed Electron application under development, inspect its windows, capture screenshots, interact with its UI, read bounded diagnostics, and stop it. Launching North Star itself from development sources in an isolated test instance is a primary acceptance case. Agents should not need to generate temporary Electron main-process scripts or drive an entire qualification session through `exec_command`. The capability supports two working modes over one session model (see [Working modes](#working-modes-exploratory-and-scripted-checks)): step-by-step exploration when the agent needs to look around, and host-run declarative checks when it needs fast, repeatable assertions.
 
 This is a coding-agent development and verification capability, not general computer use or an Electron window embedded inside the agent browser. The target runs as a separate process with its own native windows. A successful component fixture is not evidence that the full application works. Bundled/packaged target launch and qualification are deferred to [PR120](120-bundled-electron-application-control.md), not prerequisites for this plan.
 
@@ -12,7 +12,7 @@ The user asked for a new launch capability, not implementation yet. This plan in
 
 ## Current evidence and related work
 
-`scripts/qualify-inline-artifacts-electron.mjs` builds a fixture using production renderer components, launches a visible `BrowserWindow`, and drives it with `webContents.executeJavaScript()`. It demonstrates real Electron rendering, but is neither a full North Star launch nor reliable native keyboard/pointer coverage. Preserve it as a regression fixture, not as the proposed product implementation.
+`scripts/qualify-inline-artifacts-electron.mjs` builds a fixture using production renderer components, launches a visible `BrowserWindow`, and drives it with `webContents.executeJavaScript()`. It demonstrates real Electron rendering, but is neither a full North Star launch nor reliable native keyboard/pointer coverage. Preserve it as a regression fixture, not as the proposed product implementation. It runs about 20 checks in a few seconds because no model is in the loop: it polls DOM predicates every 25 ms and asserts in-process. A see-think-act agent pays a model round trip per step. That speed gap is the reason for the scripted mode below, and the reason that mode must not reintroduce arbitrary evaluation.
 
 The existing agent browser has conversation-owned sessions, per-turn abortable handles, snapshot refs, image emission, bounded diagnostics and approval-aware tools. Relevant references are `src/main/browser/manager.ts`, `src/main/browser/session.ts`, `src/main/agent/tools/browser/`, `src/main/agent/tools/types.ts`, and `src/main/agent/approval/types.ts`. Its sessions belong to North Star; an external application's BrowserWindows cannot simply be added to that manager or reparented into its sidebar.
 
@@ -40,7 +40,8 @@ Use a dedicated `electron_*` family rather than overloading `browser_*`. Names a
 | `electron_snapshot` | Return a bounded accessibility-oriented outline with actionable refs scoped to session, window and document/snapshot generation. |
 | `electron_screenshot` | Capture the selected application renderer via the existing validated image/media delivery pipeline, not a screenshot of unrelated desktop windows. |
 | `electron_interact` | A discriminated schema for click, hover, drag, fill/type, select, key press and scroll. Ref-based pointer actions use the automation input pipeline, not DOM `.click()` masquerading as a pointer test. |
-| `electron_wait` | Bounded waits for window lifecycle, document readiness, ref visibility/absence or URL changes. No arbitrary predicate code. |
+| `electron_wait` | Bounded waits for window lifecycle, document readiness, ref or locator visibility/absence, declarative conditions (see below) or URL changes, polled host-side. No arbitrary predicate code. |
+| `electron_run` | Run a declarative check (an inline step list or a workspace check file) against an owned session in one call. Host-run at machine speed; stops at the first failed step and returns per-step results plus failure evidence. Same authority and approval as the single-step tools; no evaluation. |
 | `electron_console` | Cursor-based bounded renderer console, application stdout/stderr and crash records, attributed to the correct session/window/source. |
 | `electron_handoff` | Bring the target forward and pause for the user to complete login, native UI or other human-only steps. Resume with fresh window inventory and refs. |
 | `electron_close` | Gracefully close an owned app session, then bounded escalation against only its verified owned processes. Report cleanup outcome. Idempotent. |
@@ -50,6 +51,27 @@ Every window operation supplies a `sessionId`; selection is session-local and co
 Launch inputs are bounded and normalized. Validate executable identity, cwd, argument count/length, timeouts and supported modes before approval. Use a resolved development Electron executable plus an explicit workspace app entry; do not resolve installed application bundles or accept packaged target mode. Do not guess app arguments or run package scripts as a hidden launch step. Report missing builds/dependencies as actionable errors; build/install remains a separate approved operation.
 
 Do not expose arbitrary main-process evaluation, Node evaluation, IPC invocation, preload installation, raw debugging protocol forwarding, unrestricted environment inheritance, or free-form JavaScript evaluation in the initial tools. If advanced evaluation is later justified, give it a separate design, permission and approval boundary; the browser's page-only guarantees do not transfer to Electron renderers with Node/preload access.
+
+## Working modes: exploratory and scripted checks
+
+Both modes use the same session, window, approval and action-classification model. The difference is who drives the loop.
+
+**Exploratory mode** is for unknown apps, investigating a bug or finding out what to assert. The agent drives step by step with `electron_snapshot`, `electron_interact`, `electron_wait` and `electron_screenshot`, reading a fresh snapshot between decisions. It is slow (one model round trip per step) and that is acceptable. Snapshot refs are ephemeral and scoped to one observation.
+
+**Scripted mode** is for asserting known behavior, re-checking a fix and regression runs. The agent writes a declarative check, a JSON step list, and runs it with `electron_run`. The host executes every step without returning to the model, polling waits and assertions every ~25–50 ms. The model reads one result at the end. Typical flow: explore until behavior is understood, then encode it as a check and run it. On failure, explore from the failure evidence, fix, and rerun the same check.
+
+A check is data, not code:
+- **Steps** reuse the `electron_interact` and `electron_wait` vocabulary (click, fill/type, select, key press, scroll, drag, wait) plus `assert`, `screenshot` and `snapshot`.
+- **Locators** are durable, since snapshot refs do not survive runs or reloads. Locate by accessible role and name, label text, visible text, or an app-provided test id, with an optional ordinal and a window selector (title/URL pattern among owned windows). Ambiguous matches fail rather than picking the first.
+- **Assertions** form a finite set: visible/hidden, enabled/disabled, element count, text equals/contains, accessible state or value (checked, selected, expanded, input value), focused element, URL/title match, window count, and no new console errors since a step. There is no expression language, no JavaScript and no main-process access. If something cannot be asserted with this vocabulary, record the gap instead of adding evaluation.
+- **Bounds:** limits on step count, total and per-step timeouts, screenshot count and output size.
+- **Results:** pass/fail/unverified per step, the first failure with a fresh snapshot excerpt, a screenshot through the existing media pipeline, the console cursor at failure, and timing. Input method (automation input vs native) is reported per step, as in the acceptance rules.
+
+Check files live in the workspace (proposed `.cowork/electron-checks/<name>.json`), so they are reviewable, versionable and rerunnable. Writing one is an ordinary approved workspace file write. Running one is an `electron_run` call against an already launched and approved session. A check cannot launch apps, change launch arguments, or grant itself approval. Effectful steps go through the same per-action classification as single-step calls, approved up front for the whole run or paused at that step; a denied step fails the run, and a check never silently skips a step. Content in a check file is data from the workspace and cannot claim authority.
+
+Agent-written Playwright or Node scripts run through `exec_command` remain possible under existing shell approval, but they are an escape hatch, not this capability. They do not get session ownership, profile isolation, cleanup or Electron tool approval semantics. Prompt guidance prefers `electron_run` checks.
+
+PR112 can later consume check files and their results as acceptance evidence. This plan only defines the format and runner.
 
 ## Backend decision gate
 
@@ -111,6 +133,10 @@ Implement schemas, launch approval, profile/environment policy, session state ma
 
 Add selected-window snapshots, stale-safe refs, screenshot media emission, discriminated interactions, waits and handoff. Integrate action approval and per-session scheduling. Test actual input behavior separately from DOM state manipulation. Do not silently add JavaScript evaluation to compensate for missing interactions.
 
+### Phase C2: Scripted checks
+
+Add the declarative check schema and validator, durable locators, the finite assertion set and the host-side `electron_run` runner on top of Phase C operations. Cover run-level approval of effectful steps, stop-on-first-failure evidence, cancellation mid-run and bounds. Add workspace check files and prompt guidance for when to explore versus write a check. Measure end-to-end check speed against the equivalent exploratory sequence and record both.
+
 ### Phase D: Capability exposure and end-to-end qualification
 
 Wire explicit tool permissions, supported modes/providers, prompt guidance, context state and transcript representation. Qualify the full North Star development app and at least one independent Electron development fixture on supported platforms. Do not gate this coding-agent capability on packaged target support. Document unsupported native UI and apps that cannot establish isolated launch. Ship behind an opt-in feature flag until qualification passes; disable launch independently of historical evidence rendering.
@@ -119,13 +145,15 @@ Wire explicit tool permissions, supported modes/providers, prompt guidance, cont
 
 Automated contract tests must cover malformed launch descriptors, executable/cwd path substitution, denied/missing approval, environment filtering, unsafe debug flags, foreign sessions/windows/refs, changed approval targets, duplicate launches, lost connections, crash, cancellation, timeout, concurrent selection/action, bounded output and cleanup escalation. Include adversarial page/log text requesting host access or approval bypass; it remains evidence, not instruction.
 
+Check-runner tests must cover malformed or oversized checks, unknown step/assertion types, expression- or script-like strings (rejected or treated as literal text), ambiguous and missing locators, stale windows, effectful steps under denied/approved/Auto modes, cancellation and timeout mid-run, and that a check file cannot launch or reconfigure a session. Qualify that a representative check (roughly 20 steps) runs in seconds against the fixture, and that it gives the same pass/fail as the equivalent exploratory sequence.
+
 Use a real multi-window Electron fixture to verify popup/child discovery, navigation/ref invalidation, typing, select controls, scrolling, drag, pointer-driven tooltip behavior, keyboard traversal, modal Escape/focus behavior, renderer crash recovery and screenshot attribution. Programmatic focus/DOM assertions are not a substitute for input-driven tests. Native OS input remains a separate qualification level; record limitations instead of claiming it from synthetic events.
 
 The full North Star smoke path launches a second instance with a verified disposable profile, demonstrates no normal conversation/settings/database reuse, observes its actual primary window, navigates a local no-provider flow, captures evidence, opens/closes another window when available, closes the test instance and verifies resource cleanup without disturbing the controller. External model/provider actions are a separate opt-in test using controlled credentials and explicit authorization. A component fixture alone cannot satisfy this acceptance case.
 
 Repeat the development-target smoke path through full quit/relaunch and verify persistence is limited to the test profile. Verify development and packaged controller execution separately when claiming those host distributions are supported; packaged target qualification is deferred to PR120. Run targeted unit/integration suites, `pnpm typecheck`, `pnpm test` and `pnpm build` during implementation; record unrelated failures without claiming a clean full suite. Qualification records include OS, host/target/backend versions, launch mode, input method, pass/fail/unverified checks and cleanup results.
 
-Done means an authorized coding agent can launch the real supported development app, see and target its windows, inspect/capture/interact, hand control to the user and close it without generated shell automation scripts, cross-conversation access or accidental use of the personal profile. Report launch success, rendered readiness and exercised UI behavior as separate facts. Do not claim bundled/packaged target qualification from development evidence.
+Done means an authorized coding agent can launch the real supported development app, see and target its windows, inspect/capture/interact, run a saved declarative check against it in one call, hand control to the user and close it without generated shell automation scripts, cross-conversation access or accidental use of the personal profile. Report launch success, rendered readiness and exercised UI behavior as separate facts. Do not claim bundled/packaged target qualification from development evidence.
 
 ## Deferred follow-ups
 
