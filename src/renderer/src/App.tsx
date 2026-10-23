@@ -75,8 +75,11 @@ import {
   SettledTranscript,
   type LiveSegment,
 } from "@/components/transcript"
-import { ArtifactChoiceContext } from "@/components/conversation-artifact"
-import { uiConceptChoiceNote } from "../../shared/conversation-artifacts"
+import {
+  ArtifactChoiceContext,
+  type ArtifactChoice,
+} from "@/components/conversation-artifact"
+import { withUiConceptChoice } from "../../shared/conversation-artifacts"
 import { QuestionPanel } from "@/components/question-panel"
 import { applyStreamAttempt } from "@/lib/live-stream"
 import { createTokenBatcher } from "@/lib/token-batcher"
@@ -1413,20 +1416,17 @@ function App(
     })
   }, [])
 
-  const appendArtifactChoice = useCallback(
-    (choice: { artifactId: string; revision: number }) => {
-      const block = uiConceptChoiceNote(choice.artifactId, choice.revision)
-      setMessage((prev) =>
-        prev.includes(block)
-          ? prev
-          : prev.trim()
-            ? `${prev}\n\n${block}`
-            : block
+  const appendArtifactChoice = useCallback((choice: ArtifactChoice) => {
+    setMessage((prev) =>
+      withUiConceptChoice(
+        prev,
+        choice.artifactId,
+        choice.revision,
+        choice.alternative
       )
-      requestAnimationFrame(() => textareaRef.current?.focus())
-    },
-    []
-  )
+    )
+    requestAnimationFrame(() => textareaRef.current?.focus())
+  }, [])
 
   const appendFileSelection = useCallback(
     (selection: {

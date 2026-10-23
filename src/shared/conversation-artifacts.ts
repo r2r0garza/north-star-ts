@@ -54,6 +54,7 @@ export const UI_CONCEPT_LIMITS = {
   tableColumns: 12,
   tableRows: 50,
   states: 8,
+  alternatives: 6,
 } as const
 // The snapshot's own tree is always reachable under this state id.
 export const UI_INITIAL_STATE = "initial"
@@ -125,8 +126,34 @@ export interface UiConceptSnapshot {
   description?: string
   density?: "compact" | "comfortable" | "spacious"
   typeScale?: "sm" | "md" | "lg"
+  // Exactly one of: a single concept (tree, optional states) or alternatives.
+  tree?: UiNode
+  states?: UiConceptScreens["states"]
+  alternatives?: UiConceptAlternative[]
+}
+export interface UiConceptScreens {
   tree: UiNode
   states?: Array<{ id: string; label: string; tree: UiNode }>
+}
+export interface UiConceptAlternative extends UiConceptScreens {
+  id: string
+  label: string
+  description?: string
+}
+// Renderers always see a list; a single concept is one unnamed alternative.
+export function uiConceptAlternatives(
+  snapshot: UiConceptSnapshot
+): UiConceptAlternative[] {
+  return (
+    snapshot.alternatives ?? [
+      {
+        id: "default",
+        label: snapshot.title,
+        tree: snapshot.tree!,
+        ...(snapshot.states ? { states: snapshot.states } : {}),
+      },
+    ]
+  )
 }
 export type ConversationArtifact =
   | ChartSnapshot
@@ -489,6 +516,7 @@ export function validateUiConceptSnapshot(input: unknown): UiConceptSnapshot {
       "typeScale",
       "tree",
       "states",
+      "alternatives",
     ],
     "ui_concept"
   )
@@ -497,7 +525,7 @@ export function validateUiConceptSnapshot(input: unknown): UiConceptSnapshot {
   if (value.schemaVersion !== undefined && value.schemaVersion !== 1)
     throw new Error("Unsupported artifact schema version.")
   let nodes = 0
-  const targets: Array<{ goTo: string; path: string }> = []
+  let targets: Array<{ goTo: string; path: string }> = []
   const children = (list: unknown, path: string, depth: number) => {
     if (!Array.isArray(list))
       throw new Error(`${path}.children must be an array.`)
@@ -770,11 +798,58 @@ export function validateUiConceptSnapshot(input: unknown): UiConceptSnapshot {
         )
     }
   }
+  // One concept's screens; node budget and goTo targets are per concept.
+  const screens = (
+    source: Record<string, unknown>,
+    prefix: string
+  ): UiConceptScreens => {
+    nodes = 0
+    targets = []
+    const result: UiConceptScreens = {
+      tree: node(source.tree, `${prefix}tree`, 1),
+    }
+    if (source.states !== undefined) {
+      if (
+        !Array.isArray(source.states) ||
+        !source.states.length ||
+        source.states.length > UI_CONCEPT_LIMITS.states
+      )
+        throw new Error(
+          `${prefix}states must list 1–${UI_CONCEPT_LIMITS.states} alternate screens.`
+        )
+      const ids = new Set([UI_INITIAL_STATE])
+      result.states = source.states.map((item, i) => {
+        const path = `${prefix}states[${i}]`
+        const state = object(item, path)
+        fields(state, ["id", "label", "tree"], path)
+        const id = key(state.id, `${path}.id`)
+        if (ids.has(id))
+          throw new Error(
+            `${path}.id must be unique and not "${UI_INITIAL_STATE}".`
+          )
+        ids.add(id)
+        return {
+          id,
+          label: text(state.label, `${path}.label`, ARTIFACT_LIMITS.label),
+          tree: node(state.tree, `${path}.tree`, 1),
+        }
+      })
+    }
+    const stateIds = new Set([
+      UI_INITIAL_STATE,
+      ...(result.states ?? []).map((state) => state.id),
+    ])
+    for (const target of targets)
+      if (!stateIds.has(target.goTo))
+        throw new Error(
+          `${target.path}.goTo must name a declared state (or "${UI_INITIAL_STATE}").`
+        )
+    return result
+  }
   const snapshot: UiConceptSnapshot = {
     kind: "ui_concept",
     schemaVersion: 1,
     title: text(value.title, "title", ARTIFACT_LIMITS.label),
-    tree: node(value.tree, "tree", 1),
   }
   if (value.description !== undefined)
     snapshot.description = text(
@@ -790,42 +865,57 @@ export function validateUiConceptSnapshot(input: unknown): UiConceptSnapshot {
     ),
     typeScale: choice(value.typeScale, ["sm", "md", "lg"], "typeScale"),
   })
-  if (value.states !== undefined) {
+  if (value.alternatives === undefined)
+    Object.assign(snapshot, screens(value, ""))
+  else {
+    if (value.tree !== undefined || value.states !== undefined)
+      throw new Error(
+        "Use either tree/states for one concept or alternatives, not both."
+      )
     if (
-      !Array.isArray(value.states) ||
-      !value.states.length ||
-      value.states.length > UI_CONCEPT_LIMITS.states
+      !Array.isArray(value.alternatives) ||
+      value.alternatives.length < 2 ||
+      value.alternatives.length > UI_CONCEPT_LIMITS.alternatives
     )
       throw new Error(
-        `states must list 1–${UI_CONCEPT_LIMITS.states} alternate screens.`
+        `alternatives must list 2–${UI_CONCEPT_LIMITS.alternatives} concepts.`
       )
-    const ids = new Set([UI_INITIAL_STATE])
-    snapshot.states = value.states.map((item, i) => {
-      const path = `states[${i}]`
-      const state = object(item, path)
-      fields(state, ["id", "label", "tree"], path)
-      const id = key(state.id, `${path}.id`)
-      if (ids.has(id))
-        throw new Error(
-          `${path}.id must be unique and not "${UI_INITIAL_STATE}".`
-        )
+    const ids = new Set<string>()
+    const labels = new Set<string>()
+    snapshot.alternatives = value.alternatives.map((item, i) => {
+      const path = `alternatives[${i}]`
+      const alternative = object(item, path)
+      fields(
+        alternative,
+        ["id", "label", "description", "tree", "states"],
+        path
+      )
+      const id = key(alternative.id, `${path}.id`)
+      const label = text(
+        alternative.label,
+        `${path}.label`,
+        ARTIFACT_LIMITS.label
+      )
+      if (ids.has(id) || labels.has(label))
+        throw new Error(`${path} id and label must be unique.`)
       ids.add(id)
+      labels.add(label)
       return {
         id,
-        label: text(state.label, `${path}.label`, ARTIFACT_LIMITS.label),
-        tree: node(state.tree, `${path}.tree`, 1),
+        label,
+        ...(alternative.description === undefined
+          ? {}
+          : {
+              description: text(
+                alternative.description,
+                `${path}.description`,
+                ARTIFACT_LIMITS.description
+              ),
+            }),
+        ...screens(alternative, `${path}.`),
       }
     })
   }
-  const stateIds = new Set([
-    UI_INITIAL_STATE,
-    ...(snapshot.states ?? []).map((state) => state.id),
-  ])
-  for (const target of targets)
-    if (!stateIds.has(target.goTo))
-      throw new Error(
-        `${target.path}.goTo must name a declared state (or "${UI_INITIAL_STATE}").`
-      )
   if (
     new TextEncoder().encode(JSON.stringify(snapshot)).length >
     ARTIFACT_LIMITS.bytes
@@ -835,9 +925,39 @@ export function validateUiConceptSnapshot(input: unknown): UiConceptSnapshot {
 }
 
 // Host-authored composer note for "Use this direction". The tag marks it as a
-// UI selection rather than typed prose; it names an exact revision only.
-export function uiConceptChoiceNote(artifactId: string, revision: number) {
-  return `<user_design_choice artifact_id=${JSON.stringify(artifactId)} revision=${JSON.stringify(revision)}>Chose this UI concept direction via the "Use this direction" button.</user_design_choice>`
+// UI selection rather than typed prose; it names an exact revision and, for
+// alternatives, which one.
+export function uiConceptChoiceNote(
+  artifactId: string,
+  revision: number,
+  alternative?: { id: string; label: string }
+) {
+  const picked = alternative
+    ? ` alternative_id=${JSON.stringify(alternative.id)} alternative_label=${JSON.stringify(alternative.label)}`
+    : ""
+  return `<user_design_choice artifact_id=${JSON.stringify(artifactId)} revision=${JSON.stringify(revision)}${picked}>Chose this UI concept direction via the "Use this direction" button.</user_design_choice>`
+}
+
+// Adds a choice to a composer draft, replacing any earlier choice for the
+// same artifact so switching alternatives never leaves two directions.
+export function withUiConceptChoice(
+  draft: string,
+  artifactId: string,
+  revision: number,
+  alternative?: { id: string; label: string }
+): string {
+  const block = uiConceptChoiceNote(artifactId, revision, alternative)
+  const prefix = `<user_design_choice artifact_id=${JSON.stringify(artifactId)} `
+  const end = "</user_design_choice>"
+  let rest = draft
+  for (let at = rest.indexOf(prefix); at !== -1; at = rest.indexOf(prefix)) {
+    const close = rest.indexOf(end, at)
+    if (close === -1) break
+    rest = rest.slice(0, at) + rest.slice(close + end.length)
+  }
+  // Only tidy the gap left by a removed choice; otherwise keep the draft as is.
+  if (rest !== draft) rest = rest.replace(/\n{3,}/g, "\n\n").trim()
+  return rest.trim() ? `${rest}\n\n${block}` : block
 }
 
 const VALIDATORS: {

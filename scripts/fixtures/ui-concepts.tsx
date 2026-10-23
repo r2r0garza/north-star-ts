@@ -125,7 +125,18 @@ const longText = validateUiConceptSnapshot({
   title: "Long content",
   tree: { type: "text", text: "x".repeat(500) },
 })
+const ideas = validateUiConceptSnapshot({
+  title: "Four dashboard ideas",
+  alternatives: ["Card grid", "Table first", "Split view", "Timeline"].map(
+    (label, i) => ({
+      id: `idea${i + 1}`,
+      label,
+      tree: { type: "text", role: "heading", text: `${label} layout` },
+    })
+  ),
+})
 const revisions: Record<string, UiConceptSnapshot[]> = {
+  ideas: [ideas],
   settings: [settings],
   list: [listDetail],
   dashboard: [dashboard("Dashboard concept"), dashboard("Dashboard v2", "lg")],
@@ -175,6 +186,7 @@ const items: Array<[string, number]> = [
   ["dashboard", 1],
   ["dashboard", 2],
   ["long", 1],
+  ["ideas", 1],
 ]
 function App() {
   return (

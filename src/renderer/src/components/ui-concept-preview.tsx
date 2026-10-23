@@ -7,6 +7,7 @@ import {
 } from "react"
 import {
   UI_INITIAL_STATE,
+  type UiConceptScreens,
   type UiConceptSnapshot,
   type UiControlNode,
   type UiNode,
@@ -246,7 +247,7 @@ function Node({ node }: { node: UiNode }) {
 // Pure host reducer: only declared state ids are reachable; anything else is a
 // no-op. Buttons never carry actions beyond this.
 export function conceptStateAfter(
-  concept: Pick<UiConceptSnapshot, "states">,
+  concept: Pick<UiConceptScreens, "states">,
   current: string,
   goTo: string | undefined
 ): string {
@@ -308,7 +309,7 @@ export function UiConceptPreview({
   concept,
   viewportPresets = false,
 }: {
-  concept: Pick<UiConceptSnapshot, "tree" | "states" | "density" | "typeScale">
+  concept: UiConceptScreens & Pick<UiConceptSnapshot, "density" | "typeScale">
   viewportPresets?: boolean
 }) {
   const [current, setCurrent] = useState(UI_INITIAL_STATE)

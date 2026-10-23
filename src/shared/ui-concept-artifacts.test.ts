@@ -6,6 +6,8 @@ import {
   validateArtifactSnapshot,
   validateUiConceptSnapshot,
   uiConceptChoiceNote,
+  uiConceptAlternatives,
+  withUiConceptChoice,
 } from "./conversation-artifacts"
 import { conceptInput } from "./ui-concept-artifacts.fixture"
 
@@ -220,6 +222,128 @@ describe("UI concept snapshot contract", () => {
   it("builds a host-tagged choice note naming one exact revision", () => {
     expect(uiConceptChoiceNote('a"b', 3)).toBe(
       '<user_design_choice artifact_id="a\\"b" revision=3>Chose this UI concept direction via the "Use this direction" button.</user_design_choice>'
+    )
+  })
+
+  it("names the chosen alternative and replaces an earlier choice for the same artifact", () => {
+    const pick = { id: "grid", label: "Card grid" }
+    expect(uiConceptChoiceNote("a", 1, pick)).toContain(
+      'revision=1 alternative_id="grid" alternative_label="Card grid">'
+    )
+    const first = withUiConceptChoice("Looks good.", "a", 1, pick)
+    expect(first).toBe(`Looks good.\n\n${uiConceptChoiceNote("a", 1, pick)}`)
+    const other = { id: "table", label: "Table first" }
+    const second = withUiConceptChoice(first, "a", 1, other)
+    expect(second).toBe(`Looks good.\n\n${uiConceptChoiceNote("a", 1, other)}`)
+    // A different artifact's choice is kept; untouched drafts keep their spacing.
+    const both = withUiConceptChoice(second, "b", 2)
+    expect(both).toContain(uiConceptChoiceNote("a", 1, other))
+    expect(both).toContain(uiConceptChoiceNote("b", 2))
+    expect(withUiConceptChoice("x\n\n\n\ny", "c", 1)).toBe(
+      `x\n\n\n\ny\n\n${uiConceptChoiceNote("c", 1)}`
+    )
+    expect(withUiConceptChoice("", "c", 1)).toBe(uiConceptChoiceNote("c", 1))
+  })
+
+  it("validates alternatives with per-concept screens and budgets", () => {
+    const alt = (id: string, tree: unknown, extra = {}) => ({
+      id,
+      label: `Label ${id}`,
+      tree,
+      ...extra,
+    })
+    const valid = validateUiConceptSnapshot({
+      title: "Dashboard ideas",
+      alternatives: [
+        alt(
+          "grid",
+          { type: "button", text: "Go", goTo: "detail" },
+          {
+            description: "Cards first",
+            states: [
+              { id: "detail", label: "Detail", tree: { type: "separator" } },
+            ],
+          }
+        ),
+        alt("table", { type: "separator" }),
+      ],
+    })
+    expect(valid.tree).toBeUndefined()
+    expect(uiConceptAlternatives(valid).map((a) => a.id)).toEqual([
+      "grid",
+      "table",
+    ])
+    expect(
+      uiConceptAlternatives(
+        validateUiConceptSnapshot(wrap({ type: "separator" }))
+      )
+    ).toEqual([
+      { id: "default", label: "Concept", tree: { type: "separator" } },
+    ])
+    // Each concept gets its own 200-node budget.
+    const big = {
+      type: "stack",
+      children: Array.from({ length: 150 }, () => ({ type: "separator" })),
+    }
+    expect(() =>
+      validateUiConceptSnapshot({
+        title: "x",
+        alternatives: [alt("a", big), alt("b", big)],
+      })
+    ).not.toThrow()
+    const reject = (input: unknown, message: RegExp) =>
+      expect(() => validateUiConceptSnapshot(input)).toThrow(message)
+    reject(
+      {
+        title: "x",
+        tree: { type: "separator" },
+        alternatives: [alt("a", {}), alt("b", {})],
+      },
+      /not both/
+    )
+    reject({ title: "x" }, /tree must be a plain object/)
+    reject(
+      { title: "x", alternatives: [alt("a", { type: "separator" })] },
+      /2–6/
+    )
+    reject(
+      {
+        title: "x",
+        alternatives: [
+          alt("a", { type: "separator" }),
+          alt("a", { type: "separator" }),
+        ],
+      },
+      /unique/
+    )
+    // goTo cannot reach another alternative's screens.
+    reject(
+      {
+        title: "x",
+        alternatives: [
+          alt(
+            "a",
+            { type: "separator" },
+            {
+              states: [
+                { id: "detail", label: "D", tree: { type: "separator" } },
+              ],
+            }
+          ),
+          alt("b", { type: "button", text: "Go", goTo: "detail" }),
+        ],
+      },
+      /alternatives\[1\]\.tree\.goTo must name a declared state/
+    )
+    reject(
+      {
+        title: "x",
+        alternatives: [
+          alt("a", { type: "separator" }, { html: "<b>" }),
+          alt("b", { type: "separator" }),
+        ],
+      },
+      /unsupported field html/
     )
   })
 

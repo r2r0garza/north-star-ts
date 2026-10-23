@@ -7,10 +7,17 @@ import {
   ArtifactChoiceContext,
   ConversationArtifact,
 } from "./conversation-artifact"
-import { validateUiConceptSnapshot } from "../../../shared/conversation-artifacts"
+import {
+  validateUiConceptSnapshot,
+  type UiConceptScreens,
+  type UiConceptSnapshot,
+} from "../../../shared/conversation-artifacts"
 import { conceptInput } from "../../../shared/ui-concept-artifacts.fixture"
 
-const concept = validateUiConceptSnapshot(conceptInput)
+// Single-concept fixtures always carry a tree.
+const single = (input: unknown) =>
+  validateUiConceptSnapshot(input) as UiConceptSnapshot & UiConceptScreens
+const concept = single(conceptInput)
 let root: Root
 let container: HTMLDivElement
 beforeEach(() => {
@@ -94,7 +101,7 @@ describe("UiConceptPreview", () => {
   })
 
   it("moves only between declared states and resets demo state per screen", async () => {
-    const flow = validateUiConceptSnapshot({
+    const flow = single({
       title: "List/detail",
       tree: {
         type: "stack",
@@ -163,7 +170,10 @@ describe("UiConceptPreview", () => {
     expect(frame().className).toContain("max-w-[375px]")
   })
 
-  async function renderFigure(choose?: (choice: unknown) => void) {
+  async function renderFigure(
+    choose?: (choice: unknown) => void,
+    snapshot: UiConceptSnapshot = concept
+  ) {
     const reference = {
       schemaVersion: 1 as const,
       artifactId: "a",
@@ -178,7 +188,7 @@ describe("UiConceptPreview", () => {
         conversationId: "c",
         invocationId: "i",
         reference,
-        snapshot: concept,
+        snapshot,
       },
     })
     Object.defineProperty(window, "cowork", {
@@ -203,7 +213,7 @@ describe("UiConceptPreview", () => {
   }
   const useButton = () =>
     [...container.querySelectorAll("button")].find((b) =>
-      /direction|Added to your message/.test(b.textContent ?? "")
+      /direction|Added to your message|^Use “/.test(b.textContent ?? "")
     )
 
   it("loads a saved concept through the shared figure with its revision", async () => {
@@ -228,5 +238,74 @@ describe("UiConceptPreview", () => {
     expect(choose).toHaveBeenCalledTimes(1)
     expect(choose).toHaveBeenCalledWith({ artifactId: "a", revision: 2 })
     expect(useButton()!.textContent).toBe("Added to your message")
+  })
+
+  it("switches alternatives in one figure and chooses the one shown", async () => {
+    const ideas = validateUiConceptSnapshot({
+      title: "Dashboard ideas",
+      alternatives: [
+        {
+          id: "grid",
+          label: "Card grid",
+          description: "Metrics as cards",
+          tree: {
+            type: "stack",
+            children: [
+              { type: "text", role: "heading", text: "Grid layout" },
+              {
+                type: "field",
+                label: "Filter",
+                control: { type: "input" },
+              },
+            ],
+          },
+        },
+        {
+          id: "table",
+          label: "Table first",
+          tree: { type: "text", role: "heading", text: "Table layout" },
+        },
+      ],
+    })
+    const choose = vi.fn()
+    await renderFigure(choose, ideas)
+    const buttons = () => [...container.querySelectorAll("button")]
+    const press = (label: string) =>
+      act(() =>
+        buttons()
+          .find((b) => b.textContent === label)!
+          .click()
+      )
+    expect(
+      container.querySelectorAll('[aria-label="UI concept preview"]')
+    ).toHaveLength(1)
+    expect(container.querySelector("h4")?.textContent).toBe("Grid layout")
+    expect(container.textContent).toContain("Metrics as cards")
+    ;(container.querySelector("input") as HTMLInputElement).value = "typed"
+    await press("Use “Card grid”")
+    expect(choose).toHaveBeenLastCalledWith({
+      artifactId: "a",
+      revision: 2,
+      alternative: { id: "grid", label: "Card grid" },
+    })
+    expect(useButton()?.textContent).toBe("Added to your message")
+    await press("2. Table first")
+    expect(container.querySelector("h4")?.textContent).toBe("Table layout")
+    expect(
+      buttons()
+        .find((b) => b.textContent === "2. Table first")!
+        .getAttribute("aria-pressed")
+    ).toBe("true")
+    await press("Use “Table first”")
+    expect(choose).toHaveBeenLastCalledWith({
+      artifactId: "a",
+      revision: 2,
+      alternative: { id: "table", label: "Table first" },
+    })
+    await press("1. Card grid")
+    expect((container.querySelector("input") as HTMLInputElement).value).toBe(
+      ""
+    )
+    expect(useButton()?.textContent).toBe("Use “Card grid”")
   })
 })

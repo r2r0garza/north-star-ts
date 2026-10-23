@@ -51,10 +51,10 @@ app.whenReady().then(async () => {
   const checks=[];
   try {
     await window.loadFile(${JSON.stringify(join(temporary, "renderer/ui-concepts.html"))});
-    await wait("document.querySelectorAll('[aria-label=\\"UI concept preview\\"]').length===5");
+    await wait("document.querySelectorAll('[aria-label=\\"UI concept preview\\"]').length===6");
     await js(helpers);
     const reads = await js("window.qualification.reads()");
-    assert.equal(reads, 5);
+    assert.equal(reads, 6);
     assert.equal(await js(pageFits), true, 'narrow width without page overflow'); checks.push('narrow-width','long-unbroken-text');
     assert.equal(await js("document.querySelectorAll('form').length"), 0);
     await shot('light-narrow');
@@ -123,14 +123,32 @@ app.whenReady().then(async () => {
     assert.equal(await js("window.qualification.reads()"), reads, 'interactions never refetch');
     checks.push('choice-exact-revision-once','no-refetch');
 
+    // Alternatives: one figure, switch inline, dialog follows, choice names it.
+    assert.equal(await js(fig(5)+".querySelectorAll('[aria-label=\\"UI concept preview\\"]').length"), 1);
+    await click('3. Split view', fig(5));
+    await wait(fig(5)+".querySelector('h4').textContent==='Split view layout'");
+    await js("[..."+fig(5)+".querySelectorAll('button')].find(b=>b.textContent==='Expand').click()");
+    await wait("!!document.querySelector('[role=dialog] h4')");
+    assert.equal(await js("document.querySelector('[role=dialog] h4').textContent"), 'Split view layout', 'dialog opens on the selected alternative');
+    await click('4. Timeline', "document.querySelector('[role=dialog]')");
+    await click('Use “Timeline”', "document.querySelector('[role=dialog]')");
+    await js("document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))");
+    await wait("!document.querySelector('[role=dialog]')");
+    assert.equal(await js(fig(5)+".querySelector('h4').textContent"), 'Timeline layout', 'inline view follows the dialog selection');
+    assert.equal(await js("JSON.stringify(window.qualification.choices.at(-1))"), JSON.stringify({artifactId:'ideas',revision:1,alternative:{id:'idea4',label:'Timeline'}}));
+    checks.push('alternatives-switch','alternatives-dialog-sync','alternative-choice');
+
     // Themes and enlarged text.
     for (const theme of ['light','dark']) {
-      await js("document.documentElement.classList.toggle('dark',"+(theme==='dark')+")"); await pause(100);
-      for (let i=0;i<5;i++) assert.ok(await js("frameContrast("+fig(i)+")>=4.5"), theme+' text contrast in concept '+i);
+      // Measure final colors: a throttled (occluded) window can leave
+      // transition-colors rows mid-transition.
+      await js("(()=>{const st=document.createElement('style');st.id='no-transitions';st.textContent='*{transition:none!important}';document.head.append(st);document.documentElement.classList.toggle('dark',"+(theme==='dark')+");return true})()"); await pause(100);
+      for (let i=0;i<6;i++) assert.ok(await js("frameContrast("+fig(i)+")>=4.5"), theme+' text contrast in concept '+i);
     }
     await js(fig(0)+".scrollIntoView()"); await pause(100);
     await shot('dark-narrow');
     await js("document.documentElement.classList.remove('dark')");
+    await js("document.querySelectorAll('#no-transitions').forEach(e=>e.remove())");
     const thumbInside = "(()=>{const s=document.querySelector('[role=switch]');const t=s.firstElementChild.getBoundingClientRect(),r=s.getBoundingClientRect();return t.left>=r.left-0.5&&t.right<=r.right+0.5&&t.top>=r.top-0.5&&t.bottom<=r.bottom+0.5})()";
     const switchBothStates = async size => { for (let i=0;i<2;i++) { await js("document.querySelector('[role=switch]').click()"); await pause(250); assert.ok(await js(thumbInside), 'switch thumb inside track at '+size+' ('+await js("document.querySelector('[role=switch]').getAttribute('aria-checked')")+')') } };
     await switchBothStates('100%');

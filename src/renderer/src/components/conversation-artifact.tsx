@@ -14,6 +14,7 @@ import {
   type ArtifactReference,
   type ChartSnapshot,
   type TableSnapshot,
+  uiConceptAlternatives,
 } from "../../../shared/conversation-artifacts"
 import { UiConceptPreview } from "@/components/ui-concept-preview"
 import { Button } from "@/components/ui/button"
@@ -38,8 +39,13 @@ import { CartesianChart } from "@/components/cartesian-chart"
 // Provided only where a composer exists (the main conversation view). Choosing
 // a direction drafts a host-tagged note for the user to send; it never sends,
 // approves or edits anything itself.
+export interface ArtifactChoice {
+  artifactId: string
+  revision: number
+  alternative?: { id: string; label: string }
+}
 export const ArtifactChoiceContext = createContext<
-  ((choice: { artifactId: string; revision: number }) => void) | undefined
+  ((choice: ArtifactChoice) => void) | undefined
 >(undefined)
 
 const KIND_LABEL: Record<ArtifactReference["kind"], string> = {
@@ -394,7 +400,19 @@ const SnapshotPresentation = memo(function SnapshotPresentation({
   const [dataView, setDataView] = useState(snapshot.kind === "table")
   const [expanded, setExpanded] = useState(false)
   const choose = useContext(ArtifactChoiceContext)
-  const [chosen, setChosen] = useState(false)
+  const alternatives = useMemo(
+    () =>
+      snapshot.kind === "ui_concept" ? uiConceptAlternatives(snapshot) : [],
+    [snapshot]
+  )
+  // Shared by the inline view and the dialog so both show the same concept.
+  const [selectedId, setSelectedId] = useState(alternatives[0]?.id)
+  const selected =
+    alternatives.find((alternative) => alternative.id === selectedId) ??
+    alternatives[0]
+  const multiple = snapshot.kind === "ui_concept" && !!snapshot.alternatives
+  const [chosenId, setChosenId] = useState<string>()
+  const chosen = !!selected && chosenId === selected.id
   const controls = (
     <div className="mb-3 flex flex-wrap gap-2">
       {snapshot.kind === "chart" && (
@@ -413,18 +431,68 @@ const SnapshotPresentation = memo(function SnapshotPresentation({
           size="sm"
           disabled={chosen}
           onClick={() => {
-            setChosen(true)
-            choose({ artifactId, revision })
+            setChosenId(selected.id)
+            choose({
+              artifactId,
+              revision,
+              ...(multiple
+                ? { alternative: { id: selected.id, label: selected.label } }
+                : {}),
+            })
           }}
         >
-          {chosen ? "Added to your message" : "Use this direction"}
+          {chosen
+            ? "Added to your message"
+            : multiple
+              ? `Use “${selected.label}”`
+              : "Use this direction"}
         </Button>
       )}
     </div>
   )
   const content = (inDialog = false) =>
     snapshot.kind === "ui_concept" ? (
-      <UiConceptPreview concept={snapshot} viewportPresets={inDialog} />
+      <div className="space-y-2">
+        {multiple && (
+          <>
+            <div
+              role="group"
+              aria-label="Concept alternatives"
+              className="flex flex-wrap gap-1"
+            >
+              {alternatives.map((alternative, index) => (
+                <Button
+                  key={alternative.id}
+                  type="button"
+                  size="sm"
+                  variant={
+                    alternative.id === selected.id ? "secondary" : "ghost"
+                  }
+                  aria-pressed={alternative.id === selected.id}
+                  onClick={() => setSelectedId(alternative.id)}
+                >
+                  {index + 1}. {alternative.label}
+                </Button>
+              ))}
+            </div>
+            {selected.description && (
+              <p className="text-xs break-words text-muted-foreground">
+                {selected.description}
+              </p>
+            )}
+          </>
+        )}
+        {/* Keyed so switching alternatives starts from fresh demo state. */}
+        <UiConceptPreview
+          key={selected.id}
+          concept={{
+            ...selected,
+            density: snapshot.density,
+            typeScale: snapshot.typeScale,
+          }}
+          viewportPresets={inDialog}
+        />
+      </div>
     ) : dataView ? (
       <SnapshotData snapshot={snapshot} />
     ) : snapshot.kind === "chart" ? (
