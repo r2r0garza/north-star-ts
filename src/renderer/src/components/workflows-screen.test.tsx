@@ -105,6 +105,13 @@ beforeEach(() => {
       ]),
     },
     providers: {
+      getDefault: vi.fn(async () => ({
+        activeAccountId: "openai",
+        activeModelId: "gpt-test",
+      })),
+      effortLevels: vi.fn(async (accountId: string) =>
+        accountId === "anthropic" ? ["low", "medium", "high"] : []
+      ),
       listWithModels: vi.fn(async () => [
         {
           account: { id: "openai", displayName: "OpenAI" },
@@ -1391,6 +1398,55 @@ it("opens a single anchored model picker, filters models, and saves the step sel
       ]),
     })
   )
+})
+
+it("offers independent worker and validator effort for models that support it", async () => {
+  await openCodeReview()
+  await act(async () => button("1.Review changes").click())
+  const options = () =>
+    Array.from(document.querySelectorAll<HTMLElement>('[role="option"]'))
+  const choose = async (selector: string, label: string) => {
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>(selector)!.click()
+    )
+    const option = options().find((item) => item.textContent === label)!
+    await act(async () => option.click())
+  }
+  const pick = (label: string) => choose("#review-changes-model", label)
+  const lastStep = () =>
+    vi.mocked(window.cowork.db.workflows.update).mock.calls.at(-1)![0].steps[0]
+  // The default model (GPT Test) lists no levels: no picker.
+  expect(container.querySelector("#review-changes-effort")).toBeNull()
+  await pick("Claude Test")
+  const effort = container.querySelector("#review-changes-effort")!
+  // Unset is shown as Medium and is not saved until the user picks a level.
+  expect(effort.textContent).toBe("Medium")
+  expect(lastStep().effort).toBeNull()
+  await act(async () => (effort as HTMLButtonElement).click())
+  expect(options().map((item) => item.textContent)).toEqual([
+    "Low",
+    "Medium",
+    "High",
+  ])
+  await act(async () =>
+    options().find((item) => item.textContent === "High")!.click()
+  )
+  expect(effort.textContent).toBe("High")
+  const header = container.querySelector("#step-toggle-review-changes")!
+  expect(header.textContent).toContain("/ Claude Test - High effort")
+  await act(async () => button("Completion checkOff · Configure").click())
+  await act(async () =>
+    container.querySelector<HTMLButtonElement>("#review-changes-validate")!.click()
+  )
+  await choose("#review-changes-validator-effort", "Low")
+  expect(lastStep()).toMatchObject({ effort: "high", validatorEffort: "low" })
+  // A new worker model drops both levels: the validator inherits that model.
+  await pick("GPT Test")
+  expect(lastStep()).toMatchObject({ effort: null, validatorEffort: null })
+  expect(container.querySelector("#review-changes-effort")).toBeNull()
+  expect(container.querySelector("#review-changes-validator-effort")).toBeNull()
+  // No levels on the new model, so the header shows no effort.
+  expect(header.textContent).not.toContain(" - ")
 })
 
 it("opens the exact requested sidebar run and reports a missing run without substituting another", async () => {

@@ -10,12 +10,17 @@ export function serializeWorkflowExport(workflow: WorkflowDefinition): string {
       description,
       defaultObjective,
       viewInConversationSidebar,
-      steps: workflow.steps.map(({ id, title, instructions, skillName }) => ({
-        id,
-        title,
-        instructions,
-        skillName,
-      })),
+      // Effort levels are portable names; providers reconcile them against whatever model resolves.
+      steps: workflow.steps.map(
+        ({ id, title, instructions, skillName, effort, validatorEffort }) => ({
+          id,
+          title,
+          instructions,
+          skillName,
+          effort,
+          validatorEffort,
+        })
+      ),
     },
     null,
     2

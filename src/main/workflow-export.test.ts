@@ -51,6 +51,32 @@ describe("portable workflow export", () => {
     }
   })
 
+  it("keeps worker and validator effort levels", () => {
+    const source: WorkflowDefinition = {
+      id: "effort",
+      name: "Effort",
+      description: "",
+      defaultObjective: "",
+      steps: [
+        {
+          id: "one",
+          title: "One",
+          instructions: "Do it",
+          modelId: "private-model",
+          effort: "low",
+          validatorEffort: "high",
+        },
+      ],
+    }
+    expect(JSON.parse(serializeWorkflowExport(source)).steps[0]).toEqual({
+      id: "one",
+      title: "One",
+      instructions: "Do it",
+      effort: "low",
+      validatorEffort: "high",
+    })
+  })
+
   it("supports definitions without the optional sidebar flag or any steps", () => {
     const source: WorkflowDefinition = {
       id: "empty",

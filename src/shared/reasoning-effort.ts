@@ -14,3 +14,10 @@ export function effortOrDefault(
   if (picked && levels.includes(picked)) return picked
   return levels.includes("medium") ? "medium" : levels.at(-1)
 }
+
+// Picker label for a provider-named reasoning effort.
+export function effortLabel(effort: ReasoningEffort): string {
+  return effort === "xhigh"
+    ? "Extra high"
+    : effort[0].toUpperCase() + effort.slice(1)
+}

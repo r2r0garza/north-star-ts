@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { getDb } from "../connection"
+import { REASONING_EFFORT_PATTERN } from "../../../shared/reasoning-effort"
 import type { WorkflowDefinition } from "../../../shared/workflows"
 
 export function createWorkflow(): WorkflowDefinition {
@@ -49,12 +50,14 @@ export function importWorkflow(input: unknown): WorkflowDefinition {
       "instructions",
       "accountId",
       "modelId",
+      "effort",
       "agentName",
       "skillName",
       "validateCompletion",
       "maxCorrectionLoops",
       "validatorAccountId",
       "validatorModelId",
+      "validatorEffort",
       "validatorAgentName",
     ])
     if (Object.keys(row).some((key) => !stepKeys.has(key)))
@@ -93,6 +96,13 @@ export function listWorkflows(): WorkflowDefinition[] {
   }))
 }
 
+function isEffort(value: unknown): boolean {
+  return (
+    value == null ||
+    (typeof value === "string" && REASONING_EFFORT_PATTERN.test(value))
+  )
+}
+
 export function validateWorkflow(
   input: unknown
 ): asserts input is WorkflowDefinition {
@@ -115,6 +125,8 @@ export function validateWorkflow(
         typeof step.instructions !== "string" ||
         (step.accountId != null && typeof step.accountId !== "string") ||
         (step.modelId != null && typeof step.modelId !== "string") ||
+        !isEffort(step.effort) ||
+        !isEffort(step.validatorEffort) ||
         (step.agentName != null && typeof step.agentName !== "string") ||
         (step.skillName != null &&
           (typeof step.skillName !== "string" ||

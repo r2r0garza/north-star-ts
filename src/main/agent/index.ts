@@ -1003,6 +1003,8 @@ export interface RunAgentLoopOptions {
   completionInstruction?: string
   reportOnly?: boolean
   llmSelectionOverride?: LlmSelection
+  // Replaces the conversation's effort for this turn (null = provider default).
+  effortOverride?: string | null
   agentNameOverride?: string | null
   // Additional caller-provided context, budgeted like other sections.
   extraContextSections?: ContextSection[]
@@ -1281,6 +1283,10 @@ export async function runAgentLoop(
     accountId: conversation?.accountId ?? null,
     modelId: conversation?.modelId ?? null,
   }
+  const requestEffort =
+    opts.effortOverride !== undefined
+      ? opts.effortOverride
+      : conversation?.effort
 
   // The todo tool is gated by mode, not workspace: chat is the tool-light mode
   // and doesn't get it; interactive/north_star do, with or without a workspace.
@@ -3181,10 +3187,10 @@ export async function runAgentLoop(
                     stream: true,
                     ...(streamOptions ? { stream_options: streamOptions } : {}),
                     // The composer's pick; only these adapters offer one.
-                    ...(conversation?.effort &&
+                    ...(requestEffort &&
                     (llm.provider === "anthropic" ||
                       llm.provider === "codex_subscription")
-                      ? { reasoning_effort: conversation.effort }
+                      ? { reasoning_effort: requestEffort }
                       : {}),
                     ...(clearMarks
                       ? {

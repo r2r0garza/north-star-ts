@@ -58,6 +58,7 @@ import type { CommandSnapshot } from "@/lib/command-presentation"
 import { CommandOutput } from "@/components/command-output"
 import { commandPresentation } from "@/lib/command-presentation"
 import { transcriptShouldFollow } from "@/lib/transcript-scroll"
+import { effortLabel } from "../../../shared/reasoning-effort"
 import type {
   WorkflowStep,
   WorkflowDefinition,
@@ -589,10 +590,13 @@ function RunDetailView({
                   (step) => step.id === selectedId
                 )}
                 modelLabel={
-                  modelLabels[
+                  (modelLabels[
                     `${selectedStep.accountId ?? run.accountId}::${selectedStep.modelId ?? run.modelId}`
                   ] ??
-                  `${selectedStep.accountId ?? run.accountId} · ${selectedStep.modelId ?? run.modelId}`
+                    `${selectedStep.accountId ?? run.accountId} · ${selectedStep.modelId ?? run.modelId}`) +
+                  (selectedStep.effort
+                    ? ` · ${effortLabel(selectedStep.effort)} effort`
+                    : "")
                 }
                 liveText={selectedStep.status === "active" ? liveText : ""}
                 positions={positions.current}

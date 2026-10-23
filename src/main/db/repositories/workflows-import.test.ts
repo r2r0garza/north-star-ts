@@ -38,11 +38,13 @@ describe("workflow import validation", () => {
   it("accepts valid validator settings and rejects invalid correction budgets", () => {
     const workflow = {
       id: "source", name: "Test", description: "", defaultObjective: "",
-      steps: [{ id: "one", title: "One", instructions: "Do it", validateCompletion: true, maxCorrectionLoops: 2, validatorAccountId: "acct", validatorModelId: "model", validatorAgentName: "reviewer" }],
+      steps: [{ id: "one", title: "One", instructions: "Do it", validateCompletion: true, maxCorrectionLoops: 2, validatorAccountId: "acct", validatorModelId: "model", validatorAgentName: "reviewer", effort: "low", validatorEffort: "xhigh" }],
     }
     expect(importWorkflow(workflow).steps[0]).toMatchObject({
-      validateCompletion: true, maxCorrectionLoops: 2, validatorModelId: "model", validatorAgentName: "reviewer",
+      validateCompletion: true, maxCorrectionLoops: 2, validatorModelId: "model", validatorAgentName: "reviewer", effort: "low", validatorEffort: "xhigh",
     })
+    expect(() => importWorkflow({ ...workflow, steps: [{ ...workflow.steps[0], effort: "HIGH!" }] })).toThrow("Invalid workflow")
+    expect(() => importWorkflow({ ...workflow, steps: [{ ...workflow.steps[0], validatorEffort: 3 }] })).toThrow("Invalid workflow")
     expect(() => importWorkflow({ ...workflow, steps: [{ ...workflow.steps[0], maxCorrectionLoops: 11 }] })).toThrow("Invalid workflow")
   })
 

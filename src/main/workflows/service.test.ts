@@ -202,6 +202,8 @@ it("validates completion then corrects in the original transcript and accepts", 
   run.steps[0].validatorAccountId = "validator-account"
   run.steps[0].validatorModelId = "validator-model"
   run.steps[0].validatorAgentName = "reviewer"
+  run.steps[0].effort = "low"
+  run.steps[0].validatorEffort = "high"
   state.runs.set(run.id, structuredClone(run))
   state.agent
     .mockResolvedValueOnce({ content: handoff(`${run.id}:a`) })
@@ -218,8 +220,13 @@ it("validates completion then corrects in the original transcript and accepts", 
     workspace: process.cwd(),
     llmSelectionOverride: { accountId: "validator-account", modelId: "validator-model" },
     agentNameOverride: "reviewer",
+    effortOverride: "high",
     readOnlyTools: true,
   })
+  // The worker's effort lives on its conversation, so correction turns keep it.
+  expect(vi.mocked(createConversation).mock.calls[0][0]).toMatchObject({ effort: "low" })
+  expect(state.agent.mock.calls[0][0]).not.toHaveProperty("effortOverride")
+  expect(state.agent.mock.calls[2][0]).not.toHaveProperty("effortOverride")
   expect(validator.userMessage).toContain("inspect the workspace yourself")
   expect(validator.userMessage).toContain("Tests passed")
   expect(validator.userMessage).toContain("Original objective: Check project")
@@ -406,6 +413,9 @@ it("runs an unconfigured validator on the step conversation's own model", async 
 
   expect(await service.execute(context(run))).not.toHaveProperty("error")
   expect(state.agent.mock.calls[1][0]).not.toHaveProperty("llmSelectionOverride")
+  // Unset validator effort is the provider default, never the worker's pick.
+  expect(state.agent.mock.calls[1][0]).toHaveProperty("effortOverride", null)
+  expect(vi.mocked(createConversation).mock.calls[0][0]).toMatchObject({ effort: null })
 })
 it("executes ordered autonomous turns, passes prior results, and skips completed steps on resume", async () => {
   const run = start()

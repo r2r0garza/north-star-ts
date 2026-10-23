@@ -49,13 +49,95 @@ import {
   ComboboxValue,
 } from "@/components/ui/combobox"
 import type { AccountWithModels } from "../../../main/ipc/provider-handlers"
-import type { AgentSummary } from "@/types"
+import type { AgentSummary, LlmSettings } from "@/types"
+import {
+  effortLabel,
+  effortOrDefault,
+  type ReasoningEffort,
+} from "../../../shared/reasoning-effort"
 import type { SkillSummary } from "../../../preload"
 
 import type {
   WorkflowDefinition,
   WorkflowStep,
 } from "../../../shared/workflows"
+
+// Effort levels the resolved account/model accepts (empty: no effort control).
+function useEffortLevels(accountId: string | null, modelId: string | null) {
+  const [levels, setLevels] = useState<ReasoningEffort[]>([])
+  useEffect(() => {
+    setLevels([])
+    if (!accountId || !modelId) return
+    let cancelled = false
+    void window.cowork.providers
+      .effortLevels(accountId, modelId)
+      .then((found) => !cancelled && setLevels(found))
+    return () => {
+      cancelled = true
+    }
+  }, [accountId, modelId])
+  return levels
+}
+
+// Renders nothing when the model has no levels.
+function EffortSelect({
+  id,
+  label,
+  levels,
+  value,
+  onChange,
+}: {
+  id: string
+  label: string
+  levels: ReasoningEffort[]
+  value: ReasoningEffort | null | undefined
+  onChange: (effort: ReasoningEffort | null) => void
+}) {
+  const trigger = useRef<HTMLButtonElement>(null)
+  if (!levels.length) return null
+  const items = levels.map((level) => ({
+    value: level,
+    label: effortLabel(level),
+  }))
+  // Unset shows the level requests use (medium when listed), as the composer does.
+  const shown = effortOrDefault(value, levels)
+  return (
+    <div className="min-w-0 space-y-2">
+      <Label htmlFor={id}>{label}</Label>
+      <Combobox
+        items={items}
+        value={items.find((item) => item.value === shown) ?? null}
+        isItemEqualToValue={(a, b) => a?.value === b?.value}
+        onValueChange={(item) => item && onChange(item.value)}
+      >
+        <ComboboxTrigger
+          ref={trigger}
+          id={id}
+          className="flex h-9 w-full min-w-0 items-center justify-between gap-2 overflow-hidden rounded-lg border border-input px-3 text-sm hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring"
+        >
+          <ComboboxValue>
+            {(item: { label: string } | null) => (
+              <span className="truncate">{item?.label}</span>
+            )}
+          </ComboboxValue>
+        </ComboboxTrigger>
+        <ComboboxContent anchor={trigger} className="min-w-48">
+          <ComboboxInput placeholder="Search effort…" showTrigger={false} />
+          <ComboboxEmpty>No levels found.</ComboboxEmpty>
+          <ComboboxList>
+            <ComboboxCollection>
+              {(item: { value: string; label: string }) => (
+                <ComboboxItem key={item.value} value={item}>
+                  {item.label}
+                </ComboboxItem>
+              )}
+            </ComboboxCollection>
+          </ComboboxList>
+        </ComboboxContent>
+      </Combobox>
+    </div>
+  )
+}
 
 function SortableStep({
   step,
@@ -67,6 +149,7 @@ function SortableStep({
   agents,
   skills,
   systemAgentName,
+  defaultLlm,
   initiallyOpen,
 }: {
   step: WorkflowStep
@@ -78,6 +161,7 @@ function SortableStep({
   agents: AgentSummary[]
   skills: SkillSummary[]
   systemAgentName: string
+  defaultLlm: LlmSettings | null
   initiallyOpen: boolean
 }) {
   const [open, setOpen] = useState(initiallyOpen)
@@ -111,6 +195,22 @@ function SortableStep({
     (step.modelId
       ? { value: `${step.accountId}::${step.modelId}`, label: step.modelId }
       : null)
+  // Null fields resolve like the runtime: global default; an unset validator model reuses the worker's.
+  const workerAccountId = step.accountId ?? defaultLlm?.activeAccountId ?? null
+  const workerModelId = step.modelId ?? defaultLlm?.activeModelId ?? null
+  const validatorSelected = Boolean(
+    step.validatorAccountId || step.validatorModelId
+  )
+  const workerLevels = useEffortLevels(workerAccountId, workerModelId)
+  const validatorLevels = useEffortLevels(
+    validatorSelected
+      ? (step.validatorAccountId ?? defaultLlm?.activeAccountId ?? null)
+      : workerAccountId,
+    validatorSelected
+      ? (step.validatorModelId ?? defaultLlm?.activeModelId ?? null)
+      : workerModelId
+  )
+  const shownEffort = effortOrDefault(step.effort, workerLevels)
   const {
     attributes,
     listeners,
@@ -177,6 +277,7 @@ function SortableStep({
                   className="block truncate text-xs text-muted-foreground"
                 >
                   {agentLabel} / {selectedModel?.label ?? "Default model"}
+                  {shownEffort ? ` - ${effortLabel(shownEffort)} effort` : ""}
                   {step.validateCompletion ? " / Completion check on" : ""}
                 </span>
               </span>
@@ -228,13 +329,24 @@ function SortableStep({
                   value={selectedModel}
                   isItemEqualToValue={(a, b) => a?.value === b?.value}
                   onValueChange={(item) => {
+                    // A level picked for the old model may not exist on the new one.
+                    const efforts = {
+                      effort: null,
+                      ...(validatorSelected ? {} : { validatorEffort: null }),
+                    }
                     if (!item) {
-                      onChange({ ...step, accountId: null, modelId: null })
+                      onChange({
+                        ...step,
+                        ...efforts,
+                        accountId: null,
+                        modelId: null,
+                      })
                     } else {
                       const separator = item.value.indexOf("::")
                       if (separator >= 0)
                         onChange({
                           ...step,
+                          ...efforts,
                           accountId: item.value.slice(0, separator),
                           modelId: item.value.slice(separator + 2),
                         })
@@ -282,6 +394,16 @@ function SortableStep({
                   </ComboboxContent>
                 </Combobox>
               </div>
+              <EffortSelect
+                id={`${step.id}-effort`}
+                label="Effort"
+                levels={workerLevels}
+                value={step.effort}
+                onChange={(effort) => {
+                  onChange({ ...step, effort })
+                  onSave()
+                }}
+              />
               <div className="min-w-0 space-y-2">
                 <Label htmlFor={`${step.id}-agent`}>Agent</Label>
                 <Combobox
@@ -491,6 +613,7 @@ function SortableStep({
                             const separator = item?.value.indexOf("::") ?? -1
                             onChange({
                               ...step,
+                              validatorEffort: null,
                               validatorAccountId:
                                 separator >= 0
                                   ? item!.value.slice(0, separator)
@@ -544,6 +667,16 @@ function SortableStep({
                           </ComboboxContent>
                         </Combobox>
                       </div>
+                      <EffortSelect
+                        id={`${step.id}-validator-effort`}
+                        label="Validator effort"
+                        levels={validatorLevels}
+                        value={step.validatorEffort}
+                        onChange={(validatorEffort) => {
+                          onChange({ ...step, validatorEffort })
+                          onSave()
+                        }}
+                      />
                       <div className="min-w-0 space-y-2">
                         <Label htmlFor={`${step.id}-validator-agent`}>
                           Validator agent
@@ -632,8 +765,12 @@ export function WorkflowDetail({
   const [modelGroups, setModelGroups] = useState<AccountWithModels[]>([])
   const [agents, setAgents] = useState<AgentSummary[]>([])
   const [skills, setSkills] = useState<SkillSummary[]>([])
+  const [defaultLlm, setDefaultLlm] = useState<LlmSettings | null>(null)
   const systemAgentName = window.cowork.system().mainAgentName
   useEffect(() => {
+    void window.cowork.providers
+      .getDefault()
+      .then(setDefaultLlm, () => toast.error("Could not load default model"))
     void window.cowork.providers
       .listWithModels()
       .then(setModelGroups, () => toast.error("Could not load models"))
@@ -901,6 +1038,7 @@ export function WorkflowDetail({
                       agents={agents}
                       skills={skills}
                       systemAgentName={systemAgentName}
+                      defaultLlm={defaultLlm}
                       onChange={(updated) =>
                         change({
                           ...workflow,
@@ -920,6 +1058,10 @@ export function WorkflowDetail({
               <ChevronRight className="size-4 group-data-[state=open]:rotate-90" />
               Run settings
             </CollapsibleTrigger>
+            <p className="mt-1 ml-6 text-xs text-muted-foreground">
+              The objective prefilled when starting a run, and whether this
+              workflow appears in the conversation sidebar.
+            </p>
             <CollapsibleContent>
               <div className="mt-4 space-y-2">
                 <Label htmlFor="workflow-default-objective">

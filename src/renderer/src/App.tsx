@@ -162,6 +162,7 @@ import type {
 // `approval`), so restoring a switched-away turn restores its approval card too.
 import type { SteeringState } from "../../shared/steering"
 import {
+  effortLabel,
   effortOrDefault,
   type ReasoningEffort,
 } from "../../shared/reasoning-effort"
@@ -246,13 +247,6 @@ function appendLiveText(turn: LiveTurn, delta: string): LiveTurn {
     firstTextAt,
     segments: [...turn.segments, { kind: "text", text: delta }],
   }
-}
-
-// Composer label for a provider-named reasoning effort.
-function effortLabel(effort: ReasoningEffort): string {
-  return effort === "xhigh"
-    ? "Extra high"
-    : effort[0].toUpperCase() + effort.slice(1)
 }
 
 // Append streamed reasoning, coalescing into a trailing reasoning segment the

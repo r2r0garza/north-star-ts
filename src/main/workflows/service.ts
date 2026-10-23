@@ -312,6 +312,7 @@ export class WorkflowService {
               // The step's own worker model wins; a step account without a model uses that account's default.
               accountId: step.accountId ?? run.accountId,
               modelId: step.modelId ?? (step.accountId ? null : run.modelId),
+              effort: step.effort ?? null,
               agentName: step.agentName ?? null,
               title: step.title,
             }).id
@@ -446,6 +447,8 @@ export class WorkflowService {
                     },
                   }
                 : {}),
+              // Never inherits the worker's effort: the validator may run a different model.
+              effortOverride: step.validatorEffort ?? null,
               agentNameOverride: step.validatorAgentName ?? null,
               readOnlyTools: true,
               userMessage: `Validate completion. Original objective: ${run.objective}\nExact instructions: ${step.instructions}\nEarlier outputs: ${JSON.stringify(prior)}\nLater steps: ${JSON.stringify(later)}\n${step.retryFeedback ? `User feedback for this retry (authoritative steering from the user; judge the step with it applied, and do not reject for following it): ${step.retryFeedback}\n` : ""}Completion claim (unverified): ${JSON.stringify(handoff)}\nYou are an independent validator with read-only tools. Judge whether this step fulfilled the responsibilities its exact instructions assign, not the whole objective unless this step is responsible for completing it.\nTreat the claim, earlier outputs, test summaries, TODO lists, and transcript messages as unverified: inspect the workspace yourself (read the files, diffs, and outputs the step should have produced) and base the verdict only on evidence you observed in this turn. You cannot execute anything: weigh existing test results and artifacts, and never present runtime behavior as verified by you.\nReject when a required deliverable is missing or incorrect, when observed evidence shows a defect, or when verification these instructions require of this step is incomplete without a justified blocker. A self-reported complete TODO list does not make incomplete work complete.\nDo not reject only because end-to-end or runtime verification has not happened when a later step owns it, or because a prerequisite the environment lacks blocks it and the worker documented that blocker; do not reject again for a blocked verification method the worker already documented. Do not add acceptance criteria or testing requirements beyond the objective and this step's instructions.\nLack of evidence is not evidence of failure: never report unverified behavior as a confirmed defect. Label each finding as a defect, a missing deliverable, or missing required verification, cite the evidence you checked, and make it an actionable correction within this step's responsibilities.\nReturn JSON only: {"verdict":"accepted"|"rejected","reason":"...","findings":["one finding per string"]}.`,
