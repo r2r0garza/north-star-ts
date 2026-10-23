@@ -1,6 +1,6 @@
 # PR116: Constrained UI concept previews in conversation
 
-> Status: **Phases A–D implemented; qualification limitations recorded below.** Next up after [PR115: inline analysis artifacts](115-inline-analysis-artifacts.md), whose durable artifact, revision and transcript contracts this plan reuses. Higher-fidelity code previews are separately [deferred in PR117](117-sandboxed-html-react-previews.md).
+> Status: **Completed 2026-10-23** (Phases A–D plus the alternatives follow-up; user-tested in the app). Qualification limitations are recorded below. Next up after [PR115: inline analysis artifacts](115-inline-analysis-artifacts.md), whose durable artifact, revision and transcript contracts this plan reuses. Higher-fidelity code previews are separately [deferred in PR117](117-sandboxed-html-react-previews.md).
 
 ## Objective and recommendation
 

@@ -1,6 +1,6 @@
 # PR115: Inline analysis artifacts — charts and tables
 
-> Status: **Phases A–D implemented; qualification limitations recorded below.** Chart and table snapshots have validated, bounded contracts, atomic durable tool completion, typed live/historical projection, accessible data views, expanded presentation and immutable revisions. Follow-ups: [PR116: UI concept previews](116-ui-concept-previews.md) and [PR117: sandboxed HTML/React previews](117-sandboxed-html-react-previews.md).
+> Status: **Completed 2026-10-23** (Phases A–D implemented 2026-10-21); qualification limitations recorded below. Chart and table snapshots have validated, bounded contracts, atomic durable tool completion, typed live/historical projection, accessible data views, expanded presentation and immutable revisions. Follow-ups: [PR116: UI concept previews](116-ui-concept-previews.md) and [PR117: sandboxed HTML/React previews](117-sandboxed-html-react-previews.md).
 
 ## Objective and recommendation
 
