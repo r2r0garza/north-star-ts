@@ -55,6 +55,20 @@ export const CATEGORY_TOOLS: Record<string, string[]> = {
     "browser_handoff",
   ],
   browser_advanced: ["browser_evaluate"],
+  // Launching workspace Electron apps (plan 119). Separate from `execute` and
+  // `browser`: neither grant implies application automation.
+  electron: [
+    "electron_launch",
+    "electron_status",
+    "electron_select_window",
+    "electron_snapshot",
+    "electron_screenshot",
+    "electron_interact",
+    "electron_wait",
+    "electron_handoff",
+    "electron_run",
+    "electron_close",
+  ],
   todo: ["todo_write", "run_todos_in_background"],
   // `dashboard` → author AND read live dashboards (plans 033.2 / 033.4);
   // `dashboard_read` → read only. Offered in interactive modes (buildTools gates

@@ -2463,6 +2463,7 @@ function App(
       if (
         conversationId &&
         event.key.toLowerCase() === "f" &&
+        !event.shiftKey &&
         (window.cowork.platform === "darwin" ? event.metaKey : event.ctrlKey)
       ) {
         event.preventDefault()

@@ -155,6 +155,17 @@ describe("settings service — memory", () => {
     })
   })
 
+  it("keeps Electron app control on unless explicitly turned off", () => {
+    store.set("browser", JSON.stringify({ revealOnAgentUse: "always" }))
+    expect(service.getBrowser().electronApps).toBe(true)
+    service._resetCacheForTests()
+    store.set("browser", JSON.stringify({ electronApps: "no" }))
+    expect(service.getBrowser().electronApps).toBe(true)
+    service.setBrowser({ revealOnAgentUse: "always", electronApps: false })
+    service._resetCacheForTests()
+    expect(service.getBrowser().electronApps).toBe(false)
+  })
+
   it("falls back to defaults on a corrupt blob", () => {
     store.set("memory", "{not json")
     expect(service.getMemory()).toEqual({
@@ -403,11 +414,14 @@ describe("settings service — skill sources (capabilities)", () => {
 
 describe("settings service — browser (tabbed browser, plan: Phase 4)", () => {
   it("defaults revealOnAgentUse to always", () => {
-    expect(service.getBrowser()).toEqual({ revealOnAgentUse: "always" })
+    expect(service.getBrowser()).toEqual({
+      revealOnAgentUse: "always",
+      electronApps: true,
+    })
   })
 
   it("round-trips a persisted change to never", () => {
-    service.setBrowser({ revealOnAgentUse: "never" })
+    service.setBrowser({ revealOnAgentUse: "never", electronApps: true })
     service._resetCacheForTests()
     expect(service.getBrowser().revealOnAgentUse).toBe("never")
   })

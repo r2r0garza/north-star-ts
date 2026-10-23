@@ -562,6 +562,23 @@ export function AppSidebar({
     })
   )
 
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (
+        event.key.toLowerCase() === "f" &&
+        event.shiftKey &&
+        (event.metaKey || event.ctrlKey) &&
+        !event.altKey &&
+        !event.isComposing
+      ) {
+        event.preventDefault()
+        setSearchDialogOpen(true)
+      }
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [])
+
   // Fetch conversations + projects together. Re-run on the shell's refreshKey
   // (conversation changes) and after local project CRUD.
   const refetch = useCallback(async () => {

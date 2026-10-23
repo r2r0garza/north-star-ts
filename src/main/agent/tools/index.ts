@@ -68,6 +68,17 @@ import { browserEvaluateTool } from "./browser/evaluate"
 import { browserBackTool } from "./browser/back"
 import { browserCloseTool } from "./browser/close"
 import { browserHandoffTool } from "./browser/handoff"
+import { electronLaunchTool } from "./electron/launch"
+import { electronStatusTool } from "./electron/status"
+import { electronCloseTool } from "./electron/close"
+import {
+  electronSelectWindowTool,
+  electronSnapshotTool,
+  electronScreenshotTool,
+} from "./electron/inspect"
+import { electronInteractTool } from "./electron/interact"
+import { electronWaitTool, electronHandoffTool } from "./electron/wait-handoff"
+import { electronRunTool } from "./electron/run"
 import { webSearchTool } from "./web/search"
 import { webFetchTool } from "./web/fetch"
 import { spawnSubagentTool } from "./spawn_subagent"
@@ -178,6 +189,22 @@ export const browserTools: Tool[] = [
 ]
 export const browserToolDefinitions = browserTools.map((t) => t.definition)
 
+// Electron development-app tools (plan 119) — offered by runChat only when the
+// turn has an ElectronHandle (local workspace, outside plan mode, feature on).
+const electronTools: Tool[] = [
+  electronLaunchTool,
+  electronStatusTool,
+  electronSelectWindowTool,
+  electronSnapshotTool,
+  electronScreenshotTool,
+  electronInteractTool,
+  electronWaitTool,
+  electronHandoffTool,
+  electronRunTool,
+  electronCloseTool,
+]
+export const electronToolDefinitions = electronTools.map((t) => t.definition)
+
 // Web tools — headless web access, offered in every mode independent of the
 // workspace or the visible browser (a Chat session can search/fetch too).
 // web_search is not gated; web_fetch routes through the approval gate (kind
@@ -200,6 +227,7 @@ const byName = new Map(
     ...legacyTools,
     ...otherTools,
     ...browserTools,
+    ...electronTools,
     ...webTools,
   ].map((t) => [t.definition.function.name, t])
 )
@@ -209,6 +237,7 @@ export const builtInTools = [
   ...legacyTools,
   ...otherTools,
   ...browserTools,
+  ...electronTools,
   ...webTools,
 ]
 

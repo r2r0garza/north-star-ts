@@ -7,6 +7,7 @@ import { FileActionClassifier } from "./file-classifier"
 import { DelegationClassifier } from "./delegation-classifier"
 import { BrowserActionClassifier } from "./browser-classifier"
 import { McpActionClassifier } from "./mcp-classifier"
+import { ElectronActionClassifier } from "./electron-classifier"
 import { analyzeShellCommand, shellActionForCommand } from "./shell-analyzer"
 import {
   browserActionIdentity,
@@ -817,6 +818,40 @@ describe("Explicit action-integrity approvals", () => {
       level: "require_explicit_approval",
       reason: "Calling an external MCP server",
     })
+  })
+
+  it("keeps Electron launches explicit even when allowlisted and sandboxed", () => {
+    const engine = new PolicyEngine([new ElectronActionClassifier()], {
+      isAllowed: () => true,
+    })
+    const launch: ToolAction = {
+      tool: "electron_launch",
+      kind: "electron",
+      summary: "Launch app",
+      identity: "electron_launch:[]",
+    }
+    expect(engine.decide(launch, { sandboxed: true }).level).toBe(
+      "require_explicit_approval"
+    )
+  })
+
+  it("tiers Electron interactions by consequence", () => {
+    const engine = new PolicyEngine([new ElectronActionClassifier()], {
+      isAllowed: () => false,
+    })
+    const interact = (interactionKind: string): ToolAction => ({
+      tool: "electron_interact",
+      kind: "electron",
+      summary: "click",
+      identity: "electron_interact:s1",
+      detail: { interactionKind },
+    })
+    expect(engine.decide(interact("reversible_interaction")).level).toBe(
+      "require_approval"
+    )
+    expect(engine.decide(interact("consequential_commit")).level).toBe(
+      "require_explicit_approval"
+    )
   })
 })
 

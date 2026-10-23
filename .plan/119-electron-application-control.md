@@ -1,6 +1,6 @@
 # PR119: Electron development-app launch and control for the coding agent
 
-> Status: **PLANNED — not implemented.** Drafted 2026-10-21. This document proposes a capability; it does not authorize launching apps, installing dependencies, or implementing the tools.
+> Status: **IMPLEMENTED (2026-10-23) — all phases done; qualified on macOS (arm64) for development targets; controlled by Settings → Browser → "Let the agent launch Electron apps" (default on since 2026-10-23; replaced the `COWORK_ELECTRON_APPS` env flag). Windows/Linux not yet qualified.** Drafted 2026-10-21. This document proposes a capability; it does not authorize launching apps, installing dependencies, or implementing the tools.
 
 ## Objective
 
@@ -125,21 +125,173 @@ Do not add a full QA dashboard or recipe editor in this PR. The initial visible 
 
 Choose and pin the automation backend only after a small fixture and a full North Star dev instance demonstrate launch, window inventory, renderer snapshot/capture, real automation input and teardown. Establish North Star's test-profile startup contract. Record which flags/transports are required, privilege exposure, controller runtime/dependency constraints and the development-target OS/version support matrix. Verify no access to the controller window or default user profile. No production tool exposure until this gate passes.
 
+**Phase A record (2026-10-23, macOS 26 / Darwin 25.6, Electron 37.10.3, dev target only).**
+
+- **Backend: North Star's own CDP client over `--remote-debugging-pipe`** (fd 3 host→target, fd 4 target→host, NUL-delimited JSON). There's no TCP listener or port, and nothing to discover: only the spawning host holds the pipe. No Playwright dependency. No Node inspector, so main-process evaluation is not reachable. Verified: `Target.getTargets` window inventory, flattened `Target.attachToTarget`, `Accessibility.getFullAXTree`, `Page.captureScreenshot` (also of a hidden window), `Input.dispatchMouseEvent`, and `Browser.close` → exit code 0. Playwright Electron was not adopted. It connects through `--inspect` (main-process evaluation authority) plus a loopback debugging port, and it would add a dependency.
+- **Generic profile flag:** Electron honors `--user-data-dir` for `userData`. `HOME` in the child env does **not** move `app.getPath("home")` on macOS, so a generic target can still write to the real home. The adapter must not claim home isolation for arbitrary apps.
+- **North Star test-instance contract** ([test-instance.ts](../src/main/config/test-instance.ts), first import in `src/main/index.ts`): `--test-profile=<absolute dir>` sets `userData` → `<dir>/user-data` and `home` → `<dir>/home`, plus `HOME`/`USERPROFILE` for `os.homedir()` callers and children. This happens before any module resolves a path. A relative, empty or repeated value exits with code 2 (fails closed). The display name gains a "(Test instance)" suffix. No single-instance lock exists, so the test instance starts and quits on its own. Residual risk: `.env.local` is still read from the app path.
+- **Qualification:** `node scripts/qualify-electron-test-instance.mjs` (after `pnpm build`) launches the real dev app with a minimal env (`PATH`, `LANG`). It finds the branded primary window (~6.4 s), takes an AX snapshot (156 nodes) and a PNG screenshot, quits with code 0, and checks that `processes.db` and `~/.processes/*` land in the temp profile. It also confirms nothing under the personal `userData`/`~/.<system>` dirs was modified. All 7 checks pass. Fresh-profile onboarding shows, which confirms no settings/history reuse.
+- **Not yet qualified:** Windows/Linux, native input beyond CDP `Input.*`, multi-window/popups, and dev-server (`electron-vite dev`) child-process ownership.
+
 ### Phase B: Managed launch, ownership and diagnostics
 
 Implement schemas, launch approval, profile/environment policy, session state machine, invocation retry behavior, bounded logs, status/windows, close and cleanup. Add cancellation, timeouts, owner checks and host lifecycle wiring. Provide host-owned stop visibility. Verify packaged dependency resolution before claiming the host can ship the feature.
+
+**Phase B record (2026-10-23).** Opt-in via `COWORK_ELECTRON_APPS=1` in `.env.local`.
+
+- **Manager** ([`src/main/electron-apps/`](../src/main/electron-apps/)):
+  - Session states: launching → ready → closing → exited/crashed/failed. Ready means a page target exists over the pipe.
+  - Each session has its own process group (POSIX `detached`) and a disposable profile under `<tmp>/<slug>-electron-apps/<hostPid>/`.
+  - Child env is built from a passthrough list (PATH, locale, temp, display vars) plus `HOME` set to the profile home. Provider keys, `NODE_OPTIONS` and `ELECTRON_*` are never inherited.
+  - Logs: last 200 stdout/stderr lines, each capped at 500 chars.
+  - Limits: 2 live apps per conversation, 6 per host.
+  - Invocation retry: a repeated `invocationId` returns its first session.
+  - Ownership: sessions are bound to their conversation, and foreign ids are refused.
+  - Window inventory: `Target.setDiscoverTargets` events, plus a refresh on every status read, because Chromium emits no event for a title-only change.
+  - Teardown (idempotent): `Browser.close`, then SIGTERM, then SIGKILL to the session's own group, then a sweep of leftover group members, then profile removal. The cleanup outcome is reported.
+  - A self-exited or crashed app is torn down immediately.
+  - Lifecycle hooks: conversation deletion closes its apps; `will-quit` SIGTERMs owned groups synchronously; boot `reconcile()` removes profile dirs of dead host pids and never touches processes.
+- **Launch validation** (`launch.ts`), run before approval and again before spawn:
+  - The app entry and cwd must resolve, via real paths, inside the workspace.
+  - Entry is an app directory whose `package.json` `main` exists (`missing_build` otherwise), or a .js/.cjs/.mjs main script.
+  - Electron is the workspace's own `node_modules/electron`, found by reading `path.txt` as data, never by executing its JS (`electron_missing` otherwise).
+  - Packaged bundles → `unsupported_packaged`.
+  - Args: at most 32, each at most 1024 chars. Debugging, profile and sandbox-weakening flags → `unsafe_flag`.
+  - A target whose package name equals the host's gets `--test-profile`; anything else gets `--user-data-dir`, and the approval discloses that home is not isolated.
+  - If identity changes after approval → `approval_changed`, and nothing spawns.
+  - Environment overrides are not accepted yet.
+- **Approval:** new `electron` action kind, `ElectronActionClassifier`, explicit tier (no allowlist or sandbox downgrade; Auto mode approves it like other explicit actions). The card shows runtime, entry, args, cwd, profile mode, env policy and the host-privilege disclosure.
+- **Tools:**
+  - `electron_launch`: gated; returns JSON with an untrusted-data note.
+  - `electron_status`: read-only.
+  - `electron_close`: not gated, since it only closes the conversation's own apps.
+  - All three sit in a new `electron` agent category.
+  - They're offered only on live turns in a local, non-read-only workspace, outside plan mode.
+  - Each turn adds a system-trust `electron_state` section with session id, state, entry and window count. App titles stay out of it.
+- **Host stop surface:**
+  - `electron-apps:list`/`stop`/`changed` IPC plus `window.cowork.electronApps`.
+  - `ElectronAppsBar`: a floating strip shown only while an app is live, with entry, profile mode, window count, state and Stop. Not yet visually reviewed.
+- **Tests:** launch validation, pipe codec, classifier tier, tool gating/retry/foreign/untrusted output, and `manager.live.test.ts`. The live test runs real Electron fixtures covering ready, retry, foreign session, changed approval, minimal env, child-process cleanup, crash, startup timeout, Stop during startup and the conversation limit. The full North Star test-instance launch/close (with DB in profile and exit code 0) runs with `ELECTRON_APPS_NORTH_STAR=1`.
+- **Packaged host:** the controller needs no new dependency (Node `child_process` + pipe), so nothing extra ships. Running it from a packaged North Star is not yet qualified.
+- **Not done or unqualified:**
+  - Windows process-tree kill (main process only; marked `shortcut:`).
+  - Linux display.
+  - Environment overrides.
+  - Native/CLI bridge exposure (not offered there).
 
 ### Phase C: Renderer inspection and interaction
 
 Add selected-window snapshots, stale-safe refs, screenshot media emission, discriminated interactions, waits and handoff. Integrate action approval and per-session scheduling. Test actual input behavior separately from DOM state manipulation. Do not silently add JavaScript evaluation to compensate for missing interactions.
 
+**Phase C record (2026-10-23).** Still behind `COWORK_ELECTRON_APPS=1`.
+
+- **[`WindowControl`](../src/main/electron-apps/window-control.ts)**, one per session, uses pure CDP over the session pipe:
+  - Each window gets a flattened attach with `Page`/`DOM`/`Accessibility` enabled and `Emulation.setFocusEmulationEnabled`; without that, keyboard input to an unfocused or hidden window is silently dropped.
+  - The snapshot is a bounded outline from `Accessibility.getFullAXTree` (40 KB, 300 refs) that shows states (focused/disabled/checked/expanded/selected/value).
+  - Refs are opaque `s<snapshot>e<n>`. They go to interactive roles, plus *named* pointer-target roles (region, listitem, row, cell, img, note, group, dialog, tooltip, …) so hover and drag can reach tooltips and drop zones.
+  - Refs die on a new snapshot, main-frame navigation (`Page.frameNavigated`), window destruction and reselection, each of which bumps a generation. Approved targets are re-verified against that generation before acting (`stale_ref`).
+  - One window is chosen implicitly; with several, the call fails until `electron_select_window` is used (`window_ambiguous`).
+- **Input:**
+  - click, hover and drag: `DOM.getBoxModel` + `Input.dispatchMouseEvent`. The fixture's `isTrusted`-only handler proves real input.
+  - fill: `selectAll` + `Input.insertText`.
+  - type: per-character `Input.dispatchKeyEvent`.
+  - press: a named key or a single character, with modifiers.
+  - scroll: `mouseWheel`.
+  - Native `<select>`: Electron draws its popup as an OS menu, so one fixed host-authored function sets the value. Results report `inputMethod: "dom-assisted-native-select"`.
+  - The `load` wait evaluates the constant `document.readyState`.
+  - No model-supplied script exists anywhere.
+- **Screenshots:** JPEG via `Page.captureScreenshot` clipped to the visual viewport, scaled to at most 1280 px (device-scale aware), delivered through `emitImage` with session/window/time attribution.
+- **Waits** (host-polled every 150 ms, at most 30 s): `load`, `text`/`text_gone` (accessible name/value), `ref_gone`, `url`/`title` contains, `window_count`.
+- **Handoff:** `Target.activateTarget` + `Page.bringToFront`, then the turn pauses on `ask`. The session refuses automation (`handoff_active`) until the user returns; then refs are invalidated and the inventory refreshed. The handoff is released on cancel too.
+- **Concurrency and Stop:**
+  - Per-session serial queue, with ownership and `ready` checks.
+  - The turn signal is checked before every CDP send, so a stopped turn sends no late input.
+  - Refused for other conversations.
+- **Tools:** `electron_select_window`, `electron_snapshot`, `electron_screenshot`, `electron_interact` (discriminated `action`), `electron_wait`, `electron_handoff`, all in the `electron` category.
+- **Approval:** hover and scroll are not gated. Other input uses the `electron` kind:
+  - **Consequential** (target or option matching the commit vocabulary shared with the browser, submitted fill/type, or Enter) → explicit tier, identity bound to session + action + target labels + payload hash.
+  - **Everything else** → normal tier with identity `electron_interact:<sessionId>`, so "remember" covers only that one test app.
+  - Approval summaries redact typed payloads.
+  - Launch approval never authorizes consequential actions.
+- **Qualification:**
+  - `window-control.live.test.ts` runs a real hidden multi-window fixture covering trusted click, fill, type, native select, hover tooltip, pointer drag, modal + Escape, scroll, screenshot bounds, stale ref after re-snapshot, popup discovery + explicit selection, navigation invalidating an approved target, handoff refusal, Stop-before-input and foreign conversation.
+  - The 13-step sequence takes **~2.1 s** host-side; stable over 3 runs.
+  - Opt-in North Star (`ELECTRON_APPS_NORTH_STAR=1`) launches the real test instance, snapshots the first-run Settings dialog, closes it by click, fills the composer (never sent), screenshots and quits cleanly.
+- **Not yet qualified:**
+  - Native OS input, menus and dialogs (handoff covers them).
+  - Renderer console capture (`electron_console`).
+  - Custom (non-native) select helpers.
+  - Renderer crash recovery within a live session.
+  - Native-provider/CLI bridge exposure.
+
 ### Phase C2: Scripted checks
 
 Add the declarative check schema and validator, durable locators, the finite assertion set and the host-side `electron_run` runner on top of Phase C operations. Cover run-level approval of effectful steps, stop-on-first-failure evidence, cancellation mid-run and bounds. Add workspace check files and prompt guidance for when to explore versus write a check. Measure end-to-end check speed against the equivalent exploratory sequence and record both.
 
+**Phase C2 record (2026-10-23).** Still behind `COWORK_ELECTRON_APPS=1`.
+
+- **Format and validator** ([`check-runner.ts`](../src/main/electron-apps/check-runner.ts)):
+  - A check is `{name?, description?, timeoutMs?, stepTimeoutMs?, steps}`.
+  - Steps: `click`, `hover`, `drag`, `fill`, `type`, `select`, `press`, `scroll`, `wait` (`until`), `assert` (`that`), `window` (title/url substring), `screenshot`, `snapshot`.
+  - Locators: `{role?, name?, nameContains?, label?, text?, testId?, nth?}`. `testId` uses `DOM.querySelectorAll` on `[data-testid="…"]` with a charset-restricted value; the rest match accessibility role/name/value literally. Text runs resolve to their element, and several matches fail unless `nth` is given.
+  - Conditions (exactly one): visible, hidden, enabled, disabled, focused, count, text equals/contains, state (checked/selected/expanded/pressed/value), url, title, windowCount, pageText, load.
+  - Strict: unknown steps, fields or condition shapes are rejected (so `script`, `css` and `expression` fields cannot ride along), and all strings are literal.
+  - Bounds: 64 KB JSON, 200 steps, 5 screenshots, 2 000-char strings, total timeout ≤ 300 s (default 60 s), per-step timeout ≤ 30 s (default 5 s).
+- **Runner:**
+  - Host-side under the session's serial lock, polling every 40 ms.
+  - Actions auto-wait until their locator resolves to one visible element, then use the same `WindowControl.perform` input pipeline as `electron_interact`, with the input method reported per step.
+  - Waits and assertions both retry until their timeout.
+  - Stops at the first failure with per-step `pass/fail/not_run` and timings, the error, a fresh snapshot excerpt (4 KB) and a failure screenshot through the media pipeline.
+  - Stop → `cancelled`.
+  - A check cannot launch, change launch args, or touch any other session (it runs on an already-owned session).
+- **`electron_run` tool** (`check` inline or a workspace `.json` `file`, resolved with `resolveInWorkspaceReal`):
+  - Approval is up front for the whole run:
+    - no effectful steps → no prompt;
+    - reversible only → the normal tier with the same `electron_interact:<sessionId>` identity, so a remembered session grant covers it;
+    - any statically consequential step → the explicit tier, bound to a hash of the check.
+  - At run time, a step whose *resolved* target is consequential without that up-front coverage (e.g. a testId landing on "Delete") pauses for its own explicit approval.
+  - A denied step fails the run and is never silently skipped.
+- **Check files:** any workspace-relative `.json`. The plan's `.cowork/electron-checks/<name>.json` naming is a convention for the agent (described in the tool), not enforced.
+- **Qualification** (`window-control.live.test.ts`, stable 3×):
+  - A **21-step check runs in ~1.5 s** host-side, vs ~2.1 s for the 13-step exploratory sequence driven step by step from the test (with no model round trips; with a model, each exploratory step adds a full turn).
+  - Pass/fail matches the exploratory sequence on the same fixture behaviors.
+  - Also covered: first-failure evidence (snapshot + screenshot, later steps `not_run`), ambiguous locator, denied step not executed (counter unchanged), cancellation mid-wait.
+  - Opt-in North Star runs a 4-assertion check against the real test instance.
+- **Gaps:**
+  - No "no new console errors since step" assertion: renderer console capture (`electron_console`) is not built yet.
+  - No check-file editor or PR112 integration.
+
 ### Phase D: Capability exposure and end-to-end qualification
 
 Wire explicit tool permissions, supported modes/providers, prompt guidance, context state and transcript representation. Qualify the full North Star development app and at least one independent Electron development fixture on supported platforms. Do not gate this coding-agent capability on packaged target support. Document unsupported native UI and apps that cannot establish isolated launch. Ship behind an opt-in feature flag until qualification passes; disable launch independently of historical evidence rendering.
+
+**Phase D record (2026-10-23).**
+
+- **Exposure audit:**
+  - The tools are offered only on live API-provider turns (the native Claude-subscription provider included: it advertises an inventory, and calls come back through North Star's own loop, so approvals, cancellation and `emitImage` are unchanged).
+  - Only in a local, non-read-only workspace, outside plan mode, with the flag on.
+  - CLI runtimes (`claude_code`, `codex`) return before the handle exists, and the CLI MCP bridge lists browser tools only, so they never see `electron_*`.
+  - The durable task runner has no live handle.
+  - Custom agents need the `electron` category; `execute` and `browser` do not imply it. External agents follow their built-in policy.
+  - A call to an un-offered `electron_*` tool gets the loop's existing unavailable result.
+  - Turning the flag off only stops offering the tools: historical tool results stay ordinary transcript text, and the host Stop bar still controls any live session.
+- **Guidance and context:** the per-turn `electron_state` section (emitted only when the tools are offered) carries the live session list plus usage guidance: use `electron_*` instead of Electron/Playwright scripts via `exec_command`, build first, explore and then encode an `electron_run` check, hand off native UI, packaged apps are unsupported, close unused apps.
+- **Transcript:** activity-timeline labels for every `electron_*` tool ("Launched test app", "Clicked in test app", "Ran app check <name>", …). The `electron` category appears in the agent editor with a description.
+- **Qualification:** `node scripts/qualify-electron-apps.mjs` (after `pnpm build`) runs the raw test-instance contract plus all Electron suites with the North Star case enabled, and prints a record.
+  - 2026-10-23: darwin 25.6.0 arm64, Node v24.21.0, Electron 37.10.3, backend CDP over `--remote-debugging-pipe`, launch mode development.
+  - Contract 7/7 PASS; suites **163 passed / 0 failed**; North Star case 5.7 s.
+  - The North Star case covers: launch → first-run Settings closed by click → composer filled → 4-assertion `electron_run` check → screenshot → quit 0 → profile removed → full relaunch shows first-run Settings again (no persistence) → personal `userData`/`~/.<system>` unmodified.
+  - Independent fixture covered: multi-window, popup, navigation, every input kind, checks, crash, timeout, Stop, child-process cleanup.
+  - The suites must run outside `with-node-sqlite.mjs`, which swaps `better-sqlite3` to the Node ABI and breaks a launched North Star.
+- **Unsupported (documented in tool descriptions and here):**
+  - packaged/bundled targets (PR120);
+  - native OS menus, dialogs and permission prompts (use `electron_handoff`);
+  - apps that override `userData` themselves, and home-directory isolation for non-North-Star apps (disclosed in the launch approval);
+  - environment overrides;
+  - renderer console capture and the "no new console errors" assertion;
+  - Windows process-tree teardown and Linux display (unqualified — the flag stays opt-in until they are).
+
+**Setting (2026-10-23).** The `COWORK_ELECTRON_APPS=1` env flag used during phases B–D is gone. The capability is `BrowserSettings.electronApps` (Settings → Browser → "Let the agent launch Electron apps"), **default on** at the user's request, read per turn by `electronAppsEnabled()`. Only an explicit `false` turns it off. Off only stops offering the tools; live sessions keep the host Stop bar, and history is unaffected. Every launch still requires explicit approval.
 
 ## Verification and acceptance criteria
 

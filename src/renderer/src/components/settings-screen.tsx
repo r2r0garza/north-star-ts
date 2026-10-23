@@ -1842,8 +1842,31 @@ export function SettingsScreen({
                             checked={browser.revealOnAgentUse === "always"}
                             onCheckedChange={(checked) =>
                               saveBrowser({
+                                ...browser,
                                 revealOnAgentUse: checked ? "always" : "never",
                               })
+                            }
+                          />
+                        </Field>
+                        <Field orientation="horizontal">
+                          <FieldContent>
+                            <FieldLabel htmlFor="electron-apps">
+                              Let the agent launch Electron apps
+                            </FieldLabel>
+                            <FieldDescription>
+                              In a local workspace, the agent can launch an
+                              Electron app under development as a separate test
+                              instance, then inspect, operate and check it. Each
+                              launch asks for your approval, and the app runs
+                              with your user privileges. When off, these tools
+                              aren't offered.
+                            </FieldDescription>
+                          </FieldContent>
+                          <Switch
+                            id="electron-apps"
+                            checked={browser.electronApps}
+                            onCheckedChange={(checked) =>
+                              saveBrowser({ ...browser, electronApps: checked })
                             }
                           />
                         </Field>

@@ -261,6 +261,44 @@ export function deriveLabel(
       return "Inspecting browser page"
     case "browser_screenshot":
       return "Capturing browser screenshot"
+    case "electron_launch":
+      if (status === "running") return "Launching test app"
+      if (status === "error") return "Test app launch failed"
+      return "Launched test app"
+    case "electron_status":
+      return "Checking test app"
+    case "electron_select_window":
+      return "Selecting test app window"
+    case "electron_snapshot":
+      return "Inspecting test app"
+    case "electron_screenshot":
+      return "Capturing test app screenshot"
+    case "electron_interact": {
+      const verbs: Record<string, string> = {
+        click: "Clicked",
+        hover: "Hovered",
+        drag: "Dragged",
+        fill: "Filled a field",
+        type: "Typed",
+        select: "Selected an option",
+        press: "Pressed a key",
+        scroll: "Scrolled",
+      }
+      const verb = typeof a.action === "string" ? verbs[a.action] : undefined
+      return `${verb ?? "Interacted"} in test app`
+    }
+    case "electron_wait":
+      return status === "running" ? "Waiting on test app" : "Waited on test app"
+    case "electron_handoff":
+      return status === "running" ? "Waiting for you in test app" : "Handed test app to you"
+    case "electron_run": {
+      const check = a.check && typeof a.check === "object" ? (a.check as { name?: unknown }).name : undefined
+      const label = typeof check === "string" ? check : typeof a.file === "string" ? baseName(a.file) : ""
+      if (status === "running") return label ? `Running app check ${label}` : "Running app check"
+      return label ? `Ran app check ${label}` : "Ran app check"
+    }
+    case "electron_close":
+      return status === "running" ? "Closing test app" : "Closed test app"
     case "git_status":
       return "Checking Git working tree"
     case "git_diff":

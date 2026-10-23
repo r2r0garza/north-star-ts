@@ -146,6 +146,10 @@ export interface McpSourcesSettings {
 export type BrowserReveal = "always" | "never"
 export interface BrowserSettings {
   revealOnAgentUse: BrowserReveal
+  // Offer the electron_* tools (plan 119): launching and driving workspace
+  // Electron apps under development. On by default; each launch still needs
+  // explicit approval.
+  electronApps: boolean
 }
 
 // User-editable brand colors (Settings → Appearance), overriding the .env
@@ -244,6 +248,7 @@ const DEFAULT_MCP_SOURCES: McpSourcesSettings = { folders: [] }
 
 const DEFAULT_BROWSER: BrowserSettings = {
   revealOnAgentUse: "always",
+  electronApps: true,
 }
 
 const DEFAULT_THEME: ThemeSettings = {
@@ -556,6 +561,7 @@ function loadBrowser(): BrowserSettings {
       browserCache = {
         revealOnAgentUse:
           parsed.revealOnAgentUse === "never" ? "never" : "always",
+        electronApps: parsed.electronApps !== false,
       }
       return browserCache
     } catch {

@@ -1,3 +1,4 @@
+import { ElectronAppsBar } from "@/components/electron-apps-bar"
 import React, { useCallback, useEffect, useRef, useState } from "react"
 import ReactDOM from "react-dom/client"
 
@@ -745,6 +746,7 @@ function Shell() {
           onReveal={revealHistory}
         />
         <Toaster />
+        <ElectronAppsBar />
         <StartupGuideDialog
           agentName={window.cowork.system().mainAgentName}
           open={startupGuideOpen}

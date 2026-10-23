@@ -1,3 +1,5 @@
+// Must stay the first import: redirects per-user paths for test instances.
+import { testProfile } from "./config/test-instance"
 import {
   app,
   shell,
@@ -13,6 +15,8 @@ import { config as loadEnv } from "dotenv"
 import { readMessageMedia } from "./media/tool-media"
 import { readConversationArtifact } from "./db/repositories/conversation-artifacts"
 import { saveFileLink } from "./files/save-link"
+import { electronApps } from "./electron-apps"
+import { registerElectronAppHandlers } from "./ipc/electron-app-handlers"
 
 // Load .env.local before anything reads process.env. Provider API keys are
 // configured by the user in Settings and stored per provider account, encrypted
@@ -1420,7 +1424,10 @@ ipcMain.handle("is-fullscreen", (event) => {
 // without an async flash of the static HTML title. See config/system-name.ts.
 ipcMain.on("system:name", (event) => {
   event.returnValue = {
-    displayName: systemDisplayName(),
+    // Visibly distinct branding for a plan 119 test instance.
+    displayName: testProfile()
+      ? `${systemDisplayName()} (Test instance)`
+      : systemDisplayName(),
     dataDirName: dataDirName(),
     mainAgentName: mainAgentName(),
     // The effective brand theme, resolving the persisted in-app override over the
@@ -1434,6 +1441,8 @@ ipcMain.on("app:is-packaged", (event) => {
 })
 
 app.whenReady().then(async () => {
+  // Remove disposable Electron app profiles left by a host that died (plan 119).
+  electronApps.reconcile()
   // In-memory leases disappear on restart. Persisted active writer artifacts
   // therefore become conservative repository quarantine gates.
   for (const artifact of listSubagentArtifacts({ unresolved: true })) {
@@ -1444,7 +1453,10 @@ app.whenReady().then(async () => {
   registerDbHandlers(
     indexService,
     taskRunner,
-    (id) => browserManager.closeTab(id),
+    (id) => {
+      browserManager.closeTab(id)
+      void electronApps.closeConversation(id)
+    },
     indexWatcher
   )
   registerSettingsHandlers((settings) =>
@@ -1452,6 +1464,7 @@ app.whenReady().then(async () => {
   )
   registerProviderHandlers()
   registerMcpHandlers()
+  registerElectronAppHandlers(electronApps)
   // Start the durable task runner now that the DB handlers are registered (it
   // reads the task tables synchronously). reconcile() marks any task left
   // mid-flight by a previous run as interrupted; the pump then drains the queue.
@@ -1597,6 +1610,7 @@ app.on("will-quit", () => {
   taskReportBack.stop()
   void taskRunner.stop()
   browserManager.dispose()
+  electronApps.shutdownSync()
   terminalService.dispose()
   // Disconnect every pooled MCP client (stops spawned stdio processes / closes
   // HTTP sessions). Fire-and-forget; the process is exiting.

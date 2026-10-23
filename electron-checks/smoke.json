@@ -1,0 +1,38 @@
+{
+  "name": "North Star test instance smoke check",
+  "steps": [
+    {
+      "step": "assert",
+      "that": {
+        "title": {
+          "contains": "(Test instance)"
+        }
+      }
+    },
+    {
+      "step": "click",
+      "target": {
+        "role": "button",
+        "name": "Close"
+      }
+    },
+    {
+      "step": "assert",
+      "that": {
+        "hidden": {
+          "role": "dialog",
+          "name": "Settings"
+        }
+      }
+    },
+    {
+      "step": "assert",
+      "that": {
+        "visible": {
+          "role": "textbox",
+          "name": "Send a message…"
+        }
+      }
+    }
+  ]
+}

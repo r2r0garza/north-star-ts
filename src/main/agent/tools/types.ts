@@ -6,6 +6,7 @@ import type {
 import type { Environment } from "../env/types"
 import type { TodoStatus } from "../../db/types"
 import type { BrowserHandle } from "../../browser/manager"
+import type { ElectronHandle } from "../../electron-apps/manager"
 import type {
   SpawnSubagentsInput,
   SubagentResult,
@@ -149,6 +150,9 @@ export interface ToolContext {
   // BrowserManager.handleForTurn). Absent when no browser is available (e.g.
   // unit tests) — browser tools then report the browser is unavailable.
   browser?: BrowserHandle
+  // Owned development Electron app sessions for this conversation (plan 119),
+  // bound to ctx.signal. Absent when the capability is not offered.
+  electron?: ElectronHandle
   // Attach an image to the current turn for the vision model (see ToolImage /
   // EmitImage). Used by browser_screenshot; absent where images can't be shown.
   emitImage?: EmitImage

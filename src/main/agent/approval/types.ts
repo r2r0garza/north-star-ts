@@ -24,6 +24,9 @@ export type ActionKind =
   // A tool call routed to an external MCP server. A network/subprocess side
   // effect on a third-party server, so it always prompts — see McpActionClassifier.
   | "mcp"
+  // Launching a development Electron app (plan 119): runs workspace code with
+  // the user's OS privileges, so it always takes the explicit tier.
+  | "electron"
 
 // A tool's request to do something gated. Tool-agnostic.
 export interface ToolAction {

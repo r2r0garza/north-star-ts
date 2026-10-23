@@ -45,6 +45,7 @@ import type {
 } from "../main/db/types"
 import type { ActionKind } from "../main/agent/approval/types"
 import type { PickedElement } from "../main/browser/types"
+import type { SessionStatus as ElectronAppSession } from "../main/electron-apps/manager"
 import type { GitDiffResult } from "../main/git/diff"
 import type {
   GitActionResult,
@@ -919,6 +920,22 @@ const api = {
     return () => {
       ipcRenderer.removeListener("browser:tabs", listener)
     }
+  },
+
+  // Agent-launched Electron app sessions (plan 119): list, stop, live updates.
+  electronApps: {
+    list: () =>
+      ipcRenderer.invoke("electron-apps:list") as Promise<ElectronAppSession[]>,
+    stop: (sessionId: string) =>
+      ipcRenderer.invoke("electron-apps:stop", sessionId) as Promise<void>,
+    onChanged: (callback: (sessions: ElectronAppSession[]) => void) => {
+      const listener = (_e: unknown, sessions: ElectronAppSession[]) =>
+        callback(sessions)
+      ipcRenderer.on("electron-apps:changed", listener)
+      return () => {
+        ipcRenderer.removeListener("electron-apps:changed", listener)
+      }
+    },
   },
 
   terminal: {

@@ -108,6 +108,39 @@ afterEach(async () => {
   container.remove()
   vi.unstubAllGlobals()
 })
+it.each(["darwin", "win32", "linux"] as const)(
+  "keeps global search separate from conversation find on %s",
+  async (platform) => {
+    Object.assign(window.cowork, { platform })
+    await render()
+    const modifier = platform === "darwin" ? "metaKey" : "ctrlKey"
+    const globalSearch = new KeyboardEvent("keydown", {
+      key: "F",
+      [modifier]: true,
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    })
+    await act(async () => window.dispatchEvent(globalSearch))
+    expect(
+      container.querySelector('[aria-label="Find in conversation"]')
+    ).toBeNull()
+    expect(globalSearch.defaultPrevented).toBe(false)
+
+    const conversationFind = new KeyboardEvent("keydown", {
+      key: "f",
+      [modifier]: true,
+      bubbles: true,
+      cancelable: true,
+    })
+    await act(async () => window.dispatchEvent(conversationFind))
+    expect(
+      container.querySelector('[aria-label="Find in conversation"]')
+    ).not.toBeNull()
+    expect(conversationFind.defaultPrevented).toBe(true)
+  }
+)
+
 it("waits for project context, uses project workspace precedence, and rejects stale insertion destinations", async () => {
   let resolve!: (value: { id: string; workspaceId: string }) => void
   projectGet.mockImplementation(

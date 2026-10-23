@@ -9,10 +9,10 @@
 > Mission Control, so Process UX investment remains worthwhile. `092.1` and `110`
 > moved to Deferred; low-value deferred plans were marked *dropped — pending re-review* in their own files.
 
-1. **`119` — Electron development-app launch and control.** Give the coding agent managed, approval-aware
-   launches of workspace Electron apps, with window inspection, screenshots, UI interaction, bounded
-   diagnostics and cleanup. Keep development targets separate from bundled/packaged app support deferred
-   to `120`; no general desktop control. [Plan](119-electron-application-control.md).
+1. **`119` — Electron development-app launch and control (IMPLEMENTED 2026-10-23 — macOS-qualified, on by default via Settings → Browser; Windows/Linux qualification pending).** Managed, approval-aware
+   launches of workspace Electron apps with window inspection, screenshots, real-input interaction, waits,
+   handoff, `electron_run` declarative checks and cleanup; qualify with `node scripts/qualify-electron-apps.mjs`.
+   Bundled/packaged targets deferred to `120`. [Plan](119-electron-application-control.md).
 2. **`126` — Workflow command steps.** Run Python scripts or ordinary commands directly without an
    agent call, using existing execution policy and durable bounded results for subsequent steps.
    [Plan](126-workflow-command-steps.md).

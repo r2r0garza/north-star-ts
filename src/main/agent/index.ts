@@ -20,6 +20,7 @@ import { askUser } from "./questions/broker"
 import {
   toolDefinitions,
   browserToolDefinitions,
+  electronToolDefinitions,
   webSearchDefinition,
   webFetchDefinition,
   runTool,
@@ -37,6 +38,7 @@ import {
 import { terminateOwnedCommandSessions } from "./tools/command_session_tools"
 import { terminateOwnedTestSessions } from "./tools/test_diagnostics_tools"
 import type { BrowserHandle } from "../browser/manager"
+import { electronApps, electronAppsEnabled } from "../electron-apps"
 import { TOOL_EFFECTS, type ToolImage } from "./tools/types"
 import { readFileTool } from "./tools/read_file_tool"
 import { CHAT_SHELL_TOOL_NAMES, chatShellContext } from "./tools/chat_shell"
@@ -134,6 +136,7 @@ import {
   summarySection,
   environmentSection,
   browserStateSection,
+  electronStateSection,
 } from "./context/sections"
 import { repairDanglingToolCalls } from "./repair"
 import { replayToolCallArguments } from "./tool-call-arguments"
@@ -1347,6 +1350,20 @@ export async function runAgentLoop(
   // to drive). Bound to this turn's signal so Stop unwinds an in-flight browser op.
   const browser = opts.provideBrowser?.(abort.signal)
 
+  // Electron app control (plan 119): live turns in a local, writable workspace
+  // only. A container/remote backend would still run the app on the host, and
+  // a read-only profile must not launch workspace code.
+  const executionConfig = hasWorkspace
+    ? settingsService.getExecutionConfig()
+    : null
+  const electron =
+    isLiveTurn &&
+    electronAppsEnabled() &&
+    executionConfig?.kind === "local" &&
+    executionConfig.profile !== "read-only"
+      ? electronApps.handleForTurn(conversationId, workspace!, abort.signal)
+      : undefined
+
   // Custom-agent tool restriction. When the selected agent declares a `tools`
   // frontmatter, this is the set of internal tool names it may be offered (plus
   // the universal floor, handled in buildTools); null = no restriction (omitted
@@ -1511,6 +1528,7 @@ export async function runAgentLoop(
         : []),
       ...(useIndex ? [indexQueryTool.definition] : []),
       ...(browser ? browserToolDefinitions : []),
+      ...(electron && !planMode ? electronToolDefinitions : []),
       // Web tools are offered in every mode, independent of workspace/browser.
       // In plan mode, web_fetch remains behind its ordinary per-origin approval
       // gate; it researches external sources without mutating the workspace.
@@ -1637,6 +1655,12 @@ export async function runAgentLoop(
     buildTools().some((d) => d.function.name.startsWith("browser_"))
   ) {
     sections.push(browserStateSection(browser.state()))
+  }
+  if (
+    electron &&
+    buildTools().some((d) => d.function.name.startsWith("electron_"))
+  ) {
+    sections.push(electronStateSection(await electron.status()))
   }
 
   if (agent && capabilityPolicy) {
@@ -2560,6 +2584,7 @@ export async function runAgentLoop(
                 }
               : undefined,
             browser,
+            electron,
             emitImage: acceptsImages
               ? (image: ToolImage) => {
                   if (
