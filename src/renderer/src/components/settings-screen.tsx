@@ -500,6 +500,7 @@ export function SettingsScreen({
   >(null)
   const [summaryMessageDraft, setSummaryMessageDraft] = useState("")
   const [summaryTokenDraft, setSummaryTokenDraft] = useState("")
+  const [compactionDraft, setCompactionDraft] = useState("")
   const [browser, setBrowser] = useState<BrowserSettings | null>(null)
   const [ide, setIde] = useState<IdeSettings | null>(null)
   const [ideOptions, setIdeOptions] = useState<
@@ -595,6 +596,7 @@ export function SettingsScreen({
         setMemoryModelOptions(memoryModels)
         setSummaryMessageDraft(String(idx.summarizeMessageThreshold))
         setSummaryTokenDraft(String(idx.summarizeTokenThreshold))
+        setCompactionDraft(String(idx.turnCompactionTokenThreshold))
         setBrowser(br)
         setIde(ideCfg)
         setIdeOptions(ideOpts)
@@ -755,6 +757,14 @@ export function SettingsScreen({
     if (!indexing) return
     setSummaryMessageDraft(String(indexing.summarizeMessageThreshold))
     setSummaryTokenDraft(String(indexing.summarizeTokenThreshold))
+    setCompactionDraft(String(indexing.turnCompactionTokenThreshold))
+  }
+
+  function saveCompactionThreshold(raw: string) {
+    if (!indexing) return
+    const n = clampInt(raw, 0, Number.MAX_SAFE_INTEGER)
+    if (n === null) return
+    saveIndexing({ ...indexing, turnCompactionTokenThreshold: n })
   }
 
   function saveSummaryMessageThreshold(raw: string) {
@@ -1493,6 +1503,38 @@ export function SettingsScreen({
                                     return
                                   setSummaryTokenDraft(next)
                                   saveSummaryTokenThreshold(next)
+                                }}
+                              />
+                            </Field>
+                            <Field orientation="horizontal">
+                              <FieldContent>
+                                <FieldLabel htmlFor="turn-compact">
+                                  Compact long turns at N tokens
+                                </FieldLabel>
+                                <FieldDescription>
+                                  When one agent turn's request grows past this
+                                  size, clear old tool results and then
+                                  summarize. The saved transcript is unchanged.
+                                  Set to 0 to turn off.
+                                </FieldDescription>
+                              </FieldContent>
+                              <Input
+                                id="turn-compact"
+                                type="text"
+                                inputMode="numeric"
+                                pattern="[0-9]*"
+                                className="w-28"
+                                value={compactionDraft}
+                                onBlur={restoreSummaryDrafts}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") {
+                                    e.currentTarget.blur()
+                                  }
+                                }}
+                                onChange={(e) => {
+                                  const next = digitsOnly(e.target.value)
+                                  setCompactionDraft(next)
+                                  saveCompactionThreshold(next)
                                 }}
                               />
                             </Field>

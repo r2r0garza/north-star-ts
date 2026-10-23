@@ -103,6 +103,25 @@ export class SummaryService {
       console.warn("[summaries] step summary failed:", result.error)
   }
 
+  // In-turn compaction (plan 118): fold everything persisted so far into the
+  // work-state digest now, ignoring the between-turn thresholds. Resolves true
+  // once the stored summary covers the latest message.
+  async compactNow(
+    conversationId: string,
+    signal: AbortSignal
+  ): Promise<boolean> {
+    const result = await this.summarize(
+      conversationId,
+      signal,
+      WORK_STATE_SYSTEM_PROMPT
+    )
+    if (result.error) {
+      console.warn("[summaries] in-turn compaction failed:", result.error)
+      return false
+    }
+    return !result.stopped
+  }
+
   private async summarize(
     conversationId: string,
     signal: AbortSignal,
@@ -160,7 +179,10 @@ export class SummaryService {
         // attempt re-runs with the same bounded input. (Mirrors the main agent
         // loop's finish_reason==="length" handling.)
         if (choice?.finish_reason === "length")
-          return { error: "summary truncated (hit output cap)", retryable: true }
+          return {
+            error: "summary truncated (hit output cap)",
+            retryable: true,
+          }
 
         summary = stripPreamble(contentToText(choice?.message?.content))
         if (!summary) return { error: "empty summary", retryable: false }
@@ -331,7 +353,9 @@ const WORK_STATE_SYSTEM_PROMPT =
   "instructions, what was changed (file paths and what they now do), " +
   "verification actually run and its real results, and what remains. Record " +
   "only what the turns show; never mark work done or verified without evidence " +
-  "in them. " +
+  "in them. Every unresolved task, failing check, known defect, and modified " +
+  "file in the turns must appear by name in Done, Verification, or Remaining; " +
+  "never condense them into status words such as 'mostly complete'. " +
   TRUST_RULES +
   "Do NOT answer or continue the work; only summarize it. Begin your reply " +
   "directly with the first heading — no preamble. Use exactly these four " +

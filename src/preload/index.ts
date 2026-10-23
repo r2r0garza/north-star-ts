@@ -121,6 +121,7 @@ export type ChatEvent =
     }
   | { type: "token"; delta: string; attemptId?: string }
   | { type: "reasoning"; delta: string; attemptId?: string }
+  | { type: "context_compacted"; tier: 1 | 2; before: number; after: number }
   | {
       type: "stream_attempt"
       phase: "start" | "commit" | "rollback"

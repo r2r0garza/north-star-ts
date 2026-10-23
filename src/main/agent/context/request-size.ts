@@ -62,7 +62,7 @@ function contentText(content: unknown): string {
 const messageCache = new WeakMap<object, number>()
 const toolDefCache = new WeakMap<object, number>()
 
-function messageTokens(message: any): number {
+export function messageTokens(message: any): number {
   if (!message || typeof message !== "object") return 0
   const cached = messageCache.get(message)
   if (cached !== undefined) return cached

@@ -27,6 +27,7 @@ import {
   resolveQuestion,
   stopChat,
   setAutoModeForConversation,
+  registerTurnCompactor,
   type ChatRequest,
 } from "./agent"
 import { queueSteering, cancelSteering, steeringState } from "./agent/steering"
@@ -1483,6 +1484,10 @@ app.whenReady().then(async () => {
     lane: "background",
     run: summaryService.execute,
   })
+  // In-turn compaction (plan 118) folds a long turn into a work-state summary.
+  registerTurnCompactor((conversationId, signal) =>
+    summaryService.compactNow(conversationId, signal)
+  )
   // dashboard_refresh: deterministic (no LLM) executor that replays each widget's
   // stored recipe into the data cache (plan 033.3). autoResume:false — a stale
   // dashboard is harmless and refresh is manual/on-open, so there's no need to

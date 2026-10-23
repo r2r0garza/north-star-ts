@@ -1,9 +1,7 @@
-import {
-  nativeAssistant,
-  validateCarrier,
-} from "./providers/native-carrier"
+import { nativeAssistant, validateCarrier } from "./providers/native-carrier"
 import type { ToolCallDelta } from "./tool-stream"
 import { modelRequestPermits } from "./model-permits"
+import { isContextOverflow } from "./providers/context-limits"
 import type { ApiMode, ModelRequestRetryBudget } from "../db/types"
 import {
   consumeAttempt as consumeModelRequestRetryAttempt,
@@ -54,6 +52,8 @@ export function mayRejectStreamOptions(error: unknown): boolean {
     message?: unknown
     error?: unknown
   }
+  // An overflow is never resent unchanged (plan 118).
+  if (isContextOverflow(error)) return false
   if (typeof e.status === "number") return e.status === 400 || e.status === 422
   let body = ""
   try {
@@ -247,6 +247,9 @@ export interface ModelResponseAttemptDiagnostics {
     // Of promptTokens: read from / written to the provider's prompt cache.
     cachedTokens?: number
     cacheWriteTokens?: number
+    // Tool results the provider cleared server-side before counting
+    // promptTokens (Anthropic context editing).
+    contextCleared?: { inputTokens: number; toolUses: number }
   } | null
 }
 
@@ -389,6 +392,7 @@ function usageFromChunk(chunk: any): ModelResponseAttemptDiagnostics["usage"] {
   const details = usage.prompt_tokens_details
   const cachedTokens = finiteNumber(details?.cached_tokens)
   const cacheWriteTokens = finiteNumber(details?.cache_creation_tokens)
+  const clearedTokens = finiteNumber(usage.context_cleared?.input_tokens)
   if (
     promptTokens === undefined &&
     completionTokens === undefined &&
@@ -402,6 +406,14 @@ function usageFromChunk(chunk: any): ModelResponseAttemptDiagnostics["usage"] {
     totalTokens,
     ...(cachedTokens !== undefined ? { cachedTokens } : {}),
     ...(cacheWriteTokens !== undefined ? { cacheWriteTokens } : {}),
+    ...(clearedTokens
+      ? {
+          contextCleared: {
+            inputTokens: clearedTokens,
+            toolUses: finiteNumber(usage.context_cleared?.tool_uses) ?? 0,
+          },
+        }
+      : {}),
   }
 }
 

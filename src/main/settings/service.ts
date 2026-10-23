@@ -103,6 +103,9 @@ export interface IndexingSettings {
   // on tokens only; both 0 ⇒ summarization off. See summaries/service.ts.
   summarizeMessageThreshold: number
   summarizeTokenThreshold: number
+  // In-turn compaction (plan 118): the estimated request size at which a long
+  // turn starts clearing old tool results / summarizing. `0` disables it.
+  turnCompactionTokenThreshold: number
   // Debug aid: when on, each turn's assembled system prompt is written verbatim
   // to system-prompt-logs/<mode> - <MM-DD-YYYY HH-MM-SS>.md. Off by default.
   logSystemPrompt: boolean
@@ -225,6 +228,9 @@ const DEFAULT_INDEXING: IndexingSettings = {
   // fresh tail reaches ~80k tokens. Both are user-adjustable in Settings.
   summarizeMessageThreshold: 0,
   summarizeTokenThreshold: 80000,
+  // Well below the smallest default model window; lowered further per model
+  // when the adapter knows the real window.
+  turnCompactionTokenThreshold: 120000,
   logSystemPrompt: false,
 }
 
@@ -452,6 +458,9 @@ function loadIndexing(): IndexingSettings {
         summarizeTokenThreshold:
           parsed.summarizeTokenThreshold ??
           DEFAULT_INDEXING.summarizeTokenThreshold,
+        turnCompactionTokenThreshold:
+          parsed.turnCompactionTokenThreshold ??
+          DEFAULT_INDEXING.turnCompactionTokenThreshold,
         logSystemPrompt:
           parsed.logSystemPrompt ?? DEFAULT_INDEXING.logSystemPrompt,
       }

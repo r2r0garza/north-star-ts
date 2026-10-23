@@ -6,7 +6,7 @@ import { ConversationMessageMeta } from "@/components/conversation-message-meta"
 import { ConversationFindText } from "@/components/conversation-find-text"
 import { Bubble, BubbleContent } from "@/components/ui/bubble"
 import { Trace, TraceLine, TraceIcon, TraceTitle } from "@/components/ui/trace"
-import { Activity } from "lucide-react"
+import { Activity, FoldVertical } from "lucide-react"
 import { TranscriptTools } from "@/components/transcript-tools"
 import { ChangedFilesBar } from "@/components/changed-files-bar"
 import { ReasoningTrace } from "@/components/reasoning-trace"
@@ -34,6 +34,8 @@ export type LiveSegment =
   | { kind: "reasoning"; text: string }
   | { kind: "user"; text: string; createdAt: number }
   | { kind: "tools"; calls: ToolUse[] }
+  // A turn-level notice, e.g. the request was compacted mid-turn (plan 118).
+  | { kind: "notice"; text: string }
 
 interface ChangedFilesCallbacks {
   conversationId?: string
@@ -344,6 +346,17 @@ const LiveTranscriptSegment = memo(function LiveTranscriptSegment({
           copyAlwaysVisible={false}
         />
       </div>
+    )
+  if (segment.kind === "notice")
+    return (
+      <Trace>
+        <TraceLine>
+          <TraceIcon>
+            <FoldVertical />
+          </TraceIcon>
+          <TraceTitle>{segment.text}</TraceTitle>
+        </TraceLine>
+      </Trace>
     )
   if (!segment.text) return null
   return (

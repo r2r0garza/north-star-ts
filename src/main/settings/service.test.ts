@@ -315,6 +315,7 @@ describe("settings service — indexing (plan 008)", () => {
       includeEmbeddings: false,
       summarizeMessageThreshold: 0,
       summarizeTokenThreshold: 80000,
+      turnCompactionTokenThreshold: 120000,
       logSystemPrompt: false,
     })
   })
@@ -327,6 +328,7 @@ describe("settings service — indexing (plan 008)", () => {
       includeEmbeddings: false,
       summarizeMessageThreshold: 50,
       summarizeTokenThreshold: 6000,
+      turnCompactionTokenThreshold: 0,
       logSystemPrompt: true,
     })
     service._resetCacheForTests()
@@ -336,6 +338,7 @@ describe("settings service — indexing (plan 008)", () => {
     expect(idx.watchWorkspaces).toBe(false)
     expect(idx.summarizeMessageThreshold).toBe(50)
     expect(idx.summarizeTokenThreshold).toBe(6000)
+    expect(idx.turnCompactionTokenThreshold).toBe(0)
     expect(idx.logSystemPrompt).toBe(true)
   })
 
@@ -349,6 +352,7 @@ describe("settings service — indexing (plan 008)", () => {
     expect(idx.watchWorkspaces).toBe(true)
     expect(idx.summarizeMessageThreshold).toBe(0)
     expect(idx.summarizeTokenThreshold).toBe(80000)
+    expect(idx.turnCompactionTokenThreshold).toBe(120000)
     expect(idx.logSystemPrompt).toBe(false)
   })
 
@@ -360,6 +364,7 @@ describe("settings service — indexing (plan 008)", () => {
       includeEmbeddings: false,
       summarizeMessageThreshold: 0,
       summarizeTokenThreshold: 80000,
+      turnCompactionTokenThreshold: 120000,
       logSystemPrompt: false,
     })
     // A partial/corrupt stored blob still yields a complete typed shape.

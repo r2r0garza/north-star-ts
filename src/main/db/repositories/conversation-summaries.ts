@@ -62,7 +62,9 @@ export function upsertConversationSummary(
          covers_through = excluded.covers_through,
          message_count = excluded.message_count,
          token_estimate = excluded.token_estimate,
-         updated_at = excluded.updated_at`
+         updated_at = excluded.updated_at
+       -- Monotonic: an older background fold never overwrites newer coverage.
+       WHERE excluded.covers_through >= conversation_summaries.covers_through`
     )
     .run(
       input.conversationId,

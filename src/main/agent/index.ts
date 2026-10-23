@@ -147,6 +147,18 @@ import {
   NoActiveProviderError,
   type LlmSelection,
 } from "./providers"
+import { ContextOverflowError } from "./providers/anthropic"
+import { contextWindowFor, isContextOverflow } from "./providers/context-limits"
+import {
+  buildWorkLedger,
+  clearOldToolResults,
+  clipToolResults,
+  latestRound,
+  compactionTiers,
+  compactionWatermarks,
+  continuationMessage,
+  pinnedInstructions,
+} from "./context/compaction"
 import {
   createCompletionRoundWithRetry,
   ModelRequestRetryExhaustedError,
@@ -163,7 +175,11 @@ import {
   REQUEST_SIZE_ESTIMATOR,
   type RequestSize,
 } from "./context/request-size"
-import { contextUsageLog, type ContextUsageOutcome } from "./context/usage-log"
+import {
+  contextUsageLog,
+  type ContextUsageEntry,
+  type ContextUsageOutcome,
+} from "./context/usage-log"
 import { generateTitle } from "./title"
 export { generateTitle } from "./title"
 import { sanitizeFailureContext } from "../tasks/failure-sanitizer"
@@ -296,12 +312,43 @@ export function nextOutputTokenCap(current: number): number | null {
   return OUTPUT_TOKEN_STEPS.find((step) => step > current) ?? null
 }
 
+// Forces a work-state summary of everything persisted so far (plan 118 tier
+// 2). Registered once by the main process with SummaryService.compactNow, so
+// every runAgentLoop caller gets it without importing the app entry.
+type TurnCompactor = (
+  conversationId: string,
+  signal: AbortSignal
+) => Promise<boolean>
+let turnCompactor: TurnCompactor | null = null
+export function registerTurnCompactor(fn: TurnCompactor | null): void {
+  turnCompactor = fn
+}
+
 // A provider that rejects the raised cap (the model's own output ceiling is
 // lower) — keep the original output-limit failure rather than this error.
 function rejectsOutputCap(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
   return /max_(completion_)?tokens|max.{0,20}output.{0,20}tokens|maximum.{0,40}tokens/i.test(
     message
+  )
+}
+// A non-retryable context-overflow failure naming the sizes involved. Its 4xx
+// status keeps the task and workflow runners from retrying it.
+function overflowFailure(
+  estimated: number | null,
+  window: number | null,
+  cause?: unknown
+): ContextOverflowError {
+  const threshold = settingsService.getIndexing().turnCompactionTokenThreshold
+  const k = (n: number) => `${Math.round(n / 1000)}k`
+  return new ContextOverflowError(
+    `The request exceeds the model's context window` +
+      (estimated ? ` (~${k(estimated)} tokens estimated` : " (") +
+      (window ? `, window ${k(window)}` : "") +
+      `, compaction threshold ${threshold ? k(threshold) : "off"}) and compaction could not shrink it. ` +
+      "Lower the turn compaction threshold in Settings or use a larger-context model.",
+    400,
+    { cause }
   )
 }
 const CHILD_APPROVAL_TIMEOUT_MS = 10 * 60_000
@@ -859,6 +906,9 @@ export type ChatEvent =
   // The run is parked waiting for owned background command sessions to settle.
   // Stop remains available because this is still the same in-flight turn.
   | { type: "command_wait"; phase: "start" | "done"; sessionIds?: string[] }
+  // The in-memory request was compacted mid-turn (plan 118). Tier 1 cleared
+  // old tool results; tier 2 rebuilt it from a work-state summary.
+  | { type: "context_compacted"; tier: 1 | 2; before: number; after: number }
 
 type OnEvent = (event: ChatEvent) => void
 
@@ -2035,6 +2085,7 @@ export async function runAgentLoop(
     // Per-round context usage log (plan 108). Measurement only: it never
     // changes the request and never fails the turn.
     let modelRound = 0
+    let compactionNote: ContextUsageEntry["compaction"] | null = null
     const logContextUsage = (input: {
       requestSize: RequestSize | null
       roundId: string
@@ -2084,7 +2135,9 @@ export async function runAgentLoop(
             finishReason: input.finishReason,
           },
           outcome: input.outcome,
+          ...(compactionNote ? { compaction: compactionNote } : {}),
         })
+        compactionNote = null
       } catch (error) {
         console.warn("[ctx] context usage logging failed:", error)
       }
@@ -2756,6 +2809,147 @@ export async function runAgentLoop(
           createdAt: stored.createdAt,
         })
       })
+    // In-turn compaction (plan 118), at the round boundary: every result of
+    // the previous round is persisted and no tool call is in flight. Changes
+    // only the in-memory request. `force` (an overflow) skips the watermark.
+    let compactFailedAt = 0
+    // The last round's provider-reported input size and our estimate of it.
+    let lastReported: { reported: number; estimate: number } | null = null
+    const compactionMarks = () =>
+      compactionWatermarks(
+        settingsService.getIndexing().turnCompactionTokenThreshold,
+        llm.provider
+          ? contextWindowFor(llm.provider, llm.accountId, llm.model)
+          : null
+      )
+    const compactRequest = async (
+      tools: unknown[],
+      force: boolean
+    ): Promise<{ before: number; after: number } | null> => {
+      const marks = compactionMarks()
+      const tiers = compactionTiers(llm.provider)
+      if (!marks || !(tiers.clear || tiers.rebuild)) return null
+      const measured = measureRequest(messages, tools).total
+      // Server-side clearing shrinks what the provider sees, not our estimate:
+      // judge by the last reported size plus what was added since.
+      const before =
+        tiers.serverClear && !force
+          ? lastReported
+            ? lastReported.reported + (measured - lastReported.estimate)
+            : 0
+          : measured
+      if (!force && before <= marks.high) return null
+      let total = before
+      if (tiers.clear) {
+        // An overflow means the real limit is below the watermark: halve.
+        const result = clearOldToolResults(messages, {
+          total,
+          target: force
+            ? Math.min(marks.low, Math.floor(total / 2))
+            : marks.low,
+        })
+        if (result.cleared > 0) {
+          messages.splice(0, messages.length, ...result.messages)
+          total = measureRequest(messages, tools).total
+          compactionNote = {
+            tier: 1,
+            before,
+            after: total,
+            clearedResults: result.cleared,
+          }
+          onEvent({ type: "context_compacted", tier: 1, before, after: total })
+          if (total <= marks.high || force) return { before, after: total }
+        }
+      }
+      // Nothing to fold yet (a fresh first round): summarizing can't shrink it.
+      if (
+        !tiers.rebuild ||
+        !turnCompactor ||
+        !messages.some((m) => m?.role === "assistant")
+      )
+        return { before, after: total }
+      // After a failed summary, wait for meaningful growth before retrying.
+      if (!force && compactFailedAt && total < compactFailedAt * 1.25)
+        return { before, after: total }
+      if (!(await turnCompactor(conversationId, abort.signal))) {
+        compactFailedAt = total
+        return { before, after: total }
+      }
+      compactFailedAt = 0
+      const turnMessages = listMessagesAfterSeq(conversationId, turnStartSeq)
+      const earlierUser = listMessages(conversationId).filter(
+        (m) => m.role === "user" && m.seq <= turnStartSeq
+      )
+      // A resumed or workflow turn's request was persisted before it began;
+      // an unattended step also keeps its original step prompt.
+      const opening = [
+        ...(opts.unattended && earlierUser[0] ? [earlierUser[0]] : []),
+        ...(userMessage === undefined && earlierUser.length
+          ? [earlierUser[earlierUser.length - 1]]
+          : []),
+      ]
+      const continuation = continuationMessage(
+        pinnedInstructions(turnMessages, opening),
+        buildWorkLedger(
+          turnMessages,
+          showTodos ? listTodos(conversationId) : []
+        )
+      )
+      const pinned = measureRequest([continuation]).total
+      if (pinned > marks.high)
+        throw new ContextOverflowError(
+          `This turn's instructions and work ledger alone (~${Math.round(pinned / 1000)}k tokens) exceed the compaction threshold (${Math.round(marks.high / 1000)}k). Raise the turn compaction threshold in Settings or use a larger-context model.`
+        )
+      // Refresh the summary and todo sections; everything else is unchanged.
+      const freshSections = sections.filter(
+        (section) => section.name !== "summary" && section.name !== "todos"
+      )
+      const todoPrompt = showTodos
+        ? buildTodoListPrompt(listTodos(conversationId))
+        : null
+      if (todoPrompt)
+        freshSections.push({
+          name: "todos",
+          priority: SECTION_PRIORITY.todos,
+          content: todoPrompt,
+        })
+      const summary = summarySection(conversationId)
+      if (summary) freshSections.push(summary)
+      const rebuilt = [
+        ...contextBuilder.build(conversationId, {
+          baseSystemPrompt,
+          sections: freshSections,
+          tokenBudget:
+            settingsService.getIndexing().summarizeTokenThreshold || undefined,
+          images: acceptsImages,
+        }),
+        continuation,
+      ]
+      // The results the model asked for last round, shortened if needed.
+      const round = latestRound(messages)
+      const roundBudget =
+        marks.high -
+        measureRequest(rebuilt, tools).total -
+        (round.length ? measureRequest(round.slice(0, 1)).total : 0)
+      messages.splice(
+        0,
+        messages.length,
+        ...rebuilt,
+        ...clipToolResults(round, roundBudget)
+      )
+      const after = measureRequest(messages, tools).total
+      compactionNote = {
+        tier: 2,
+        before,
+        after,
+        clearedResults: compactionNote?.clearedResults ?? 0,
+        summaryCoversThrough: summary?.replacesHistoryThrough ?? null,
+        pinnedTokens: pinned,
+      }
+      lastReported = null
+      onEvent({ type: "context_compacted", tier: 2, before, after })
+      return { before, after }
+    }
     while (true) {
       // Stop pressed during the previous step's tool execution: break before
       // starting another model round-trip. (An abort mid-stream is caught by the
@@ -2792,17 +2986,30 @@ export async function runAgentLoop(
           baseRoundId,
           ...(outputCap > MAX_OUTPUT_TOKENS ? [`cap-${outputCap}`] : []),
           ...(stalls ? [`stall-${stalls}`] : []),
+          ...(overflowCompacted ? ["compacted"] : []),
         ].join(":")
       // The current attempt's connection, so a hung one can be closed without
       // stopping the turn.
       const current: { abort: AbortController | null } = { abort: null }
       modelRound += 1
+      await compactRequest(tools, false)
       let requestSize: RequestSize | null = null
       try {
         requestSize = measureRequest(messages, tools)
       } catch (error) {
         console.warn("[ctx] request measurement failed:", error)
       }
+      // Never send a request known to exceed the model's window.
+      const contextWindow = llm.provider
+        ? contextWindowFor(llm.provider, llm.accountId, llm.model)
+        : null
+      if (requestSize && contextWindow && requestSize.total > contextWindow)
+        throw overflowFailure(requestSize.total, contextWindow)
+      let overflowCompacted = false
+      // Only the Anthropic adapter takes the server-side clearing thresholds.
+      const clearMarks = compactionTiers(llm.provider).serverClear
+        ? compactionMarks()
+        : null
       // The transport attempt in flight, and whether its line is written: a
       // rolled-back attempt logs itself; one that throws without a rollback
       // (an abort) is logged by the catch below.
@@ -2977,6 +3184,14 @@ export async function runAgentLoop(
                       llm.provider === "codex_subscription")
                       ? { reasoning_effort: conversation.effort }
                       : {}),
+                    ...(clearMarks
+                      ? {
+                          context_clearing: {
+                            trigger: clearMarks.high,
+                            clearAtLeast: clearMarks.high - clearMarks.low,
+                          },
+                        }
+                      : {}),
                   },
                   [
                     undefined,
@@ -3011,6 +3226,24 @@ export async function runAgentLoop(
             logicalRoundId = roundId()
             continue
           }
+          // An overflow is never resent unchanged: compact once and retry
+          // only if the request actually shrank.
+          if (isContextOverflow(error) && !abort.signal.aborted) {
+            const compacted = overflowCompacted
+              ? null
+              : await compactRequest(tools, true)
+            overflowCompacted = true
+            if (compacted && compacted.after < compacted.before) {
+              requestSize = measureRequest(messages, tools)
+              logicalRoundId = roundId()
+              continue
+            }
+            throw overflowFailure(
+              requestSize?.total ?? null,
+              contextWindow,
+              error
+            )
+          }
           if (outputCap > MAX_OUTPUT_TOKENS && rejectsOutputCap(error))
             throw new ModelResponseValidationError(
               "The model hit the output limit before returning a usable answer, and the provider rejected a higher output cap.",
@@ -3025,6 +3258,25 @@ export async function runAgentLoop(
       // tool fragments, so a retry cannot execute an abandoned partial tool call
       // or duplicate partial prose in the live UI.
       const usage = round.diagnostics.usage
+      // The provider cleared old tool results itself; show and log it like
+      // our own tier 1.
+      const serverCleared = usage?.contextCleared
+      if (serverCleared && usage?.promptTokens !== undefined) {
+        const before = usage.promptTokens + serverCleared.inputTokens
+        compactionNote = {
+          tier: 1,
+          before,
+          after: usage.promptTokens,
+          clearedResults: serverCleared.toolUses,
+          server: true,
+        }
+        onEvent({
+          type: "context_compacted",
+          tier: 1,
+          before,
+          after: usage.promptTokens,
+        })
+      }
       logContextUsage({
         requestSize,
         roundId: logicalRoundId,
@@ -3044,6 +3296,11 @@ export async function runAgentLoop(
         ),
         finishReason: round.finishReason,
       })
+      if (usage?.promptTokens && requestSize)
+        lastReported = {
+          reported: usage.promptTokens,
+          estimate: requestSize.total,
+        }
       if (usage) {
         hasTurnUsage = true
         turnUsage.promptTokens += usage.promptTokens ?? 0

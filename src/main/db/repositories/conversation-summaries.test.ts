@@ -109,6 +109,24 @@ describe.skipIf(!sqliteLoads)("conversation-summaries repository", () => {
     expect(getConversationSummary(convId)).toBeUndefined()
   })
 
+  it("never lowers coverage (an older fold cannot overwrite a newer one)", () => {
+    const convId = freshConversation()
+    upsertConversationSummary({
+      conversationId: convId,
+      summary: "in-turn compaction",
+      coversThrough: 40,
+      messageCount: 40,
+    })
+    const stale = upsertConversationSummary({
+      conversationId: convId,
+      summary: "older background fold",
+      coversThrough: 25,
+      messageCount: 25,
+    })
+    expect(stale.summary).toBe("in-turn compaction")
+    expect(stale.coversThrough).toBe(40)
+  })
+
   it("cascades on conversation delete", () => {
     const convId = freshConversation()
     upsertConversationSummary({

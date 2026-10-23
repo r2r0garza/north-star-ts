@@ -64,6 +64,18 @@ export interface ContextUsageEntry {
     finishReason: string | null
   }
   outcome: ContextUsageOutcome
+  // In-turn compaction applied before this request (plan 118).
+  compaction?: {
+    tier: 1 | 2
+    before: number
+    after: number
+    clearedResults: number
+    // Cleared by the provider (Anthropic context editing); sizes are its
+    // reported input tokens rather than our estimate.
+    server?: boolean
+    summaryCoversThrough?: number | null
+    pinnedTokens?: number
+  }
 }
 
 export interface ContextUsageLog {

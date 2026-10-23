@@ -20,10 +20,10 @@
    `@google/genai`, stateless (Interactions API with `store: false`, or `generateContent` if Interactions
    is not GA), replaying thought signatures through the shared native carrier.
    [Plan](123-google-api-provider.md).
-4. **`118` — In-turn context compaction.** Bound a single long agent turn's request at the model-round
+4. **`118` — In-turn context compaction (IMPLEMENTED — verified in North Star on Codex and Anthropic; workflow step on Codex pending; Google not verified live).** Bound a single long agent turn's request at the model-round
    boundary: clear old tool-result bodies first, then fall back to a work-state summary and rebuild. The
    persisted transcript stays complete; instructions are pinned and a tool-record work ledger survives
-   compaction. Blocked on `123`.
+   compaction.
    [Plan](118-in-turn-context-compaction.md).
 5. **`119` — Electron development-app launch and control.** Give the coding agent managed, approval-aware
    launches of workspace Electron apps, with window inspection, screenshots, UI interaction, bounded

@@ -1,4 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk"
+import {
+  COMPACTION_PROTECTED_TOOLS,
+  KEEP_RECENT_TOOL_USES,
+} from "../context/compaction"
 import type { BetaMessageStream } from "@anthropic-ai/sdk/lib/BetaMessageStream"
 import {
   historyFingerprint,
@@ -33,6 +37,7 @@ type Block = Record<string, any>
 type ModelInfo = Anthropic.Models.ModelInfo
 
 const BINDING_BETA = "thinking-binding-controls-2026-08-01"
+const CONTEXT_MANAGEMENT_BETA = "context-management-2025-06-27"
 
 // A request the model cannot fit. Carries a 4xx status so isTransientError
 // treats it as deterministic; never reported as a `length` finish.
@@ -264,6 +269,29 @@ export function translateRequest(
         }
       : {}),
   }
+  // In-turn compaction tier 1 (plan 118): clear old tool results server-side.
+  // Client-side stubs would rewrite the thinking-bound prefix.
+  const clearing = body.context_clearing as
+    | { trigger: number; clearAtLeast: number }
+    | undefined
+  if (clearing && tools.length) {
+    params.context_management = {
+      edits: [
+        {
+          type: "clear_tool_uses_20250919",
+          trigger: { type: "input_tokens", value: clearing.trigger },
+          // Large, because every clear rewrites the cached prefix.
+          clear_at_least: {
+            type: "input_tokens",
+            value: clearing.clearAtLeast,
+          },
+          keep: { type: "tool_uses", value: KEEP_RECENT_TOOL_USES },
+          exclude_tools: [...COMPACTION_PROTECTED_TOOLS],
+        },
+      ],
+    }
+    params.betas = [...(params.betas ?? []), CONTEXT_MANAGEMENT_BETA]
+  }
   return { params, prefix: responsePrefix }
 }
 
@@ -312,6 +340,10 @@ function finish(
       path: entry.path,
     })
   const stop = message.stop_reason
+  const cleared = (message.context_management?.applied_edits ?? []).filter(
+    (e): e is Anthropic.Beta.BetaClearToolUses20250919EditResponse =>
+      e.type === "clear_tool_uses_20250919"
+  )
   if (stop === "model_context_window_exceeded")
     throw new ContextOverflowError(
       "The request exceeded the model's context window."
@@ -368,6 +400,22 @@ function finish(
         cached_tokens: usage.cache_read_input_tokens ?? 0,
         cache_creation_tokens: usage.cache_creation_input_tokens ?? 0,
       },
+      // Server-side tool-result clearing (plan 118 tier 1), already
+      // subtracted from prompt_tokens.
+      ...(cleared.length
+        ? {
+            context_cleared: {
+              input_tokens: cleared.reduce(
+                (sum, e) => sum + e.cleared_input_tokens,
+                0
+              ),
+              tool_uses: cleared.reduce(
+                (sum, e) => sum + e.cleared_tool_uses,
+                0
+              ),
+            },
+          }
+        : {}),
     },
   }
 }

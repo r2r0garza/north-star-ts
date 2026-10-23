@@ -2114,6 +2114,20 @@ function App(
                 ),
               }))
             }
+          } else if (event.type === "context_compacted") {
+            liveTokens.flush()
+            liveReasoning.flush()
+            const k = (n: number) => `${Math.round(n / 1000)}k`
+            updateLive(turnConvoId, (turn) => ({
+              ...turn,
+              segments: [
+                ...turn.segments,
+                {
+                  kind: "notice",
+                  text: `Context compacted (${event.tier === 1 ? "old tool results cleared" : "summarized"}): ~${k(event.before)} → ~${k(event.after)} tokens`,
+                },
+              ],
+            }))
           } else if (event.type === "command_wait") {
             updateLive(turnConvoId, (turn) => ({
               ...turn,

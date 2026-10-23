@@ -407,6 +407,30 @@ describe("buildAnthropicClient", () => {
     ],
   }
 
+  it("reports server-side tool-result clearing in usage (plan 118)", async () => {
+    const cleared = round("end_turn").replace(
+      '"delta":{"stop_reason":"end_turn","stop_sequence":null}',
+      '"delta":{"stop_reason":"end_turn","stop_sequence":null},"context_management":{"applied_edits":[{"type":"clear_tool_uses_20250919","cleared_input_tokens":42000,"cleared_tool_uses":6}]}'
+    )
+    expect(cleared).toContain("applied_edits")
+    serve(stream(cleared))
+    const chunks = await collect(
+      await client().chat.completions.create(body, undefined, {})
+    )
+    expect(chunks.at(-1).usage).toMatchObject({
+      prompt_tokens: 105,
+      context_cleared: { input_tokens: 42000, tool_uses: 6 },
+    })
+  })
+
+  it("reports no clearing when none was applied", async () => {
+    serve(stream(round("end_turn")))
+    const chunks = await collect(
+      await client().chat.completions.create(body, undefined, {})
+    )
+    expect(chunks.at(-1).usage.context_cleared).toBeUndefined()
+  })
+
   it("maps a streamed round to chat-completion chunks with a replayable carrier", async () => {
     const requests = serve(stream(round("tool_use", thinkingTextTool)))
     const c = client()
