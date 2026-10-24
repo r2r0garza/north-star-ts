@@ -318,6 +318,68 @@ describe("workspace diagnostics and test tools", () => {
     }
   )
 
+  it("parses Playwright list reporter cases and summary", async () => {
+    const env = fakeEnv({
+      packageJson: { scripts: { test: "playwright test" } },
+      spawnOutput:
+        "\n> qa@1.0.0 test\n> playwright test\n\n\nRunning 2 tests using 1 worker\n\n" +
+        "  ✓  1 [chromium] › tests/create-defect.spec.ts:3:5 › TC-001 [AC-01] Open the form (749ms)\n" +
+        "  ✓  2 [chromium] › tests/create-defect.spec.ts:50:5 › TC-003 Create a defect (1.3s)\n\n" +
+        "  2 passed (9.7s)\n",
+    })
+    const started = parsed(
+      await runTestsTool.execute({ yield_ms: 20 }, ctx(env))
+    )
+    expect(started.counts).toEqual({
+      total: 2,
+      passed: 2,
+      failed: 0,
+      skipped: 0,
+      todo: 0,
+    })
+    expect(started.countsSource).toBe("runner_summary")
+    expect(started.results).toEqual([
+      {
+        suite: "tests/create-defect.spec.ts",
+        path: "tests/create-defect.spec.ts",
+        name: "TC-001 [AC-01] Open the form",
+        status: "passed",
+        durationMs: 749,
+      },
+      expect.objectContaining({ name: "TC-003 Create a defect", durationMs: 1300 }),
+    ])
+  })
+
+  it("counts Playwright failures, skips and flaky tests", async () => {
+    const env = fakeEnv({
+      packageJson: { scripts: { test: "playwright test" } },
+      spawnOutput:
+        "Running 4 tests using 1 worker\n\n" +
+        "  ✘  1 [chromium] › tests/a.spec.ts:3:5 › breaks (1.0s)\n" +
+        "  -  2 [chromium] › tests/a.spec.ts:9:5 › later\n" +
+        "  ✓  3 [chromium] › tests/a.spec.ts:12:5 › works (20ms)\n\n" +
+        "  1) [chromium] › tests/a.spec.ts:3:5 › breaks\n\n    Error: expect(received).toBe(expected)\n\n" +
+        "  1 failed\n    [chromium] › tests/a.spec.ts:3:5 › breaks\n  1 flaky\n    [chromium] › tests/a.spec.ts:20:5 › retried\n" +
+        "  1 skipped\n  1 passed (3.1s)\n",
+    })
+    const started = parsed(
+      await runTestsTool.execute({ yield_ms: 20 }, ctx(env))
+    )
+    expect(started.counts).toEqual({
+      total: 4,
+      passed: 2,
+      failed: 1,
+      skipped: 1,
+      todo: 0,
+    })
+    const results = started.results as { name: string; status: string }[]
+    expect(results.map((r) => [r.name, r.status])).toEqual([
+      ["breaks", "failed"],
+      ["later", "skipped"],
+      ["works", "passed"],
+    ])
+  })
+
   it("ignores unindented checkmarks from tools wrapped around the runner", async () => {
     const env = fakeEnv({
       packageJson: { scripts: { test: "vitest run" } },

@@ -528,6 +528,26 @@ function parseTestCases(raw: string): TestCaseResult[] {
   let failedPath: string | undefined
   for (const line of lines) {
     const clean = stripAnsi(line).trimEnd()
+    // Playwright list reporter: "  ✘  2 [chromium] › a.spec.ts:3:5 › title (1.2s)".
+    // Checked first: the file pattern below would swallow it as a file header.
+    const playwrightCase =
+      /^\s+(✓|✘|-)\s+\d+\s+\[[^\]]+\]\s+›\s+(\S+?):\d+:\d+\s+›\s+(.+?)(?:\s+\((\d+(?:\.\d+)?)(ms|s|m)\))?$/.exec(
+        clean
+      )
+    if (playwrightCase) {
+      const [, mark, path, name, amount, unit] = playwrightCase
+      cases.push({
+        suite: path,
+        path,
+        name,
+        status:
+          mark === "✘" ? "failed" : mark === "-" ? "skipped" : "passed",
+        durationMs: amount
+          ? Number(amount) * (unit === "m" ? 60_000 : unit === "s" ? 1000 : 1)
+          : undefined,
+      })
+      continue
+    }
     const file =
       /^\s*(?:✓|✔|PASS|❯|×|FAIL)\s+(.+\.(?:test|spec)\.[jt]sx?)(?:\s+\((\d+)\))?/.exec(
         clean
@@ -590,11 +610,12 @@ function countTests(records: TestCaseResult[]) {
 // jest "Tests:       1 failed, 2 passed, 3 total". The default reporters list cases
 // only for failing files, so counting parsed cases undercounts badly.
 function parseTestSummary(raw: string): ReturnType<typeof countTests> | null {
-  const line = stripAnsi(raw)
+  const text = stripAnsi(raw)
+  const line = text
     .split(/\r?\n/)
     .reverse()
     .find((text) => /^\s*Tests:?\s+\d+\s+\w+/.test(text))
-  if (!line) return null
+  if (!line) return parsePlaywrightSummary(text)
   const counts = { total: 0, passed: 0, failed: 0, skipped: 0, todo: 0 }
   let total: number | undefined
   for (const [, n, word] of line.matchAll(/(\d+)\s+(\w+)/g)) {
@@ -610,6 +631,34 @@ function parseTestSummary(raw: string): ReturnType<typeof countTests> | null {
     (parenthesized
       ? Number(parenthesized[1])
       : counts.passed + counts.failed + counts.skipped + counts.todo)
+  return counts
+}
+
+// Playwright prints one total per line after "Running N tests using M workers":
+// "  1 failed", "  1 flaky", "  2 skipped", "  9 passed (9.7s)". Flaky tests
+// passed on retry; interrupted ones count as failed, did-not-run as skipped.
+function parsePlaywrightSummary(
+  text: string
+): ReturnType<typeof countTests> | null {
+  if (!/^\s*Running \d+ tests? using \d+ workers?/m.test(text)) return null
+  const counts = { total: 0, passed: 0, failed: 0, skipped: 0, todo: 0 }
+  let found = false
+  for (const [, n, word] of text.matchAll(
+    /^\s*(\d+) (passed|failed|flaky|skipped|interrupted|did not run)(?: \([\d.]+m?s\))?\s*$/gm
+  )) {
+    found = true
+    const key =
+      word === "flaky"
+        ? "passed"
+        : word === "interrupted"
+          ? "failed"
+          : word === "did not run"
+            ? "skipped"
+            : (word as "passed" | "failed" | "skipped")
+    counts[key] += Number(n)
+  }
+  if (!found) return null
+  counts.total = counts.passed + counts.failed + counts.skipped
   return counts
 }
 
