@@ -2,7 +2,10 @@ import { memo } from "react"
 import { Markdown } from "@/components/markdown"
 import { MessageScrollerItem } from "@/components/ui/message-scroller"
 import { Message, MessageContent } from "@/components/ui/message"
-import { ConversationMessageMeta } from "@/components/conversation-message-meta"
+import {
+  ConversationMessageMeta,
+  ElapsedTimer,
+} from "@/components/conversation-message-meta"
 import { ConversationFindText } from "@/components/conversation-find-text"
 import { Bubble, BubbleContent } from "@/components/ui/bubble"
 import { Trace, TraceLine, TraceIcon, TraceTitle } from "@/components/ui/trace"
@@ -207,9 +210,9 @@ const SettledTranscriptRow = memo(function SettledTranscriptRow({
 
 interface LiveTranscriptTurnProps extends ChangedFilesCallbacks {
   segments: LiveSegment[]
-  // The aggregated visible text across all live text segments (copy source).
+  // The aggregated visible text across all live text segments.
   content: string
-  firstTextAt: number | null
+  startedAt: number | null
   commandWait: boolean
   streamRetrying: boolean
   findQuery: string
@@ -223,7 +226,7 @@ interface LiveTranscriptTurnProps extends ChangedFilesCallbacks {
 export function LiveTranscriptTurn({
   segments,
   content,
-  firstTextAt,
+  startedAt,
   commandWait,
   streamRetrying,
   findQuery,
@@ -267,14 +270,6 @@ export function LiveTranscriptTurn({
               </TraceLine>
             </Trace>
           )}
-          {hasText && firstTextAt !== null && (
-            <ConversationMessageMeta
-              content={content}
-              createdAt={firstTextAt}
-              align="start"
-              copyAlwaysVisible
-            />
-          )}
           {segments.length > 0 && commandWait && (
             <Trace>
               <TraceLine status="running">
@@ -285,6 +280,7 @@ export function LiveTranscriptTurn({
               </TraceLine>
             </Trace>
           )}
+          <ElapsedTimer startedAt={startedAt} />
         </MessageContent>
       </Message>
     </MessageScrollerItem>

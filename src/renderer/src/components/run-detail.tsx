@@ -144,6 +144,14 @@ function initialDestination(run: WorkflowRun) {
   )
 }
 
+function formatElapsed(ms: number) {
+  const total = Math.max(0, Math.floor(ms / 1000))
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = String(total % 60).padStart(2, "0")
+  return h ? `${h}:${String(m).padStart(2, "0")}:${s}` : `${m}:${s}`
+}
+
 type ReaderTab = "Transcript" | "Result" | "Details"
 type ReadingPosition = { top: number; following: boolean }
 
@@ -214,6 +222,23 @@ function RunDetailView({
     }
     previousActive.current = activeStepId
   }, [activeStepId, selectedId, tab])
+  const previousStatus = useRef(run.status)
+  useEffect(() => {
+    if (run.status === "Completed" && previousStatus.current !== "Completed")
+      select("outcome")
+    previousStatus.current = run.status
+  }, [run.status])
+  const [now, setNow] = useState(Date.now)
+  useEffect(() => {
+    if (run.status !== "Active") return
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [run.status])
+  const endedAt =
+    run.status === "Active"
+      ? now
+      : Math.max(...run.steps.map((step) => step.finishedAt ?? 0)) ||
+        run.updatedAt
   useEffect(() => {
     setLiveText("")
     return window.cowork.tasks.onEvent(({ taskId, event }) => {
@@ -281,6 +306,12 @@ function RunDetailView({
             </div>
           </details>
           <div className="flex flex-wrap items-center gap-2">
+            <span
+              className="text-xs text-muted-foreground tabular-nums"
+              aria-label="Elapsed time"
+            >
+              {formatElapsed(endedAt - run.createdAt)}
+            </span>
             <Badge
               variant="secondary"
               className={cn("gap-1.5", STATUS_STYLE[run.status])}

@@ -170,7 +170,7 @@ function render({
                 <LiveTranscriptTurn
                   segments={live}
                   content={content}
-                  firstTextAt={content ? 10 : null}
+                  startedAt={0}
                   commandWait={commandWait}
                   streamRetrying={streamRetrying}
                   findQuery={findQuery}
@@ -422,6 +422,18 @@ describe("transcript render boundaries", () => {
 
     render({ live: [], commandWait: true })
     expect(container.textContent).toContain("Waiting for background command…")
+  })
+
+  it("shows the elapsed timer, not the copy action, while a turn is live", () => {
+    const copyButtons = () =>
+      container.querySelectorAll('[aria-label="Copy message"]').length
+    render({ live: null })
+    const settledCopies = copyButtons()
+    expect(container.querySelector('[role="timer"]')).toBeNull()
+
+    render({ live: [{ kind: "text", text: "Streaming" }] })
+    expect(container.querySelector('[role="timer"]')).not.toBeNull()
+    expect(copyButtons()).toBe(settledCopies)
   })
 
   it("keeps the latest settled assistant copy action always visible", () => {

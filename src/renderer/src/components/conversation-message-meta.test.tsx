@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { Message, MessageContent } from "@/components/ui/message"
 import {
   ConversationMessageMeta,
+  formatElapsed,
   formatConversationTimestamp,
 } from "./conversation-message-meta"
 
@@ -113,5 +114,14 @@ describe("ConversationMessageMeta", () => {
     await act(async () => button.click())
     expect(writeText).toHaveBeenCalledTimes(2)
     expect(button.getAttribute("aria-label")).toBe("Message copied")
+  })
+})
+
+describe("formatElapsed", () => {
+  it("shows seconds, then minutes with padded seconds", () => {
+    expect(formatElapsed(0)).toBe("0s")
+    expect(formatElapsed(59_999)).toBe("59s")
+    expect(formatElapsed(65_000)).toBe("1m 05s")
+    expect(formatElapsed(-5)).toBe("0s")
   })
 })

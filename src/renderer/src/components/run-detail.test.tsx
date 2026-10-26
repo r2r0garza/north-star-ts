@@ -309,6 +309,8 @@ it("keeps tool responses inside their matching collapsed calls, including after 
         />
       )
     )
+    expect(container.querySelector('[aria-label="Run outcome"]')).not.toBeNull()
+    await act(async () => stepTrigger.click())
     expect(
       container.querySelector('[aria-label="Step transcript"]')?.textContent
     ).toContain("Final saved output")

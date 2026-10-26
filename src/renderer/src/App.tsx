@@ -120,7 +120,7 @@ import {
   type ToolUse,
 } from "@/lib/timeline"
 import { cn } from "@/lib/utils"
-import { firstTextTimestamp, liveMessageContent } from "@/lib/live-message"
+import { liveMessageContent } from "@/lib/live-message"
 import { maybeNotify } from "@/lib/notify"
 import {
   EMPTY_CHAT_SUCCESS_ERROR,
@@ -169,7 +169,9 @@ import {
 
 interface LiveTurn {
   segments: LiveSegment[]
-  firstTextAt: number | null
+  // When the turn began, for the live elapsed timer (null when this renderer
+  // didn't see the turn start, e.g. a resumed stream).
+  startedAt: number | null
   streamCheckpoints: Record<string, LiveSegment[]>
   streamRetrying: boolean
   question: { requestId: string; questions: Question[] } | null
@@ -177,7 +179,7 @@ interface LiveTurn {
 }
 const EMPTY_LIVE: LiveTurn = {
   segments: [],
-  firstTextAt: null,
+  startedAt: null,
   streamCheckpoints: {},
   streamRetrying: false,
   question: null,
@@ -230,12 +232,10 @@ function agentSourceLabel(sourceKind: string, systemName: string): string {
 // last event was also text (so a token stream coalesces), otherwise starts a new
 // text segment after a tools group — which is what creates the interleaving.
 function appendLiveText(turn: LiveTurn, delta: string): LiveTurn {
-  const firstTextAt = firstTextTimestamp(turn.firstTextAt, delta)
   const last = turn.segments[turn.segments.length - 1]
   if (last?.kind === "text") {
     return {
       ...turn,
-      firstTextAt,
       segments: [
         ...turn.segments.slice(0, -1),
         { kind: "text", text: last.text + delta },
@@ -244,7 +244,6 @@ function appendLiveText(turn: LiveTurn, delta: string): LiveTurn {
   }
   return {
     ...turn,
-    firstTextAt,
     segments: [...turn.segments, { kind: "text", text: delta }],
   }
 }
@@ -1045,7 +1044,8 @@ function App(
         setReportTurns((prev) => {
           const next = new Map(prev)
           const turn = prev.get(id) ?? EMPTY_LIVE
-          if (payload.type === "started") next.set(id, EMPTY_LIVE)
+          if (payload.type === "started")
+            next.set(id, { ...EMPTY_LIVE, startedAt: Date.now() })
           else if (payload.event.type === "stream_attempt") {
             next.set(id, applyStreamAttempt(turn, payload.event))
           }
@@ -1950,7 +1950,7 @@ function App(
     liveTokens.flush()
     setLiveTurns((prev) => {
       const next = new Map(prev)
-      next.set(turnConvoId, EMPTY_LIVE)
+      next.set(turnConvoId, { ...EMPTY_LIVE, startedAt: Date.now() })
       return next
     })
     // Mark this conversation as streaming (per-conversation, so switching away
@@ -3941,7 +3941,7 @@ function App(
                     key="live"
                     segments={liveSegments}
                     content={liveContent}
-                    firstTextAt={liveTurn?.firstTextAt ?? null}
+                    startedAt={liveTurn?.startedAt ?? null}
                     commandWait={liveTurn?.commandWait ?? false}
                     streamRetrying={liveTurn?.streamRetrying ?? false}
                     findQuery={activeConversationFindQuery}
