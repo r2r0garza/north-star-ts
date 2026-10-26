@@ -1,6 +1,6 @@
 import type { BrowserWindow } from "electron"
 import { isBrowserAddressShortcut } from "../../shared/browser-shortcut"
-import { BrowserSession } from "./session"
+import { BrowserSession, type WorkflowTabOptions } from "./session"
 import { BrowserWindowHost, type TabInfo } from "./window"
 import { SidebarBrowserHost, type SidebarBounds } from "./sidebar-host"
 import * as settingsService from "../settings/service"
@@ -177,12 +177,15 @@ export class BrowserManager {
 
   // Get-or-create the tab (session) for a conversation. Wires per-tab listeners
   // and homes the view in the window host (hidden until shown/embedded).
-  private ensureTab(conversationId: string): BrowserSession {
+  private ensureTab(
+    conversationId: string,
+    tab?: WorkflowTabOptions
+  ): BrowserSession {
     if (this.disposed) throw new Error("BrowserManager is disposed")
     const existing = this.tabs.get(conversationId)
     if (existing) return existing
 
-    const session = new BrowserSession()
+    const session = new BrowserSession(tab)
     const wc = session.webContents
     // Any state change (url/title/loading) refreshes the chrome's tab strip and
     // the app renderer's browser chrome.
@@ -459,12 +462,18 @@ export class BrowserManager {
 
   // Build a per-turn handle scoped to one conversation's tab, bound to the
   // turn's AbortSignal. Cheap — the tab is created lazily on first use.
-  handleForTurn(conversationId: string, signal?: AbortSignal): BrowserHandle {
+  // `tab` applies when this call creates the tab (workflow steps, plan 130).
+  handleForTurn(
+    conversationId: string,
+    signal?: AbortSignal,
+    tab?: WorkflowTabOptions
+  ): BrowserHandle {
+    const ensureTab = (id: string) => this.ensureTab(id, tab)
     // Agent navigation: create the tab, apply reveal policy for a foreground
     // conversation, then navigate. Background conversations navigate silently
     // (no reveal, no tab switch — the strip shows their loading state).
     const navigate = (url: string) => {
-      const session = this.ensureTab(conversationId)
+      const session = ensureTab(conversationId)
       if (this.isForeground(conversationId)) {
         if (settingsService.getBrowser().revealOnAgentUse === "always") {
           this.revealSurface()
@@ -476,26 +485,26 @@ export class BrowserManager {
     return {
       navigate,
       screenshot: () =>
-        this.ensureTab(conversationId).screenshot(
+        ensureTab(conversationId).screenshot(
           SCREENSHOT_TIMEOUT_MS,
           signal
         ),
       snapshot: () =>
-        this.ensureTab(conversationId).snapshot(SNAPSHOT_TIMEOUT_MS, signal),
-      describeRef: (ref) => this.ensureTab(conversationId).describeRef(ref),
+        ensureTab(conversationId).snapshot(SNAPSHOT_TIMEOUT_MS, signal),
+      describeRef: (ref) => ensureTab(conversationId).describeRef(ref),
       click: (ref) =>
-        this.ensureTab(conversationId).click(ref, INTERACT_TIMEOUT_MS, signal),
+        ensureTab(conversationId).click(ref, INTERACT_TIMEOUT_MS, signal),
       hover: (ref) =>
-        this.ensureTab(conversationId).hover(ref, INTERACT_TIMEOUT_MS, signal),
+        ensureTab(conversationId).hover(ref, INTERACT_TIMEOUT_MS, signal),
       drag: (fromRef, toRef) =>
-        this.ensureTab(conversationId).drag(
+        ensureTab(conversationId).drag(
           fromRef,
           toRef,
           INTERACT_TIMEOUT_MS,
           signal
         ),
       type: (ref, text, submit) =>
-        this.ensureTab(conversationId).type(
+        ensureTab(conversationId).type(
           ref,
           text,
           submit,
@@ -503,32 +512,32 @@ export class BrowserManager {
           signal
         ),
       selectOption: (ref, option) =>
-        this.ensureTab(conversationId).selectOption(
+        ensureTab(conversationId).selectOption(
           ref,
           option,
           INTERACT_TIMEOUT_MS,
           signal
         ),
       wait: (input) =>
-        this.ensureTab(conversationId).wait(input, NAVIGATE_TIMEOUT_MS, signal),
-      console: (options) => this.ensureTab(conversationId).console(options),
-      network: (options) => this.ensureTab(conversationId).network(options),
-      dialog: () => this.ensureTab(conversationId).dialog(),
+        ensureTab(conversationId).wait(input, NAVIGATE_TIMEOUT_MS, signal),
+      console: (options) => ensureTab(conversationId).console(options),
+      network: (options) => ensureTab(conversationId).network(options),
+      dialog: () => ensureTab(conversationId).dialog(),
       handleDialog: (action, promptText) =>
-        this.ensureTab(conversationId).handleDialog(
+        ensureTab(conversationId).handleDialog(
           action,
           promptText,
           INTERACT_TIMEOUT_MS,
           signal
         ),
       evaluate: (expression) =>
-        this.ensureTab(conversationId).evaluate(
+        ensureTab(conversationId).evaluate(
           expression,
           INTERACT_TIMEOUT_MS,
           signal
         ),
       back: () =>
-        this.ensureTab(conversationId).back(NAVIGATE_TIMEOUT_MS, signal),
+        ensureTab(conversationId).back(NAVIGATE_TIMEOUT_MS, signal),
       // close() must NOT create a tab — it closes this conversation's tab (or
       // no-ops if none), so it calls closeTab directly.
       close: () => this.closeTab(conversationId),
@@ -547,7 +556,7 @@ export class BrowserManager {
       // nothing here. Window: reveal the separate window and show this tab — that
       // window is independent, so it doesn't disturb the app's active conversation.
       reveal: () => {
-        this.ensureTab(conversationId)
+        ensureTab(conversationId)
         if (this.surface === "sidebar") {
           if (this.activeConversationId === conversationId)
             this.openRequester?.()

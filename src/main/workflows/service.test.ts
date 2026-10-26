@@ -985,3 +985,65 @@ it("keeps assigned skills active when resuming a step", async () => {
     userMessage: expect.stringMatching(/^\/git-commit\nResume/),
   })
 })
+it("lends browser and Electron only to enabled steps and releases them when the step ends", async () => {
+  const close = vi.fn(async (_id: string) => {})
+  const browser = vi.fn()
+  const surfacing = new WorkflowService(runner as unknown as TaskRunner, undefined, undefined, {
+    browser: browser as never,
+    close,
+  })
+  Object.assign(state.workflow.steps[0], {
+    browser: true,
+    electron: true,
+    allowedOrigins: ["http://localhost:5173"],
+    validateCompletion: true,
+  })
+  const run = start()
+  state.agent
+    .mockImplementationOnce(async (opts) => {
+      opts.provideBrowser(new AbortController().signal)
+      return { content: handoff(`${run.id}:a`) }
+    })
+    .mockResolvedValueOnce({ content: JSON.stringify({ verdict: "accepted", reason: "Seen", findings: [] }) })
+    .mockResolvedValueOnce({ content: handoff(`${run.id}:b`) })
+  expect(await surfacing.execute(context(run))).not.toHaveProperty("error")
+  const [worker, validator, plain] = state.agent.mock.calls.map(([opts]) => opts)
+  const guard = { allowedOrigins: ["http://localhost:5173"], allowEvaluate: false, allowConsequential: false }
+  expect(worker).toMatchObject({ provideElectron: true, unattendedGuard: guard })
+  expect(vi.mocked(appendMessage).mock.calls[0][0].content).toContain("limited to these origins: http://localhost:5173")
+  expect(validator).toMatchObject({ readOnlyTools: true, provideElectron: true, unattendedGuard: guard })
+  expect(validator.userMessage).toContain("cannot navigate, interact or launch")
+  expect(browser).toHaveBeenCalledWith("conversation-1", expect.any(AbortSignal), {
+    partition: `workflow-run-${run.id}`,
+    allowedOrigins: ["http://localhost:5173"],
+  })
+  expect(plain).not.toHaveProperty("provideBrowser")
+  expect(plain).not.toHaveProperty("unattendedGuard")
+  expect(close.mock.calls).toEqual([["conversation-1"]])
+})
+it("releases a failed browser step and refuses past the concurrency cap", async () => {
+  const close = vi.fn(async (_id: string) => {})
+  const surfacing = new WorkflowService(runner as unknown as TaskRunner, undefined, undefined, {
+    browser: vi.fn() as never,
+    close,
+  })
+  state.workflow.steps[0].browser = true
+  const failed = start()
+  state.agent.mockResolvedValueOnce({ error: "boom" })
+  expect(await surfacing.execute(context(failed))).toEqual({ error: "boom" })
+  expect(close).toHaveBeenCalledTimes(1)
+
+  // Hold the cap with steps that never finish, then start one more.
+  const { MAX_SURFACE_STEPS } = await import("./service")
+  const pending: Promise<unknown>[] = []
+  let started = 0
+  state.agent.mockImplementation(() => {
+    started++
+    return new Promise(() => {})
+  })
+  for (let i = 0; i < MAX_SURFACE_STEPS; i++) pending.push(surfacing.execute(context(start())))
+  await vi.waitFor(() => expect(started).toBe(MAX_SURFACE_STEPS))
+  const refused = start()
+  expect(await surfacing.execute(context(refused))).toMatchObject({ error: expect.stringContaining("Too many workflow steps") })
+  expect(state.runs.get(refused.id)?.steps[0].status).toBe("failed")
+})

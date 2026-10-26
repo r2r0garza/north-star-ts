@@ -25,7 +25,7 @@
 5. **`129` — Qualify Electron app control on Linux.** Run PR119's qualification on X11, Wayland and Xvfb
    and fix what it requires: display detection, Chromium sandbox failures as actionable errors (never
    `--no-sandbox`), child env and teardown. [Plan](129-electron-app-control-linux-qualification.md).
-6. **`130` — Browser and Electron tools in workflow steps.** Per-step opt-in to the agent browser and
+6. **`130` — Browser and Electron tools in workflow steps (IMPLEMENTED — manual verification pending).** Per-step opt-in to the agent browser and
    Electron app control for unattended runs (self-verification, black-box URL testing), with per-step
    origin allowlists, consequential actions blocked despite auto mode, owned tab/app lifecycle and
    observation-only validator access. [Plan](130-workflow-browser-and-electron-tools.md).

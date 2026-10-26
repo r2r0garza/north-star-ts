@@ -99,7 +99,13 @@ import {
 } from "../db/repositories/model-request-retry-budgets"
 import { createTask, getTask } from "../db/repositories/tasks"
 import { upsertWorkspace } from "../db/repositories/workspaces"
-import { resolveApproval, runAgentLoop, runChat, stopChat } from "."
+import {
+  resolveApproval,
+  runAgentLoop,
+  runChat,
+  setAutoModeForConversation,
+  stopChat,
+} from "."
 import { replaceTodos } from "../db/repositories/todos"
 import {
   repairDanglingToolCalls,
@@ -1520,6 +1526,80 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
           )
       )
     ).toBe(true)
+  })
+
+  it("lends a workflow step the browser with its guard, without the live auto-mode setter", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "north_star" })
+    const navigate = vi.fn(async (url: string) => ({ url, title: "Page" }))
+    const handle = { navigate, state: () => null } as never
+    const events: any[] = []
+    scriptedCompletions.push((request) => {
+      expect(request.tools).toContain("browser_navigate")
+      for (const name of ["browser_evaluate", "browser_handoff", "electron_launch"])
+        expect(request.tools).not.toContain(name)
+      // Unattended turns never register for the renderer's mid-turn toggle.
+      setAutoModeForConversation(conversation.id, false)
+      return streamToolCalls([
+        {
+          id: "call_off",
+          name: "browser_navigate",
+          arguments: JSON.stringify({ url: "https://example.com" }),
+        },
+        {
+          id: "call_on",
+          name: "browser_navigate",
+          arguments: JSON.stringify({ url: "http://localhost:5173/" }),
+        },
+      ])
+    })
+    scriptedCompletions.push(() => streamText("done"))
+
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "check the page",
+      abort: new AbortController(),
+      autoMode: true,
+      unattended: true,
+      provideBrowser: () => handle,
+      unattendedGuard: {
+        allowedOrigins: ["http://localhost:5173"],
+        allowEvaluate: false,
+        allowConsequential: false,
+      },
+      onEvent: (event) => events.push(event),
+    })
+
+    expect(result).toEqual({ content: "done" })
+    expect(events.some((e) => e.type === "auto_mode")).toBe(false)
+    expect(navigate.mock.calls).toEqual([["http://localhost:5173/"]])
+    const off = events.find((e) => e.type === "tool" && e.phase === "done" && e.id === "call_off")
+    expect(off.result).toContain("not an allowed origin")
+  })
+
+  it("gives a read-only validator browser observation tools only", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "north_star" })
+    scriptedCompletions.push((request) => {
+      for (const name of ["browser_snapshot", "browser_screenshot", "browser_console", "browser_network"])
+        expect(request.tools).toContain(name)
+      for (const name of ["browser_navigate", "browser_click", "browser_type", "browser_back"])
+        expect(request.tools).not.toContain(name)
+      return streamText("{}")
+    })
+    await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "validate",
+      abort: new AbortController(),
+      autoMode: true,
+      unattended: true,
+      readOnlyTools: true,
+      provideBrowser: () => ({ state: () => null }) as never,
+      onEvent: () => {},
+    })
+    expect(completionRequests).toHaveLength(1)
   })
 
   it("offers only read-only tools and refuses writes on a read-only turn", async () => {

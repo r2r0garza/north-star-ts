@@ -522,6 +522,20 @@ function RunDetailView({
                 </Badge>
               )}
             </div>
+            {(selectedStep?.browser || selectedStep?.electron) && (
+              <p className="pb-3 text-xs break-words text-muted-foreground">
+                {[
+                  selectedStep.browser &&
+                    `Browser on ${selectedStep.allowedOrigins?.join(", ") || "no origins"}${selectedStep.browserEvaluate ? " (page JavaScript allowed)" : ""}`,
+                  selectedStep.electron && "Electron app control",
+                  selectedStep.allowConsequential
+                    ? "consequential actions allowed"
+                    : "consequential actions blocked",
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </p>
+            )}
             {selectedStep && (
               <div
                 role="tablist"

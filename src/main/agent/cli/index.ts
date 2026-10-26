@@ -29,6 +29,7 @@ import {
   BROWSER_MCP_TOOL_NAMES,
 } from "../mcp-server"
 import type { BrowserHandle } from "../../browser/manager"
+import type { UnattendedSurfaceGuard } from "../approval/unattended-classifier"
 
 // The North Star tools a CLI turn may reach over the MCP bridge (plan 045).
 // `ask_user_question` is offered only when someone is watching this turn and can
@@ -66,6 +67,7 @@ async function openBridge(input: {
   onEvent: (event: ChatEvent) => void
   signal: AbortSignal
   browser: BrowserHandle | undefined
+  guard?: UnattendedSurfaceGuard
 }): Promise<CliMcpInjection | null> {
   if (input.tools.length === 0) return null
   try {
@@ -77,7 +79,7 @@ async function openBridge(input: {
       tools: input.tools,
       question: { emit: input.onEvent, signal: input.signal },
       browser: input.browser
-        ? { browser: input.browser, signal: input.signal }
+        ? { browser: input.browser, signal: input.signal, guard: input.guard }
         : null,
     })
   } catch (error) {
@@ -121,6 +123,7 @@ export async function runCodexConversation(input: {
   // Injected by the caller rather than imported — the agent module can't reach
   // the BrowserManager singleton. Absent where there is no browser.
   provideBrowser?: (signal: AbortSignal) => BrowserHandle
+  unattendedGuard?: UnattendedSurfaceGuard
   // Memory scope for this turn, resolved by the caller the same way the main
   // agent loop resolves it. These CLI paths return before that loop runs, and
   // previously recorded no memory at all.
@@ -182,6 +185,7 @@ export async function runCodexConversation(input: {
       onEvent: input.onEvent,
       signal: input.abort.signal,
       browser: input.provideBrowser?.(input.abort.signal),
+      guard: input.unattendedGuard,
     })
     const toolNames = new Map<string, string>()
     const result = await runCodexCli({
@@ -276,6 +280,7 @@ export async function runClaudeConversation(input: {
   // Injected by the caller rather than imported — the agent module can't reach
   // the BrowserManager singleton. Absent where there is no browser.
   provideBrowser?: (signal: AbortSignal) => BrowserHandle
+  unattendedGuard?: UnattendedSurfaceGuard
   // Memory scope for this turn, resolved by the caller the same way the main
   // agent loop resolves it. These CLI paths return before that loop runs, and
   // previously recorded no memory at all.
@@ -341,6 +346,7 @@ export async function runClaudeConversation(input: {
       onEvent: input.onEvent,
       signal: input.abort.signal,
       browser: input.provideBrowser?.(input.abort.signal),
+      guard: input.unattendedGuard,
     })
     if (bridge) {
       // App-owned session config. Holds the URL and a ${VAR} placeholder — never

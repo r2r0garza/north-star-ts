@@ -89,6 +89,13 @@ beforeEach(() => {
   vi.mocked(toast.error).mockClear()
   window.cowork = {
     system: vi.fn(() => ({ mainAgentName: "North Star" })),
+    settings: {
+      getBrowser: vi.fn(async () => ({ electronApps: true })),
+      getExecution: vi.fn(async () => ({
+        backend: "local",
+        localProfile: "workspace-write",
+      })),
+    },
     skills: {
       list: vi.fn(async () => [
         { name: "git-commit", description: "Commit changes" },
@@ -1842,4 +1849,47 @@ it("keeps exact correction counts bounded and retains completion configuration w
   expect(
     vi.mocked(window.cowork.db.workflows.update).mock.calls.at(-1)![0].steps[0]
   ).toMatchObject({ validateCompletion: false, maxCorrectionLoops: 5 })
+})
+it("enables the browser on a step and saves normalized origins", async () => {
+  await openCodeReview()
+  await act(async () => button("1.Review changes").click())
+  await act(async () => button("Browser and appsOff · Configure").click())
+  await act(async () =>
+    container.querySelector<HTMLButtonElement>("#review-changes-browser")!.click()
+  )
+  const field = await editText(
+    "#review-changes-origins",
+    "http://localhost:5173/app\nnot-an-origin\nhttp://localhost:5173"
+  )
+  await act(async () =>
+    field.dispatchEvent(new FocusEvent("focusout", { bubbles: true }))
+  )
+  expect(
+    vi.mocked(window.cowork.db.workflows.update).mock.calls.at(-1)![0].steps[0]
+  ).toMatchObject({ browser: true, allowedOrigins: ["http://localhost:5173"] })
+  expect(toast.error).toHaveBeenCalledWith("Not a valid origin: not-an-origin")
+})
+it("keeps typed origins when leaving the editor without blurring the field", async () => {
+  await openCodeReview()
+  await act(async () => button("1.Review changes").click())
+  await act(async () => button("Browser and appsOff · Configure").click())
+  await act(async () =>
+    container.querySelector<HTMLButtonElement>("#review-changes-browser")!.click()
+  )
+  await editText("#review-changes-origins", "http://localhost:5175")
+  await act(async () =>
+    container
+      .querySelector<HTMLButtonElement>('[aria-label="Back to library"]')!
+      .click()
+  )
+  expect(window.cowork.db.workflows.flush).toHaveBeenCalledWith(
+    expect.objectContaining({
+      steps: expect.arrayContaining([
+        expect.objectContaining({
+          browser: true,
+          allowedOrigins: ["http://localhost:5175"],
+        }),
+      ]),
+    })
+  )
 })

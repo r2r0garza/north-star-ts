@@ -9,9 +9,10 @@ import type { BrowserSession } from "./session"
 //
 // This host is a pure display layer: the BrowserManager owns the sessions/views
 // (one per conversation) and tells the host which to show. All views are added
-// as children of the window but only the active one is visible + laid out;
-// background tabs stay setVisible(false) yet keep running/painting (CDP
-// screenshots drive the renderer's compositor regardless of on-screen state).
+// as children of the window, laid out, and kept visible, with the active one
+// raised to the top. A setVisible(false) view has a 0×0 viewport, so CDP clicks
+// on a background tab (e.g. a workflow step the user isn't watching) would hit
+// nothing; a covered-but-visible view still hit-tests normally.
 //
 // The window is created hidden (show:false). Even hidden, an attached view's
 // page runs and paints, so CDP screenshots work before the user reveals it.
@@ -33,8 +34,8 @@ export interface TabInfo {
 
 export class BrowserWindowHost {
   private window: BrowserWindow | null = null
-  // All views currently hosted, keyed by conversationId. Every view is a child
-  // of the window; only `activeId`'s view is visible + laid out.
+  // All views currently hosted, keyed by conversationId. Every view is a laid-out
+  // child of the window; `activeId`'s view is stacked on top.
   private views = new Map<string, BrowserSession["view"]>()
   private activeId: string | null = null
   private resizeHandler: (() => void) | null = null
@@ -84,27 +85,27 @@ export class BrowserWindowHost {
     return win
   }
 
-  // Register a view as a hidden child of the window (a new tab). Idempotent.
+  // Register a view as a child of the window (a new tab), beneath the active
+  // tab. Idempotent.
   addView(id: string, view: BrowserSession["view"]): void {
     const win = this.ensureWindow()
     if (this.views.has(id)) return
     win.contentView.addChildView(view)
-    view.setVisible(false)
     this.views.set(id, view)
     if (!this.resizeHandler) {
       this.resizeHandler = () => this.layout()
       win.on("resize", this.resizeHandler)
+      win.on("show", this.resizeHandler)
+      win.on("hide", this.resizeHandler)
     }
+    this.layout()
   }
 
-  // Show the given tab: make its view visible + laid out, hide all others. A
-  // null id (no active conversation, or that conversation has no tab) hides all.
+  // Show the given tab by raising it above the others. A null id (no active
+  // conversation, or that conversation has no tab) shows none.
   showView(id: string | null): void {
     if (!this.window || this.window.isDestroyed()) return
     this.activeId = id
-    for (const [viewId, view] of this.views) {
-      view.setVisible(viewId === id)
-    }
     this.layout()
   }
 
@@ -164,18 +165,28 @@ export class BrowserWindowHost {
     this.quitting = true
   }
 
-  // Lay out only the active view to fill the window below the chrome bar.
+  // Lay out every view to fill the window below the chrome bar and raise the
+  // active one. Views are hidden only while the window is on screen with no
+  // active tab, so the user never sees a stale page; otherwise they stay
+  // visible (and so hit-testable) underneath.
   private layout(): void {
-    if (!this.window || this.window.isDestroyed() || !this.activeId) return
-    const view = this.views.get(this.activeId)
-    if (!view) return
-    const [width, height] = this.window.getContentSize()
-    view.setBounds({
+    const win = this.window
+    if (!win || win.isDestroyed()) return
+    const [width, height] = win.getContentSize()
+    const bounds = {
       x: 0,
       y: CHROME_HEIGHT,
       width,
       height: Math.max(0, height - CHROME_HEIGHT),
-    })
+    }
+    const visible = this.activeId !== null || !win.isVisible()
+    for (const view of this.views.values()) {
+      view.setBounds(bounds)
+      view.setVisible(visible)
+    }
+    const active = this.activeId ? this.views.get(this.activeId) : undefined
+    // Re-adding an existing child moves it to the top of the stack.
+    if (active) win.contentView.addChildView(active)
   }
 
   dispose(): void {

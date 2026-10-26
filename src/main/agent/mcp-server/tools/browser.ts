@@ -2,6 +2,10 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js"
 import { browserTools } from "../../tools"
 import type { ToolImage } from "../../tools/types"
 import type { Gate } from "../../approval/types"
+import {
+  unattendedSurfaceDecision,
+  type UnattendedSurfaceGuard,
+} from "../../approval/unattended-classifier"
 import { askUser } from "../../questions/broker"
 import { normalizeQuestions } from "../../questions/normalize"
 import type { CliMcpGrant } from "../types"
@@ -61,9 +65,18 @@ function fail(message: string): CallToolResult {
 // browser action classifies as `hard_block` today (BrowserActionClassifier emits
 // only allow / require_approval / require_explicit_approval), so consulting the
 // engine could not change any outcome, and skipping it keeps the bridge off the
-// allowlist table. If a browser hard_block is ever added, this gate must start
-// calling policy.decide and honor it.
+// allowlist table. The one browser hard_block source is the unattended workflow
+// guard (plan 130), honored by guardedGate.
 const autoApprove: Gate = () => Promise.resolve("approved")
+
+function guardedGate(guard: UnattendedSurfaceGuard): Gate {
+  return (action) =>
+    Promise.resolve(
+      unattendedSurfaceDecision(action, guard)?.level === "hard_block"
+        ? "blocked"
+        : "approved"
+    )
+}
 
 export async function callBrowserTool(
   name: string,
@@ -92,7 +105,7 @@ export async function callBrowserTool(
       workspace: grant.workspace ?? "",
       conversationId: grant.conversationId,
       browser: sink.browser,
-      gate: autoApprove,
+      gate: sink.guard ? guardedGate(sink.guard) : autoApprove,
       signal: sink.signal,
       emitImage: (image: ToolImage) => {
         if (!sink.signal.aborted) images.push(image)

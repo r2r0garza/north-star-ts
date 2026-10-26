@@ -1,5 +1,6 @@
 import type { Question } from "../tools/types"
 import type { BrowserHandle } from "../../browser/manager"
+import type { UnattendedSurfaceGuard } from "../approval/unattended-classifier"
 import { BROWSER_MCP_TOOL_NAMES } from "./tools/browser"
 
 export type CliMcpProvider = "claude_code" | "codex_cli"
@@ -41,6 +42,8 @@ export interface CliMcpQuestionSink {
 export interface CliMcpBrowserSink {
   browser: BrowserHandle
   signal: AbortSignal
+  // Present for unattended workflow steps (plan 130); its hard-blocks still apply.
+  guard?: UnattendedSurfaceGuard
 }
 
 // Everything the server needs to authorize and scope one CLI turn. The token

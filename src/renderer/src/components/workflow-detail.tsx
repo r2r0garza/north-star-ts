@@ -139,6 +139,23 @@ function EffortSelect({
   )
 }
 
+// Origins are stored normalized (scheme://host[:port]) so the runtime check is exact.
+function parseOrigins(text: string) {
+  const origins: string[] = []
+  const invalid: string[] = []
+  for (const line of text.split(/\s+/)) {
+    if (!line) continue
+    try {
+      const origin = new URL(line).origin
+      if (origin === "null") throw new Error()
+      if (!origins.includes(origin)) origins.push(origin)
+    } catch {
+      invalid.push(line)
+    }
+  }
+  return { origins, invalid }
+}
+
 function SortableStep({
   step,
   index,
@@ -151,6 +168,7 @@ function SortableStep({
   systemAgentName,
   defaultLlm,
   initiallyOpen,
+  electronUnavailable,
 }: {
   step: WorkflowStep
   index: number
@@ -163,6 +181,7 @@ function SortableStep({
   systemAgentName: string
   defaultLlm: LlmSettings | null
   initiallyOpen: boolean
+  electronUnavailable: string | null
 }) {
   const [open, setOpen] = useState(initiallyOpen)
   const titleInput = useRef<HTMLInputElement>(null)
@@ -279,6 +298,8 @@ function SortableStep({
                   {agentLabel} / {selectedModel?.label ?? "Default model"}
                   {shownEffort ? ` - ${effortLabel(shownEffort)} effort` : ""}
                   {step.validateCompletion ? " / Completion check on" : ""}
+                  {step.browser ? " / Browser" : ""}
+                  {step.electron ? " / Electron" : ""}
                 </span>
               </span>
             </button>
@@ -311,13 +332,14 @@ function SortableStep({
               <Label htmlFor={`${step.id}-instructions`}>Instructions</Label>
               <Textarea
                 id={`${step.id}-instructions`}
+                rows={10}
                 value={step.instructions}
                 onBlur={onSave}
                 onChange={(event) =>
                   onChange({ ...step, instructions: event.target.value })
                 }
                 placeholder="What should this step do?"
-                className="min-h-60 resize-y overflow-y-auto leading-relaxed"
+                className="field-sizing-fixed overflow-y-auto leading-relaxed"
               />
             </div>
             <h4 className="font-medium">Execution</h4>
@@ -526,6 +548,127 @@ function SortableStep({
                 skills for this step.
               </p>
             </div>
+            <Collapsible className="space-y-3 border-t pt-4">
+              <CollapsibleTrigger className="flex w-full items-center justify-between text-left font-medium">
+                <span>Browser and apps</span>
+                <span className="text-xs text-muted-foreground">
+                  {[step.browser && "Browser", step.electron && "Electron"]
+                    .filter(Boolean)
+                    .join(" + ") || "Off"}{" "}
+                  · Configure
+                </span>
+              </CollapsibleTrigger>
+              <CollapsibleContent className="space-y-3">
+                <div className="flex items-center justify-between gap-4">
+                  <Label htmlFor={`${step.id}-browser`}>Agent browser</Label>
+                  <Switch
+                    id={`${step.id}-browser`}
+                    checked={step.browser ?? false}
+                    onCheckedChange={(checked) => {
+                      onChange({ ...step, browser: checked })
+                      onSave()
+                    }}
+                  />
+                </div>
+                {step.browser && (
+                  <>
+                    <div className="space-y-2">
+                      <Label htmlFor={`${step.id}-origins`}>
+                        Allowed origins
+                      </Label>
+                      <Textarea
+                        id={`${step.id}-origins`}
+                        rows={3}
+                        placeholder={"http://localhost:5173\nhttps://staging.example.com"}
+                        defaultValue={(step.allowedOrigins ?? []).join("\n")}
+                        // Record on every keystroke like the other fields, so leaving the editor flushes it.
+                        onChange={(event) =>
+                          onChange({
+                            ...step,
+                            allowedOrigins: parseOrigins(event.target.value).origins,
+                          })
+                        }
+                        onBlur={(event) => {
+                          const { origins, invalid } = parseOrigins(
+                            event.currentTarget.value
+                          )
+                          if (invalid.length)
+                            toast.error(`Not a valid origin: ${invalid.join(", ")}`)
+                          event.currentTarget.value = origins.join("\n")
+                          onSave()
+                        }}
+                      />
+                      {!step.allowedOrigins?.length && (
+                        <p className="text-xs text-destructive">
+                          No origins yet: the step can't open any page.
+                        </p>
+                      )}
+                      <p className="text-xs text-muted-foreground">
+                        One per line. The step can open only these origins;
+                        redirects and links elsewhere are blocked, and new
+                        windows are refused. Local dev servers must be listed
+                        too.
+                      </p>
+                    </div>
+                    <div className="flex items-center justify-between gap-4">
+                      <Label htmlFor={`${step.id}-evaluate`}>
+                        Allow page JavaScript (browser_evaluate)
+                      </Label>
+                      <Switch
+                        id={`${step.id}-evaluate`}
+                        checked={step.browserEvaluate ?? false}
+                        onCheckedChange={(checked) => {
+                          onChange({ ...step, browserEvaluate: checked })
+                          onSave()
+                        }}
+                      />
+                    </div>
+                  </>
+                )}
+                <div className="flex items-center justify-between gap-4">
+                  <Label htmlFor={`${step.id}-electron`}>
+                    Electron app control
+                  </Label>
+                  <Switch
+                    id={`${step.id}-electron`}
+                    checked={step.electron ?? false}
+                    disabled={!!electronUnavailable && !step.electron}
+                    onCheckedChange={(checked) => {
+                      onChange({ ...step, electron: checked })
+                      onSave()
+                    }}
+                  />
+                </div>
+                {electronUnavailable && (
+                  <p className="text-xs text-muted-foreground">
+                    {electronUnavailable}
+                  </p>
+                )}
+                {(step.browser || step.electron) && (
+                  <>
+                    <div className="flex items-center justify-between gap-4">
+                      <Label htmlFor={`${step.id}-consequential`}>
+                        Allow consequential actions
+                      </Label>
+                      <Switch
+                        id={`${step.id}-consequential`}
+                        checked={step.allowConsequential ?? false}
+                        onCheckedChange={(checked) => {
+                          onChange({ ...step, allowConsequential: checked })
+                          onSave()
+                        }}
+                      />
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Runs are unattended. When on, the step can delete,
+                      submit, send, purchase or publish on the allowed origins
+                      and in launched apps without asking anyone. Off blocks
+                      those actions.
+                    </p>
+                  </>
+                )}
+              </CollapsibleContent>
+            </Collapsible>
             <Collapsible className="space-y-3 border-t pt-4">
               <CollapsibleTrigger className="flex w-full items-center justify-between text-left font-medium">
                 <span>Completion check</span>
@@ -780,9 +923,26 @@ export function WorkflowDetail({
     void window.cowork.skills
       .list()
       .then(setSkills, () => toast.error("Could not load skills"))
+    // Same conditions chat uses to offer Electron tools (plan 119).
+    void Promise.all([
+      window.cowork.settings.getBrowser(),
+      window.cowork.settings.getExecution(),
+    ]).then(([browser, execution]) =>
+      setElectronUnavailable(
+        !browser.electronApps
+          ? "Electron app control is off in Settings → Browser."
+          : execution.backend !== "local" ||
+              execution.localProfile === "read-only"
+            ? "Electron app control needs a local, writable execution profile."
+            : null
+      )
+    )
   }, [])
 
   const [newStepId, setNewStepId] = useState<string | null>(null)
+  const [electronUnavailable, setElectronUnavailable] = useState<
+    string | null
+  >(null)
   const [saveState, setSaveState] = useState("Saved")
   const latest = useRef(workflow)
   const saved = useRef(JSON.stringify(workflow))
@@ -1039,6 +1199,7 @@ export function WorkflowDetail({
                       skills={skills}
                       systemAgentName={systemAgentName}
                       defaultLlm={defaultLlm}
+                      electronUnavailable={electronUnavailable}
                       onChange={(updated) =>
                         change({
                           ...workflow,

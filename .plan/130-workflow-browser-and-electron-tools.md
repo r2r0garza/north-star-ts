@@ -1,6 +1,6 @@
 # PR130: Browser and Electron tools in workflow steps
 
-> Status: **Proposed.** Builds on the agent browser and [PR119: Electron application control](119-electron-application-control.md). Let a workflow agent step opt into the agent browser and Electron app control so unattended runs can check their own work and black-box test pages and apps.
+> Status: **IMPLEMENTED (2026-10-24) — manual verification pending.** Builds on the agent browser and [PR119: Electron application control](119-electron-application-control.md). Let a workflow agent step opt into the agent browser and Electron app control so unattended runs can check their own work and black-box test pages and apps.
 
 ## Objective and examples
 
@@ -67,3 +67,14 @@ A user can enable the browser and/or Electron app control on a workflow agent st
 ## Out of scope
 
 Browser access for workflow command steps (PR126/127), validator navigation or interaction, sharing the user's chat browsing profile or sign-ins with workflows, a headless browser that runs without the app window, recording/replaying browser scripts, and parallel browser fan-out within one step.
+
+## Implementation notes (2026-10-24)
+
+- Step fields: `browser`, `allowedOrigins` (normalized origins), `browserEvaluate`, `electron`, `allowConsequential`. Validated in `validateWorkflow`, included in import/export. Absent means off.
+- `src/main/agent/approval/unattended-classifier.ts` is the shared guard. The `runAgentLoop` gate consults it before auto mode, and the CLI bridge's browser gate consults it too. It can only hard-block.
+- `browser_evaluate` is controlled by its own toggle, independent of `allowConsequential`.
+- Workflow tabs get their own partition. `will-navigate` and main-frame `will-redirect` are checked against the allowlist, and `window.open` is denied rather than checked.
+- Unattended turns never register a live auto-mode setter. `provideElectron` makes Electron explicitly opt-in, and `electron_handoff` joins the unattended deny list.
+- Lifecycle: the tab and app sessions close when the step completes and on every `execute` exit (failure, pause, cancel, shutdown). Startup orphan cleanup is the existing `electronApps.reconcile()`; browser tabs are in-memory. A cap of 4 concurrent workflow surface steps fails the step that goes over it.
+- Interrupted browser/Electron calls already block automatic resume: their effects are not read-only, so `unknownSideEffectingToolCalls` counts them.
+- Not done: the manual checks above, and a "view this step's tab" button in run details (opening the step's conversation shows its tab).

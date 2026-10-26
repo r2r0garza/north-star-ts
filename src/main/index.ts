@@ -1517,7 +1517,15 @@ app.whenReady().then(async () => {
     taskRunner,
     { service: indexService, watcher: indexWatcher },
     (conversationId, signal) =>
-      summaryService.summarizeIfDue(conversationId, signal)
+      summaryService.summarizeIfDue(conversationId, signal),
+    {
+      browser: (conversationId, signal, tab) =>
+        browserManager.handleForTurn(conversationId, signal, tab),
+      close: (conversationId) => {
+        browserManager.closeTab(conversationId)
+        return electronApps.closeConversation(conversationId)
+      },
+    }
   )
   taskRunner.registerKind(WORKFLOW_RUN_KIND, {
     autoResume: false,

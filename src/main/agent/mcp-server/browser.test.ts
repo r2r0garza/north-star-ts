@@ -58,6 +58,7 @@ async function grantWithBrowser(
   input: {
     tools?: CliMcpToolName[]
     withBrowser?: boolean
+    guard?: { allowedOrigins: string[]; allowEvaluate: boolean; allowConsequential: boolean }
   } = {}
 ) {
   const abort = new AbortController()
@@ -73,7 +74,7 @@ async function grantWithBrowser(
     browser:
       input.withBrowser === false
         ? null
-        : { browser: browser.handle as never, signal: abort.signal },
+        : { browser: browser.handle as never, signal: abort.signal, guard: input.guard },
   })
   return { injection, browser, abort, events }
 }
@@ -124,6 +125,28 @@ describe("browser tools over the CLI MCP bridge", () => {
       // No approval event, and nothing was denied by a missing gate.
       expect(events.filter((e) => e.type === "approval")).toHaveLength(0)
       expect(result.content[0].text).not.toContain("denied")
+    } finally {
+      await client.close()
+      injection.revoke()
+    }
+  })
+
+  it("honors an unattended workflow guard's hard-blocks", async () => {
+    const { injection, browser } = await grantWithBrowser({
+      guard: { allowedOrigins: ["http://localhost:5173"], allowEvaluate: false, allowConsequential: false },
+    })
+    const client = await connect(injection.token, injection.url)
+    try {
+      const off = (await client.callTool({
+        name: "browser_navigate",
+        arguments: { url: "https://example.com" },
+      })) as { content: Array<{ text: string }> }
+      expect(off.content[0].text).toContain("blocked")
+      await client.callTool({
+        name: "browser_navigate",
+        arguments: { url: "http://localhost:5173/" },
+      })
+      expect(browser.handle.navigate.mock.calls).toEqual([["http://localhost:5173/"]])
     } finally {
       await client.close()
       injection.revoke()

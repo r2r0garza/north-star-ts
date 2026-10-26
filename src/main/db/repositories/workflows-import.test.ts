@@ -162,3 +162,38 @@ it("preserves assigned skills through portable export and import", () => {
   expect(imported.steps[0].skillName).toBe("git-commit")
   expect(imported.steps[1].skillName).toBeUndefined()
 })
+
+describe("workflow browser and Electron capabilities", () => {
+  it("round-trips capabilities through export and rejects unnormalized origins", () => {
+    const workflow = definition()
+    Object.assign(workflow.steps[0], {
+      browser: true,
+      allowedOrigins: ["http://localhost:5173", "https://staging.example.com"],
+      browserEvaluate: false,
+      electron: true,
+      allowConsequential: false,
+    })
+    const imported = importWorkflow(JSON.parse(serializeWorkflowExport(workflow)))
+    expect(imported.steps[0]).toMatchObject({
+      browser: true,
+      allowedOrigins: ["http://localhost:5173", "https://staging.example.com"],
+      electron: true,
+      allowConsequential: false,
+    })
+    // Older definitions carry no capability fields and stay off.
+    expect(imported.steps[1].browser).toBeUndefined()
+    for (const allowedOrigins of [
+      ["http://localhost:5173/"],
+      ["localhost:5173"],
+      ["file:///tmp"],
+      "http://localhost",
+    ]) {
+      const bad = definition()
+      Object.assign(bad.steps[0], { browser: true, allowedOrigins })
+      expect(() => importWorkflow(bad)).toThrow("Invalid workflow")
+    }
+    const bad = definition()
+    Object.assign(bad.steps[0], { electron: "yes" })
+    expect(() => importWorkflow(bad)).toThrow("Invalid workflow")
+  })
+})

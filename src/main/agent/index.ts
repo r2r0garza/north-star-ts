@@ -247,6 +247,10 @@ import type { ToolCallRecord } from "../db/types"
 import { normalizeClaudeModel } from "./cli/claude"
 import { makePolicyEngine } from "./approval/engine"
 import { PlanModeClassifier } from "./approval/plan-mode-classifier"
+import {
+  unattendedSurfaceDecision,
+  type UnattendedSurfaceGuard,
+} from "./approval/unattended-classifier"
 import type {
   ActionKind,
   Gate,
@@ -960,6 +964,11 @@ export interface RunAgentLoopOptions {
   // singleton) rather than imported — same cycle-avoidance as enqueueTask. Absent
   // in contexts with no browser (e.g. the durable task runner, unit tests).
   provideBrowser?: (signal: AbortSignal) => BrowserHandle
+  // Offer Electron app control. Defaults to live chat turns only; a workflow
+  // step opts in explicitly (plan 130).
+  provideElectron?: boolean
+  // Unattended browser/Electron limits, checked before auto mode approves.
+  unattendedGuard?: UnattendedSurfaceGuard
   // The durable task this run belongs to, when driven by the runner's runOne.
   // Absent on the live `chat` path (which has no task). Used only to surface this
   // task's prior gate decisions in the approvals context section (plan 021) so a
@@ -1178,6 +1187,7 @@ export async function runAgentLoop(
       reportProvider: effectiveAccount.provider,
       // Lends the CLI North Star's browser over the bridge (plan 045).
       provideBrowser: opts.provideBrowser,
+      unattendedGuard: opts.unattendedGuard,
       // The CLI paths return before `agentDir` is resolved below, so scope their
       // memory the same way it would have been: confinement workspace, else the
       // conversation's own directory.
@@ -1326,7 +1336,8 @@ export async function runAgentLoop(
   // for live turns (those with a renderer wired via provideBrowser). The durable
   // task runner and subagent spawns have no dropdown to toggle from, and keying
   // by conversation would let a background worker's entry clobber a live one.
-  const isLiveTurn = !!opts.provideBrowser
+  // Unattended turns (workflow steps) may borrow a browser but have no dropdown.
+  const isLiveTurn = !!opts.provideBrowser && !opts.unattended
   if (isLiveTurn) autoModeSetters.set(conversationId, setAutoMode)
 
   // Whether to surface the workspace index to the agent (plan 008/014): a
@@ -1357,7 +1368,7 @@ export async function runAgentLoop(
     ? settingsService.getExecutionConfig()
     : null
   const electron =
-    isLiveTurn &&
+    (opts.provideElectron ?? isLiveTurn) &&
     electronAppsEnabled() &&
     executionConfig?.kind === "local" &&
     executionConfig.profile !== "read-only"
@@ -1469,15 +1480,10 @@ export async function runAgentLoop(
     if (opts.unattended)
       defs = defs.filter(
         (d) =>
-          ![
-            "ask_user_question",
-            "run_todos_in_background",
-            "spawn_subagent",
-            "spawn_subagents",
-            "present_plan",
-            "write_plan",
-            "browser_handoff",
-          ].includes(d.function.name)
+          !UNATTENDED_DENIED_TOOLS.has(d.function.name) &&
+          (d.function.name !== "browser_evaluate" ||
+            !opts.unattendedGuard ||
+            opts.unattendedGuard.allowEvaluate)
       )
     const agentFiltered = externalToolAllowed
       ? defs.filter((d) => externalToolAllowed(d.function.name))
@@ -1492,7 +1498,9 @@ export async function runAgentLoop(
       (d) =>
         (!opts.allowedToolNames ||
           opts.allowedToolNames.has(d.function.name)) &&
-        (!opts.readOnlyTools || isReadOnlyTool(d.function.name))
+        (!opts.readOnlyTools ||
+          isReadOnlyTool(d.function.name) ||
+          BROWSER_OBSERVATION_TOOLS.has(d.function.name))
     )
   }
   const buildTools = () =>
@@ -2339,18 +2347,7 @@ export async function runAgentLoop(
           }),
         signal: abort.signal,
         execute: async (call, _index, callSignal) => {
-          if (
-            opts.unattended &&
-            [
-              "ask_user_question",
-              "run_todos_in_background",
-              "spawn_subagent",
-              "spawn_subagents",
-              "present_plan",
-              "write_plan",
-              "browser_handoff",
-            ].includes(call.name)
-          )
+          if (opts.unattended && UNATTENDED_DENIED_TOOLS.has(call.name))
             return {
               result:
                 "This tool is unavailable in an unattended workflow. Complete the current step directly or report the blocker.",
@@ -2438,6 +2435,8 @@ export async function runAgentLoop(
             // from buildTools()). Reads the LIVE flag, so once a plan is approved
             // this stops blocking and the same turn can implement.
             const decision =
+              (opts.unattendedGuard &&
+                unattendedSurfaceDecision(action, opts.unattendedGuard)) ??
               planModeClassifier.classify(action) ??
               policy.decide(action, {
                 workspacePath: workspace,
@@ -3622,6 +3621,27 @@ export async function runAgentLoop(
 // kicks off title generation, and owns the conversation-keyed AbortController so
 // the Stop button (chat:stop → stopChat) can cancel it. A "live turn" is just a
 // task with a renderer attached; the durable task runner calls runAgentLoop
+// Tools that wait on a user or hand work elsewhere; an unattended workflow turn has neither.
+const UNATTENDED_DENIED_TOOLS = new Set([
+  "ask_user_question",
+  "run_todos_in_background",
+  "spawn_subagent",
+  "spawn_subagents",
+  "present_plan",
+  "write_plan",
+  "browser_handoff",
+  "electron_handoff",
+])
+
+// Browser reads a read-only turn (workflow validator) may use on a browser it was lent.
+// Excluded from isReadOnlyTool so read-only subagents never inherit them.
+const BROWSER_OBSERVATION_TOOLS = new Set([
+  "browser_snapshot",
+  "browser_screenshot",
+  "browser_console",
+  "browser_network",
+])
+
 const READ_ONLY_SUBAGENT_EXTRA_TOOLS = new Set([
   "read_skill",
   "read_plan",

@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto"
 import { getDb } from "../connection"
 import { REASONING_EFFORT_PATTERN } from "../../../shared/reasoning-effort"
-import type { WorkflowDefinition } from "../../../shared/workflows"
+import {
+  isWorkflowOrigin,
+  type WorkflowDefinition,
+} from "../../../shared/workflows"
 
 export function createWorkflow(): WorkflowDefinition {
   const workflow: WorkflowDefinition = {
@@ -59,6 +62,11 @@ export function importWorkflow(input: unknown): WorkflowDefinition {
       "validatorModelId",
       "validatorEffort",
       "validatorAgentName",
+      "browser",
+      "allowedOrigins",
+      "browserEvaluate",
+      "electron",
+      "allowConsequential",
     ])
     if (Object.keys(row).some((key) => !stepKeys.has(key)))
       throw new Error("Invalid workflow")
@@ -142,7 +150,14 @@ export function validateWorkflow(
         (step.validatorModelId != null &&
           typeof step.validatorModelId !== "string") ||
         (step.validatorAgentName != null &&
-          typeof step.validatorAgentName !== "string")
+          typeof step.validatorAgentName !== "string") ||
+        (["browser", "browserEvaluate", "electron", "allowConsequential"] as const).some(
+          (key) => step[key] !== undefined && typeof step[key] !== "boolean"
+        ) ||
+        (step.allowedOrigins !== undefined &&
+          (!Array.isArray(step.allowedOrigins) ||
+            step.allowedOrigins.length > 50 ||
+            !step.allowedOrigins.every(isWorkflowOrigin)))
     ) ||
     new Set(workflow.steps.map((step) => step.id)).size !==
       workflow.steps.length
