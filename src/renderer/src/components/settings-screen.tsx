@@ -310,7 +310,7 @@ const MCP_SOURCE_KIND_LABEL: Record<McpSourceRow["kind"], string> = {
 }
 
 const SUMMARY_TOKEN_MIN = 6000
-const SUMMARY_TOKEN_MAX = 150000
+const SUMMARY_TOKEN_MAX = 800000
 const DEFAULT_MODEL_VALUE = "__default__"
 
 function digitsOnly(raw: string): string {
@@ -1480,7 +1480,7 @@ export function SettingsScreen({
                                 <FieldDescription>
                                   Regenerate the summary once the un-summarized
                                   turns reach this many tokens (whichever
-                                  threshold is hit first). Range 6,000–150,000.
+                                  threshold is hit first). Range 6,000–800,000.
                                 </FieldDescription>
                               </FieldContent>
                               <Input
