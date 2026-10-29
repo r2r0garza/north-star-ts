@@ -23,6 +23,33 @@ function ctxWith(result: AskResult) {
 }
 
 describe("ask_user_question", () => {
+  it("instructs the agent to recommend exactly one option for single-choice questions", () => {
+    expect(askUserQuestionTool.definition.function.description).toContain(
+      'For every single-choice question (multiSelect false or omitted), choose exactly one recommended preset option and append " (recommended)" to its label.'
+    )
+  })
+
+  it("preserves recommended labels through normalization and answer formatting", async () => {
+    const label = "SQLite (recommended)"
+    const { ctx, ask } = ctxWith({
+      status: "answered",
+      answers: [{ selected: [label] }],
+    })
+    const result = await askUserQuestionTool.execute(
+      {
+        questions: [
+          {
+            ...validQuestion,
+            options: [{ label: "Postgres" }, { label }],
+          },
+        ],
+      },
+      ctx
+    )
+    expect(ask.mock.calls[0][0][0].options[1].label).toBe(label)
+    expect(JSON.parse(result).answers[0].selected).toEqual([label])
+  })
+
   it("reports unavailable when ctx has no ask (e.g. headless)", async () => {
     const result = await askUserQuestionTool.execute(
       { questions: [validQuestion] },

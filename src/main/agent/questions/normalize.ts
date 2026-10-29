@@ -17,7 +17,9 @@ export const ASK_USER_QUESTION_DESCRIPTION =
   "for things you can decide yourself or find in the workspace. Present 1-4 questions, " +
   'each with 2-4 distinct preset options; a free-form "Other" field is added ' +
   "automatically, so never add your own. Set multiSelect:true when several options can " +
-  "apply at once. The turn pauses until the user answers, and their answers are returned " +
+  "apply at once. For every single-choice question (multiSelect false or omitted), choose " +
+  'exactly one recommended preset option and append " (recommended)" to its label. ' +
+  "The turn pauses until the user answers, and their answers are returned " +
   "to you as JSON."
 
 export type NormalizeResult =

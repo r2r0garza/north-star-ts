@@ -97,6 +97,9 @@ describe("CLI MCP bridge server", () => {
     try {
       const listed = await client.listTools()
       expect(listed.tools.map((t) => t.name)).toEqual(["ask_user_question"])
+      expect(listed.tools[0].description).toContain(
+        'For every single-choice question (multiSelect false or omitted), choose exactly one recommended preset option and append " (recommended)" to its label.'
+      )
 
       const call = client.callTool({
         name: "ask_user_question",

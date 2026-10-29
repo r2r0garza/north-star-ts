@@ -35,7 +35,9 @@ export const ASK_USER_QUESTION_BRIDGE_DESCRIPTION =
   "deciding for yourself anything the workspace already answers. Present 1-4 questions, each " +
   'with 2-4 distinct preset options; a free-form "Other" field is added automatically, so ' +
   "never add your own. Set multiSelect:true when several options can apply at once. Their " +
-  "answers come back to you as JSON."
+  "answers come back to you as JSON. For every single-choice question (multiSelect false " +
+  'or omitted), choose exactly one recommended preset option and append " (recommended)" ' +
+  "to its label."
 
 export const askUserQuestionMcpTool = {
   name: "ask_user_question",
