@@ -69,7 +69,7 @@ interface TestSession {
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000
-const MAX_TIMEOUT_MS = 600_000
+const MAX_TIMEOUT_MS = 1_800_000
 const DEFAULT_YIELD_MS = 1_000
 const MAX_YIELD_MS = 30_000
 const MAX_CAPTURE_BYTES = 256 * 1024
@@ -105,7 +105,7 @@ export const workspaceDiagnosticsTool: Tool = {
           timeout_ms: {
             type: "integer",
             description:
-              "Maximum checker runtime in milliseconds. Defaults to 120000; capped at 600000.",
+              "Maximum checker runtime in milliseconds. Defaults to 120000; capped at 1800000.",
           },
           max_output_bytes: {
             type: "integer",
@@ -196,7 +196,7 @@ export const runTestsTool: Tool = {
           timeout_ms: {
             type: "integer",
             description:
-              "Maximum test runtime in milliseconds. Defaults to 120000; capped at 600000.",
+              "Maximum test runtime in milliseconds. Defaults to 120000; capped at 1800000.",
           },
           yield_ms: {
             type: "integer",
