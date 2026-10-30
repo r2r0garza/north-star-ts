@@ -22,8 +22,19 @@ export const presentChartTool: Tool = {
           source: { type: "string", maxLength: 200 },
           dataAsOf: { type: "string", maxLength: 200 },
           chartKind: { type: "string", enum: ["line", "bar", "area"] },
-          xKey: { type: "string", maxLength: 64 },
-          unit: { type: "string", maxLength: 200 },
+          xKey: {
+            type: "string",
+            maxLength: 64,
+            pattern: "^[A-Za-z][A-Za-z0-9_]*$",
+            description:
+              "Data key, not a display label: start with a letter; use only letters, digits and underscores, e.g. responseTime. No spaces; do not use __proto__, constructor or prototype. Must match row keys.",
+          },
+          unit: {
+            type: "string",
+            maxLength: 200,
+            description:
+              'When numberFormat="percent", omit unit or use "%" only. Values are fractions.',
+          },
           numberFormat: {
             type: "string",
             enum: ["number", "integer", "percent"],
@@ -36,7 +47,13 @@ export const presentChartTool: Tool = {
               type: "object",
               additionalProperties: false,
               properties: {
-                key: { type: "string", maxLength: 64 },
+                key: {
+                  type: "string",
+                  maxLength: 64,
+                  pattern: "^[A-Za-z][A-Za-z0-9_]*$",
+                  description:
+                    "Safe row key such as responseTime; no spaces or reserved __proto__/constructor/prototype keys. Put human-readable wording in label.",
+                },
                 label: { type: "string", maxLength: 200 },
               },
               required: ["key", "label"],

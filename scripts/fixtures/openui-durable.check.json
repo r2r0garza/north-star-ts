@@ -1,0 +1,31 @@
+{
+  "name": "Phase C durable visual replay",
+  "steps": [
+    {
+      "step": "assert",
+      "that": { "pageText": { "contains": "Saved evidence survives reload" } }
+    },
+    { "step": "click", "target": { "role": "button", "name": "View data" } },
+    { "step": "assert", "that": { "pageText": { "contains": "No value" } } },
+    {
+      "step": "click",
+      "target": { "role": "button", "name": "Reload conversation" }
+    },
+    {
+      "step": "wait",
+      "until": { "pageText": { "contains": "Saved evidence survives reload" } }
+    },
+    {
+      "step": "assert",
+      "that": { "visible": { "role": "button", "name": "View data" } }
+    },
+    { "step": "click", "target": { "role": "button", "name": "Expand" } },
+    { "step": "assert", "that": { "visible": { "role": "dialog" } } },
+    { "step": "screenshot" },
+    { "step": "press", "key": "Escape" },
+    {
+      "step": "assert",
+      "that": { "focused": { "role": "button", "name": "Expand" } }
+    }
+  ]
+}

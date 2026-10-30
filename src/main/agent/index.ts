@@ -114,6 +114,7 @@ import { dashboardWriteTool } from "./tools/dashboard_write"
 import { presentChartTool } from "./tools/present_chart"
 import { presentTableTool } from "./tools/present_table"
 import { presentUiTool } from "./tools/present_ui"
+import { presentVisualTool, visualSpikeEnabled } from "./tools/present_visual"
 import {
   isPresentationTool,
   type ArtifactPresentation,
@@ -1559,6 +1560,7 @@ export async function runAgentLoop(
             presentChartTool.definition,
             presentTableTool.definition,
             presentUiTool.definition,
+            ...(visualSpikeEnabled() ? [presentVisualTool.definition] : []),
           ]
         : []),
       // dashboard_read (plan 033.4): same modes as dashboard_write but kept in

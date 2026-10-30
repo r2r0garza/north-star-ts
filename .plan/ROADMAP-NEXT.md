@@ -9,7 +9,7 @@
 > Mission Control, so Process UX investment remains worthwhile. `092.1` and `110`
 > moved to Deferred; low-value deferred plans were marked *dropped — pending re-review* in their own files.
 
-1. **`131` — OpenUI richer visual answers spike.** Evaluate composed metrics, charts, tables and UI
+1. **`131` — OpenUI richer visual answers spike (INITIAL PHASE D COMPARISON RECORDED — conditional go for opt-in composition; no default rollout).** Evaluate composed metrics, charts, tables and UI
    concepts using North Star components, preserving durable artifacts and a presentation-only boundary.
    Measure quality and integration cost before deciding on adoption; generated mini-apps are out of scope.
    [Plan](131-openui-visual-answers-spike.md).

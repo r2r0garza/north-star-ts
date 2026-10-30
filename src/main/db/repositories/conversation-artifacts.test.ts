@@ -28,6 +28,8 @@ import {
 import { presentChartTool } from "../../agent/tools/present_chart"
 import { runToolCallBatches } from "../../agent/tool-batch-scheduler"
 
+import { validateVisualSnapshot } from "../../../shared/openui-visual"
+
 const sqliteLoads = sqliteLoadsForTests()
 const input = {
   title: "Revenue",
@@ -456,5 +458,107 @@ describe.skipIf(!sqliteLoads)("UI concept storage", () => {
     start(c, "ui-x", snapshot, "present_ui")
     expect(() => complete(c, "ui-x", snapshot)).toThrow()
     expect(count()).toBe(2)
+  })
+})
+
+describe.skipIf(!sqliteLoads)("durable visual answer vertical slice", () => {
+  const visual = validateVisualSnapshot({
+    title: "Summary",
+    library: "north-star-static-v1",
+    document: 'root = Text("Synthetic evidence");',
+    datasets: [],
+  })
+  it("settles, reloads exact revisions, rejects conflicts and preserves idempotency", () => {
+    const conversationId = createConversation({ mode: "chat" }).id
+    const owner = start(conversationId, "visual-1", visual, "present_visual")
+    const first = markToolCallSettled({
+      conversationId,
+      toolCallId: owner.toolCallId,
+      state: "settled_success",
+      presentationArtifact: visual,
+    })!
+    const ref = toolArtifactReference(conversationId, owner.toolCallId)!
+    expect(
+      readConversationArtifact(conversationId, ref.artifactId, 1).artifact
+        ?.snapshot
+    ).toEqual(visual)
+    expect(
+      markToolCallSettled({
+        conversationId,
+        toolCallId: owner.toolCallId,
+        state: "settled_success",
+        presentationArtifact: visual,
+      })?.result
+    ).toBe(first.result)
+    const revised = {
+      ...visual,
+      title: "Revision two",
+      artifactId: ref.artifactId,
+      expectedBaseRevision: 1,
+    }
+    start(conversationId, "visual-2", revised, "present_visual")
+    markToolCallSettled({
+      conversationId,
+      toolCallId: "visual-2",
+      state: "settled_success",
+      presentationArtifact: revised,
+    })
+    expect(
+      readConversationArtifact(conversationId, ref.artifactId, 1).artifact
+        ?.snapshot.title
+    ).toBe("Summary")
+    expect(
+      readConversationArtifact(conversationId, ref.artifactId, 2).artifact
+        ?.snapshot.title
+    ).toBe("Revision two")
+    const stale = { ...revised, title: "Stale distinct revision" }
+    start(conversationId, "visual-conflict", stale, "present_visual")
+    expect(
+      markToolCallSettled({
+        conversationId,
+        toolCallId: "visual-conflict",
+        state: "settled_success",
+        presentationArtifact: stale,
+      })?.result
+    ).toContain("ERROR[artifact_conflict]")
+    const message = appendMessage({
+      conversationId,
+      role: "tool",
+      toolCallId: owner.toolCallId,
+      toolName: "present_visual",
+      content: first.result,
+    })
+    expect(
+      listMessages(conversationId).find((m) => m.id === message.id)?.artifact
+    ).toEqual(ref)
+    expect(
+      readConversationArtifact(
+        createConversation({ mode: "chat" }).id,
+        ref.artifactId,
+        1
+      ).error
+    ).toMatch(/unavailable/)
+  })
+  it("does not persist cancelled or malformed visual results", () => {
+    const conversationId = createConversation({ mode: "chat" }).id
+    start(conversationId, "cancelled-visual", visual, "present_visual")
+    markToolCallSettled({
+      conversationId,
+      toolCallId: "cancelled-visual",
+      state: "settled_error",
+      result: "ERROR[cancelled]: cancelled",
+      presentationArtifact: visual,
+    })
+    expect(count()).toBe(0)
+    start(conversationId, "invalid-visual", visual, "present_visual")
+    expect(() =>
+      markToolCallSettled({
+        conversationId,
+        toolCallId: "invalid-visual",
+        state: "settled_success",
+        presentationArtifact: { ...visual, library: "future" } as never,
+      })
+    ).toThrow()
+    expect(count()).toBe(0)
   })
 })
