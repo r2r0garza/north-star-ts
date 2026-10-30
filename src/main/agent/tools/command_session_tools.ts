@@ -12,9 +12,10 @@ import type {
   CommandCompletionInbox,
   CommandCompletionOwner,
 } from "../command-completion-inbox"
-import { renderContextEnvelope } from "../context/provenance"
+import { renderContextEnvelope } from "../../../shared/context-provenance"
 import { truncateForModel, toolError } from "./output"
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "./types"
+import { isTestSessionId } from "./test_diagnostics_tools"
 import { repositoryDelegationLeases } from "../subagents/repository-lease"
 import {
   activeSkillResourceRootPaths,
@@ -64,6 +65,8 @@ interface AgentCommandSession {
   didSettle: boolean
   completionInbox?: CommandCompletionInbox
   completionOwner?: CommandCompletionOwner
+  emitOutput?: (result: string) => void
+  outputTimer?: NodeJS.Timeout
 }
 
 interface RenderedOutput {
@@ -492,6 +495,7 @@ async function startCommand(
     handle,
     maxOutputBytes,
     timeoutMs,
+    emitOutput: ctx.emitCommandOutput,
     completion:
       opts.background && ctx.commandCompletions && ctx.commandCompletionOwner
         ? {
@@ -550,6 +554,7 @@ function createSession(input: {
   handle: CommandSessionHandle
   maxOutputBytes: number
   timeoutMs: number
+  emitOutput?: (result: string) => void
   completion?: {
     inbox: CommandCompletionInbox
     owner: CommandCompletionOwner
@@ -581,6 +586,7 @@ function createSession(input: {
     didSettle: false,
     completionInbox: input.completion?.inbox,
     completionOwner: input.completion?.owner,
+    emitOutput: input.emitOutput,
     timeout: setTimeout(() => {
       session.timedOut = true
       session.status = "timed_out"
@@ -595,6 +601,7 @@ function createSession(input: {
     appendOutput(session, chunk.stream, chunk.data)
   )
   input.handle.onExit((exit) => settleSession(session, exit))
+  emitSessionOutput(session)
   return session
 }
 
@@ -632,6 +639,21 @@ function appendOutput(
     bytesToDrop =
       session.totalBytes - session.droppedBytes - session.maxOutputBytes
   }
+  if (session.emitOutput && !session.outputTimer) {
+    session.outputTimer = setTimeout(() => {
+      session.outputTimer = undefined
+      emitSessionOutput(session)
+    }, 200)
+  }
+}
+
+function emitSessionOutput(session: AgentCommandSession): void {
+  if (!session.emitOutput) return
+  session.emitOutput(
+    renderCommandResult(session, renderSince(session, 0), {
+      includeSessionId: true,
+    })
+  )
 }
 
 function settleSession(session: AgentCommandSession, exit: CommandExit): void {
@@ -642,6 +664,10 @@ function settleSession(session: AgentCommandSession, exit: CommandExit): void {
   session.signal = exit.signal
   session.cleanupError = exit.cleanupError
   if (session.status === "running") session.status = "completed"
+  if (session.outputTimer) clearTimeout(session.outputTimer)
+  session.outputTimer = undefined
+  emitSessionOutput(session)
+  session.emitOutput = undefined
   session.resolveSettled()
   if (session.completionInbox && session.completionOwner) {
     const output = renderSince(session, 0)
@@ -745,7 +771,14 @@ function getOwnedSession(
   }
   const session = sessions.get(id)
   if (!session) {
-    return { error: toolError("not_found", "Command session was not found.") }
+    return {
+      error: toolError(
+        "not_found",
+        isTestSessionId(id)
+          ? "This is a run_tests session, not a command session. Read it with get_test_results (use wait_ms to wait for it to finish)."
+          : "Command session was not found."
+      ),
+    }
   }
   if (session.workspace !== ctx.workspace) {
     return {
@@ -994,6 +1027,7 @@ export const testCommandSessions = {
   clear(): void {
     for (const session of sessions.values()) {
       clearTimeout(session.timeout)
+      if (session.outputTimer) clearTimeout(session.outputTimer)
       if (session.cleanup) clearTimeout(session.cleanup)
       session.handle.kill()
     }

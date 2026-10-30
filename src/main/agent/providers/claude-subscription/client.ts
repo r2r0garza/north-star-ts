@@ -2,7 +2,7 @@ import {
   nativeAssistant,
   validateCarrier,
   historyFingerprint,
-} from "./native-carrier"
+} from "../native-carrier"
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process"
 import { randomUUID } from "crypto"
 import { once } from "events"

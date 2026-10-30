@@ -504,7 +504,9 @@ export function ActivityPanel({
   isAutoMode,
   onBrowserPoppedOutChange,
   onWidthChange,
+  workflowsSection,
 }: {
+  workflowsSection?: React.ReactNode
   conversationId: string | null
   // Controlled open state (the Shell owns it so the toggle can live in the drag
   // bar and "Run in background" can force the panel open).
@@ -737,6 +739,11 @@ export function ActivityPanel({
                     Workspace Activity
                   </h2>
                 </div>
+              )}
+              {activeKind === "info" && workflowsSection && (
+                <ActivitySection title="Workflows">
+                  {workflowsSection}
+                </ActivitySection>
               )}
               <ActivitySection title="Tasks">
                 <TasksSection

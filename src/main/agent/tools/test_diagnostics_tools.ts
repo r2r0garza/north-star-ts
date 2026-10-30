@@ -75,10 +75,16 @@ const MAX_YIELD_MS = 30_000
 const MAX_CAPTURE_BYTES = 256 * 1024
 const DEFAULT_PAGE_SIZE = 50
 const MAX_PAGE_SIZE = 200
+// The runner summary and most failure detail sit at the end of the output.
+const DEFAULT_RAW_EVIDENCE_BYTES = 16 * 1024
 const COMPLETED_SESSION_TTL_MS = 5 * 60_000
 const TERMINATE_GRACE_MS = 1_500
 
 const testSessions = new Map<string, TestSession>()
+
+export function isTestSessionId(id: string): boolean {
+  return testSessions.has(id)
+}
 
 export const workspaceDiagnosticsTool: Tool = {
   effects: TOOL_EFFECTS.openWorldMutation,
@@ -167,7 +173,8 @@ export const runTestsTool: Tool = {
     function: {
       name: "run_tests",
       description:
-        "Run a configured test target with bounded session support. The target selects declared package scripts; it is not an arbitrary shell command.",
+        "Run a configured test target with bounded session support. The target selects declared package scripts; it is not an arbitrary shell command. " +
+        "If the result status is running, wait for it with get_test_results and wait_ms (not poll_command). A session still running when your turn ends is terminated.",
       parameters: {
         type: "object",
         properties: {
@@ -179,7 +186,7 @@ export const runTestsTool: Tool = {
           path: {
             type: "string",
             description:
-              "Optional workspace-relative file/path filter. Passed after -- to the declared test script.",
+              "Optional workspace-relative file/path filter, appended to the declared test script's arguments.",
           },
           name: {
             type: "string",
@@ -239,7 +246,7 @@ export const runTestsTool: Tool = {
     return renderTestSession(session, {
       offset: 0,
       limit: DEFAULT_PAGE_SIZE,
-      includeRawEvidence: true,
+      rawEvidenceBytes: DEFAULT_RAW_EVIDENCE_BYTES,
     })
   },
 }
@@ -251,11 +258,17 @@ export const getTestResultsTool: Tool = {
     function: {
       name: "get_test_results",
       description:
-        "Page normalized test results and bounded raw evidence from a run_tests session owned by this conversation and workspace.",
+        "Page normalized test results and bounded raw evidence from a run_tests session owned by this conversation and workspace. " +
+        "counts come from the runner's own summary line when it printed one (countsSource runner_summary); otherwise they count only the parsed cases, which may be a subset.",
       parameters: {
         type: "object",
         properties: {
           session_id: { type: "string" },
+          wait_ms: {
+            type: "integer",
+            description:
+              "Wait up to this long for a running session to finish before returning. Defaults to 0; capped at 30000.",
+          },
           offset: {
             type: "integer",
             description: "Zero-based result offset. Defaults to 0.",
@@ -267,7 +280,12 @@ export const getTestResultsTool: Tool = {
           include_raw_evidence: {
             type: "boolean",
             description:
-              "When true, includes bounded raw output evidence. Defaults to false.",
+              "When true, includes the tail of the raw output. Defaults to false.",
+          },
+          max_raw_bytes: {
+            type: "integer",
+            description:
+              "Raw evidence tail size in bytes when include_raw_evidence is true. Defaults to 16384; capped at 262144.",
           },
         },
         required: ["session_id"],
@@ -277,10 +295,17 @@ export const getTestResultsTool: Tool = {
   execute: async (args, ctx) => {
     const session = getOwnedTestSession(args.session_id, ctx)
     if ("error" in session) return session.error
+    await waitForSettle(
+      session.session,
+      Math.min(numberArg(args.wait_ms, 0), MAX_YIELD_MS)
+    )
     return renderTestSession(session.session, {
       offset: numberArg(args.offset, 0),
       limit: pageLimit(args.limit),
-      includeRawEvidence: args.include_raw_evidence === true,
+      rawEvidenceBytes:
+        args.include_raw_evidence === true
+          ? outputCap(args.max_raw_bytes ?? DEFAULT_RAW_EVIDENCE_BYTES)
+          : 0,
     })
   },
 }
@@ -332,7 +357,7 @@ async function detectCommand(
   const manager = await detectPackageManager(env)
   const command =
     opts.kind === "test"
-      ? withTestFilters(`${manager} run ${shellQuote(script)}`, opts)
+      ? withTestFilters(`${manager} run ${shellQuote(script)}`, manager, opts)
       : `${manager} run ${shellQuote(script)}`
   return {
     provider: `package-json:${manager}`,
@@ -445,6 +470,7 @@ async function detectPackageManager(
 
 function withTestFilters(
   command: string,
+  manager: "pnpm" | "yarn" | "npm",
   opts: { pathFilter?: string; nameFilter?: string }
 ): string {
   const extras: string[] = []
@@ -452,7 +478,10 @@ function withTestFilters(
   if (opts.nameFilter) {
     extras.push("--testNamePattern", shellQuote(opts.nameFilter))
   }
-  return extras.length ? `${command} -- ${extras.join(" ")}` : command
+  if (!extras.length) return command
+  // pnpm and yarn forward a literal `--` to the script, where vitest stops treating
+  // the following path as a filter and runs the whole suite. npm strips it.
+  return `${command}${manager === "npm" ? " --" : ""} ${extras.join(" ")}`
 }
 
 function parseDiagnostics(raw: string): DiagnosticRecord[] {
@@ -499,6 +528,26 @@ function parseTestCases(raw: string): TestCaseResult[] {
   let failedPath: string | undefined
   for (const line of lines) {
     const clean = stripAnsi(line).trimEnd()
+    // Playwright list reporter: "  ✘  2 [chromium] › a.spec.ts:3:5 › title (1.2s)".
+    // Checked first: the file pattern below would swallow it as a file header.
+    const playwrightCase =
+      /^\s+(✓|✘|-)\s+\d+\s+\[[^\]]+\]\s+›\s+(\S+?):\d+:\d+\s+›\s+(.+?)(?:\s+\((\d+(?:\.\d+)?)(ms|s|m)\))?$/.exec(
+        clean
+      )
+    if (playwrightCase) {
+      const [, mark, path, name, amount, unit] = playwrightCase
+      cases.push({
+        suite: path,
+        path,
+        name,
+        status:
+          mark === "✘" ? "failed" : mark === "-" ? "skipped" : "passed",
+        durationMs: amount
+          ? Number(amount) * (unit === "m" ? 60_000 : unit === "s" ? 1000 : 1)
+          : undefined,
+      })
+      continue
+    }
     const file =
       /^\s*(?:✓|✔|PASS|❯|×|FAIL)\s+(.+\.(?:test|spec)\.[jt]sx?)(?:\s+\((\d+)\))?/.exec(
         clean
@@ -508,7 +557,9 @@ function parseTestCases(raw: string): TestCaseResult[] {
       if (/^\s*(?:×|FAIL)/.test(clean)) failedPath = file[1]
       continue
     }
-    const vitestCase = /^\s*(✓|✔|×|-)\s+(.+?)(?:\s+(\d+)ms)?$/.exec(clean)
+    // Runners indent case lines under their file; an unindented ✔ is other tool
+    // output (e.g. electron-rebuild's "✔ Rebuild Complete"), not a test.
+    const vitestCase = /^\s+(✓|✔|×|-)\s+(.+?)(?:\s+(\d+)ms)?$/.exec(clean)
     if (vitestCase && !/^(Tests|Test Files)\b/.test(vitestCase[2])) {
       cases.push({
         suite: currentPath,
@@ -553,6 +604,62 @@ function countTests(records: TestCaseResult[]) {
     skipped: records.filter((r) => r.status === "skipped").length,
     todo: records.filter((r) => r.status === "todo").length,
   }
+}
+
+// The runner's own totals, e.g. vitest "Tests  8 failed | 2170 passed (2178)" or
+// jest "Tests:       1 failed, 2 passed, 3 total". The default reporters list cases
+// only for failing files, so counting parsed cases undercounts badly.
+function parseTestSummary(raw: string): ReturnType<typeof countTests> | null {
+  const text = stripAnsi(raw)
+  const line = text
+    .split(/\r?\n/)
+    .reverse()
+    .find((text) => /^\s*Tests:?\s+\d+\s+\w+/.test(text))
+  if (!line) return parsePlaywrightSummary(text)
+  const counts = { total: 0, passed: 0, failed: 0, skipped: 0, todo: 0 }
+  let total: number | undefined
+  for (const [, n, word] of line.matchAll(/(\d+)\s+(\w+)/g)) {
+    const count = Number(n)
+    if (word === "total") total = count
+    else if (word === "passed" || word === "failed" || word === "todo")
+      counts[word] += count
+    else if (word === "skipped" || word === "pending") counts.skipped += count
+  }
+  const parenthesized = /\((\d+)\)\s*$/.exec(line)
+  counts.total =
+    total ??
+    (parenthesized
+      ? Number(parenthesized[1])
+      : counts.passed + counts.failed + counts.skipped + counts.todo)
+  return counts
+}
+
+// Playwright prints one total per line after "Running N tests using M workers":
+// "  1 failed", "  1 flaky", "  2 skipped", "  9 passed (9.7s)". Flaky tests
+// passed on retry; interrupted ones count as failed, did-not-run as skipped.
+function parsePlaywrightSummary(
+  text: string
+): ReturnType<typeof countTests> | null {
+  if (!/^\s*Running \d+ tests? using \d+ workers?/m.test(text)) return null
+  const counts = { total: 0, passed: 0, failed: 0, skipped: 0, todo: 0 }
+  let found = false
+  for (const [, n, word] of text.matchAll(
+    /^\s*(\d+) (passed|failed|flaky|skipped|interrupted|did not run)(?: \([\d.]+m?s\))?\s*$/gm
+  )) {
+    found = true
+    const key =
+      word === "flaky"
+        ? "passed"
+        : word === "interrupted"
+          ? "failed"
+          : word === "did not run"
+            ? "skipped"
+            : (word as "passed" | "failed" | "skipped")
+    counts[key] += Number(n)
+  }
+  if (!found) return null
+  counts.total = counts.passed + counts.failed + counts.skipped
+  return counts
 }
 
 function createTestSession(input: {
@@ -677,9 +784,11 @@ function getOwnedTestSession(
 
 function renderTestSession(
   session: TestSession,
-  opts: { offset: number; limit: number; includeRawEvidence: boolean }
+  opts: { offset: number; limit: number; rawEvidenceBytes: number }
 ): string {
   const results = parseTestCases(session.output)
+  const summary = parseTestSummary(session.output)
+  const raw = opts.rawEvidenceBytes ? stripAnsi(session.output) : ""
   const offset = Math.min(opts.offset, results.length)
   const page = results.slice(offset, offset + opts.limit)
   return JSON.stringify(
@@ -693,15 +802,19 @@ function renderTestSession(
       exitCode: session.exitCode,
       signal: session.signal,
       cleanupError: session.cleanupError,
-      counts: countTests(results),
+      counts: summary ?? countTests(results),
+      countsSource: summary ? "runner_summary" : "parsed_cases",
       offset,
       limit: opts.limit,
       hasMore: offset + page.length < results.length,
       nextOffset:
         offset + page.length < results.length ? offset + page.length : null,
       results: page,
-      rawEvidence: opts.includeRawEvidence
-        ? stripAnsi(session.output)
+      rawEvidence: opts.rawEvidenceBytes
+        ? trimOutput(raw, opts.rawEvidenceBytes)
+        : undefined,
+      rawEvidenceTruncated: opts.rawEvidenceBytes
+        ? Buffer.byteLength(raw, "utf8") > opts.rawEvidenceBytes
         : undefined,
       outputTruncated:
         Buffer.byteLength(session.output, "utf8") >= MAX_CAPTURE_BYTES,
@@ -712,7 +825,7 @@ function renderTestSession(
 }
 
 async function waitForSettle(session: TestSession, ms: number): Promise<void> {
-  if (session.status !== "running") return
+  if (session.status !== "running" || ms <= 0) return
   await waitForSettlementOrDelay(session, ms)
 }
 

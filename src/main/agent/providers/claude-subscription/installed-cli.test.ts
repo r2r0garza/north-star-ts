@@ -49,7 +49,7 @@ vi.mock("./admission", async (original) => {
     },
   }
 })
-import { nativeAssistant } from "./native-carrier"
+import { nativeAssistant } from "../native-carrier"
 import {
   buildClaudeSubscriptionClient,
   shutdownClaudeSubscription,

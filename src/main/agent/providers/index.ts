@@ -8,6 +8,9 @@ import * as settingsService from "../../settings/service"
 import { getApiKey, setApiKey } from "../../settings/secrets"
 import type { ApiMode, Provider, ProviderAccount } from "../../db/types"
 import { buildCodexSubscriptionClient } from "./codex-subscription"
+import { buildAnthropicClient } from "./anthropic"
+import { buildGoogleClient } from "./google"
+import type { ReasoningEffort } from "../../../shared/reasoning-effort"
 
 // The LLM routing layer. Resolves a provider account + model — either an explicit
 // per-conversation selection or the global default (the settings `llm` blob) —
@@ -21,6 +24,10 @@ import { buildCodexSubscriptionClient } from "./codex-subscription"
 //
 // Two SDKs back the wired providers, chosen by provider type:
 //   • portkey                     → the Portkey SDK (routes via x-portkey-* headers).
+//   • anthropic                   → the Anthropic SDK, translated to the
+//                                   chat-completions shape in ./anthropic.
+//   • google                      → the Gen AI SDK's Interactions API, translated
+//                                   the same way in ./google.
 //   • openai, openai_compatible   → the OpenAI SDK (Authorization: Bearer on EVERY
 //                                   request — chat AND models — which is what a plain
 //                                   OpenAI-compatible gateway like Copilot Bridge
@@ -55,6 +62,8 @@ export interface LlmClient {
   models: {
     list: () => Promise<{ data?: Array<{ id?: string }> } | undefined>
   }
+  // The reasoning effort levels a model's catalog entry lists, lowest first.
+  effortLevels?: (model: string) => Promise<ReasoningEffort[]>
 }
 
 // The resolved client + the model id to call it with, returned together so the
@@ -151,10 +160,12 @@ function buildClient(account: ProviderAccount): LlmClient {
     account.provider !== "portkey" &&
     account.provider !== "openai_compatible" &&
     account.provider !== "openai" &&
+    account.provider !== "anthropic" &&
+    account.provider !== "google" &&
     account.provider !== "codex_subscription"
   ) {
     throw new NoActiveProviderError(
-      `Provider "${account.provider}" is not wired yet. Pick a Portkey, OpenAI, OpenAI-compatible, or experimental subscription account.`
+      `Provider "${account.provider}" is not wired yet. Pick a Portkey, OpenAI, OpenAI-compatible, Anthropic, Google, or experimental subscription account.`
     )
   }
   const apiKey = getApiKey(account.id)
@@ -163,11 +174,13 @@ function buildClient(account: ProviderAccount): LlmClient {
       `The provider "${account.displayName}" has no API key set. Add one in Settings.`
     )
   }
-  // A base URL is required for the two gateway providers; native `openai` may omit
-  // it (the SDK defaults to api.openai.com).
+  // A base URL is required for the two gateway providers; native `openai`,
+  // `anthropic` and `google` may omit it (their SDKs default to the vendor API).
   if (
     !account.baseUrl &&
     account.provider !== "openai" &&
+    account.provider !== "anthropic" &&
+    account.provider !== "google" &&
     account.provider !== "codex_subscription"
   ) {
     throw new NoActiveProviderError(
@@ -184,6 +197,18 @@ function buildClient(account: ProviderAccount): LlmClient {
         setApiKey(account.id, secret)
         clientCache.delete(account.id)
       },
+    })
+  } else if (account.provider === "anthropic") {
+    client = buildAnthropicClient({
+      accountId: account.id,
+      apiKey,
+      baseUrl: account.baseUrl,
+    })
+  } else if (account.provider === "google") {
+    client = buildGoogleClient({
+      accountId: account.id,
+      apiKey,
+      baseUrl: account.baseUrl,
     })
   } else if (account.provider === "portkey") {
     const portkey = new Portkey({ baseURL: account.baseUrl!, apiKey })
@@ -318,6 +343,8 @@ export function hasActiveProvider(): boolean {
       if (
         !account.baseUrl &&
         account.provider !== "openai" &&
+        account.provider !== "anthropic" &&
+        account.provider !== "google" &&
         account.provider !== "codex_subscription"
       ) {
         return false
@@ -333,6 +360,25 @@ export function hasActiveProvider(): boolean {
   } catch {
     return false
   }
+}
+
+// The reasoning effort levels the composer offers for a model, lowest first;
+// empty when the provider takes no effort from the app. Never throws.
+export async function modelEffortLevels(
+  accountId: string,
+  modelId: string
+): Promise<ReasoningEffort[]> {
+  try {
+    const account = providerAccountsRepo.getAccount(accountId)
+    if (
+      account?.provider === "anthropic" ||
+      account?.provider === "codex_subscription"
+    )
+      return (await buildClient(account).effortLevels?.(modelId)) ?? []
+  } catch {
+    // No key, no client: no picker.
+  }
+  return []
 }
 
 // Build a transient client for an account by id — used by the gateway model

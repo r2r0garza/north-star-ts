@@ -11,11 +11,3 @@ export function liveMessageContent(segments: LiveMessageSegment[]): string {
     .map((segment) => segment.text)
     .join("")
 }
-
-export function firstTextTimestamp(
-  current: number | null,
-  delta: string,
-  now: () => number = Date.now
-): number | null {
-  return current ?? (delta.trim().length > 0 ? now() : null)
-}

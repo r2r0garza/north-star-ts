@@ -2,8 +2,10 @@ import {
   validateCarrier,
   MAX_CARRIER_BYTES,
   type NativeAssistantCarrier,
-} from "../../agent/providers/claude-subscription/native-carrier"
+} from "../../agent/providers/native-carrier"
 import { randomUUID } from "crypto"
+import { toolArtifactReference } from "./conversation-artifacts"
+import { isPresentationTool } from "../../../shared/conversation-artifacts"
 import { messageMedia, cleanupToolMedia } from "../../media/tool-media"
 import { getDb } from "../connection"
 import {
@@ -25,6 +27,7 @@ interface MessageRow {
   token_estimate: number | null
   created_at: number
   native_assistant: string | null
+  reasoning: string | null
 }
 
 function readCarrier(raw: string) {
@@ -37,9 +40,17 @@ function readCarrier(raw: string) {
 }
 
 function toMessage(row: MessageRow): Message {
+  const artifact =
+    row.role === "tool" && row.tool_call_id && isPresentationTool(row.tool_name)
+      ? toolArtifactReference(row.conversation_id, row.tool_call_id)
+      : undefined
   return {
+    ...(artifact ? { artifact } : {}),
     ...(row.role === "assistant" && row.native_assistant
       ? { nativeAssistant: readCarrier(row.native_assistant) }
+      : {}),
+    ...(row.role === "assistant" && row.reasoning
+      ? { reasoning: row.reasoning }
       : {}),
     ...(row.role === "tool" && messageMedia(row.id).length
       ? { media: messageMedia(row.id) }
@@ -72,6 +83,8 @@ function estimateText(
 
 export interface AppendMessageInput {
   nativeAssistant?: NativeAssistantCarrier
+  // Assistant reasoning, kept for the transcript UI only (never replayed).
+  reasoning?: string
   conversationId: string
   role: MessageRole
   content?: string | null
@@ -107,8 +120,8 @@ export function appendMessage(
     const seq = row.maxSeq + 1
     db.prepare(
       `INSERT INTO messages
-        (id, conversation_id, seq, role, content, tool_calls, tool_call_id, tool_name, token_estimate, created_at, native_assistant)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        (id, conversation_id, seq, role, content, tool_calls, tool_call_id, tool_name, token_estimate, created_at, native_assistant, reasoning)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
       input.conversationId,
@@ -120,7 +133,8 @@ export function appendMessage(
       input.toolName ?? null,
       tokenEstimate,
       now,
-      carrier ? JSON.stringify(carrier) : null
+      carrier ? JSON.stringify(carrier) : null,
+      input.role === "assistant" && input.reasoning ? input.reasoning : null
     )
     if (input.role === "tool" && input.toolCallId) {
       db.prepare(

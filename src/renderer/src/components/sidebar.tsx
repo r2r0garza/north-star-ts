@@ -502,12 +502,9 @@ export function AppSidebar({
   onSettingsClick,
   onSkillsClick,
   onAgentsClick,
-  onProcessClick,
-  showProcesses,
-  showMissionControl,
-  onMissionControlClick,
   onMcpClick,
   onDashboardsClick,
+  onWorkflowsClick,
   refreshKey,
   runningConvos,
   waitingConvos,
@@ -523,12 +520,9 @@ export function AppSidebar({
   onSettingsClick: () => void
   onSkillsClick: () => void
   onAgentsClick: () => void
-  onProcessClick: () => void
-  showProcesses: boolean
-  showMissionControl: boolean
-  onMissionControlClick: () => void
   onMcpClick: () => void
   onDashboardsClick: () => void
+  onWorkflowsClick: () => void
   // Bumped by the app whenever conversations change, so the list refetches.
   refreshKey: number
   // Conversations with a turn currently streaming — each shows a spinner.
@@ -567,6 +561,23 @@ export function AppSidebar({
       coordinateGetter: sortableKeyboardCoordinates,
     })
   )
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (
+        event.key.toLowerCase() === "f" &&
+        event.shiftKey &&
+        (event.metaKey || event.ctrlKey) &&
+        !event.altKey &&
+        !event.isComposing
+      ) {
+        event.preventDefault()
+        setSearchDialogOpen(true)
+      }
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [])
 
   // Fetch conversations + projects together. Re-run on the shell's refreshKey
   // (conversation changes) and after local project CRUD.
@@ -934,36 +945,22 @@ export function AppSidebar({
           type="button"
           size="sm"
           variant="ghost"
+          onClick={onWorkflowsClick}
+          className="w-full justify-start"
+        >
+          <Workflow className="size-4" />
+          Workflows
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
           onClick={onDashboardsClick}
           className="w-full justify-start"
         >
           <LayoutDashboard className="size-4" />
           Dashboards
         </Button>
-        {showMissionControl && (
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            onClick={onMissionControlClick}
-            className="w-full justify-start"
-          >
-            <Network className="size-4" />
-            Mission Control
-          </Button>
-        )}
-        {showProcesses && (
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            onClick={onProcessClick}
-            className="w-full justify-start"
-          >
-            <Workflow className="size-4" />
-            Processes
-          </Button>
-        )}
         <Button
           type="button"
           size="sm"

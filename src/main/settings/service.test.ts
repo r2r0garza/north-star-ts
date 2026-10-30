@@ -155,6 +155,17 @@ describe("settings service — memory", () => {
     })
   })
 
+  it("keeps Electron app control on unless explicitly turned off", () => {
+    store.set("browser", JSON.stringify({ revealOnAgentUse: "always" }))
+    expect(service.getBrowser().electronApps).toBe(true)
+    service._resetCacheForTests()
+    store.set("browser", JSON.stringify({ electronApps: "no" }))
+    expect(service.getBrowser().electronApps).toBe(true)
+    service.setBrowser({ revealOnAgentUse: "always", electronApps: false })
+    service._resetCacheForTests()
+    expect(service.getBrowser().electronApps).toBe(false)
+  })
+
   it("falls back to defaults on a corrupt blob", () => {
     store.set("memory", "{not json")
     expect(service.getMemory()).toEqual({
@@ -315,6 +326,7 @@ describe("settings service — indexing (plan 008)", () => {
       includeEmbeddings: false,
       summarizeMessageThreshold: 0,
       summarizeTokenThreshold: 80000,
+      turnCompactionTokenThreshold: 120000,
       logSystemPrompt: false,
     })
   })
@@ -327,6 +339,7 @@ describe("settings service — indexing (plan 008)", () => {
       includeEmbeddings: false,
       summarizeMessageThreshold: 50,
       summarizeTokenThreshold: 6000,
+      turnCompactionTokenThreshold: 0,
       logSystemPrompt: true,
     })
     service._resetCacheForTests()
@@ -336,6 +349,7 @@ describe("settings service — indexing (plan 008)", () => {
     expect(idx.watchWorkspaces).toBe(false)
     expect(idx.summarizeMessageThreshold).toBe(50)
     expect(idx.summarizeTokenThreshold).toBe(6000)
+    expect(idx.turnCompactionTokenThreshold).toBe(0)
     expect(idx.logSystemPrompt).toBe(true)
   })
 
@@ -349,6 +363,7 @@ describe("settings service — indexing (plan 008)", () => {
     expect(idx.watchWorkspaces).toBe(true)
     expect(idx.summarizeMessageThreshold).toBe(0)
     expect(idx.summarizeTokenThreshold).toBe(80000)
+    expect(idx.turnCompactionTokenThreshold).toBe(120000)
     expect(idx.logSystemPrompt).toBe(false)
   })
 
@@ -360,6 +375,7 @@ describe("settings service — indexing (plan 008)", () => {
       includeEmbeddings: false,
       summarizeMessageThreshold: 0,
       summarizeTokenThreshold: 80000,
+      turnCompactionTokenThreshold: 120000,
       logSystemPrompt: false,
     })
     // A partial/corrupt stored blob still yields a complete typed shape.
@@ -398,11 +414,14 @@ describe("settings service — skill sources (capabilities)", () => {
 
 describe("settings service — browser (tabbed browser, plan: Phase 4)", () => {
   it("defaults revealOnAgentUse to always", () => {
-    expect(service.getBrowser()).toEqual({ revealOnAgentUse: "always" })
+    expect(service.getBrowser()).toEqual({
+      revealOnAgentUse: "always",
+      electronApps: true,
+    })
   })
 
   it("round-trips a persisted change to never", () => {
-    service.setBrowser({ revealOnAgentUse: "never" })
+    service.setBrowser({ revealOnAgentUse: "never", electronApps: true })
     service._resetCacheForTests()
     expect(service.getBrowser().revealOnAgentUse).toBe("never")
   })
@@ -466,25 +485,5 @@ describe("settings service — onboarding", () => {
   it("falls back to defaults on a corrupt blob", () => {
     store.set("onboarding", "{not json")
     expect(service.getOnboarding()).toEqual({ hideStartupGuide: false })
-  })
-})
-
-describe("settings service — sidebar", () => {
-  it("hides the legacy Processes button by default", () => {
-    expect(service.getSidebar()).toEqual({ showLegacyProcesses: false })
-  })
-
-  it("round-trips the Processes switch", () => {
-    service.setSidebar({ showLegacyProcesses: true })
-    service._resetCacheForTests()
-    expect(service.getSidebar()).toEqual({ showLegacyProcesses: true })
-  })
-
-  it("falls back to hidden for corrupt or unknown values", () => {
-    store.set("sidebar", JSON.stringify({ showLegacyProcesses: "yes" }))
-    expect(service.getSidebar()).toEqual({ showLegacyProcesses: false })
-    service._resetCacheForTests()
-    store.set("sidebar", "{not json")
-    expect(service.getSidebar()).toEqual({ showLegacyProcesses: false })
   })
 })

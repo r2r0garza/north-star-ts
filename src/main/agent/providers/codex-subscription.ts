@@ -1,4 +1,9 @@
 import type { LlmClient } from "./index"
+import {
+  effortOrDefault,
+  REASONING_EFFORT_PATTERN,
+  type ReasoningEffort,
+} from "../../../shared/reasoning-effort"
 
 export const CODEX_SUBSCRIPTION_BASE_URL =
   "https://chatgpt.com/backend-api/codex"
@@ -27,6 +32,8 @@ interface BuildRequestInput {
   model: string
   maxOutputTokens: number
   body: Record<string, unknown>
+  // The model's catalog levels; the composer's pick must be one of them.
+  efforts?: ReasoningEffort[]
 }
 
 interface CodexSubscriptionSecret {
@@ -113,6 +120,7 @@ function responsesTools(
 export function buildCodexSubscriptionRequest({
   model,
   body,
+  efforts = [],
 }: BuildRequestInput): Record<string, unknown> {
   const messages = Array.isArray(body.messages)
     ? (body.messages as ChatMessage[])
@@ -188,6 +196,15 @@ export function buildCodexSubscriptionRequest({
     input,
     stream: true,
     store: false,
+    // The composer's effort when the model lists it, else medium: without an
+    // effort, newer models answer without reasoning; without a summary
+    // request, none is sent to show.
+    reasoning: {
+      effort:
+        effortOrDefault(body.reasoning_effort as ReasoningEffort, efforts) ??
+        "medium",
+      summary: "auto",
+    },
   }
   const tools = responsesTools(body.tools)
   if (tools) request.tools = tools
@@ -420,6 +437,10 @@ async function* codexSseToChatStream(
   let emittedOutput = false
   let toolIndex = 0
   let terminal: any = null
+  let summaryPart: string | undefined
+  // Reasoning items whose summary streamed, and what arrived (for the log line).
+  const summarized = new Set<string>()
+  const seen = { deltas: 0, items: 0, itemSummaries: 0 }
 
   for await (const event of readSseEvents(body)) {
     const type = typeof event?.type === "string" ? event.type : ""
@@ -434,6 +455,51 @@ async function* codexSseToChatStream(
       yield {
         _request_id: requestId,
         choices: [{ delta: { content: event.delta } }],
+      }
+      continue
+    }
+    if (
+      type === "response.reasoning_summary_text.delta" &&
+      typeof event.delta === "string"
+    ) {
+      // Separate summary parts (and reasoning items) with a blank line.
+      const part = `${event.item_id}:${event.summary_index}`
+      const gap = summaryPart !== undefined && summaryPart !== part
+      summaryPart = part
+      summarized.add(String(event.item_id))
+      seen.deltas++
+      yield {
+        _request_id: requestId,
+        choices: [
+          {
+            delta: {
+              reasoning_content: gap ? `\n\n${event.delta}` : event.delta,
+            },
+          },
+        ],
+      }
+      continue
+    }
+    if (
+      type === "response.output_item.done" &&
+      event.item?.type === "reasoning"
+    ) {
+      seen.items++
+      // The finished item carries the summary too; use it when none streamed.
+      const text = (Array.isArray(event.item.summary) ? event.item.summary : [])
+        .map((part: any) => (typeof part?.text === "string" ? part.text : ""))
+        .filter(Boolean)
+        .join("\n\n")
+      if (text) seen.itemSummaries++
+      if (text && !summarized.has(String(event.item.id))) {
+        const gap = summaryPart !== undefined
+        summaryPart = `${event.item.id}:done`
+        yield {
+          _request_id: requestId,
+          choices: [
+            { delta: { reasoning_content: gap ? `\n\n${text}` : text } },
+          ],
+        }
       }
       continue
     }
@@ -483,6 +549,9 @@ async function* codexSseToChatStream(
     }
   }
 
+  // shortcut: diagnostic for the reasoning-summary rollout; drop once Codex
+  // reasoning is confirmed showing in the transcript.
+  console.debug("[codex] reasoning", seen)
   if (!terminal) {
     throw new Error(
       emittedOutput
@@ -797,6 +866,32 @@ export function parseCodexSubscriptionModels(json: unknown): string[] {
     collectFallbackModelIds(json, ids)
   }
   return [...ids].sort((a, b) => a.localeCompare(b))
+}
+
+// Each listed model's reasoning levels, in catalog order.
+export function parseCodexReasoningLevels(
+  json: unknown
+): Map<string, ReasoningEffort[]> {
+  const models = (json as { models?: unknown } | null)?.models
+  return new Map(
+    (Array.isArray(models) ? models : []).flatMap(
+      (m): Array<[string, ReasoningEffort[]]> =>
+        typeof m?.slug === "string" &&
+        Array.isArray(m.supported_reasoning_levels)
+          ? [
+              [
+                m.slug.trim(),
+                m.supported_reasoning_levels
+                  .map((l: any) => l?.effort)
+                  .filter(
+                    (e: unknown): e is string =>
+                      typeof e === "string" && REASONING_EFFORT_PATTERN.test(e)
+                  ),
+              ],
+            ]
+          : []
+    )
+  )
 }
 
 export async function preflightCodexSubscriptionBackend(input: {
@@ -1187,7 +1282,18 @@ export function buildCodexSubscriptionClient(input: {
       error.status = probe.status
       throw error
     }
+    levels = parseCodexReasoningLevels(json)
     return { data: parseCodexSubscriptionModels(json).map((id) => ({ id })) }
+  }
+  // Levels from the last catalog fetch; fetched once on demand otherwise.
+  let levels: Map<string, ReasoningEffort[]> | undefined
+  let loading: Promise<unknown> | undefined
+  const effortLevels = async (model: string) => {
+    if (!levels) {
+      loading ??= listModels().catch(() => (loading = undefined))
+      await loading
+    }
+    return levels?.get(model.trim()) ?? []
   }
   const create = async (body: Record<string, unknown>, ...rest: unknown[]) => {
     const opts = rest[1] as { signal?: AbortSignal } | undefined
@@ -1204,6 +1310,8 @@ export function buildCodexSubscriptionClient(input: {
       model,
       maxOutputTokens,
       body,
+      // Only a pick needs checking; without one the default applies.
+      efforts: body.reasoning_effort ? await effortLevels(model) : [],
     })
     const clientVersion = await resolveClientVersion()
     const send = async (accessToken: string) => {
@@ -1262,5 +1370,6 @@ export function buildCodexSubscriptionClient(input: {
   return {
     chat: { completions: { create } },
     models: { list: listModels },
+    effortLevels,
   }
 }

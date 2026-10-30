@@ -16,7 +16,7 @@ const APPROVE_AUTO_LABEL = "Yes, approve and work in Auto mode"
 // automatically approved. Free-form feedback keeps plan mode on and returns the
 // user's notes so the model keeps refining. Offered only in plan mode.
 export const presentPlanTool: Tool = {
-  effects: TOOL_EFFECTS.openWorldMutation,
+  effects: TOOL_EFFECTS.readOnlySequential,
   definition: {
     type: "function",
     function: {

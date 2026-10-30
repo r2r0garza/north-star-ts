@@ -7,8 +7,7 @@ export type TerminalProfile = {
 
 export type TerminalSessionView = {
   id: string
-  // The owner: a conversation id, or another owner such as
-  // "mission-control:<featureId>" for workspace setup runs (plan 106.11).
+  // The conversation or task that owns this terminal.
   conversationId: string
   profileId: string
   title: string

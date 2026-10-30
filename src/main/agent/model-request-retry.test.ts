@@ -141,7 +141,7 @@ beforeEach(() => {
 describe.skipIf(!sqliteLoads)("model request retry coordinator", () => {
   it("retains private native metadata from the completed stream only", async () => {
     const { nativeAssistant } =
-      await import("./providers/claude-subscription/native-carrier")
+      await import("./providers/native-carrier")
     const carrier = {
       version: 1,
       provider: "claude_subscription",
@@ -933,6 +933,33 @@ describe.skipIf(!sqliteLoads)("model request retry coordinator", () => {
   })
 })
 
+describe.skipIf(!sqliteLoads)("streamed reasoning", () => {
+  it("collects reasoning apart from text and reports it per attempt", async () => {
+    const events: any[] = []
+    const round = await createCompletionRoundWithRetry({
+      conversationId,
+      logicalRoundId: "after-seq:reasoning",
+      signal: new AbortController().signal,
+      clock: makeClock(),
+      isTransientError: () => false,
+      onAttemptEvent: (event) => events.push(event),
+      request: async () =>
+        (async function* () {
+          yield { choices: [{ delta: { reasoning_content: "Think" } }] }
+          yield { choices: [{ delta: { reasoning: " more." } }] }
+          yield {
+            choices: [{ delta: { content: "Answer" }, finish_reason: "stop" }],
+          }
+        })(),
+    })
+    expect(round.reasoning).toBe("Think more.")
+    expect(round.text).toBe("Answer")
+    expect(
+      events.filter((e) => e.type === "reasoning").map((e) => e.delta)
+    ).toEqual(["Think", " more."])
+  })
+})
+
 describe.skipIf(!sqliteLoads)("streamed usage reporting (plan 108)", () => {
   it("picks up the trailing usage chunk that has an empty choices array", async () => {
     const round = await createCompletionRoundWithRetry({
@@ -961,7 +988,14 @@ describe.skipIf(!sqliteLoads)("streamed usage reporting (plan 108)", () => {
           }
           yield {
             choices: [],
-            usage: { prompt_tokens: 1200, completion_tokens: 30 },
+            usage: {
+              prompt_tokens: 1200,
+              completion_tokens: 30,
+              prompt_tokens_details: {
+                cached_tokens: 1000,
+                cache_creation_tokens: 150,
+              },
+            },
           }
         })(),
     })
@@ -972,6 +1006,8 @@ describe.skipIf(!sqliteLoads)("streamed usage reporting (plan 108)", () => {
       promptTokens: 1200,
       completionTokens: 30,
       totalTokens: undefined,
+      cachedTokens: 1000,
+      cacheWriteTokens: 150,
     })
   })
 

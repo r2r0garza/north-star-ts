@@ -3,7 +3,7 @@ import { dirname, join, relative } from "path"
 import { TOOL_EFFECTS, type Tool } from "../tools/types"
 import { registerSkillResourceRoot } from "../tools/skill_resources"
 import type { SkillMetadata } from "./types"
-import { renderContextEnvelope } from "../context/provenance"
+import { renderContextEnvelope } from "../../../shared/context-provenance"
 
 const MAX_MANIFEST_ENTRIES = 200
 const MAX_MANIFEST_BYTES = 16 * 1024

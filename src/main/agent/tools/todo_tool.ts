@@ -33,6 +33,14 @@ export const todoWriteTool: Tool = {
         "time. Mark an item completed as soon as it's done — never re-do completed work. If " +
         "something fails, mark it cancelled and add a revised item. To remove an item, omit " +
         "it from a replace-all write; send `todos: []` to clear the list.\n\n" +
+        "Writing good items: when the work comes from a plan, spec, or acceptance " +
+        "criteria, make one item per phase, criterion, or deliverable, and name what " +
+        "done looks like (e.g. 'Phase B: artifacts render inline in the transcript, " +
+        "with tests'). Never use catch-all items such as 'Continue implementation' or " +
+        "'Implement the feature'. Mark an item completed only when its whole scope is " +
+        "done and verified; if only part is done, split the rest into a new item. When " +
+        "resuming, revise the existing list instead of starting a fresh one. Do not end " +
+        "your turn while items you can still do remain open.\n\n" +
         "Every call returns the full current list plus a summary count by status.",
       parameters: {
         type: "object",

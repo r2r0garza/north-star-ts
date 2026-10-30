@@ -4,12 +4,12 @@ import { KIND_WIDE_IDENTITY } from "../../../shared/approval-scope"
 import { listApprovals } from "../../db/repositories/approvals"
 import { getConversationSummary } from "../../db/repositories/conversation-summaries"
 import { readGitBranch } from "../../index/metadata"
-import { LocalEnvironment } from "../env/local"
 import { resolveModelLabel } from "../providers"
 import type { LlmSelection } from "../providers"
 import type { ContextSection } from "./context-builder"
 import { SECTION_PRIORITY } from "./context-builder"
 import type { BrowserState } from "../../browser/manager"
+import type { SessionStatus } from "../../electron-apps/manager"
 
 // Renderers for the ContextBuilder's droppable sections (plan 014). Each returns
 // a ContextSection or null (omitted). The builder budgets + composes them; these
@@ -102,6 +102,28 @@ export function browserStateSection(
       channel: "runtime",
       source: "browser_state",
     },
+  }
+}
+
+// Live Electron app sessions (plan 119), so a closed or crashed app is never
+// described as running from history. Host-derived fields only: window titles
+// and URLs are app content and stay in tool results.
+export function electronStateSection(sessions: SessionStatus[]): ContextSection {
+  const lines = sessions.map(
+    (s) =>
+      `- ${s.sessionId}: ${s.state}, entry ${s.entry}, ${s.windows.length} window(s)`
+  )
+  return {
+    name: "electron_state",
+    priority: SECTION_PRIORITY.electronState,
+    content:
+      "## Electron app sessions\n" +
+      (lines.length
+        ? "Authoritative current state of the apps this conversation launched:\n" +
+          lines.join("\n")
+        : "No Electron app launched by this conversation is running. If the history mentions one, it has since ended.") +
+      "\nTo run or verify a workspace Electron app, use the electron_* tools, not Electron/Playwright scripts via exec_command. Build it first if needed, then electron_launch. Explore with electron_snapshot/electron_interact; once the behavior is known, encode it as an electron_run check (a workspace .json file can be rerun). Use electron_handoff for native dialogs, menus or sign-in. Packaged apps are unsupported. Close apps you no longer need.",
+    provenance: { trust: "system", channel: "runtime", source: "electron_state" },
   }
 }
 
@@ -203,41 +225,23 @@ export function summarySection(conversationId: string): ContextSection | null {
   }
 }
 
-// Run a short git command in `cwd` and return its trimmed stdout, or null if it
-// fails (non-zero exit, timeout, git missing). Uses the host environment's exec —
-// the same spawn/capture path the shell tool uses — with a tight timeout and byte
-// cap so gathering context can never hang or flood the prompt. Read-only git
-// plumbing, so it runs directly here (not through the approval gate, which is for
-// the agent's own tool calls).
-async function runGit(cwd: string, args: string): Promise<string | null> {
-  try {
-    const env = new LocalEnvironment(cwd)
-    const res = await env.exec(`git ${args}`, {
-      cwd,
-      timeoutMs: 3000,
-      maxOutputBytes: 4096,
-    })
-    if (res.exitCode !== 0 || res.timedOut) return null
-    return res.stdout.toString("utf8").trim()
-  } catch {
-    return null
-  }
-}
-
 // Dynamic per-turn environment orientation (mirrors the "# Environment" / git
 // blocks a coding harness bakes in, but assembled fresh each turn from what's
 // actually true). Composes only the parts that apply, so nothing here is a
 // stale snapshot or a claim about a capability the session lacks:
-//   - date + time + model: always (model omitted if it can't be resolved).
+//   - date + model: always (model omitted if it can't be resolved).
 //   - platform + workspace line: only when a workspace path is present — platform
 //     matters only when the agent can run commands, which chat can't.
-//   - git block (branch + short status + recent commits): only when the workspace
-//     is a git repo (readGitBranch reads .git/HEAD and returns null otherwise),
-//     and only the sub-lines whose git command succeeded.
+//   - git branch: only when the workspace is a git repo (readGitBranch reads
+//     .git/HEAD and returns null otherwise).
+// No time, git status or recent commits: this lands in the system prompt, and a
+// line that changes every turn (or every edit) invalidates the provider's prompt
+// cache and replayable thinking for the whole history. The agent can run git
+// itself when it needs the live state.
 // Date is always present so this never returns null in practice; the `| null`
-// return keeps it uniform with the other section renderers. Async because git
-// needs a shell — render it before ContextBuilder.build(), which takes
-// pre-rendered sections.
+// return keeps it uniform with the other section renderers. Async because
+// readGitBranch reads from disk — render it before ContextBuilder.build(), which
+// takes pre-rendered sections.
 export async function environmentSection(opts: {
   workspacePath?: string
   llmSelection?: LlmSelection
@@ -247,7 +251,6 @@ export async function environmentSection(opts: {
 
   const now = opts.now ?? new Date()
   lines.push(`- Date: ${now.toLocaleDateString()}`)
-  lines.push(`- Time: ${now.toLocaleTimeString()}`)
 
   const model = resolveModelLabel(opts.llmSelection)
   if (model) lines.push(`- Model: ${model}`)
@@ -256,8 +259,7 @@ export async function environmentSection(opts: {
     lines.push(`- Platform: ${process.platform}`)
     lines.push(`- Workspace: ${opts.workspacePath}`)
 
-    // Git block — only for a real repo. readGitBranch is the zero-dependency
-    // repo check; when it resolves, layer on status + recent commits best-effort.
+    // Branch only — readGitBranch is the zero-dependency repo check.
     const branch = await readGitBranch(opts.workspacePath)
     if (branch) {
       const v = branch.value as
@@ -269,18 +271,6 @@ export async function environmentSection(opts: {
           ? `detached at ${v.sha}`
           : "unknown"
       lines.push(`- Git branch: ${branchLabel}`)
-
-      // Distinguish empty output (clean tree) from a failed command (null): only
-      // claim "clean" when git actually succeeded and returned nothing.
-      const status = await runGit(opts.workspacePath, "status --short")
-      if (status !== null) {
-        lines.push(
-          status.length > 0 ? `- Git status:\n${status}` : "- Git status: clean"
-        )
-      }
-
-      const log = await runGit(opts.workspacePath, "log -5 --oneline")
-      if (log) lines.push(`- Recent commits:\n${log}`)
     }
   }
 

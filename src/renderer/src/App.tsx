@@ -10,12 +10,14 @@ import {
 } from "react"
 import type { KeyboardEvent } from "react"
 import { toast } from "sonner"
+import { normalizeWorkflowResults } from "../../shared/workflow-result"
 import {
   ArrowLeft,
   ArrowUp,
   Bot,
   BrainCircuit,
   ChevronDown,
+  Gauge,
   ChevronUp,
   ClipboardList,
   FileText,
@@ -73,6 +75,11 @@ import {
   SettledTranscript,
   type LiveSegment,
 } from "@/components/transcript"
+import {
+  ArtifactChoiceContext,
+  type ArtifactChoice,
+} from "@/components/conversation-artifact"
+import { withUiConceptChoice } from "../../shared/conversation-artifacts"
 import { QuestionPanel } from "@/components/question-panel"
 import { applyStreamAttempt } from "@/lib/live-stream"
 import { createTokenBatcher } from "@/lib/token-batcher"
@@ -113,7 +120,7 @@ import {
   type ToolUse,
 } from "@/lib/timeline"
 import { cn } from "@/lib/utils"
-import { firstTextTimestamp, liveMessageContent } from "@/lib/live-message"
+import { liveMessageContent } from "@/lib/live-message"
 import { maybeNotify } from "@/lib/notify"
 import {
   EMPTY_CHAT_SUCCESS_ERROR,
@@ -153,9 +160,18 @@ import type {
 // `liveTurns` until the turn settles and reconciles into the persisted timeline.
 // A pending approval lives inside a tools segment (on the matching call's
 // `approval`), so restoring a switched-away turn restores its approval card too.
+import type { SteeringState } from "../../shared/steering"
+import {
+  effortLabel,
+  effortOrDefault,
+  type ReasoningEffort,
+} from "../../shared/reasoning-effort"
+
 interface LiveTurn {
   segments: LiveSegment[]
-  firstTextAt: number | null
+  // When the turn began, for the live elapsed timer (null when this renderer
+  // didn't see the turn start, e.g. a resumed stream).
+  startedAt: number | null
   streamCheckpoints: Record<string, LiveSegment[]>
   streamRetrying: boolean
   question: { requestId: string; questions: Question[] } | null
@@ -163,7 +179,7 @@ interface LiveTurn {
 }
 const EMPTY_LIVE: LiveTurn = {
   segments: [],
-  firstTextAt: null,
+  startedAt: null,
   streamCheckpoints: {},
   streamRetrying: false,
   question: null,
@@ -216,12 +232,10 @@ function agentSourceLabel(sourceKind: string, systemName: string): string {
 // last event was also text (so a token stream coalesces), otherwise starts a new
 // text segment after a tools group — which is what creates the interleaving.
 function appendLiveText(turn: LiveTurn, delta: string): LiveTurn {
-  const firstTextAt = firstTextTimestamp(turn.firstTextAt, delta)
   const last = turn.segments[turn.segments.length - 1]
   if (last?.kind === "text") {
     return {
       ...turn,
-      firstTextAt,
       segments: [
         ...turn.segments.slice(0, -1),
         { kind: "text", text: last.text + delta },
@@ -230,8 +244,23 @@ function appendLiveText(turn: LiveTurn, delta: string): LiveTurn {
   }
   return {
     ...turn,
-    firstTextAt,
     segments: [...turn.segments, { kind: "text", text: delta }],
+  }
+}
+
+// Append streamed reasoning, coalescing into a trailing reasoning segment the
+// same way text does; a text or tool event in between starts a new one.
+function appendLiveReasoning(turn: LiveTurn, delta: string): LiveTurn {
+  const last = turn.segments[turn.segments.length - 1]
+  return {
+    ...turn,
+    segments:
+      last?.kind === "reasoning"
+        ? [
+            ...turn.segments.slice(0, -1),
+            { kind: "reasoning", text: last.text + delta },
+          ]
+        : [...turn.segments, { kind: "reasoning", text: delta }],
   }
 }
 
@@ -271,6 +300,14 @@ function sourceModelToken(agent: AgentSummary): string | null {
 // event was also a tool (back-to-back calls in one round group together, like
 // buildTimeline groups an assistant message's calls), else opens a new group.
 function addLiveToolStart(turn: LiveTurn, call: ToolUse): LiveTurn {
+  if (
+    turn.segments.some(
+      (segment) =>
+        segment.kind === "tools" &&
+        segment.calls.some((existing) => existing.id === call.id)
+    )
+  )
+    return turn
   const last = turn.segments[turn.segments.length - 1]
   if (last?.kind === "tools") {
     return {
@@ -372,7 +409,19 @@ function formatPickedElement(el: PickedElement): string {
   return `[User pointed at a browser element — ${parts.join(", ")}]`
 }
 
+export type WorkflowConversationContext = {
+  key: string
+  generation: object
+  workspace: string
+  projectId: string | null
+  ready: boolean
+}
+
 export type AppHandle = {
+  appendWorkflowResult: (
+    text: string,
+    context: WorkflowConversationContext
+  ) => boolean
   appendTerminalSelection: (text: string) => void
   appendFileSelection: (selection: {
     path: string
@@ -415,6 +464,8 @@ type AppProps = {
   // Report the active conversation's workspace root up to the Shell (the sidebar
   // Files tab + browser opens need it for workspace access and file:// URLs).
   onWorkspaceChange?: (workspace: string) => void
+  workflowDraftKey?: string
+  onWorkflowContextChange?: (context: WorkflowConversationContext) => void
   // Open the sidebar Files tab for a turn's changed files.
   onReviewFiles?: () => void
   // Open an html changed-file in the sidebar agent browser.
@@ -446,6 +497,8 @@ function App(
     settingsOpen,
     rightPanelOpen,
     onWorkspaceChange,
+    workflowDraftKey = "draft",
+    onWorkflowContextChange,
     onReviewFiles,
     onOpenHtml,
     onRanInBackground,
@@ -467,6 +520,82 @@ function App(
   const systemName = system.displayName
 
   const [workspace, setWorkspace] = useState("")
+  const workflowKey = conversationId ?? workflowDraftKey
+  const workspaceResolutionKey = useMemo(
+    () => ({}),
+    [workflowKey, pendingProjectId]
+  )
+  const [resolvedWorkspaceKey, setResolvedWorkspaceKey] = useState<
+    object | null
+  >(null)
+  const workflowGeneration = useMemo(
+    () => ({}),
+    [workflowKey, pendingProjectId, isChat, workspace]
+  )
+  const [workflowContext, setWorkflowContext] =
+    useState<WorkflowConversationContext | null>(null)
+  const workflowContextRef = useRef<WorkflowConversationContext | null>(null)
+  const currentWorkflowContext =
+    workflowContext?.generation === workflowGeneration &&
+    resolvedWorkspaceKey === workspaceResolutionKey
+      ? workflowContext
+      : null
+  workflowContextRef.current = currentWorkflowContext
+  useEffect(() => {
+    let cancelled = false
+    const base: WorkflowConversationContext = {
+      key: workflowKey,
+      generation: workflowGeneration,
+      workspace: "",
+      projectId: null,
+      ready: false,
+    }
+    onWorkflowContextChange?.(base)
+    async function resolve() {
+      if (resolvedWorkspaceKey !== workspaceResolutionKey) return
+      const conversation = conversationId
+        ? await window.cowork.db.conversations.get(conversationId)
+        : null
+      if (conversationId && !conversation)
+        throw new Error("Conversation unavailable")
+      const projectId = conversation?.projectId ?? pendingProjectId
+      const project = projectId
+        ? await window.cowork.db.projects.get(projectId)
+        : null
+      if (projectId && !project) throw new Error("Project unavailable")
+      // The settled composer workspace is what chat sends; never re-derive it.
+      const path = workspace.trim()
+      if (!cancelled) {
+        const next = {
+          ...base,
+          projectId,
+          workspace: isChat ? "" : path,
+          ready: true,
+        }
+        setWorkflowContext(next)
+        onWorkflowContextChange?.(next)
+      }
+    }
+    void resolve().catch(() => {
+      if (!cancelled) {
+        setWorkflowContext(base)
+        onWorkflowContextChange?.(base)
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [
+    workflowGeneration,
+    workflowKey,
+    conversationId,
+    pendingProjectId,
+    isChat,
+    workspace,
+    onWorkflowContextChange,
+    resolvedWorkspaceKey,
+    workspaceResolutionKey,
+  ])
   const [parentConversation, setParentConversation] = useState<{
     id: string
     title: string | null
@@ -477,6 +606,16 @@ function App(
   // project, not a per-conversation pick.
   const [lockedWorkspace, setLockedWorkspace] = useState(false)
   const [attachments, setAttachments] = useState<string[]>([])
+  const [draggingFiles, setDraggingFiles] = useState(false)
+  const fileDragDepth = useRef(0)
+  const attachmentContext = `${view}:${conversationId ?? "draft"}`
+  const attachmentContextRef = useRef(attachmentContext)
+  attachmentContextRef.current = attachmentContext
+  useEffect(() => {
+    fileDragDepth.current = 0
+    setDraggingFiles(false)
+    setAttachments([])
+  }, [attachmentContext])
   const [message, setMessage] = useState("")
   // Agent mode: controls how the agent behaves on workspace views.
   //   "default" — normal operation, confirms gated actions with the user.
@@ -645,6 +784,39 @@ function App(
   // spinner with no approval card and no way to send (the session-bleed bug).
   // Each entry is dropped when its turn settles (reconciled into `timeline`).
   const [liveTurns, setLiveTurns] = useState<Map<string, LiveTurn>>(new Map())
+  const [steering, setSteering] = useState<Map<string, SteeringState>>(
+    new Map()
+  )
+  const [queueing, setQueueing] = useState(false)
+  const queueingRef = useRef(false)
+  const steeringRef = useRef(steering)
+  steeringRef.current = steering
+  const steeringVersion = useRef(new Map<string, number>())
+  const applySteeringState = (id: string, state: SteeringState) => {
+    steeringVersion.current.set(id, (steeringVersion.current.get(id) ?? 0) + 1)
+    setSteering((previous) => new Map(previous).set(id, state))
+  }
+  async function refreshSteering(id: string) {
+    const version = steeringVersion.current.get(id) ?? 0
+    const state = await window.cowork.chatSteeringState(id)
+    if ((steeringVersion.current.get(id) ?? 0) === version)
+      applySteeringState(id, state)
+  }
+  useEffect(() => {
+    if (!conversationId || !window.cowork.chatSteeringState) return
+    void refreshSteering(conversationId).catch(() => {})
+  }, [conversationId])
+  async function cancelQueuedSteering(id: string) {
+    if (!conversationId) return
+    try {
+      await window.cowork.chatCancelSteering(conversationId, id)
+      await refreshSteering(conversationId)
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not cancel message"
+      )
+    }
+  }
   // Surface the running set to the Shell (for the sidebar's per-row spinner)
   // whenever it changes.
   useEffect(() => {
@@ -684,10 +856,30 @@ function App(
     []
   )
   useEffect(() => () => liveTokens.dispose(), [liveTokens])
+  // Reasoning is batched the same way. Each batcher is flushed before the other
+  // takes a delta, so reasoning and text keep their arrival order.
+  const liveReasoning = useMemo(
+    () =>
+      createTokenBatcher((batch) =>
+        setLiveTurns((prev) => {
+          const next = new Map(prev)
+          for (const [convoId, text] of batch) {
+            next.set(
+              convoId,
+              appendLiveReasoning(prev.get(convoId) ?? EMPTY_LIVE, text)
+            )
+          }
+          return next
+        })
+      ),
+    []
+  )
+  useEffect(() => () => liveReasoning.dispose(), [liveReasoning])
   // Mutate one conversation's live turn immutably; seeds an empty turn if absent.
   // Buffered tokens land first so every other update keeps its stream order.
   const updateLive = useCallback(
     (convoId: string, fn: (prev: LiveTurn) => LiveTurn) => {
+      liveReasoning.flush()
       liveTokens.flush()
       setLiveTurns((prev) => {
         const next = new Map(prev)
@@ -695,12 +887,13 @@ function App(
         return next
       })
     },
-    [liveTokens]
+    [liveTokens, liveReasoning]
   )
   // Drop one conversation's live turn (its content has been reconciled into the
   // persisted transcript, or the turn is being restarted).
   const clearLive = useCallback(
     (convoId: string) => {
+      liveReasoning.flush()
       liveTokens.flush()
       setLiveTurns((prev) => {
         if (!prev.has(convoId)) return prev
@@ -709,7 +902,7 @@ function App(
         return next
       })
     },
-    [liveTokens]
+    [liveTokens, liveReasoning]
   )
 
   // All providers + their models (for the composer's grouped picker) and the
@@ -726,6 +919,10 @@ function App(
   // create() on first send. Null fields fall back to the default.
   const [selAccountId, setSelAccountId] = useState<string | null>(null)
   const [selModelId, setSelModelId] = useState<string | null>(null)
+  // This conversation's reasoning effort (null = the provider's default), and
+  // the levels the effective model accepts (empty = no effort picker).
+  const [selEffort, setSelEffort] = useState<ReasoningEffort | null>(null)
+  const [effortLevels, setEffortLevels] = useState<ReasoningEffort[]>([])
 
   const reloadLlm = useCallback(async () => {
     const [list, dflt] = await Promise.all([
@@ -778,6 +975,19 @@ function App(
   const effectiveIsCli =
     effectiveAccount?.account.provider === "claude_code" ||
     effectiveAccount?.account.provider === "codex_cli"
+  // The level requests will use, as the adapters resolve it.
+  const shownEffort = effortOrDefault(selEffort, effortLevels)
+  useEffect(() => {
+    setEffortLevels([])
+    if (!effAccountId || !effModelId) return
+    let cancelled = false
+    void window.cowork.providers
+      .effortLevels(effAccountId, effModelId)
+      .then((levels) => !cancelled && setEffortLevels(levels))
+    return () => {
+      cancelled = true
+    }
+  }, [effAccountId, effModelId])
 
   // The conversation the panel is currently showing. Updated synchronously when
   // the prop changes (in the load effect) so streaming callbacks can tell, at the
@@ -821,6 +1031,9 @@ function App(
           reportTokens.push(id, payload.event.delta)
           return
         }
+        // Completion reports show only their text.
+        if (payload.type !== "started" && payload.event.type === "reasoning")
+          return
         reportTokens.flush()
         if (payload.type === "started") {
           reportGenerationRef.current.set(
@@ -831,7 +1044,8 @@ function App(
         setReportTurns((prev) => {
           const next = new Map(prev)
           const turn = prev.get(id) ?? EMPTY_LIVE
-          if (payload.type === "started") next.set(id, EMPTY_LIVE)
+          if (payload.type === "started")
+            next.set(id, { ...EMPTY_LIVE, startedAt: Date.now() })
           else if (payload.event.type === "stream_attempt") {
             next.set(id, applyStreamAttempt(turn, payload.event))
           }
@@ -881,14 +1095,24 @@ function App(
   // Chat needs only a message (a file is optional); the workspace views need a
   // selected folder as well. All views need an LLM selection.
   const canSend =
-    !!message.trim() && !loading && hasLlm && (isChat || !!workspace.trim())
-  const sendUnavailableReason = !message.trim()
-    ? "Enter a message first"
-    : !hasLlm
-      ? "Choose a model before sending"
-      : !isChat && !workspace.trim()
-        ? "Select a workspace folder before sending"
-        : null
+    !!message.trim() &&
+    (!loading ||
+      (!effectiveIsCli && !!steering.get(conversationId ?? "")?.runId)) &&
+    !queueing &&
+    hasLlm &&
+    (isChat || !!workspace.trim()) &&
+    !(effectiveIsCli && attachments.length > 0)
+  const canRunInBackground = canSend && !loading && attachments.length === 0
+  const sendUnavailableReason =
+    effectiveIsCli && attachments.length > 0
+      ? "Attachments are not supported by CLI providers. Choose another model or remove the files."
+      : !message.trim()
+        ? "Enter a message first"
+        : !hasLlm
+          ? "Choose a model before sending"
+          : !isChat && !workspace.trim()
+            ? "Select a workspace folder before sending"
+            : null
 
   // Subscribe to elements picked in the agent browser. Each pick APPENDS a chip
   // (sticky picker button, or Alt/Option+click on a live page), so several can be
@@ -916,6 +1140,7 @@ function App(
     // flag) so we don't wipe the in-flight stream the user is watching.
     if (conversationId && justCreatedRef.current === conversationId) {
       justCreatedRef.current = null
+      setResolvedWorkspaceKey(workspaceResolutionKey)
       return
     }
     // Existing conversations retain their session-scoped mode while offscreen.
@@ -935,77 +1160,99 @@ function App(
       // A fresh conversation starts from the default selection (null = inherit).
       setSelAccountId(null)
       setSelModelId(null)
+      setSelEffort(null)
       // No custom agent by default (null = built-in main agent).
       setSelAgentName(null)
       // If starting in a project that has a directory, adopt + lock it; otherwise
       // clear the picker (unassigned / directory-less project).
       if (pendingProjectId) {
-        void window.cowork.db.projects.get(pendingProjectId).then(async (p) => {
-          if (cancelled) return
-          if (p?.workspaceId) {
-            const ws = await window.cowork.db.workspaces.list()
-            const match = ws.find((w) => w.id === p.workspaceId)
+        void window.cowork.db.projects
+          .get(pendingProjectId)
+          .then(async (p) => {
             if (cancelled) return
-            setWorkspace(match?.path ?? "")
-            setLockedWorkspace(!!match)
-          } else {
-            setWorkspace("")
-            setLockedWorkspace(false)
-          }
-        })
+            if (p?.workspaceId) {
+              const ws = await window.cowork.db.workspaces.list()
+              const match = ws.find((w) => w.id === p.workspaceId)
+              if (cancelled) return
+              setWorkspace(match?.path ?? "")
+              setLockedWorkspace(!!match)
+            } else {
+              setWorkspace("")
+              setLockedWorkspace(false)
+            }
+            setResolvedWorkspaceKey(workspaceResolutionKey)
+          })
+          .catch(() => {
+            if (!cancelled) setResolvedWorkspaceKey(null)
+          })
       } else {
         setWorkspace("")
         setLockedWorkspace(false)
+        setResolvedWorkspaceKey(workspaceResolutionKey)
       }
-      return
+      return () => {
+        cancelled = true
+      }
     }
     setLoadedConversationId(null)
     Promise.all([
       window.cowork.db.messages.list(conversationId),
       window.cowork.db.conversations.get(conversationId),
-    ]).then(async ([rows, convo]) => {
-      if (cancelled) return
-      setTimeline(buildTimeline(rows))
-      setLoadedConversationId(conversationId)
-      setAttachments([])
-      // Restore the conversation's own model selection (null falls back to default).
-      setSelAccountId(convo?.accountId ?? null)
-      setSelModelId(convo?.modelId ?? null)
-      // Restore the conversation's selected custom agent (null = main agent).
-      setSelAgentName(convo?.agentName ?? null)
-      // If the conversation belongs to a project with a directory, that directory
-      // is the source of truth and the picker is locked. Otherwise fall back to
-      // the conversation's own workspace_id (legacy / unassigned).
-      let locked = false
-      if (convo?.projectId) {
-        const project = await window.cowork.db.projects.get(convo.projectId)
+    ])
+      .then(async ([rows, convo]) => {
         if (cancelled) return
-        if (project?.workspaceId) {
-          const ws = await window.cowork.db.workspaces.list()
-          const match = ws.find((w) => w.id === project.workspaceId)
+        setTimeline(buildTimeline(rows))
+        setLoadedConversationId(conversationId)
+        setAttachments([])
+        // Restore the conversation's own model selection (null falls back to default).
+        setSelAccountId(convo?.accountId ?? null)
+        setSelModelId(convo?.modelId ?? null)
+        setSelEffort(convo?.effort ?? null)
+        // Restore the conversation's selected custom agent (null = main agent).
+        setSelAgentName(convo?.agentName ?? null)
+        // If the conversation belongs to a project with a directory, that directory
+        // is the source of truth and the picker is locked. Otherwise fall back to
+        // the conversation's own workspace_id (legacy / unassigned).
+        let locked = false
+        if (convo?.projectId) {
+          const project = await window.cowork.db.projects.get(convo.projectId)
           if (cancelled) return
-          setWorkspace(match?.path ?? "")
-          locked = !!match
+          if (project?.workspaceId) {
+            const ws = await window.cowork.db.workspaces.list()
+            const match = ws.find((w) => w.id === project.workspaceId)
+            if (cancelled) return
+            setWorkspace(match?.path ?? "")
+            locked = !!match
+          }
         }
-      }
-      setLockedWorkspace(locked)
-      if (!locked) {
-        // A Mission Control worker works in a worktree of its workspace.
-        if (convo?.workingDirectory) {
-          setWorkspace(convo.workingDirectory)
-        } else if (convo?.workspaceId) {
-          const ws = await window.cowork.db.workspaces.list()
-          const match = ws.find((w) => w.id === convo.workspaceId)
-          if (!cancelled) setWorkspace(match?.path ?? "")
-        } else {
-          setWorkspace("")
+        setLockedWorkspace(locked)
+        if (!locked) {
+          // A Mission Control worker works in a worktree of its workspace.
+          if (convo?.workingDirectory) {
+            setWorkspace(convo.workingDirectory)
+          } else if (convo?.workspaceId) {
+            const ws = await window.cowork.db.workspaces.list()
+            const match = ws.find((w) => w.id === convo.workspaceId)
+            if (!cancelled) setWorkspace(match?.path ?? "")
+          } else {
+            setWorkspace("")
+          }
         }
-      }
-    })
+        if (!cancelled) setResolvedWorkspaceKey(workspaceResolutionKey)
+      })
+      .catch(() => {
+        if (!cancelled) setResolvedWorkspaceKey(null)
+      })
     return () => {
       cancelled = true
     }
-  }, [conversationId, pendingProjectId, setAgentModeFor])
+  }, [
+    conversationId,
+    pendingProjectId,
+    workflowDraftKey,
+    workspaceResolutionKey,
+    setAgentModeFor,
+  ])
 
   // Fetch the skill catalog for the slash menu. Extracted so it can be re-run on
   // demand (see below): the main process reads skills fresh from disk every turn,
@@ -1163,6 +1410,18 @@ function App(
     })
   }, [])
 
+  const appendArtifactChoice = useCallback((choice: ArtifactChoice) => {
+    setMessage((prev) =>
+      withUiConceptChoice(
+        prev,
+        choice.artifactId,
+        choice.revision,
+        choice.alternative
+      )
+    )
+    requestAnimationFrame(() => textareaRef.current?.focus())
+  }, [])
+
   const appendFileSelection = useCallback(
     (selection: {
       path: string
@@ -1202,6 +1461,18 @@ function App(
   useImperativeHandle(
     ref,
     () => ({
+      appendWorkflowResult: (text, context) => {
+        if (
+          workflowContextRef.current?.generation !== context.generation ||
+          workflowContextRef.current?.key !== context.key
+        )
+          return false
+        setMessage((prev) => (prev.trim() ? `${prev}\n\n${text}` : text))
+        setMenu(null)
+        setMenuActive(null)
+        requestAnimationFrame(() => textareaRef.current?.focus())
+        return true
+      },
       appendTerminalSelection,
       appendFileSelection,
       prepareComposerTransition,
@@ -1267,6 +1538,27 @@ function App(
     })
   }
 
+  useEffect(() => {
+    function cancelOnEscape(event: globalThis.KeyboardEvent) {
+      if (
+        event.key !== "Escape" ||
+        event.defaultPrevented ||
+        menuOpen ||
+        document.querySelector(
+          '[role="dialog"], [role="alertdialog"], [role="menu"]'
+        )
+      )
+        return
+      const pending = steering.get(conversationId ?? "")?.messages.at(-1)
+      if (pending) {
+        event.preventDefault()
+        void cancelQueuedSteering(pending.id)
+      }
+    }
+    window.addEventListener("keydown", cancelOnEscape)
+    return () => window.removeEventListener("keydown", cancelOnEscape)
+  }, [conversationId, steering, menuOpen])
+
   // Keyboard handling for the composer. When the menu is open, intercept
   // navigation/selection keys BEFORE the Enter-to-send path below; otherwise
   // fall through to the existing send behavior.
@@ -1293,8 +1585,18 @@ function App(
       }
       if (e.key === "Escape") {
         e.preventDefault()
+        e.stopPropagation()
         setMenu(null)
         setMenuActive(null)
+        return
+      }
+    }
+    if (e.key === "Escape") {
+      const pending = steering.get(conversationId ?? "")?.messages.at(-1)
+      if (pending) {
+        e.preventDefault()
+        e.stopPropagation()
+        void cancelQueuedSteering(pending.id)
         return
       }
     }
@@ -1309,6 +1611,7 @@ function App(
     try {
       const data = await window.cowork.pickWorkspace()
       if (data.path) {
+        setResolvedWorkspaceKey(null)
         setWorkspace(data.path)
         // If a conversation already exists, record the workspace on it now;
         // otherwise it's linked when the conversation is created on first send.
@@ -1319,22 +1622,51 @@ function App(
           })
           onConversationChanged()
         }
+        setResolvedWorkspaceKey(workspaceResolutionKey)
       }
     } catch (error) {
       pushError(error)
     }
   }
 
+  function addAttachments(paths: string[]) {
+    setAttachments((prev) => [...new Set([...prev, ...paths])])
+  }
+
   async function attachFiles() {
+    const context = attachmentContextRef.current
     try {
       const data = await window.cowork.pickFiles()
-      if (data.paths?.length) {
-        // Merge with existing, de-duplicating by path.
-        setAttachments((prev) => [...new Set([...prev, ...data.paths!])])
-      }
+      if (context !== attachmentContextRef.current) return
+      if (data.paths?.length) addAttachments(data.paths)
     } catch (error) {
-      pushError(error)
+      if (context === attachmentContextRef.current) pushError(error)
     }
+  }
+
+  function dropFiles(event: React.DragEvent) {
+    fileDragDepth.current = 0
+    setDraggingFiles(false)
+    if (!Array.from(event.dataTransfer.types).includes("Files")) return
+    event.preventDefault()
+    const paths: string[] = []
+    let failed = false
+    for (const file of Array.from(event.dataTransfer.files)) {
+      try {
+        const path = window.cowork.getPathForFile(file)
+        if (path) paths.push(path)
+        else failed = true
+      } catch {
+        failed = true
+      }
+    }
+    addAttachments(paths)
+    if (failed)
+      pushError(
+        new Error(
+          "Could not read a dropped file's path. Try the Attach files button instead."
+        )
+      )
   }
 
   // Surface a picker failure as an assistant text item in the transcript.
@@ -1500,7 +1832,9 @@ function App(
     // Expand confirmed file mentions before sending, so the model gets bare
     // workspace paths (`@src/foo.ts` → `src/foo.ts`). Skill mentions stay literal
     // in the transcript and are sent separately as deterministic invocations.
-    const base = expandMentions(message, confirmedMentions).trim()
+    const base = normalizeWorkflowResults(
+      expandMentions(message, confirmedMentions).trim()
+    )
     // Prepend a descriptor per picked element (if any) so the agent knows exactly
     // which on-page element(s) the user is pointing at. It can act on each two
     // ways: edit the source that renders it (grep the selector/text), or
@@ -1511,6 +1845,39 @@ function App(
         ? `${pickedElements.map(formatPickedElement).join("\n")}\n\n${base}`
         : base
     const sentAttachments = bashBlock ? [] : attachments
+    if (loading && !bashBlock && conversationId) {
+      const runId = steeringRef.current.get(conversationId)?.runId
+      if (!runId || queueingRef.current) return
+      queueingRef.current = true
+      setQueueing(true)
+      const target = conversationId
+      try {
+        await window.cowork.chatSteer(target, runId, {
+          id: crypto.randomUUID(),
+          message: text,
+          attachments: sentAttachments,
+          skills: [...confirmedSkills],
+        })
+        if (viewingRef.current === target) {
+          setMessage((draft) => (draft === message ? "" : draft))
+          setConfirmedSkills(new Set())
+          setConfirmedFiles(new Set())
+          setMenu(null)
+          setMenuActive(null)
+          setAttachments([])
+          setPickedElements([])
+        }
+        await refreshSteering(target)
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : "Could not queue message"
+        )
+      } finally {
+        queueingRef.current = false
+        setQueueing(false)
+      }
+      return
+    }
 
     // Ensure a conversation exists — created lazily on first send. For
     // workspace views, link the picked workspace at creation time.
@@ -1531,6 +1898,7 @@ function App(
         // the default" — only store an explicit pick that differs from default.
         accountId: selAccountId,
         modelId: selModelId,
+        effort: selEffort,
         // Persist the selected custom agent (null = built-in main agent).
         agentName: effectiveIsCli ? null : selAgentName,
       })
@@ -1558,7 +1926,9 @@ function App(
         kind: "text",
         key: `local-${turnConvoId}-${prev.length}`,
         role: "user",
-        content: text,
+        content: sentAttachments.length
+          ? `${text}\n\nAttached files: ${sentAttachments.map(lastSegment).join(", ")}`
+          : text,
         createdAt,
       },
     ])
@@ -1576,10 +1946,11 @@ function App(
     setTranscriptScroll((prev) => resetTranscriptScroll(prev, turnConvoId))
     // Start this conversation's live turn from a clean slate (its buffers are
     // keyed by conversation, so this never touches another conversation's turn).
+    liveReasoning.flush()
     liveTokens.flush()
     setLiveTurns((prev) => {
       const next = new Map(prev)
-      next.set(turnConvoId, EMPTY_LIVE)
+      next.set(turnConvoId, { ...EMPTY_LIVE, startedAt: Date.now() })
       return next
     })
     // Mark this conversation as streaming (per-conversation, so switching away
@@ -1602,9 +1973,9 @@ function App(
           conversationId: turnConvoId,
           message: text,
           bashBlock,
-          // Chat sends no workspace and inlines attachments instead.
+          // Chat has no workspace; explicit attachments work in every mode.
           workspace: isChat ? undefined : workspace.trim(),
-          attachments: isChat ? sentAttachments : undefined,
+          attachments: sentAttachments,
           skills: bashBlock ? [] : [...confirmedSkills],
           // Plan mode is interactive/north_star only (never Chat); auto mode is
           // available everywhere, including Chat (suppresses browser_navigate
@@ -1619,10 +1990,29 @@ function App(
         // turn that keeps streaming after the user switches away no longer loses
         // its tokens/tools/approval — they're preserved and restored on return.
         (event) => {
-          if (event.type === "stream_attempt") {
+          if (event.type === "steering_state") {
+            applySteeringState(turnConvoId, event.state)
+          } else if (event.type === "steering_delivered") {
+            liveTokens.flush()
+            updateLive(turnConvoId, (turn) => ({
+              ...turn,
+              segments: [
+                ...turn.segments,
+                {
+                  kind: "user",
+                  text: event.content,
+                  createdAt: event.createdAt,
+                },
+              ],
+            }))
+          } else if (event.type === "stream_attempt") {
             updateLive(turnConvoId, (turn) => applyStreamAttempt(turn, event))
           } else if (event.type === "token") {
+            liveReasoning.flush()
             liveTokens.push(turnConvoId, event.delta)
+          } else if (event.type === "reasoning") {
+            liveTokens.flush()
+            liveReasoning.push(turnConvoId, event.delta)
           } else if (event.type === "tool" && event.phase === "start") {
             // A tool started — add a running row (label derived from its args) to
             // the current tools segment, or open a new one after streamed text.
@@ -1636,6 +2026,13 @@ function App(
                 })
               )
             )
+          } else if (event.type === "command_output") {
+            updateLive(turnConvoId, (turn) =>
+              updateLiveTool(turn, event.id, (tool) => ({
+                ...tool,
+                commandLive: event.result,
+              }))
+            )
           } else if (event.type === "tool" && event.phase === "done") {
             // Its result arrived — attach it, clear any approval card, and flip
             // status (matched by id, wherever its segment is).
@@ -1643,8 +2040,9 @@ function App(
               updateLiveTool(turn, event.id, (t) => ({
                 ...t,
                 result: event.result,
-                media: event.media,
-                resultMessageId: event.messageId,
+                media: event.media ?? t.media,
+                artifact: event.artifact ?? t.artifact,
+                resultMessageId: event.messageId ?? t.resultMessageId,
                 conversationId: turnConvoId,
                 status: isErrorResult(event.result) ? "error" : "done",
                 label: deriveLabel(
@@ -1727,6 +2125,20 @@ function App(
                 ),
               }))
             }
+          } else if (event.type === "context_compacted") {
+            liveTokens.flush()
+            liveReasoning.flush()
+            const k = (n: number) => `${Math.round(n / 1000)}k`
+            updateLive(turnConvoId, (turn) => ({
+              ...turn,
+              segments: [
+                ...turn.segments,
+                {
+                  kind: "notice",
+                  text: `Context compacted (${event.tier === 1 ? "old tool results cleared" : "summarized"}): ~${k(event.before)} → ~${k(event.after)} tokens`,
+                },
+              ],
+            }))
           } else if (event.type === "command_wait") {
             updateLive(turnConvoId, (turn) => ({
               ...turn,
@@ -1856,7 +2268,7 @@ function App(
   // touch the transcript view here. Workspace-backed views only for now (Chat's
   // attachment-only path can come later).
   async function runInBackground() {
-    if (!canSend || isChat) return
+    if (!canRunInBackground || isChat) return
     if (!(await preflightExternalAgentModel("background"))) return
     const text = message.trim()
 
@@ -1876,6 +2288,7 @@ function App(
         projectId: pendingProjectId,
         accountId: selAccountId,
         modelId: selModelId,
+        effort: selEffort,
         agentName: effectiveIsCli ? null : selAgentName,
       })
       convoId = convo.id
@@ -2050,6 +2463,7 @@ function App(
       if (
         conversationId &&
         event.key.toLowerCase() === "f" &&
+        !event.shiftKey &&
         (window.cowork.platform === "darwin" ? event.metaKey : event.ctrlKey)
       ) {
         event.preventDefault()
@@ -2313,6 +2727,8 @@ function App(
   async function selectModel(accountId: string, modelId: string) {
     setSelAccountId(accountId)
     setSelModelId(modelId)
+    // Levels differ per model; a new model starts at its default.
+    setSelEffort(null)
     const cli = accountsWithModels.find(
       (entry) => entry.account.id === accountId
     )?.account.provider
@@ -2325,8 +2741,18 @@ function App(
       await window.cowork.db.conversations.update(conversationId, {
         accountId,
         modelId,
+        effort: null,
         ...(isCli ? { agentName: null } : {}),
       })
+    }
+  }
+  // Pick this conversation's reasoning effort (unset = medium, see
+  // effortOrDefault). Persisted like the model; carried into create() on first
+  // send otherwise.
+  async function selectEffort(effort: ReasoningEffort) {
+    setSelEffort(effort)
+    if (conversationId) {
+      await window.cowork.db.conversations.update(conversationId, { effort })
     }
   }
   // Select the custom agent for this conversation (null = built-in main agent).
@@ -2781,8 +3207,8 @@ function App(
           ))}
         </AttachmentGroup>
       )}
-      {/* Attachment cards (Chat only) — removable, shown above the input. */}
-      {isChat && attachments.length > 0 && (
+      {/* Removable files staged for the next message. */}
+      {attachments.length > 0 && (
         <AttachmentGroup className="mb-2">
           {attachments.map((path) => (
             <Attachment key={path} size="sm" title={path}>
@@ -2804,6 +3230,54 @@ function App(
           ))}
         </AttachmentGroup>
       )}
+      {steering.get(conversationId ?? "")?.messages.map((pending) => (
+        <div
+          key={pending.id}
+          className="mb-2 flex items-start gap-3 rounded-xl border border-input px-3 py-2 text-sm"
+          role="status"
+        >
+          <div className="min-w-0 flex-1">
+            <span className="text-xs text-muted-foreground">
+              {pending.status === "queued"
+                ? "Queued · sends after current tools finish"
+                : "Not sent · agent stopped"}
+            </span>
+            <p className="max-h-24 overflow-auto break-words whitespace-pre-wrap">
+              {pending.message}
+            </p>
+            {pending.status === "returned" && (
+              <button
+                type="button"
+                className="text-xs underline"
+                onClick={() => {
+                  setMessage((draft) =>
+                    [draft, pending.message].filter(Boolean).join("\n\n")
+                  )
+                  setAttachments((files) => [
+                    ...new Set([...files, ...pending.attachments]),
+                  ])
+                  setConfirmedSkills(
+                    (skills) => new Set([...skills, ...pending.skills])
+                  )
+                  void cancelQueuedSteering(pending.id)
+                }}
+              >
+                Restore draft
+              </button>
+            )}
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-6 shrink-0"
+            aria-label="Cancel queued message"
+            onClick={() => void cancelQueuedSteering(pending.id)}
+          >
+            <X className="size-3.5" />
+          </Button>
+        </div>
+      ))}
       <div
         ref={composerSurfaceRef}
         className="relative rounded-2xl border border-input bg-transparent focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50"
@@ -2857,17 +3331,16 @@ function App(
         </div>
         <div className="flex items-center justify-between px-2.5 pb-2.5">
           <div className="flex items-center gap-1">
-            {isChat ? (
-              <TooltipButton
-                tooltip="Attach files"
-                type="button"
-                onClick={attachFiles}
-                aria-label="Attach files"
-                className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              >
-                <Plus className="size-4" />
-              </TooltipButton>
-            ) : (
+            <TooltipButton
+              tooltip="Attach files"
+              type="button"
+              onClick={attachFiles}
+              aria-label="Attach files"
+              className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              <Plus className="size-4" />
+            </TooltipButton>
+            {!isChat && (
               <>
                 {lockedWorkspace ? (
                   // The directory comes from the conversation's project and can't
@@ -2913,6 +3386,41 @@ function App(
             )}
             {!rightPanelOpen && modelPicker}
             {rightPanelOpen && modelPickerCompact}
+            {!effectiveIsCli && shownEffort && (
+              <DropdownMenu>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        aria-label={`Reasoning effort: ${effortLabel(shownEffort)}`}
+                        className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                      >
+                        <Gauge className="size-4" />
+                        {!rightPanelOpen && (
+                          <span>{effortLabel(shownEffort)}</span>
+                        )}
+                        <ChevronDown className="size-3 shrink-0 opacity-60" />
+                      </button>
+                    </DropdownMenuTrigger>
+                  </TooltipTrigger>
+                  <TooltipContent>Reasoning effort</TooltipContent>
+                </Tooltip>
+                <DropdownMenuContent align="start">
+                  {effortLevels.map((level) => (
+                    <DropdownMenuItem
+                      key={level}
+                      onClick={() => void selectEffort(level)}
+                      className={cn(
+                        level === shownEffort && "bg-accent font-medium"
+                      )}
+                    >
+                      {effortLabel(level)}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
             {!effectiveIsCli && !rightPanelOpen && agentPicker}
             {!effectiveIsCli && rightPanelOpen && agentPickerCompact}
             {/* Agent mode dropdown. Per-conversation for this app session.
@@ -3045,17 +3553,19 @@ function App(
                   <TooltipTrigger asChild>
                     <span
                       className="inline-flex"
-                      role={!canSend ? "button" : undefined}
-                      aria-disabled={!canSend ? "true" : undefined}
-                      aria-label={!canSend ? "Run in background" : undefined}
-                      tabIndex={!canSend ? 0 : undefined}
+                      role={!canRunInBackground ? "button" : undefined}
+                      aria-disabled={!canRunInBackground ? "true" : undefined}
+                      aria-label={
+                        !canRunInBackground ? "Run in background" : undefined
+                      }
+                      tabIndex={!canRunInBackground ? 0 : undefined}
                     >
                       <Button
                         type="button"
                         size="icon"
                         variant="outline"
                         onClick={runInBackground}
-                        disabled={!canSend}
+                        disabled={!canRunInBackground}
                         aria-label="Run in background"
                         className="size-8 rounded-full"
                       >
@@ -3064,11 +3574,13 @@ function App(
                     </span>
                   </TooltipTrigger>
                   <TooltipContent>
-                    {sendUnavailableReason ?? "Run in background"}
+                    {attachments.length > 0
+                      ? "Attachments are not supported by background tasks. Send in this conversation instead."
+                      : (sendUnavailableReason ?? "Run in background")}
                   </TooltipContent>
                 </Tooltip>
               )}
-            {loading ? (
+            {loading && (!message.trim() || effectiveIsCli) ? (
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
@@ -3081,7 +3593,11 @@ function App(
                     <Square className="size-3.5 fill-current" />
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent>Stop</TooltipContent>
+                <TooltipContent>
+                  {effectiveIsCli && message.trim()
+                    ? "Stop to send a message. This CLI provider does not support safe-boundary steering."
+                    : "Stop"}
+                </TooltipContent>
               </Tooltip>
             ) : (
               <Tooltip>
@@ -3239,7 +3755,34 @@ function App(
     // Info/Browser/Changes toggle): the scroll region starts BELOW it, so
     // messages scrolling up are clipped at the bar's edge instead of passing
     // under it.
-    <div className="relative flex h-full w-full flex-col overflow-hidden pt-11">
+    <div
+      className="relative flex h-full w-full flex-col overflow-hidden pt-11"
+      data-conversation-drop-zone
+      onDragEnter={(event) => {
+        if (!Array.from(event.dataTransfer.types).includes("Files")) return
+        event.preventDefault()
+        fileDragDepth.current += 1
+        setDraggingFiles(true)
+      }}
+      onDragOver={(event) => {
+        if (!Array.from(event.dataTransfer.types).includes("Files")) return
+        event.preventDefault()
+        event.dataTransfer.dropEffect = "copy"
+      }}
+      onDragLeave={() => {
+        fileDragDepth.current = Math.max(0, fileDragDepth.current - 1)
+        if (fileDragDepth.current === 0) setDraggingFiles(false)
+      }}
+      onDrop={dropFiles}
+    >
+      {draggingFiles && (
+        <div
+          role="status"
+          className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center border-2 border-dashed border-primary bg-background/90 text-sm font-medium"
+        >
+          Drop files to attach to your next message
+        </div>
+      )}
       {conversationFindOpen && (
         <div className="absolute top-12 right-4 z-30 flex h-9 items-center gap-1 rounded-lg border bg-background p-1 shadow-md">
           <Search className="ml-1 size-3.5 text-muted-foreground" />
@@ -3380,33 +3923,35 @@ function App(
               ref={transcriptContentRef}
               className="mx-auto w-full max-w-[min(90%,72rem)] gap-4 px-4 py-6"
             >
-              <SettledTranscript
-                items={displayTimeline}
-                anchorLast={!loading && !suppressSettledAnchor}
-                findQuery={activeConversationFindQuery}
-                latestAssistantKey={latestSettledAssistantKey}
-                onRunBash={effectiveIsCli ? undefined : runTranscriptBash}
-                runDisabled={loading || !hasLlm || agentMode === "plan"}
-                workspace={transcriptWorkspace}
-                conversationId={conversationId ?? undefined}
-                onOpenHtml={openTranscriptHtml}
-                onReviewFiles={reviewTranscriptFiles}
-              />
-              {loading && (
-                <LiveTranscriptTurn
-                  key="live"
-                  segments={liveSegments}
-                  content={liveContent}
-                  firstTextAt={liveTurn?.firstTextAt ?? null}
-                  commandWait={liveTurn?.commandWait ?? false}
-                  streamRetrying={liveTurn?.streamRetrying ?? false}
+              <ArtifactChoiceContext.Provider value={appendArtifactChoice}>
+                <SettledTranscript
+                  items={displayTimeline}
+                  anchorLast={!loading && !suppressSettledAnchor}
                   findQuery={activeConversationFindQuery}
+                  latestAssistantKey={latestSettledAssistantKey}
+                  onRunBash={effectiveIsCli ? undefined : runTranscriptBash}
+                  runDisabled={loading || !hasLlm || agentMode === "plan"}
                   workspace={transcriptWorkspace}
                   conversationId={conversationId ?? undefined}
                   onOpenHtml={openTranscriptHtml}
                   onReviewFiles={reviewTranscriptFiles}
                 />
-              )}
+                {loading && (
+                  <LiveTranscriptTurn
+                    key="live"
+                    segments={liveSegments}
+                    content={liveContent}
+                    startedAt={liveTurn?.startedAt ?? null}
+                    commandWait={liveTurn?.commandWait ?? false}
+                    streamRetrying={liveTurn?.streamRetrying ?? false}
+                    findQuery={activeConversationFindQuery}
+                    workspace={transcriptWorkspace}
+                    conversationId={conversationId ?? undefined}
+                    onOpenHtml={openTranscriptHtml}
+                    onReviewFiles={reviewTranscriptFiles}
+                  />
+                )}
+              </ArtifactChoiceContext.Provider>
             </MessageScrollerContent>
           </MessageScrollerViewport>
           {/* Scroll-to-bottom button — self-manages its visibility. */}

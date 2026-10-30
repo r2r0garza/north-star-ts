@@ -4,7 +4,7 @@ import { readHostTextLines } from "../env/read-text-lines"
 import { supportedDocumentKind } from "./document_extraction_tool"
 import { renderMetadata, toolError } from "./output"
 import { HostFileError, openHostFile, resolveReadable } from "./host_files"
-import { renderContextEnvelope } from "../context/provenance"
+import { renderContextEnvelope } from "../../../shared/context-provenance"
 
 // Largest file we'll read into context. Matches the attachment cap in
 // agent/index.ts so the agent's two file-ingestion paths are bounded alike.
@@ -33,7 +33,7 @@ export const readFileTool: Tool = {
             description:
               "The file to read. In a workspace, a path relative to the workspace " +
               "root, or an activated skill resource URI like skill://name/path. " +
-              "In a Chat session, the name (or path) of one of the attached files.",
+              "In any mode, an exact absolute path of an attached file; without a workspace, a unique attachment filename also works.",
           },
           offset: {
             type: "integer",

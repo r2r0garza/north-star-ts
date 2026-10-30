@@ -44,6 +44,9 @@ export interface ContextUsageEntry {
   } | null
   request: {
     reported: number | null
+    // Of `reported`: prompt-cache reads and writes, when the provider says.
+    cached?: number | null
+    cacheWrite?: number | null
     estimated: number
     estimator: string
     // reported / estimated, when the provider sent usage.
@@ -61,6 +64,18 @@ export interface ContextUsageEntry {
     finishReason: string | null
   }
   outcome: ContextUsageOutcome
+  // In-turn compaction applied before this request (plan 118).
+  compaction?: {
+    tier: 1 | 2
+    before: number
+    after: number
+    clearedResults: number
+    // Cleared by the provider (Anthropic context editing); sizes are its
+    // reported input tokens rather than our estimate.
+    server?: boolean
+    summaryCoversThrough?: number | null
+    pinnedTokens?: number
+  }
 }
 
 export interface ContextUsageLog {
@@ -73,12 +88,16 @@ function kilo(tokens: number): string {
   return `${(tokens / 1000).toFixed(1)}k`
 }
 
-// `[ctx] round 17 · 48.2k in (reported) · 0.8k out` — one console line per
+// `[ctx] round 17 · 48.2k in (reported, 46.0k cached) · 0.8k out` — one console line per
 // round while running `pnpm dev`.
 export function formatContextUsageLine(entry: ContextUsageEntry): string {
+  const { cached, cacheWrite } = entry.request
+  const cache =
+    (typeof cached === "number" ? `, ${kilo(cached)} cached` : "") +
+    (cacheWrite ? `, ${kilo(cacheWrite)} cache write` : "")
   const inbound =
     entry.request.reported !== null
-      ? `${kilo(entry.request.reported)} in (reported)`
+      ? `${kilo(entry.request.reported)} in (reported${cache})`
       : `${kilo(entry.request.estimated)} in (est)`
   const outTokens = entry.response.reported ?? entry.response.estimated
   const outbound = outTokens !== null ? ` · ${kilo(outTokens)} out` : ""

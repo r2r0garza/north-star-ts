@@ -120,7 +120,6 @@ import { getBudget } from "../db/repositories/model-request-retry-budgets"
 import { generateTitle } from "./title"
 import { parseAgent } from "./agents/loader"
 import { SummaryService } from "../summaries/service"
-import { routeCandidates } from "../tasks/process/router"
 import { createTask } from "../db/repositories/tasks"
 import { getConversationSummary } from "../db/repositories/conversation-summaries"
 import {
@@ -364,25 +363,6 @@ describe.skipIf(!sqliteLoads)(
       } else {
         expect(captured[0].output_config?.effort).toBeUndefined()
       }
-      expect(captured[0].tools ?? []).toEqual([])
-      await clean()
-    }, 60000)
-
-    it("uses the selected subscription adapter for process/seat classification", async () => {
-      responses.push({ text: "reviewer" })
-      expect(
-        await routeCandidates({
-          candidates: [
-            { name: "builder", description: "implements" },
-            { name: "reviewer", description: "reviews" },
-          ],
-          taskPrompt: "Review the changes",
-          selection,
-          signal: new AbortController().signal,
-        })
-      ).toBe("reviewer")
-      expect(captured).toHaveLength(1)
-      expect(captured[0].max_tokens).toBe(64)
       expect(captured[0].tools ?? []).toEqual([])
       await clean()
     }, 60000)

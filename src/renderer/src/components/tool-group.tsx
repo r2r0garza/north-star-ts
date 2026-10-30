@@ -1,8 +1,16 @@
-import { useState } from "react"
+import { useLayoutEffect, useRef, useState } from "react"
+import { CommandOutput } from "@/components/command-output"
+import {
+  commandPresentation,
+  isCommandTool,
+  snapshotOutcome,
+  snapshotLabel,
+} from "@/lib/command-presentation"
+import { projectCommandOutcomes } from "@/lib/command-outcomes"
+import { executionArguments } from "../../../shared/tool-activity"
 import {
   BookOpen,
   Check,
-  ChevronRight,
   CircleAlert,
   CircleSlash,
   FilePlus,
@@ -17,15 +25,18 @@ import {
   type LucideIcon,
 } from "lucide-react"
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible"
-import { Marker, MarkerIcon, MarkerContent } from "@/components/ui/marker"
+  Trace,
+  TraceLine,
+  TraceIcon,
+  TraceTitle,
+  TraceDescription,
+  TraceCollapsible,
+  TraceCollapsibleTrigger,
+  TraceCollapsibleContent,
+} from "@/components/ui/trace"
 import { Bubble, BubbleContent } from "@/components/ui/bubble"
 import { Button } from "@/components/ui/button"
 import { Kbd } from "@/components/ui/kbd"
-import { Spinner } from "@/components/ui/spinner"
 import { ToolMediaPreview } from "@/components/tool-media-preview"
 import { cn } from "@/lib/utils"
 import { isErrorResult, type ToolUse } from "@/lib/timeline"
@@ -50,6 +61,7 @@ const ICONS: Record<string, LucideIcon> = {
   list_files_tool: FolderOpen,
   read_skill: BookOpen,
   run_shell_tool: Terminal,
+  exec_command: Terminal,
   spawn_subagent: Users,
   spawn_subagents: Users,
 }
@@ -149,52 +161,90 @@ function browserApprovalDetails(
   ].filter(Boolean)
 }
 
-// A collapsible group of tool calls for one assistant turn. Collapsed by
-// default; summary shows the count (and a spinner while any call is running).
-// A pending approval no longer force-opens the group: the approval prompt now
-// renders above the composer (see App.tsx), not inline here. The running row
-// just shows an "awaiting approval" hint.
-export function ToolGroup({ calls }: { calls: ToolUse[] }) {
-  const anyRunning = calls.some((c) => c.status === "running")
-  const n = calls.length
-
-  const [open, setOpen] = useState(false)
-
+// Approval waits are not execution. Aggregate precedence: running, approval, failure, settled.
+export function ToolGroup({ calls: originalCalls }: { calls: ToolUse[] }) {
+  const calls = projectCommandOutcomes(originalCalls)
+  const [open, setOpen] = useState(() =>
+    calls.some((call) => isCommandTool(call.name) && call.status === "running")
+  )
+  if (calls.length === 1) {
+    return (
+      <Trace>
+        <ToolUseRow key={calls[0].id} use={calls[0]} />
+      </Trace>
+    )
+  }
+  const awaiting = calls.filter(
+    (call) => call.approval?.status === "pending"
+  ).length
+  const running = calls.filter(
+    (call) =>
+      (call.status === "running" ||
+        (!!call.commandLive &&
+          commandPresentation(call.name, call.commandLive)?.outcome ===
+            "reported_running")) &&
+      !["pending", "denied"].includes(call.approval?.status ?? "")
+  ).length
+  const failed = calls.filter(
+    (call) =>
+      call.status === "error" ||
+      (call.commandOutcome
+        ? snapshotOutcome(call.commandOutcome)
+        : commandPresentation(call.name, call.commandLive ?? call.result)
+            ?.outcome) === "failure"
+  ).length
+  const unknown = calls.filter((call) =>
+    ["unknown", "reported_running"].includes(
+      (call.commandOutcome
+        ? snapshotOutcome(call.commandOutcome)
+        : commandPresentation(call.name, call.commandLive ?? call.result)
+            ?.outcome) ?? ""
+    )
+  ).length
+  const interrupted = calls.filter(
+    (call) => call.status === "interrupted"
+  ).length
+  const status = running
+    ? "running"
+    : awaiting
+      ? "pending"
+      : failed
+        ? "error"
+        : undefined
+  const summary = [
+    running && `${running} running`,
+    awaiting && `${awaiting} awaiting approval`,
+    failed && `${failed} failed`,
+    interrupted && `${interrupted} interrupted`,
+    unknown && `${unknown} final outcome unavailable`,
+  ]
+    .filter(Boolean)
+    .join(", ")
   return (
-    <Collapsible
-      className="w-full max-w-full min-w-0"
-      open={open}
-      onOpenChange={setOpen}
-    >
-      <CollapsibleTrigger asChild>
-        <button type="button" className="group/tg w-full text-left">
-          <Marker>
-            <MarkerIcon>
-              {anyRunning ? (
-                <Spinner />
-              ) : (
-                <ChevronRight className="transition-transform group-data-[state=open]/tg:rotate-90" />
-              )}
-            </MarkerIcon>
-            <MarkerContent>
-              {n} tool use{n === 1 ? "" : "s"}
-            </MarkerContent>
-          </Marker>
-        </button>
-      </CollapsibleTrigger>
-      <CollapsibleContent className="max-w-full min-w-0">
-        <div className="mt-1 flex max-w-full min-w-0 flex-col gap-1 pl-2">
-          {open && calls.map((c) => <ToolUseRow key={c.id} use={c} />)}
-        </div>
-      </CollapsibleContent>
-    </Collapsible>
+    <Trace>
+      <TraceCollapsible open={open} onOpenChange={setOpen}>
+        <TraceCollapsibleTrigger>
+          <TraceLine status={status}>
+            <TraceIcon>
+              <Wrench />
+            </TraceIcon>
+            <TraceTitle>
+              {calls.length} tool use{calls.length === 1 ? "" : "s"}
+              {summary && ` — ${summary}`}
+            </TraceTitle>
+          </TraceLine>
+        </TraceCollapsibleTrigger>
+        <TraceCollapsibleContent>
+          <Trace>
+            {open &&
+              calls.map((call) => <ToolUseRow key={call.id} use={call} />)}
+          </Trace>
+        </TraceCollapsibleContent>
+      </TraceCollapsible>
+    </Trace>
   )
 }
 
-// One tool call: a collapsible row whose trigger is the labeled marker and whose
-// content reveals the arguments and the result/output. When the action is
-// awaiting human approval, the row shows an "awaiting approval" hint — the
-// actionable prompt itself renders above the composer (see App.tsx).
 interface SubagentDisplayResult {
   id: string
   status: string
@@ -239,171 +289,255 @@ function formatDuration(durationMs: number | undefined): string | undefined {
 
 function SubagentResults({ results }: { results: SubagentDisplayResult[] }) {
   return (
-    <div className="flex flex-col gap-2">
+    <Trace>
       {results.map((result) => (
-        <div key={result.id} className="rounded-md border bg-muted/40 p-2">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span className="font-medium">{result.id}</span>
-            <span className="rounded bg-background px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
-              {result.identity} · {result.access}
-            </span>
-            <span
-              className={cn(
-                "ml-auto text-[0.7rem]",
-                result.status === "completed"
-                  ? "text-emerald-600 dark:text-emerald-400"
-                  : "text-destructive"
-              )}
-            >
-              {result.status}
-            </span>
-          </div>
-          {(result.content || result.error) && (
-            <p className="mt-1.5 break-words whitespace-pre-wrap text-muted-foreground">
-              {clip(result.error ?? result.content ?? "")}
-            </p>
-          )}
-          <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[0.68rem] text-muted-foreground">
-            {formatDuration(result.durationMs) && (
-              <span>{formatDuration(result.durationMs)}</span>
-            )}
-            {result.usage?.totalTokens !== undefined && (
-              <span>{result.usage.totalTokens.toLocaleString()} tokens</span>
-            )}
-            {result.touchedFileCount !== undefined && (
-              <span>{result.touchedFileCount} files</span>
-            )}
-            {result.commits?.length ? (
-              <span>{result.commits.length} commits</span>
-            ) : null}
-            {result.mergeability && <span>merge: {result.mergeability}</span>}
-            {result.branch && (
-              <span className="font-mono">{result.branch}</span>
-            )}
-            {result.integrationStatus && (
-              <span>integration: {result.integrationStatus}</span>
-            )}
-            {result.integrationBranch && (
-              <span className="font-mono">{result.integrationBranch}</span>
-            )}
-            {result.conversationId && (
-              <button
-                type="button"
-                className="underline underline-offset-2 hover:text-foreground"
-                onClick={() =>
-                  window.dispatchEvent(
-                    new CustomEvent("open-conversation", {
-                      detail: { conversationId: result.conversationId },
-                    })
-                  )
-                }
+        <TraceCollapsible key={result.id}>
+          <TraceCollapsibleTrigger>
+            <TraceLine status={subagentStatus(result.status)}>
+              <TraceIcon>
+                <Users />
+              </TraceIcon>
+              <TraceTitle className="overflow-visible break-words text-clip whitespace-normal">
+                {result.id} — {result.status}
+              </TraceTitle>
+            </TraceLine>
+          </TraceCollapsibleTrigger>
+          <TraceCollapsibleContent className="text-xs">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span className="font-medium">{result.id}</span>
+              <span className="rounded bg-background px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
+                {result.identity} · {result.access}
+              </span>
+              <span
+                className={cn(
+                  "ml-auto text-[0.7rem]",
+                  result.status === "completed"
+                    ? "text-emerald-600 dark:text-emerald-400"
+                    : subagentStatus(result.status) === "error"
+                      ? "text-destructive"
+                      : "text-muted-foreground"
+                )}
               >
-                Open transcript
-              </button>
+                {result.status}
+              </span>
+            </div>
+            {(result.content || result.error) && (
+              <p className="mt-1.5 break-words whitespace-pre-wrap text-muted-foreground">
+                {clip(result.error ?? result.content ?? "")}
+              </p>
             )}
-          </div>
-        </div>
+            <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[0.68rem] text-muted-foreground">
+              {formatDuration(result.durationMs) && (
+                <span>{formatDuration(result.durationMs)}</span>
+              )}
+              {result.usage?.totalTokens !== undefined && (
+                <span>{result.usage.totalTokens.toLocaleString()} tokens</span>
+              )}
+              {result.touchedFileCount !== undefined && (
+                <span>{result.touchedFileCount} files</span>
+              )}
+              {result.commits?.length ? (
+                <span>{result.commits.length} commits</span>
+              ) : null}
+              {result.mergeability && <span>merge: {result.mergeability}</span>}
+              {result.branch && (
+                <span className="font-mono">{result.branch}</span>
+              )}
+              {result.integrationStatus && (
+                <span>integration: {result.integrationStatus}</span>
+              )}
+              {result.integrationBranch && (
+                <span className="font-mono">{result.integrationBranch}</span>
+              )}
+              {result.conversationId && (
+                <button
+                  type="button"
+                  className="underline underline-offset-2 hover:text-foreground"
+                  onClick={() =>
+                    window.dispatchEvent(
+                      new CustomEvent("open-conversation", {
+                        detail: { conversationId: result.conversationId },
+                      })
+                    )
+                  }
+                >
+                  Open transcript
+                </button>
+              )}
+            </div>
+          </TraceCollapsibleContent>
+        </TraceCollapsible>
       ))}
-    </div>
+    </Trace>
   )
 }
 
-function ToolUseRow({ use }: { use: ToolUse }) {
+function subagentStatus(status: string) {
+  if (["active", "running", "in_progress"].includes(status)) return "running"
+  if (["pending", "queued", "waiting", "waiting_for_approval"].includes(status))
+    return "pending"
+  if (["failed", "error"].includes(status)) return "error"
+  return undefined
+}
+
+export function ActiveCommand({ call }: { call: ToolUse }) {
+  const ref = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const surface = ref.current
+    return () => {
+      if (!surface?.contains(document.activeElement)) return
+      const parent = surface.parentElement
+      queueMicrotask(() => {
+        if (document.activeElement !== document.body) return
+        parent
+          ?.querySelector<HTMLButtonElement>(
+            '[data-slot="trace-collapsible-trigger"]'
+          )
+          ?.focus({ preventScroll: true })
+      })
+    }
+  }, [])
+  return (
+    <Trace ref={ref} data-slot="active-command">
+      <ToolUseRow use={call} standalone />
+    </Trace>
+  )
+}
+
+function ToolUseRow({
+  use,
+  standalone = false,
+}: {
+  use: ToolUse
+  standalone?: boolean
+}) {
   const [open, setOpen] = useState(false)
   const Icon = iconFor(use.name)
-  const error = use.status === "error"
+  const originalCommand = commandPresentation(
+    use.name,
+    use.commandLive ?? use.result
+  )
+  const command =
+    originalCommand && use.commandOutcome
+      ? {
+          ...originalCommand,
+          outcome: snapshotOutcome(use.commandOutcome),
+          label: snapshotLabel(use.commandOutcome),
+          snapshots: [use.commandOutcome],
+        }
+      : originalCommand
+  const liveRunning =
+    !!use.commandLive && command?.outcome === "reported_running"
+  const error = use.status === "error" || command?.outcome === "failure"
   const interrupted = use.status === "interrupted"
   const awaiting = use.approval?.status === "pending"
   const delegated =
     use.name === "spawn_subagents" ? subagentResults(use.result) : null
+  const status = awaiting
+    ? "pending"
+    : (liveRunning || use.status === "running") &&
+        use.approval?.status !== "denied"
+      ? "running"
+      : error
+        ? "error"
+        : undefined
+  const label = awaiting
+    ? "Awaiting approval"
+    : use.approval?.status === "denied"
+      ? "Approval denied"
+      : command && use.status !== "interrupted"
+        ? liveRunning
+          ? "Running"
+          : command.label
+        : error
+          ? "Failed"
+          : interrupted
+            ? "Interrupted"
+            : use.status === "running"
+              ? "Running"
+              : undefined
+  const Header = standalone ? "div" : TraceCollapsibleTrigger
+  const Content = standalone ? "div" : TraceCollapsibleContent
   return (
-    <div className="flex max-w-full min-w-0 flex-col gap-1">
-      <Collapsible
-        open={open}
-        onOpenChange={setOpen}
-        className="w-full max-w-full min-w-0"
-      >
-        <CollapsibleTrigger asChild>
-          <button type="button" className="group/row w-full text-left">
-            <Marker
-              className={cn(
-                error && "text-destructive",
-                interrupted && "text-muted-foreground"
-              )}
-            >
-              <MarkerIcon>
-                {use.status === "running" ? (
-                  <Spinner />
-                ) : interrupted ? (
-                  <CircleSlash />
-                ) : (
-                  <Icon />
-                )}
-              </MarkerIcon>
-              <MarkerContent>{use.label}</MarkerContent>
-              {awaiting && (
-                <span className="ml-auto flex items-center gap-1 text-[0.7rem] text-destructive">
-                  <ShieldAlert className="size-3.5 shrink-0" /> awaiting
-                  approval
-                </span>
-              )}
-              {interrupted && (
-                <span className="ml-auto flex items-center gap-1 text-[0.7rem] text-muted-foreground">
-                  <CircleSlash className="size-3.5 shrink-0" /> interrupted
-                </span>
-              )}
-              {use.status === "done" && (
-                <Check className="size-3.5 shrink-0 text-muted-foreground" />
-              )}
-              {error && (
-                <CircleAlert className="size-3.5 shrink-0 text-destructive" />
-              )}
-            </Marker>
-          </button>
-        </CollapsibleTrigger>
-        <CollapsibleContent className="max-w-full min-w-0">
-          <div className="mt-1 flex max-w-full min-w-0 flex-col gap-2 pl-6 text-xs">
-            {(use.args || use.rawArgs) && (
-              <pre className="w-full max-w-full min-w-0 overflow-x-auto rounded-md bg-muted px-2 py-1.5 text-muted-foreground">
-                {use.args ? JSON.stringify(use.args, null, 2) : use.rawArgs}
-              </pre>
+    <TraceCollapsible open={standalone || open} onOpenChange={setOpen}>
+      <Header>
+        <TraceLine status={status}>
+          <TraceIcon>{interrupted ? <CircleSlash /> : <Icon />}</TraceIcon>
+          <TraceTitle>{use.label || use.name}</TraceTitle>
+          {label && (
+            <TraceDescription className="shrink whitespace-normal">
+              {label}
+            </TraceDescription>
+          )}
+          {use.status === "done" &&
+            !error &&
+            (!command || command.outcome === "success") && (
+              <TraceIcon>
+                <Check />
+              </TraceIcon>
             )}
-            {delegated ? (
-              <SubagentResults results={delegated} />
-            ) : (
-              use.result !== undefined && (
-                <Bubble
-                  align="start"
-                  variant={isErrorResult(use.result) ? "destructive" : "muted"}
-                >
-                  <BubbleContent>
-                    <pre className="max-h-64 overflow-auto break-words whitespace-pre-wrap">
-                      {clip(use.result)}
-                    </pre>
-                  </BubbleContent>
-                </Bubble>
-              )
-            )}
-            {open && use.media && use.media.length > 0 && (
-              <ToolMediaPreview
-                key={`${use.conversationId}:${use.resultMessageId}`}
-                media={use.media}
-                conversationId={use.conversationId}
-                messageId={use.resultMessageId}
-              />
-            )}
-            {interrupted && (
-              <Bubble align="start" variant="muted">
+          {error && (
+            <TraceIcon>
+              <CircleAlert />
+            </TraceIcon>
+          )}
+        </TraceLine>
+      </Header>
+      <Content className="text-xs">
+        <div className="flex max-w-full min-w-0 flex-col gap-2">
+          <p className="font-mono text-muted-foreground">{use.name}</p>
+          {!command && !standalone && (use.args || use.rawArgs) && (
+            <pre className="w-full max-w-full min-w-0 overflow-x-auto rounded-md bg-muted px-2 py-1.5 text-muted-foreground">
+              {use.args
+                ? JSON.stringify(executionArguments(use.args), null, 2)
+                : use.rawArgs}
+            </pre>
+          )}
+          {command || standalone ? (
+            <CommandOutput
+              name={use.name}
+              args={use.args}
+              rawArgs={use.rawArgs}
+              result={use.result}
+              presentation={command}
+              pending={standalone && !command}
+              live={!!use.commandLive && !use.commandOutcome}
+            />
+          ) : delegated ? (
+            <SubagentResults results={delegated} />
+          ) : (
+            use.result !== undefined && (
+              <Bubble
+                align="start"
+                variant={isErrorResult(use.result) ? "destructive" : "muted"}
+              >
                 <BubbleContent>
-                  This request was interrupted before it finished and wasn't
-                  completed. Send a new message to try again.
+                  <pre className="max-h-64 overflow-auto break-words whitespace-pre-wrap">
+                    {clip(use.result)}
+                  </pre>
                 </BubbleContent>
               </Bubble>
-            )}
-          </div>
-        </CollapsibleContent>
-      </Collapsible>
-    </div>
+            )
+          )}
+          {open && use.media && use.media.length > 0 && (
+            <ToolMediaPreview
+              key={`${use.conversationId}:${use.resultMessageId}`}
+              media={use.media}
+              conversationId={use.conversationId}
+              messageId={use.resultMessageId}
+            />
+          )}
+          {interrupted && (
+            <Bubble align="start" variant="muted">
+              <BubbleContent>
+                This request was interrupted before it finished and wasn't
+                completed. Send a new message to try again.
+              </BubbleContent>
+            </Bubble>
+          )}
+        </div>
+      </Content>
+    </TraceCollapsible>
   )
 }
 

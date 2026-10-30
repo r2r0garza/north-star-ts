@@ -56,12 +56,30 @@ import {
   SCHEMA_V49_TABLES,
 } from "./schema"
 import { renameWorkTerms } from "./work-terms-migration"
+import { ensureWorkflows, ensureWorkflowRuns } from "./workflow-schema"
+import { ensureSteeringMessages } from "./steering-schema"
+import { ensureConversationArtifacts } from "./artifact-schema"
+import {
+  ORCHESTRATION_TABLES,
+  retireOrchestration,
+} from "./retire-orchestration"
+import { existsSync } from "node:fs"
 
 // Ordered migrations. Index 0 runs to reach user_version 1, index 1 to reach 2,
 // and so on. Add a new entry to evolve the schema (e.g. future repo-indexing
 // tables) — never edit a shipped migration, append a new one.
 function ensureNativeAssistantColumn(db: Database.Database): void {
   addColumnIfMissing(db, "messages", "native_assistant", "TEXT")
+}
+
+// The composer's per-conversation reasoning effort (null = adapter default).
+function ensureConversationEffortColumn(db: Database.Database): void {
+  addColumnIfMissing(db, "conversations", "effort", "TEXT")
+}
+
+// Model reasoning shown collapsed in the transcript (never sent to a model).
+function ensureMessageReasoningColumn(db: Database.Database): void {
+  addColumnIfMissing(db, "messages", "reasoning", "TEXT")
 }
 
 // v68: per-account image input. Defaults on so existing accounts keep sending
@@ -196,6 +214,27 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureProviderImageInputColumn,
   ensureProcessCommandPhases,
   ensureProcessDeletionColumn,
+  retireOrchestration,
+  ensureWorkflows,
+  (db) =>
+    addColumnIfMissing(
+      db,
+      "workflows",
+      "default_objective",
+      "TEXT NOT NULL DEFAULT ''"
+    ),
+  ensureWorkflowRuns,
+  (db) =>
+    addColumnIfMissing(
+      db,
+      "workflows",
+      "view_in_conversation_sidebar",
+      "INTEGER NOT NULL DEFAULT 0 CHECK(view_in_conversation_sidebar IN (0, 1))"
+    ),
+  ensureSteeringMessages,
+  ensureConversationArtifacts,
+  ensureMessageReasoningColumn,
+  ensureConversationEffortColumn,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -619,6 +658,18 @@ export function runMigrations(
   options: { through?: number } = {}
 ): void {
   const current = db.pragma("user_version", { simple: true }) as number
+  const retirementPending = ORCHESTRATION_TABLES.some((table) =>
+    tableExists(db, table)
+  )
+  if (
+    options.through === undefined &&
+    retirementPending &&
+    db.name !== ":memory:" &&
+    db.name
+  ) {
+    const backup = `${db.name}.before-orchestration-retirement.bak`
+    if (!existsSync(backup)) db.prepare("VACUUM INTO ?").run(backup)
+  }
   const fkWasOn = db.pragma("foreign_keys", { simple: true }) === 1
   if (fkWasOn) db.pragma("foreign_keys = OFF")
   try {
@@ -644,33 +695,32 @@ export function runMigrations(
     // so keep prerelease schema drift self-healing instead of making users repair
     // SQLite by hand.
     db.transaction(() => {
-      ensureProcessRuntimeProfileColumns(db)
-      ensureProcessResultContentColumn(db)
-      ensurePhaseReviewColumn(db)
+      retireOrchestration(db)
       ensureGeneratedFilesColumn(db)
       ensureWorktreeSetupColumn(db)
       ensureConversationNotes(db)
-      ensureSeatMemory(db)
-      ensureHealth(db)
-      ensureWorkspaceAnalyses(db)
-      ensureMissionControlPlaybooks(db)
-      ensurePlaybookHookOwnership(db)
-      ensureMissionControlComms(db)
-      ensureContextScopes(db)
-      ensureMissionIntegration(db)
-      ensureNavigator(db)
-      healAndRenameWorkTerms(db)
+      ensureSteeringMessages(db)
       ensureSubscriptionProviderConstraints(db)
       ensureProjectPositionColumn(db)
       ensureSubagentArtifactsTable(db)
       ensureWorkingDirectoryColumns(db)
       ensureNativeAssistantColumn(db)
+      ensureMessageReasoningColumn(db)
+      ensureConversationEffortColumn(db)
       ensureToolMedia(db)
-      ensureProcessCommandPhases(db)
-      ensureProcessDeletionColumn(db)
+      ensureConversationArtifacts(db)
+      addColumnIfMissing(db, "workspaces", "command_checks", "TEXT")
       // After ensureSubscriptionProviderConstraints: its V65 table rebuild
       // predates this column and would drop it.
       ensureProviderImageInputColumn(db)
+      ensureWorkflows(db)
+      ensureWorkflowRuns(db)
+      addColumnIfMissing(
+        db,
+        "workflows",
+        "view_in_conversation_sidebar",
+        "INTEGER NOT NULL DEFAULT 0 CHECK(view_in_conversation_sidebar IN (0, 1))"
+      )
     })()
   } finally {
     if (fkWasOn) db.pragma("foreign_keys = ON")

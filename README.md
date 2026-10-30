@@ -19,19 +19,6 @@ commands run on the host from that folder under an approval policy.
   report back to the conversation, and a failed task can be retried, optionally
   on another model. Interactive, work, and background tasks run in separate
   lanes so upkeep never blocks a chat.
-- **Processes:** author reusable directed acyclic graphs (DAGs) of agent,
-  deterministic command, and nested sub-process phases. Runs support gates,
-  retries from the failure frontier, live monitoring, bounded receipts, and
-  crash-safe interruption handling.
-- **Deterministic command phases:** run a persisted shell command without an LLM
-  worker. Commands use the configured local or container execution backend,
-  workspace confinement, the shared approval policy, repository-lease checks,
-  timeouts, cancellation, bounded stdout/stderr capture, and structured exit
-  receipts.
-- **Workspace checks:** make a process portable by having phases name checks such
-  as `test`, `build`, or `lint`, then map those names to each workspace's command
-  and relative working directory. Missing checks block a run before any phase
-  starts; the resolved commands are frozen for the run.
 - **Dashboards:** live widgets built from data the agent fetched, refreshed
   from a stored recipe.
 - **Secure local file links:** Markdown links to files created in a conversation
@@ -41,11 +28,6 @@ commands run on the host from that folder under an approval policy.
   (`~/.<system-name>/venv`), so `pip install` never touches your global Python.
 - **Workspace index:** symbol and file index (TypeScript, JavaScript, Python)
   for fast code navigation.
-- **Mission Control** (feature-flagged): a team of agent seats that plans and
-  runs Features, Milestones, and User stories in isolated git worktrees, with
-  Playbooks, a Navigator, Comms, health monitoring, and a merge queue. Enable it
-  with `NEXT_mission_control=true`.
-
 ### Subagents and Git isolation
 
 Normal conversation turns and background tasks write directly to the selected
@@ -59,50 +41,23 @@ Successful writer branches can be staged through an integration branch when
 `prepare_integration` is requested. If a writer run is interrupted, North Star
 preserves its artifact record, blocks new writers for that repository, and shows
 the amber **Subagent cleanup** control so the worktree and branch can be
-reviewed before they are removed or preserved. Mission Control uses isolated
-worktrees independently as part of its execution model.
+reviewed before they are removed or preserved.
 
-### Processes and command phases
+### Retired orchestration data
 
-The **Processes** view is a reusable workflow builder and run monitor. A process
-is a DAG whose phases can be one of three kinds:
-
-- **Agent:** runs an LLM-backed worker using its configured agent pool, routing,
-  runtime, context, validator, fan-out, and completion settings.
-- **Command:** runs one saved shell command through the deterministic command
-  executor. It does not call a model, has no agent pool, cannot fan out or use an
-  LLM validator, and can only depend on a completed upstream phase rather than
-  each fan-out child.
-- **Sub-process:** runs another process definition as a nested run, with the
-  existing depth and cycle protections.
-
-Command phases can use a literal command or a portable workspace check. A check
-phase stores a name such as `test`; each workspace supplies its own command and
-workspace-relative working directory, so the same process can run `pnpm test` in
-one repository and `cargo test` in another. There are no implicit check defaults.
-When a run starts, North Star validates every check, including checks required by
-nested sub-processes, resolves them once, and stores the exact command snapshot
-on the run. Editing a workspace check or process definition does not change a
-run already in progress; Retry explicitly clears the snapshot and re-resolves it.
-
-The command executor runs through the configured local host or Docker/Podman
-backend, checks the shared approval policy and repository leases, confines the
-working directory to the workspace, and records a bounded stdout/stderr receipt.
-Receipts include the command, environment, exit code or signal, duration,
-truncation metadata, and errors. A zero exit with no executor error completes the
-phase; a non-zero exit, timeout, spawn or cleanup error fails it. Commands are
-not automatically retried because they may have side effects. If North Star
-stops after a command has spawned, it marks that phase interrupted and waits for
-an explicit retry rather than replaying it; a command that never spawned can be
-re-driven safely.
-
-The builder can ask AI for an inert command proposal, but proposals are never
-saved or executed until the user reviews and saves them. **Try it** runs an
-unsaved workspace check once through the same executor and policy, without
-saving it. Workspace environment inspection can identify project Python or
-JavaScript environments, show interpreters and setup recipes, and run approved
-setup steps one at a time in the integrated terminal. Command phases themselves
-never install dependencies.
+Mission Control and Processes are no longer available. Schema migration v71
+retires their exclusive tables and cancels unfinished `process_run` and
+`seat_wake` tasks, retaining task history, conversations, messages, approvals,
+projects, workspace settings, providers, dashboards, and subagent artifacts.
+Before upgrading a file-backed database, North Star creates a consistent SQLite
+backup beside it named `<database>.before-orchestration-retirement.bak`. If the
+backup cannot be created, startup fails before retirement. Keep this backup if
+you need the old orchestration records; the app no longer exposes them.
+Historical migrations remain for upgrades from older versions. The startup
+self-heal does not recreate retired tables. Existing on-disk worktrees and
+branches are left untouched for manual review; no repository cleanup runs.
+Workspace generated-file, setup, and named-check settings remain stored for
+compatibility, but the retired command-phase execution UI is gone.
 
 ## Getting started
 
@@ -128,8 +83,6 @@ src/
       providers/     provider routing + Codex and Claude subscription transports
       env/           execution backends (local host or Docker/Podman container)
     tasks/         background task runner, handoffs, and report-back updates
-    process/       command phases, workspace checks, environment setup, and trials
-    mission-control/  agent seats, playbooks, worktrees, merge queue (feature-flagged)
     python/        managed chat venv
     dashboards/    live dashboard storage and refresh
     conversations/ db/  conversation history and SQLite persistence
@@ -188,7 +141,6 @@ Copy `env.example` to `.env.local` to start. Supported options include:
   tools in a container instead of on the host
 - `COWORK_LOCAL_PROFILE` (`read-only` | `workspace-write` | `host-access`):
   access profile for local execution
-- `NEXT_mission_control`: set to `true` to enable Mission Control
 - `NEXT_accent_color` / `NEXT_neutral_color`: theme presets (quote hex values)
 
 ## Prompts & Skills

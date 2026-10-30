@@ -14,9 +14,11 @@ import * as externalModelMappingsRepo from "../db/repositories/external-agent-mo
 import * as secrets from "../settings/secrets"
 import * as settingsService from "../settings/service"
 import {
+  clientForAccount,
   fetchGatewayModelIds,
   hasActiveProvider,
   invalidate as invalidateProviderClient,
+  modelEffortLevels,
 } from "../agent/providers"
 import type { CreateAccountInput } from "../db/repositories/provider-accounts"
 import type { AddModelInput } from "../db/repositories/models"
@@ -215,6 +217,12 @@ export function registerProviderHandlers(): void {
   ipcMain.handle("providers:secureStorageAvailable", () =>
     secrets.isSecureStorageAvailable()
   )
+  // The composer's effort picker: levels the selected model accepts.
+  ipcMain.handle(
+    "providers:effortLevels",
+    (_e, accountId: string, modelId: string) =>
+      modelEffortLevels(String(accountId), String(modelId))
+  )
 
   // ── Accounts ──────────────────────────────────────────────────────────────
   ipcMain.handle("providers:list", () =>
@@ -340,6 +348,40 @@ export function registerProviderHandlers(): void {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         console.warn("[providers] Codex models debug probe failed:", message)
+        return { ok: false, error: message }
+      }
+    }
+  )
+  // Dev-only: save the raw models.list response of an Anthropic or Google
+  // account, for checking the capability and token-limit fields we read.
+  ipcMain.handle(
+    "providers:debugModels",
+    async (
+      _e,
+      id: string
+    ): Promise<{ ok: boolean; paths?: string[]; error?: string }> => {
+      if (app.isPackaged) {
+        return { ok: false, error: "Debug probe is available in development." }
+      }
+      try {
+        const account = providerAccountsRepo.getAccount(id)
+        if (
+          !account ||
+          (account.provider !== "anthropic" && account.provider !== "google")
+        ) {
+          return { ok: false, error: "Anthropic or Google account not found." }
+        }
+        const response = await clientForAccount(account.id).models.list()
+        const logDir = path.join(app.getAppPath(), "models-responses")
+        await mkdir(logDir, { recursive: true })
+        const timestamp = new Date().toISOString().replace(/[:.]/g, "-")
+        const file = path.join(logDir, `${account.provider}-${timestamp}.json`)
+        await writeFile(file, JSON.stringify(response, null, 2), "utf-8")
+        console.info("[providers] Models response saved:", file)
+        return { ok: true, paths: [file] }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        console.warn("[providers] Models debug probe failed:", message)
         return { ok: false, error: message }
       }
     }

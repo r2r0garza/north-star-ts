@@ -6,7 +6,7 @@ import type {
 import type { Environment } from "../env/types"
 import type { TodoStatus } from "../../db/types"
 import type { BrowserHandle } from "../../browser/manager"
-import type { SeatTurnIdentity } from "../../mission-control/seat-turns"
+import type { ElectronHandle } from "../../electron-apps/manager"
 import type {
   SpawnSubagentsInput,
   SubagentResult,
@@ -150,9 +150,17 @@ export interface ToolContext {
   // BrowserManager.handleForTurn). Absent when no browser is available (e.g.
   // unit tests) — browser tools then report the browser is unavailable.
   browser?: BrowserHandle
+  // Owned development Electron app sessions for this conversation (plan 119),
+  // bound to ctx.signal. Absent when the capability is not offered.
+  electron?: ElectronHandle
   // Attach an image to the current turn for the vision model (see ToolImage /
   // EmitImage). Used by browser_screenshot; absent where images can't be shown.
   emitImage?: EmitImage
+  emitCommandOutput?: (result: string) => void
+  // Staged until the host atomically commits successful tool completion.
+  emitArtifact?: (
+    snapshot: import("../../../shared/conversation-artifacts").ArtifactPresentation
+  ) => void
   // Read-only auxiliary roots registered by read_skill during this turn. Keys
   // are skill names; values are absolute host paths to the selected skill folder.
   skillResourceRoots?: Record<string, string>
@@ -200,18 +208,6 @@ export interface ToolContext {
   commandCompletions?: CommandCompletionInbox
   commandCompletionOwner?: CommandCompletionOwner
   // --- Process phase context (plan 031.2 cross-phase flag-back) ---
-  // Set ONLY when this turn is a Process phase worker (makeRunPhase forks the
-  // conversation with these). The flag_for_rework tool uses them to load the run's
-  // graph, validate the flagged target is a real upstream phase, and record a
-  // durable flag. Absent for ordinary chats/subagents — flag_for_rework then
-  // reports it's unavailable (and isn't offered).
-  processRunId?: string
-  processPhaseRunId?: string
-  // --- Mission Control seat turn (plan 106.4) ---
-  // Set ONLY on a seat turn (a role-bound playbook worker, a seat-session step,
-  // or a wake). The Comms tools take the sender from here, never from model
-  // arguments. Absent otherwise — the Comms tools then report unavailable.
-  missionControlSeat?: SeatTurnIdentity
 }
 
 export interface ToolEffects {

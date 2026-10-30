@@ -96,6 +96,25 @@ describe("search_tool", () => {
     }
   })
 
+  it("hints at regex mode when a fixed-text query with regex syntax finds nothing", async () => {
+    await writeFile(join(workspace, "a.ts"), "restart(taskId)\n")
+    const literal = await searchTool.execute(
+      { query: "async restart|restart(" },
+      { workspace }
+    )
+    expect(literal).toContain('set mode: "regex"')
+    const plain = await searchTool.execute(
+      { query: "nothing here" },
+      { workspace }
+    )
+    expect(plain).not.toContain("regex")
+    const regex = await searchTool.execute(
+      { query: "async restart|restart\\(", mode: "regex" },
+      { workspace }
+    )
+    expect(regex).toContain("a.ts:1")
+  })
+
   it("renders infrastructure failures as search errors even in regex mode", async () => {
     const result = await searchTool.execute(
       { query: "needle", mode: "regex" },

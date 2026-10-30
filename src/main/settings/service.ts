@@ -103,6 +103,9 @@ export interface IndexingSettings {
   // on tokens only; both 0 ⇒ summarization off. See summaries/service.ts.
   summarizeMessageThreshold: number
   summarizeTokenThreshold: number
+  // In-turn compaction (plan 118): the estimated request size at which a long
+  // turn starts clearing old tool results / summarizing. `0` disables it.
+  turnCompactionTokenThreshold: number
   // Debug aid: when on, each turn's assembled system prompt is written verbatim
   // to system-prompt-logs/<mode> - <MM-DD-YYYY HH-MM-SS>.md. Off by default.
   logSystemPrompt: boolean
@@ -143,6 +146,10 @@ export interface McpSourcesSettings {
 export type BrowserReveal = "always" | "never"
 export interface BrowserSettings {
   revealOnAgentUse: BrowserReveal
+  // Offer the electron_* tools (plan 119): launching and driving workspace
+  // Electron apps under development. On by default; each launch still needs
+  // explicit approval.
+  electronApps: boolean
 }
 
 // User-editable brand colors (Settings → Appearance), overriding the .env
@@ -182,12 +189,6 @@ export interface NotificationSettings {
 
 export interface OnboardingSettings {
   hideStartupGuide: boolean
-}
-
-// Which sidebar destinations show (plan 106.9). Processes is legacy now that
-// Mission Control runs them as playbooks, so it's hidden unless turned on.
-export interface SidebarSettings {
-  showLegacyProcesses: boolean
 }
 
 export type DefaultConversationMode = "chat" | "interactive" | "north_star"
@@ -231,6 +232,9 @@ const DEFAULT_INDEXING: IndexingSettings = {
   // fresh tail reaches ~80k tokens. Both are user-adjustable in Settings.
   summarizeMessageThreshold: 0,
   summarizeTokenThreshold: 80000,
+  // Well below the smallest default model window; lowered further per model
+  // when the adapter knows the real window.
+  turnCompactionTokenThreshold: 120000,
   logSystemPrompt: false,
 }
 
@@ -244,6 +248,7 @@ const DEFAULT_MCP_SOURCES: McpSourcesSettings = { folders: [] }
 
 const DEFAULT_BROWSER: BrowserSettings = {
   revealOnAgentUse: "always",
+  electronApps: true,
 }
 
 const DEFAULT_THEME: ThemeSettings = {
@@ -265,10 +270,6 @@ const DEFAULT_NOTIFICATIONS: NotificationSettings = {
 
 const DEFAULT_ONBOARDING: OnboardingSettings = {
   hideStartupGuide: false,
-}
-
-const DEFAULT_SIDEBAR: SidebarSettings = {
-  showLegacyProcesses: false,
 }
 
 const DEFAULT_CONVERSATIONS: ConversationSettings = {
@@ -306,7 +307,6 @@ const KEY_IDE = "ide"
 const KEY_NOTIFICATIONS = "notifications"
 const KEY_ONBOARDING = "onboarding"
 const KEY_CONVERSATIONS = "conversations"
-const KEY_SIDEBAR = "sidebar"
 
 let executionCache: ExecutionSettings | undefined
 let permissionsCache: PermissionSettings | undefined
@@ -323,7 +323,6 @@ let ideCache: IdeSettings | undefined
 let notificationsCache: NotificationSettings | undefined
 let onboardingCache: OnboardingSettings | undefined
 let conversationsCache: ConversationSettings | undefined
-let sidebarCache: SidebarSettings | undefined
 // Tracks whether an execution row exists, so getExecutionConfig can fall back to
 // the COWORK_ENV_RUNTIME env var until the user writes a backend choice.
 let executionPersisted = false
@@ -464,6 +463,9 @@ function loadIndexing(): IndexingSettings {
         summarizeTokenThreshold:
           parsed.summarizeTokenThreshold ??
           DEFAULT_INDEXING.summarizeTokenThreshold,
+        turnCompactionTokenThreshold:
+          parsed.turnCompactionTokenThreshold ??
+          DEFAULT_INDEXING.turnCompactionTokenThreshold,
         logSystemPrompt:
           parsed.logSystemPrompt ?? DEFAULT_INDEXING.logSystemPrompt,
       }
@@ -559,6 +561,7 @@ function loadBrowser(): BrowserSettings {
       browserCache = {
         revealOnAgentUse:
           parsed.revealOnAgentUse === "never" ? "never" : "always",
+        electronApps: parsed.electronApps !== false,
       }
       return browserCache
     } catch {
@@ -645,27 +648,6 @@ function loadOnboarding(): OnboardingSettings {
   }
   onboardingCache = { ...DEFAULT_ONBOARDING }
   return onboardingCache
-}
-
-function loadSidebar(): SidebarSettings {
-  if (sidebarCache) return sidebarCache
-  const raw = settingsRepo.getSetting(KEY_SIDEBAR)
-  if (raw) {
-    try {
-      const parsed = JSON.parse(raw) as Partial<SidebarSettings>
-      sidebarCache = {
-        showLegacyProcesses:
-          typeof parsed.showLegacyProcesses === "boolean"
-            ? parsed.showLegacyProcesses
-            : DEFAULT_SIDEBAR.showLegacyProcesses,
-      }
-      return sidebarCache
-    } catch {
-      // Corrupt blob — fall through to defaults.
-    }
-  }
-  sidebarCache = { ...DEFAULT_SIDEBAR }
-  return sidebarCache
 }
 
 function loadConversations(): ConversationSettings {
@@ -775,10 +757,6 @@ export function getConversations(): ConversationSettings {
   return loadConversations()
 }
 
-export function getSidebar(): SidebarSettings {
-  return loadSidebar()
-}
-
 // Whether the sandbox policy auto-approves a given action category. Consulted by
 // the PolicyEngine only when the active backend is a container (see policy.ts).
 // Unknown/undefined categories are never auto-approved (conservative default).
@@ -864,12 +842,6 @@ export function setOnboarding(next: OnboardingSettings): OnboardingSettings {
   return next
 }
 
-export function setSidebar(next: SidebarSettings): SidebarSettings {
-  settingsRepo.setSetting(KEY_SIDEBAR, JSON.stringify(next))
-  sidebarCache = next
-  return next
-}
-
 export function setConversations(
   next: ConversationSettings
 ): ConversationSettings {
@@ -926,6 +898,5 @@ export function _resetCacheForTests(): void {
   notificationsCache = undefined
   onboardingCache = undefined
   conversationsCache = undefined
-  sidebarCache = undefined
   executionPersisted = false
 }

@@ -35,7 +35,10 @@ vi.mock("./context/usage-log", async (importOriginal) => ({
 type CompletionRequest = {
   messages: any[]
   streamOptions: unknown
+  reasoningEffort?: unknown
 }
+
+const llmProvider = vi.hoisted(() => ({ value: "openai_compatible" }))
 
 const scriptedCompletions: Array<
   (request: CompletionRequest) => AsyncIterable<any>
@@ -50,17 +53,22 @@ vi.mock("./providers", () => {
       model: "test-model",
       accountId: "test-account",
       apiMode: "completions",
-      provider: "openai_compatible",
+      provider: llmProvider.value,
     }),
     createCompletion: async (
       _client: unknown,
       _model: string,
       _maxTokens: number,
-      base: { messages: any[]; stream_options?: unknown }
+      base: {
+        messages: any[]
+        stream_options?: unknown
+        reasoning_effort?: unknown
+      }
     ) => {
       const snapshot = structuredClone({
         messages: base.messages,
         streamOptions: base.stream_options,
+        reasoningEffort: base.reasoning_effort,
       })
       completionRequests.push(snapshot)
       const next = scriptedCompletions.shift()
@@ -134,6 +142,7 @@ beforeEach(() => {
   scriptedCompletions.length = 0
   completionRequests.length = 0
   logged.length = 0
+  llmProvider.value = "openai_compatible"
   testStreamUsage.reset()
   vi.spyOn(console, "warn").mockImplementation(() => {})
 })
@@ -292,5 +301,32 @@ describe.skipIf(!sqliteLoads)("per-round context usage logging", () => {
         [1, "after-seq:1:stall-1", "ok"],
       ])
     })
+  })
+})
+
+describe.skipIf(!sqliteLoads)("per-turn effort override", () => {
+  it("replaces the conversation's effort only for the overriding turn", async () => {
+    llmProvider.value = "anthropic"
+    const workspace = await makeWorkspace()
+    const convo = createConversation({ mode: "interactive", effort: "low" })
+    const turn = (effortOverride?: string | null) => {
+      scriptedCompletions.push(() => streamText("done"))
+      return runAgentLoop({
+        conversationId: convo.id,
+        workspace,
+        userMessage: "go",
+        abort: new AbortController(),
+        onEvent: () => {},
+        ...(effortOverride !== undefined ? { effortOverride } : {}),
+      })
+    }
+    await turn()
+    await turn("high")
+    await turn(null)
+    expect(completionRequests.map((request) => request.reasoningEffort)).toEqual([
+      "low",
+      "high",
+      undefined,
+    ])
   })
 })

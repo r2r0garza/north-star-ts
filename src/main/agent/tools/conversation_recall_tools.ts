@@ -6,7 +6,7 @@ import {
   conversationSearch,
   conversationTreeSearch,
 } from "../../db/repositories/conversation-recall"
-import { withProvenanceJson } from "../context/provenance"
+import { withProvenanceJson } from "../../../shared/context-provenance"
 
 const ROLE_VALUES: MessageRole[] = ["system", "user", "assistant", "tool"]
 

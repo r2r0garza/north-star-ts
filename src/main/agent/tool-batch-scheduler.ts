@@ -1,4 +1,5 @@
 import type { ToolEffects, ToolImage, ToolExecutionPolicy } from "./tools/types"
+import type { ArtifactPresentation } from "../../shared/conversation-artifacts"
 
 export interface ScheduledToolCall {
   id: string
@@ -10,6 +11,7 @@ export interface ScheduledToolResult {
   call: ScheduledToolCall
   result: string
   images: ToolImage[]
+  presentationArtifact?: ArtifactPresentation
   error: boolean
   outcome: "success" | "error" | "unknown" | "not_started"
 }
@@ -20,7 +22,11 @@ export interface ToolBatchSchedulerOptions {
     call: ScheduledToolCall,
     index: number,
     signal: AbortSignal
-  ) => Promise<{ result: string; images?: ToolImage[] }>
+  ) => Promise<{
+    result: string
+    images?: ToolImage[]
+    presentationArtifact?: ArtifactPresentation
+  }>
   onStart?: (call: ScheduledToolCall) => void
   onDone?: (call: ScheduledToolCall, result: string) => void
   policyFor?: (call: ScheduledToolCall) => ToolExecutionPolicy | undefined
@@ -152,6 +158,7 @@ async function executeCall(
       call,
       result: output.result,
       images: output.images ?? [],
+      presentationArtifact: output.presentationArtifact,
       error: false,
       outcome: "success",
     }

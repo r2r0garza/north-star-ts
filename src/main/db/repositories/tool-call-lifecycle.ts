@@ -1,6 +1,16 @@
 import { createHash, randomUUID } from "crypto"
 import { getDb } from "../connection"
 import { persistToolMedia } from "../../media/tool-media"
+import {
+  ArtifactQuotaError,
+  ArtifactRevisionConflictError,
+  persistConversationArtifact,
+} from "./conversation-artifacts"
+import {
+  artifactAcknowledgement,
+  isPresentationTool,
+  type ArtifactPresentation,
+} from "../../../shared/conversation-artifacts"
 import type { ToolImage } from "../../agent/tools/types"
 import type {
   ToolCallLifecycle,
@@ -261,6 +271,7 @@ export function markToolCallNotStarted(input: {
 
 export function markToolCallSettled(input: {
   images?: ToolImage[]
+  presentationArtifact?: ArtifactPresentation
   conversationId: string
   toolCallId: string
   state: "settled_success" | "settled_error"
@@ -272,6 +283,31 @@ export function markToolCallSettled(input: {
   const db = getDb()
   return db.transaction(() => {
     const current = getToolCallLifecycle(input.conversationId, input.toolCallId)
+    if (
+      current &&
+      isPresentationTool(current.toolName) &&
+      current.state === "started" &&
+      input.state === "settled_success"
+    ) {
+      if (!input.presentationArtifact)
+        throw new Error(
+          "Successful presentation completion requires a validated snapshot"
+        )
+      try {
+        input.result = artifactAcknowledgement(
+          persistConversationArtifact(current, input.presentationArtifact)
+        )
+      } catch (error) {
+        if (
+          !(error instanceof ArtifactQuotaError) &&
+          !(error instanceof ArtifactRevisionConflictError)
+        )
+          throw error
+        input.state = "settled_error"
+        input.result = `ERROR[${error instanceof ArtifactQuotaError ? "artifact_quota" : "artifact_conflict"}]: ${error.message}`
+        input.error = input.result
+      }
+    }
     if (
       input.state === "settled_success" &&
       input.images?.length &&

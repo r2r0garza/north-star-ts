@@ -20,7 +20,7 @@ beforeEach(() => {
   getSidebar = vi.fn(async () => ({ showLegacyProcesses: false }))
   const empty = async () => []
   window.cowork = {
-    system: () => ({ missionControlEnabled: false }),
+    system: () => ({ mainAgentName: "North Star" }),
     settings: {
       getSidebar,
       getExecution: async () => ({
@@ -64,35 +64,14 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe("Settings Sidebar feature flag", () => {
-  it.each([true, false])(
-    "shows Sidebar only when enabled: %s",
-    async (enabled) => {
-      window.cowork.system = () =>
-        ({ missionControlEnabled: enabled }) as ReturnType<
-          typeof window.cowork.system
-        >
-      await act(async () => {
-        root.render(
-          <SettingsScreen open onOpenChange={vi.fn()} initialTab="sidebar" />
-        )
-      })
-      const sidebarTab = Array.from(
-        document.querySelectorAll('[role="tab"]')
-      ).find((element) => element.textContent?.trim() === "Sidebar")
-      expect(Boolean(sidebarTab)).toBe(enabled)
-      expect(
-        document.body.textContent?.includes("Show legacy Processes in sidebar")
-      ).toBe(enabled)
-      if (enabled) {
-        expect(getSidebar).toHaveBeenCalledOnce()
-      } else {
-        expect(getSidebar).not.toHaveBeenCalled()
-        const appearance = Array.from(
-          document.querySelectorAll('[role="tab"]')
-        ).find((element) => element.textContent?.trim() === "Appearance")
-        expect(appearance?.getAttribute("aria-selected")).toBe("true")
-      }
-    }
-  )
+describe("retired sidebar settings", () => {
+  it("does not expose legacy Processes preferences", async () => {
+    await act(async () => {
+      root.render(
+        <SettingsScreen open onOpenChange={vi.fn()} initialTab="sidebar" />
+      )
+    })
+    expect(document.body.textContent).not.toContain("Show legacy Processes")
+    expect(getSidebar).not.toHaveBeenCalled()
+  })
 })

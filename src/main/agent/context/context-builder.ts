@@ -1,14 +1,14 @@
 import {
   nativeAssistant,
   type NativeAssistantCarrier,
-} from "../providers/claude-subscription/native-carrier"
+} from "../providers/native-carrier"
 import {
   listMessages,
   listMessagesAfterSeq,
 } from "../../db/repositories/messages"
 import { defaultTokenCounter, type TokenCounter } from "./token-counter"
 import type { Message } from "../../db/types"
-import { renderContextEnvelope, type ContextProvenance } from "./provenance"
+import { renderContextEnvelope, type ContextProvenance } from "../../../shared/context-provenance"
 import { isCommandCompletionEvent } from "../../../shared/runtime-messages"
 import { replayToolCallArguments } from "../tool-call-arguments"
 import { replayToolMedia, type MediaContentPart } from "../../media/tool-media"
@@ -63,6 +63,7 @@ export interface ContextSection {
 export const SECTION_PRIORITY = {
   environment: 5, // date/model/workspace/git orientation — small, most droppable
   browserState: 8, // live agent-browser page (url/title) — small live orientation
+  electronState: 8, // live Electron app sessions (plan 119) — small live orientation
   index: 10, // advisory workspace orientation — most droppable
   approvals: 20,
   taskState: 30,

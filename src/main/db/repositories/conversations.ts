@@ -2,6 +2,10 @@ import { randomUUID } from "crypto"
 import { cleanupToolMedia } from "../../media/tool-media"
 import { getDb } from "../connection"
 import type { Conversation, ConversationSearchResult, Mode } from "../types"
+import {
+  REASONING_EFFORT_PATTERN,
+  type ReasoningEffort,
+} from "../../../shared/reasoning-effort"
 
 const SEARCH_LIMIT_DEFAULT = 30
 const SEARCH_LIMIT_MAX = 50
@@ -12,7 +16,7 @@ const SNIPPET_START = "\u0001"
 const SNIPPET_END = "\u0002"
 
 export const USER_FACING_CONVERSATION_PREDICATE =
-  "c.id NOT IN (SELECT conversation_id FROM tasks WHERE conversation_id IS NOT NULL AND COALESCE(json_extract(input, '$.kind'), 'agent_chat') <> 'inline_todos')"
+  "c.id NOT IN (SELECT conversation_id FROM tasks WHERE conversation_id IS NOT NULL AND COALESCE(json_extract(input, '$.kind'), 'agent_chat') <> 'inline_todos') AND c.id NOT IN (SELECT json_extract(step.value, '$.conversationId') FROM workflow_runs, json_each(data, '$.steps') AS step WHERE json_extract(step.value, '$.conversationId') IS NOT NULL)"
 
 interface ConversationRow {
   id: string
@@ -23,6 +27,7 @@ interface ConversationRow {
   project_id: string | null
   account_id: string | null
   model_id: string | null
+  effort: string | null
   agent_name: string | null
   pinned: number
   created_at: number
@@ -53,6 +58,14 @@ function publishConversationChange(conversationIds: string[]): void {
   }
 }
 
+// Renderer-supplied effort: only level-shaped names are stored, anything else
+// is null. Adapters check the name against the model's own list.
+function reasoningEffort(value: unknown): ReasoningEffort | null {
+  return typeof value === "string" && REASONING_EFFORT_PATTERN.test(value)
+    ? value
+    : null
+}
+
 function toConversation(row: ConversationRow): Conversation {
   return {
     id: row.id,
@@ -63,6 +76,7 @@ function toConversation(row: ConversationRow): Conversation {
     projectId: row.project_id,
     accountId: row.account_id,
     modelId: row.model_id,
+    effort: reasoningEffort(row.effort),
     agentName: row.agent_name,
     pinned: row.pinned === 1,
     createdAt: row.created_at,
@@ -78,13 +92,14 @@ export function createConversation(input: {
   title?: string | null
   accountId?: string | null
   modelId?: string | null
+  effort?: string | null
   agentName?: string | null
 }): Conversation {
   const id = randomUUID()
   const now = Date.now()
   getDb()
     .prepare(
-      "INSERT INTO conversations (id, mode, title, workspace_id, working_directory, project_id, account_id, model_id, agent_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO conversations (id, mode, title, workspace_id, working_directory, project_id, account_id, model_id, effort, agent_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .run(
       id,
@@ -95,6 +110,7 @@ export function createConversation(input: {
       input.projectId ?? null,
       input.accountId ?? null,
       input.modelId ?? null,
+      reasoningEffort(input.effort),
       input.agentName ?? null,
       now,
       now
@@ -348,6 +364,7 @@ export function updateConversation(
     projectId?: string | null
     accountId?: string | null
     modelId?: string | null
+    effort?: string | null
     agentName?: string | null
   }
 ): Conversation {
@@ -375,6 +392,10 @@ export function updateConversation(
   if (patch.modelId !== undefined) {
     sets.push("model_id = ?")
     values.push(patch.modelId)
+  }
+  if (patch.effort !== undefined) {
+    sets.push("effort = ?")
+    values.push(reasoningEffort(patch.effort))
   }
   if (patch.agentName !== undefined) {
     sets.push("agent_name = ?")

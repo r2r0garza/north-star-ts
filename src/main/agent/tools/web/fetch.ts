@@ -1,6 +1,6 @@
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "../types"
 import { toolError, truncateForModel } from "../output"
-import { renderContextEnvelope } from "../../context/provenance"
+import { renderContextEnvelope } from "../../../../shared/context-provenance"
 import { extractReadable } from "./extract"
 import {
   SafeFetchBodyTooLargeError,

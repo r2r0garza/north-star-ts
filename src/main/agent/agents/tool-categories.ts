@@ -55,6 +55,20 @@ export const CATEGORY_TOOLS: Record<string, string[]> = {
     "browser_handoff",
   ],
   browser_advanced: ["browser_evaluate"],
+  // Launching workspace Electron apps (plan 119). Separate from `execute` and
+  // `browser`: neither grant implies application automation.
+  electron: [
+    "electron_launch",
+    "electron_status",
+    "electron_select_window",
+    "electron_snapshot",
+    "electron_screenshot",
+    "electron_interact",
+    "electron_wait",
+    "electron_handoff",
+    "electron_run",
+    "electron_close",
+  ],
   todo: ["todo_write", "run_todos_in_background"],
   // `dashboard` → author AND read live dashboards (plans 033.2 / 033.4);
   // `dashboard_read` → read only. Offered in interactive modes (buildTools gates
@@ -62,6 +76,7 @@ export const CATEGORY_TOOLS: Record<string, string[]> = {
   // let a tool-restricted agent opt in.
   dashboard: ["dashboard_write", "dashboard_read"],
   dashboard_read: ["dashboard_read"],
+  presentation: ["present_chart", "present_table", "present_ui"],
   // `agent` → the subagent-spawn tool. Its OFFERING has an extra gate (children
   // must also be present) applied in buildTools; this mapping just records the
   // name so an agent-scoped allowlist admits it.
@@ -79,20 +94,12 @@ const FLOOR = new Set([...CATEGORY_TOOLS.read, ...CATEGORY_TOOLS.search])
 // Universal infrastructure: never gated by an agent's `tools` list. Clarifying
 // (ask_user_question), reading skills (read_skill), and the plan handoff tools
 // (write_plan/read_plan/present_plan) are capabilities every agent keeps.
-// flag_for_rework is a process-structural capability (plan 031.2): it's only
-// OFFERED to a Process phase worker (buildTools gates it on processRunId), but a
-// phase agent may restrict its `tools`, so it bypasses the allowlist to stay
-// available to whichever agent runs the phase.
 const UNIVERSAL = new Set([
   "ask_user_question",
   "read_skill",
   "write_plan",
   "read_plan",
   "present_plan",
-  "flag_for_rework",
-  // record_proof (plan 106.3) is offered only to a Mission Control proof step,
-  // which must be able to record regardless of its agent's tool narrowing.
-  "record_proof",
 ])
 
 export function isUniversalTool(name: string): boolean {

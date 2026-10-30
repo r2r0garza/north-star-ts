@@ -15,6 +15,34 @@ export function formatConversationTimestamp(
   }).format(createdAt)
 }
 
+export function formatElapsed(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000))
+  const m = Math.floor(seconds / 60)
+  return m > 0
+    ? `${m}m ${String(seconds % 60).padStart(2, "0")}s`
+    : `${seconds}s`
+}
+
+// Ticking elapsed time for the in-flight turn. It sits where the settled row's
+// timestamp and copy button appear, so settling swaps one for the other in place.
+export function ElapsedTimer({ startedAt }: { startedAt: number | null }) {
+  // Mount time stands in when this renderer didn't see the turn start.
+  const [mountedAt] = useState(() => Date.now())
+  const start = startedAt ?? mountedAt
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [])
+  return (
+    <MessageFooter className="h-6 justify-start px-0 font-normal tabular-nums">
+      <span role="timer" aria-label="Elapsed time">
+        {formatElapsed(now - start)}
+      </span>
+    </MessageFooter>
+  )
+}
+
 type ConversationMessageMetaProps = {
   content: string
   createdAt: number

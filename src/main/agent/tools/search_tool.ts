@@ -176,7 +176,13 @@ export const searchTool: Tool = {
         signal: ctx.signal,
       })
 
-      const body = renderSearchResult(search, displayRoot, query, maxResults)
+      const body = renderSearchResult(
+        search,
+        displayRoot,
+        query,
+        maxResults,
+        mode
+      )
       return truncateForModel(body, {
         recoveryHint: recoveryHint(result),
         metadata: {
@@ -248,11 +254,17 @@ function renderSearchResult(
   search: SearchResult,
   displayRoot: string,
   query: string,
-  maxResults: number
+  maxResults: number,
+  mode: SearchMode
 ): string {
+  // Models often write `a|b` or `foo(` expecting regex; say why fixed text found nothing.
+  const noMatches = (what: string) =>
+    `No ${what} ${JSON.stringify(query)}.` +
+    (mode === "fixed" && /[|\\]|\.\*/.test(query)
+      ? ' The query was searched as fixed text; set mode: "regex" for alternation or other regex syntax.'
+      : "")
   if (search.result === "files") {
-    if (search.files.length === 0)
-      return `No files matched ${JSON.stringify(query)}.`
+    if (search.files.length === 0) return noMatches("files matched")
     return appendNotes(
       search.files.map((p) => relPath(displayRoot, p)).join("\n"),
       search,
@@ -261,8 +273,7 @@ function renderSearchResult(
   }
 
   if (search.result === "count") {
-    if (search.counts.length === 0)
-      return `No matches for ${JSON.stringify(query)}.`
+    if (search.counts.length === 0) return noMatches("matches for")
     const rows = search.counts.map(
       (c) => `${relPath(displayRoot, c.path)}: ${c.matches}`
     )
@@ -270,8 +281,7 @@ function renderSearchResult(
     return appendNotes(rows.join("\n"), search, maxResults)
   }
 
-  if (search.matches.length === 0)
-    return `No matches for ${JSON.stringify(query)}.`
+  if (search.matches.length === 0) return noMatches("matches for")
   const rows = search.matches.map((m) => {
     const column = m.column ? `:${m.column}` : ""
     const prefix = m.kind === "context" ? "-" : ":"

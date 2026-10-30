@@ -2,15 +2,22 @@ import { memo } from "react"
 import { Markdown } from "@/components/markdown"
 import { MessageScrollerItem } from "@/components/ui/message-scroller"
 import { Message, MessageContent } from "@/components/ui/message"
-import { ConversationMessageMeta } from "@/components/conversation-message-meta"
+import {
+  ConversationMessageMeta,
+  ElapsedTimer,
+} from "@/components/conversation-message-meta"
 import { ConversationFindText } from "@/components/conversation-find-text"
 import { Bubble, BubbleContent } from "@/components/ui/bubble"
-import { Marker, MarkerIcon, MarkerContent } from "@/components/ui/marker"
-import { Spinner } from "@/components/ui/spinner"
-import { ToolGroup } from "@/components/tool-group"
+import { Trace, TraceLine, TraceIcon, TraceTitle } from "@/components/ui/trace"
+import { Activity, FoldVertical } from "lucide-react"
+import { TranscriptTools } from "@/components/transcript-tools"
 import { ChangedFilesBar } from "@/components/changed-files-bar"
-import { RefocusChip } from "@/components/mission-control/refocus-chip"
-import type { TimelineItem, ToolUse } from "@/lib/timeline"
+import { ReasoningTrace } from "@/components/reasoning-trace"
+import {
+  projectTimelineCommandOutcomes,
+  type TimelineItem,
+  type ToolUse,
+} from "@/lib/timeline"
 import { cn } from "@/lib/utils"
 
 // Transcript render boundaries (plan 097). The settled timeline and the live,
@@ -27,7 +34,11 @@ import { cn } from "@/lib/utils"
 // the settled transcript.
 export type LiveSegment =
   | { kind: "text"; text: string }
+  | { kind: "reasoning"; text: string }
+  | { kind: "user"; text: string; createdAt: number }
   | { kind: "tools"; calls: ToolUse[] }
+  // A turn-level notice, e.g. the request was compacted mid-turn (plan 118).
+  | { kind: "notice"; text: string }
 
 interface ChangedFilesCallbacks {
   conversationId?: string
@@ -63,7 +74,7 @@ export const SettledTranscript = memo(function SettledTranscript({
   onRunBash,
   runDisabled,
 }: SettledTranscriptProps) {
-  return items.map((item, i) => (
+  return projectTimelineCommandOutcomes(items).map((item, i) => (
     <SettledTranscriptRow
       key={item.key}
       item={item}
@@ -107,12 +118,29 @@ const SettledTranscriptRow = memo(function SettledTranscriptRow({
   onRunBash,
   runDisabled,
 }: SettledTranscriptRowProps) {
+  if (item.kind === "reasoning") {
+    return (
+      <MessageScrollerItem scrollAnchor={scrollAnchor}>
+        <Message align="start">
+          <MessageContent>
+            <ReasoningTrace
+              text={item.content}
+              conversationId={conversationId}
+            />
+          </MessageContent>
+        </Message>
+      </MessageScrollerItem>
+    )
+  }
   if (item.kind === "tools") {
     return (
       <MessageScrollerItem scrollAnchor={scrollAnchor}>
         <Message align="start">
           <MessageContent>
-            <ToolGroup calls={item.calls} />
+            <TranscriptTools
+              calls={item.calls}
+              conversationId={conversationId}
+            />
             <ChangedFilesBar
               calls={item.calls}
               workspace={workspace}
@@ -127,7 +155,7 @@ const SettledTranscriptRow = memo(function SettledTranscriptRow({
   if (item.notice === "refocus")
     return (
       <MessageScrollerItem scrollAnchor={scrollAnchor}>
-        <RefocusChip content={item.content} />
+        <div>{item.content}</div>
       </MessageScrollerItem>
     )
   const align = item.role === "user" ? "end" : "start"
@@ -137,13 +165,16 @@ const SettledTranscriptRow = memo(function SettledTranscriptRow({
         <MessageContent>
           <Bubble
             align={align}
-            variant={item.role === "user" ? "default" : "muted"}
+            variant={item.role === "user" ? "default" : "ghost"}
+            className={
+              item.role === "assistant" ? "w-full max-w-full" : undefined
+            }
           >
             <BubbleContent
               className={cn(
                 item.role === "user"
                   ? "whitespace-pre-wrap"
-                  : "overflow-visible"
+                  : "w-full overflow-visible"
               )}
             >
               {item.role === "assistant" ? (
@@ -179,9 +210,9 @@ const SettledTranscriptRow = memo(function SettledTranscriptRow({
 
 interface LiveTranscriptTurnProps extends ChangedFilesCallbacks {
   segments: LiveSegment[]
-  // The aggregated visible text across all live text segments (copy source).
+  // The aggregated visible text across all live text segments.
   content: string
-  firstTextAt: number | null
+  startedAt: number | null
   commandWait: boolean
   streamRetrying: boolean
   findQuery: string
@@ -195,7 +226,7 @@ interface LiveTranscriptTurnProps extends ChangedFilesCallbacks {
 export function LiveTranscriptTurn({
   segments,
   content,
-  firstTextAt,
+  startedAt,
   commandWait,
   streamRetrying,
   findQuery,
@@ -209,12 +240,13 @@ export function LiveTranscriptTurn({
     <MessageScrollerItem scrollAnchor>
       <Message align="start" tabIndex={hasText ? 0 : undefined}>
         <MessageContent>
-          {segments.map((segment, index) => (
+          {projectTimelineCommandOutcomes(segments).map((segment, index) => (
             <LiveTranscriptSegment
               // Segments only append or update in place, so position is a
               // stable identity for the turn's lifetime.
               key={`s${index}`}
               segment={segment}
+              tail={index === segments.length - 1}
               findQuery={findQuery}
               workspace={workspace}
               conversationId={conversationId}
@@ -223,35 +255,32 @@ export function LiveTranscriptTurn({
             />
           ))}
           {segments.length === 0 && (
-            <Marker>
-              <MarkerIcon>
-                <Spinner />
-              </MarkerIcon>
-              <MarkerContent>
-                {commandWait
-                  ? "Waiting for background command…"
-                  : streamRetrying
-                    ? "Connection interrupted — retrying…"
-                    : "Thinking…"}
-              </MarkerContent>
-            </Marker>
-          )}
-          {hasText && firstTextAt !== null && (
-            <ConversationMessageMeta
-              content={content}
-              createdAt={firstTextAt}
-              align="start"
-              copyAlwaysVisible
-            />
+            <Trace>
+              <TraceLine status="running">
+                <TraceIcon>
+                  <Activity />
+                </TraceIcon>
+                <TraceTitle>
+                  {commandWait
+                    ? "Waiting for background command…"
+                    : streamRetrying
+                      ? "Connection interrupted — retrying…"
+                      : "Thinking…"}
+                </TraceTitle>
+              </TraceLine>
+            </Trace>
           )}
           {segments.length > 0 && commandWait && (
-            <Marker>
-              <MarkerIcon>
-                <Spinner />
-              </MarkerIcon>
-              <MarkerContent>Waiting for background command…</MarkerContent>
-            </Marker>
+            <Trace>
+              <TraceLine status="running">
+                <TraceIcon>
+                  <Activity />
+                </TraceIcon>
+                <TraceTitle>Waiting for background command…</TraceTitle>
+              </TraceLine>
+            </Trace>
           )}
+          <ElapsedTimer startedAt={startedAt} />
         </MessageContent>
       </Message>
     </MessageScrollerItem>
@@ -260,21 +289,35 @@ export function LiveTranscriptTurn({
 
 interface LiveTranscriptSegmentProps extends ChangedFilesCallbacks {
   segment: LiveSegment
+  // Whether this is the turn's latest segment (reasoning still streaming).
+  tail: boolean
   findQuery: string
 }
 
 const LiveTranscriptSegment = memo(function LiveTranscriptSegment({
   segment,
+  tail,
   findQuery,
   workspace,
   conversationId,
   onOpenHtml,
   onReviewFiles,
 }: LiveTranscriptSegmentProps) {
+  if (segment.kind === "reasoning")
+    return (
+      <ReasoningTrace
+        text={segment.text}
+        live={tail}
+        conversationId={conversationId}
+      />
+    )
   if (segment.kind === "tools") {
     return (
       <div>
-        <ToolGroup calls={segment.calls} />
+        <TranscriptTools
+          calls={segment.calls}
+          conversationId={conversationId}
+        />
         <ChangedFilesBar
           calls={segment.calls}
           workspace={workspace}
@@ -284,10 +327,37 @@ const LiveTranscriptSegment = memo(function LiveTranscriptSegment({
       </div>
     )
   }
+  if (segment.kind === "user")
+    return (
+      <div className="flex flex-col items-end gap-1">
+        <Bubble align="end">
+          <BubbleContent>
+            <ConversationFindText text={segment.text} query={findQuery} />
+          </BubbleContent>
+        </Bubble>
+        <ConversationMessageMeta
+          content={segment.text}
+          createdAt={segment.createdAt}
+          align="end"
+          copyAlwaysVisible={false}
+        />
+      </div>
+    )
+  if (segment.kind === "notice")
+    return (
+      <Trace>
+        <TraceLine>
+          <TraceIcon>
+            <FoldVertical />
+          </TraceIcon>
+          <TraceTitle>{segment.text}</TraceTitle>
+        </TraceLine>
+      </Trace>
+    )
   if (!segment.text) return null
   return (
-    <Bubble align="start" variant="muted">
-      <BubbleContent className="overflow-visible">
+    <Bubble align="start" variant="ghost" className="w-full max-w-full">
+      <BubbleContent className="w-full overflow-visible">
         <Markdown
           content={segment.text}
           mode="streaming"

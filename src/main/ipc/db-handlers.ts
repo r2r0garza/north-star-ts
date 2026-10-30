@@ -1,15 +1,17 @@
 import { ipcMain, type WebContents } from "electron"
+import type { WorkflowDefinition } from "../../shared/workflows"
+import { serializeWorkflowExport } from "../workflow-export"
 import {
   conversations,
   messages,
   workspaces,
   projects,
+  workflows,
   tasks,
   taskEvents,
   checkpoints,
   approvals,
   todos,
-  processes,
   dashboards,
 } from "../db/repositories"
 import type {
@@ -19,15 +21,7 @@ import type {
   Mode,
   TaskStatus,
   ApprovalStatus,
-  EdgeTrigger,
-  PhaseGatePolicy,
-  PhaseRouting,
-  PhaseContextScope,
-  ProcessCommandConfig,
-  ProcessPhaseKind,
   WorkspaceChecks,
-  ProcessRunStatus,
-  ProcessRuntimeConfig,
 } from "../db/types"
 import type { IndexService } from "../index/service"
 import type { TaskRunner } from "../tasks/runner"
@@ -86,6 +80,7 @@ export function registerDbHandlers(
         title?: string | null
         accountId?: string | null
         modelId?: string | null
+        effort?: string | null
         agentName?: string | null
       }
     ) => {
@@ -119,6 +114,7 @@ export function registerDbHandlers(
         projectId?: string | null
         accountId?: string | null
         modelId?: string | null
+        effort?: string | null
         agentName?: string | null
       }
     ) => {
@@ -257,6 +253,37 @@ export function registerDbHandlers(
     projects.reorderProjects(ids)
   )
 
+  ipcMain.on("db:workflows:flush", (event, workflow: WorkflowDefinition) => {
+    try {
+      workflows.updateWorkflow(workflow)
+      event.returnValue = { ok: true }
+    } catch {
+      event.returnValue = { ok: false }
+    }
+  })
+  ipcMain.handle("db:workflows:delete", (_e, id: string) =>
+    workflows.deleteWorkflow(id)
+  )
+  ipcMain.handle("db:workflows:import", (_e, data: unknown) => workflows.importWorkflow(data))
+  ipcMain.handle("db:workflows:export", (_e, workflow: WorkflowDefinition) => {
+    const { dialog, BrowserWindow } = require("electron") as typeof import("electron")
+    const { writeFile } = require("node:fs/promises") as typeof import("node:fs/promises")
+    const safeName = workflow.name.replace(/[\\/:*?\"<>|]/g, "-").trim() || "workflow"
+    return (async () => {
+      const win = BrowserWindow.getFocusedWindow()
+    const options = { defaultPath: `${safeName}.json`, filters: [{ name: "JSON", extensions: ["json"] }] }
+    const result = win ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options)
+      if (result.canceled || !result.filePath) return { canceled: true }
+      await writeFile(result.filePath, serializeWorkflowExport(workflow), "utf8")
+      return { canceled: false }
+    })()
+  })
+  ipcMain.handle("db:workflows:create", () => workflows.createWorkflow())
+  ipcMain.handle("db:workflows:list", () => workflows.listWorkflows())
+  ipcMain.handle("db:workflows:update", (_e, workflow: WorkflowDefinition) =>
+    workflows.updateWorkflow(workflow)
+  )
+
   // Tasks (storage-only)
   ipcMain.handle(
     "db:tasks:create",
@@ -344,166 +371,6 @@ export function registerDbHandlers(
       id: string,
       decision: { status: "approved" | "denied"; decision?: unknown }
     ) => approvals.resolveApproval(id, decision)
-  )
-
-  // Process engine (plan 025). Definition authoring + run/phase-run reads. The
-  // control verbs (startRun/cancel/approve) live on the `process:*` channels
-  // (process-handlers.ts); these are the structured CRUD the 026 builder uses.
-  ipcMain.handle(
-    "db:processes:create",
-    (_e, input: { name: string; description?: string | null }) =>
-      processes.createProcessDefinition(input)
-  )
-  ipcMain.handle("db:processes:list", () => processes.listProcessDefinitions())
-  ipcMain.handle(
-    "db:processes:get",
-    (_e, id: string) => processes.getProcessGraph(id) ?? null
-  )
-  ipcMain.handle(
-    "db:processes:update",
-    (
-      _e,
-      id: string,
-      patch: {
-        name?: string
-        description?: string | null
-        requireFlagApproval?: boolean
-      }
-    ) => processes.updateProcessDefinition(id, patch)
-  )
-  ipcMain.handle("db:processes:delete", (_e, id: string) =>
-    processes.deleteProcessDefinition(id)
-  )
-
-  ipcMain.handle(
-    "db:processes:phases:create",
-    (
-      _e,
-      input: {
-        processId: string
-        key: string
-        name: string
-        routing?: PhaseRouting
-        gatePolicy?: PhaseGatePolicy
-        fanOut?: boolean
-        maxReworkRounds?: number
-        dotFolder?: boolean
-        validator?: boolean
-        validatorMaxIterations?: number
-        validatorAgent?: string | null
-        subprocessId?: string | null
-        proofStep?: boolean
-        contextScope?: PhaseContextScope
-        kind?: ProcessPhaseKind
-        commandConfig?: ProcessCommandConfig | null
-        position: number
-      }
-    ) => processes.createPhase(input)
-  )
-  ipcMain.handle("db:processes:phases:list", (_e, processId: string) =>
-    processes.listPhases(processId)
-  )
-  ipcMain.handle(
-    "db:processes:phases:update",
-    (
-      _e,
-      id: string,
-      patch: {
-        key?: string
-        name?: string
-        routing?: PhaseRouting
-        gatePolicy?: PhaseGatePolicy
-        fanOut?: boolean
-        maxReworkRounds?: number
-        dotFolder?: boolean
-        validator?: boolean
-        validatorMaxIterations?: number
-        validatorAgent?: string | null
-        subprocessId?: string | null
-        proofStep?: boolean
-        contextScope?: PhaseContextScope
-        kind?: ProcessPhaseKind
-        commandConfig?: ProcessCommandConfig | null
-        position?: number
-      }
-    ) => processes.updatePhase(id, patch)
-  )
-  ipcMain.handle("db:processes:phases:delete", (_e, id: string) =>
-    processes.deletePhase(id)
-  )
-
-  ipcMain.handle(
-    "db:processes:agents:create",
-    (
-      _e,
-      input: {
-        phaseId: string
-        agentName?: string | null
-        seatRole?: string | null
-        skills?: string[] | null
-        tools?: string[] | null
-        runtimeConfig?: ProcessRuntimeConfig | null
-        position: number
-      }
-    ) => processes.createPhaseAgent(input)
-  )
-  ipcMain.handle(
-    "db:processes:agents:update",
-    (_e, id: string, patch: { runtimeConfig?: ProcessRuntimeConfig | null }) =>
-      processes.updatePhaseAgent(id, patch)
-  )
-  ipcMain.handle("db:processes:agents:list", (_e, phaseId: string) =>
-    processes.listPhaseAgents(phaseId)
-  )
-  ipcMain.handle("db:processes:agents:delete", (_e, id: string) =>
-    processes.deletePhaseAgent(id)
-  )
-
-  ipcMain.handle(
-    "db:processes:edges:create",
-    (
-      _e,
-      input: {
-        processId: string
-        fromPhaseId: string
-        toPhaseId: string
-        trigger?: EdgeTrigger
-      }
-    ) => processes.createEdge(input)
-  )
-  ipcMain.handle("db:processes:edges:list", (_e, processId: string) =>
-    processes.listEdges(processId)
-  )
-  ipcMain.handle("db:processes:edges:delete", (_e, id: string) =>
-    processes.deleteEdge(id)
-  )
-
-  ipcMain.handle(
-    "db:processes:runs:list",
-    (
-      _e,
-      opts?: {
-        processId?: string
-        status?: ProcessRunStatus
-        parentPhaseRunId?: string
-      }
-    ) => processes.listProcessRuns(opts)
-  )
-  ipcMain.handle(
-    "db:processes:runs:get",
-    (_e, id: string) => processes.getProcessRun(id) ?? null
-  )
-  ipcMain.handle(
-    "db:processes:phaseRuns:list",
-    (
-      _e,
-      opts: { runId?: string; parentId?: string | null; phaseId?: string }
-    ) => processes.listPhaseRuns(opts)
-  )
-  ipcMain.handle(
-    "db:processes:phaseAttempts:list",
-    (_e, opts: { runId?: string; phaseRunId?: string }) =>
-      processes.listPhaseAttempts(opts)
   )
 
   // Live dashboards (plan 033). Structured CRUD the dashboards view + the

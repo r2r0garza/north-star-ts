@@ -1,10 +1,10 @@
 import type { Task } from "../db/types"
-import { renderContextEnvelope } from "../agent/context/provenance"
+import { renderContextEnvelope } from "../../shared/context-provenance"
 
 export interface TaskHandoff {
   version: 1
   taskId: string
-  status: "completed" | "blocked" | "failed"
+  status: "completed" | "unfinished" | "blocked" | "failed"
   summary: string
   changes: string[]
   verification: string[]
@@ -15,19 +15,20 @@ export interface TaskHandoff {
 export function handoffInstruction(taskId: string): string {
   return `# Required background task handoff
 When finished, return ONLY one JSON object, without markdown fences:
-{"version":1,"taskId":${JSON.stringify(taskId)},"status":"completed|blocked|failed","summary":"what was accomplished","changes":["concrete changes or results"],"verification":["checks actually performed and their results"],"unresolved":["limitations or unfinished work"],"nextAction":null}
-Choose exactly one status. All array entries must be nonempty strings. Use empty arrays when there are none; never invent verification. summary must be nonempty. For blocked or failed, unresolved must describe the obstacle and nextAction must be a nonempty suggested action. For completed, nextAction may be null. Completion means the assignment was fulfilled, not merely that the turn ended. This handoff is for the coordinating agent, not a user-facing closing statement.`
+{"version":1,"taskId":${JSON.stringify(taskId)},"status":"completed|unfinished|blocked|failed","summary":"what was accomplished","changes":["concrete changes or results"],"verification":["checks actually performed and their results"],"unresolved":["limitations or unfinished work"],"nextAction":null}
+Choose exactly one status. completed: the assignment was fulfilled, not merely that the turn ended. unfinished: work remains that you can still do with your tools; prefer to keep working instead. blocked: only an external obstacle your tools cannot resolve, such as credentials, login, approval, permissions, or a missing environment prerequisite; remaining work, a large scope, or verification you cannot run here (record it under unresolved) is not a blocker. failed: the assignment cannot be done as specified. All array entries must be nonempty strings. Use empty arrays when there are none; never invent verification. summary must be nonempty. For unfinished, blocked, or failed, unresolved must describe the remaining work or obstacle and nextAction must be a nonempty suggested action. For completed, nextAction may be null. This handoff is for the coordinating agent, not a user-facing closing statement.`
 }
 
 export function parseTaskHandoff(
   content: unknown,
   taskId: string
 ): TaskHandoff {
-  const invalid = () =>
+  const invalid = (reason: string) =>
     new Error(
-      "The background worker did not return a valid structured handoff; completion could not be confirmed."
+      `The background worker did not return a valid structured handoff; completion could not be confirmed. (${reason})`
     )
-  if (typeof content !== "string" || content.length > 32_000) throw invalid()
+  if (typeof content !== "string" || content.length > 32_000)
+    throw invalid("the reply is not text or exceeds 32000 characters")
   let value: unknown
   try {
     value = JSON.parse(content)
@@ -60,38 +61,59 @@ export function parseTaskHandoff(
         start = -1
       }
     }
-    if (candidates.length !== 1) throw invalid()
+    if (candidates.length !== 1)
+      throw invalid(
+        `expected exactly one JSON object, found ${candidates.length}`
+      )
     value = candidates[0]
   }
   if (!value || typeof value !== "object" || Array.isArray(value))
-    throw invalid()
+    throw invalid("the handoff is not a JSON object")
   const o = value as Record<string, unknown>
   const text = (v: unknown): v is string =>
     typeof v === "string" && v.trim().length > 0 && v.length <= 8_000
   const texts = (v: unknown): v is string[] =>
     Array.isArray(v) && v.length <= 50 && v.every(text)
-  if (
-    o.version !== 1 ||
-    o.taskId !== taskId ||
-    !["completed", "blocked", "failed"].includes(o.status as string) ||
-    !text(o.summary) ||
-    !texts(o.changes) ||
-    !texts(o.verification) ||
-    !texts(o.unresolved) ||
-    !(o.nextAction === null || text(o.nextAction)) ||
-    (o.status !== "completed" &&
-      (o.unresolved.length === 0 || !text(o.nextAction)))
-  )
-    throw invalid()
+  // A completed handoff has nothing to suggest, so an omitted nextAction means null.
+  const nextAction =
+    o.nextAction === undefined && o.status === "completed" ? null : o.nextAction
+  const checks: [boolean, string][] = [
+    [o.version === 1, "version must be 1"],
+    [o.taskId === taskId, `taskId must be ${JSON.stringify(taskId)}`],
+    [
+      ["completed", "unfinished", "blocked", "failed"].includes(
+        o.status as string
+      ),
+      "status must be completed, unfinished, blocked, or failed",
+    ],
+    [text(o.summary), "summary must be a nonempty string"],
+    [texts(o.changes), "changes must be an array of nonempty strings"],
+    [
+      texts(o.verification),
+      "verification must be an array of nonempty strings",
+    ],
+    [texts(o.unresolved), "unresolved must be an array of nonempty strings"],
+    [
+      nextAction === null || text(nextAction),
+      "nextAction must be null or a nonempty string",
+    ],
+    [
+      o.status === "completed" ||
+        (texts(o.unresolved) && o.unresolved.length > 0 && text(nextAction)),
+      "an unfinished, blocked, or failed handoff needs unresolved entries and a nonempty nextAction",
+    ],
+  ]
+  const problem = checks.find(([ok]) => !ok)?.[1]
+  if (problem) throw invalid(problem)
   return {
     version: 1,
     taskId,
     status: o.status as TaskHandoff["status"],
-    summary: o.summary,
-    changes: o.changes,
-    verification: o.verification,
-    unresolved: o.unresolved,
-    nextAction: o.nextAction as string | null,
+    summary: o.summary as string,
+    changes: o.changes as string[],
+    verification: o.verification as string[],
+    unresolved: o.unresolved as string[],
+    nextAction: nextAction as string | null,
   }
 }
 

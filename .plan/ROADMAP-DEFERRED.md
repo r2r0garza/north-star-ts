@@ -1,5 +1,16 @@
 # Roadmap — Deferred
 
+- **`120` — Bundled Electron application launch and control.** Split from `119` on 2026-10-21 at the
+  user's direction. `119` is a coding-agent capability for workspace Electron apps under development;
+  launching bundled/packaged targets is not needed now. Revisit packaged executable/bundle resolution,
+  compatibility, verified disposable profiles and packaged quit/relaunch qualification separately after
+  a concrete need emerges. This does not authorize general computer use.
+  [Plan](120-bundled-electron-application-control.md).
+
+- **`114` — shadcn Code Block adoption.** Reuse a shared code-block presentation for Markdown fences,
+  tool payloads, approval previews, and other code surfaces while retaining existing highlighting,
+  streaming behavior, and specialized file/diff viewers. Deferred for now.
+  [Plan](114-shadcn-code-block-adoption.md).
 - **`110` — Anthropic subscription usage investigation.** Moved from Next on 2026-10-11: Anthropic
   Subscription is hidden in packaged builds and is not the user's daily provider. Revisit only if shipping it
   again is on the table. Start with the cheap discriminating test — the same task through native `claude -p`
@@ -92,6 +103,37 @@
   it, 4/4 with); `045`'s out-of-scope line is amended to permit exactly that narrow steer.
   **`045.1` remains**: extract the shared `index_query` service, add its adapter, widen the grant, add
   the CLI-provider UI copy, and close the Codex steering gap (no per-run append flag exists).
+
+- **`117` — Sandboxed HTML and React previews.** Deferred because executable previews require a proven
+  runtime/compiler isolation boundary, resource controls and packaged-platform qualification, not just
+  installed UI components or an iframe. Reuse `115` artifact infrastructure; activate after artifacts ship,
+  real redesign work demonstrates `116`'s fidelity limits, and a dedicated security investigation passes
+  its fail-closed go/no-go gate. Start with inert HTML/CSS; keep executable React deferred if isolation
+  cannot be established. [Plan](117-sandboxed-html-react-previews.md).
+
+- **`112.1` — Scenario fixtures, launch harness, and test browser.** The six `112` scenario fixtures,
+   the scorecard format, and a deterministic harness baseline; then the backup's app launch harness,
+   `app_*` tools, recipe storage, and bundled Playwright runner ported onto main, with test browser
+   resolution in the order workspace browser → Chrome → consented download and the phase clock paused
+   while the user is asked. Parent: [`112`](112-app-run-recipes-and-acceptance-validation.md), the last
+   ~10% blocking Mission Control from shipping. [Plan](112.1-scenario-fixtures-harness-and-test-browser.md).
+- **`112.2` — Live-model scorecard baseline.** A dev-only scenario driver that runs each `112` scenario
+   on Autopilot with a real model (N ≥ 3 runs, recorded as rates, costs included) on the `112.1` build,
+   before any behavior change; the baseline `112.3`–`112.5` are measured against, under `112`'s stop rule.
+   [Plan](112.2-live-model-scorecard-baseline.md).
+- **`112.3` — Self-verifying recipes and repair.** Recipes that detectors draft, builders complete, and
+   the harness verifies by running (`setup`, `prerequisites`, `.env` references, smoke), recipe state per branch, environment-vs-feature failure
+   classification, a bounded repair loop with plain-language escalation, and an honest *unverified*
+   outcome. [Plan](112.3-self-verifying-recipes-and-repair.md).
+- **`112.4` — Exploratory story proofs.** An app check (`104` phase) before the story `test` step that
+   routes environment failures to repair; isolated seat browsers; proof methods that refuse proofs
+   resting only on builder tests or code reading; scratch-only QA writes.
+   [Plan](112.4-exploratory-story-proofs.md).
+- **`112.5` — Wave gate and durable suite.** `merged` status and a wave acceptance gate where QA writes
+   one Playwright suite against the integrated app, with a `webServer` generated from the verified recipe
+   so `npx playwright test` works for the user; fix stories with capped rounds; the runnable-skeleton
+   rule; worktree-local installs on dependency divergence; overlapping stories serialized at planning
+   time. [Plan](112.5-wave-gate-and-durable-suite.md).
 
 ## Dropped — pending re-review (2026-10-11)
 

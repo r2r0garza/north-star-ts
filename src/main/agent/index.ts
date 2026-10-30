@@ -1,5 +1,18 @@
-import { nativeAssistant } from "./providers/claude-subscription/native-carrier"
+import {
+  openSteering,
+  consumeSteering,
+  setSteeringWake,
+  steeringState,
+  validateSteeringWith,
+} from "./steering"
+import type { SteeringState } from "../../shared/steering"
+import { nativeAssistant } from "./providers/native-carrier"
 import { randomUUID } from "crypto"
+import {
+  acceptsToolActivity,
+  executionArguments,
+  withToolActivity,
+} from "../../shared/tool-activity"
 import { readFile, stat } from "fs/promises"
 import { basename, dirname, isAbsolute } from "path"
 import { SHUTDOWN_ABORT_REASON, stopNote } from "./abort"
@@ -7,6 +20,7 @@ import { askUser } from "./questions/broker"
 import {
   toolDefinitions,
   browserToolDefinitions,
+  electronToolDefinitions,
   webSearchDefinition,
   webFetchDefinition,
   runTool,
@@ -24,6 +38,7 @@ import {
 import { terminateOwnedCommandSessions } from "./tools/command_session_tools"
 import { terminateOwnedTestSessions } from "./tools/test_diagnostics_tools"
 import type { BrowserHandle } from "../browser/manager"
+import { electronApps, electronAppsEnabled } from "../electron-apps"
 import { TOOL_EFFECTS, type ToolImage } from "./tools/types"
 import { readFileTool } from "./tools/read_file_tool"
 import { CHAT_SHELL_TOOL_NAMES, chatShellContext } from "./tools/chat_shell"
@@ -48,7 +63,7 @@ import {
 } from "../db/repositories/todos"
 import { createTask, updateTask } from "../db/repositories/tasks"
 import { todoSeed, finishedTodoTitle } from "../tasks/todo-run"
-import { buildTodoListPrompt } from "./todo-prompt"
+import { buildTodoListPrompt, todoListInHistory } from "./todo-prompt"
 import { loadSkills } from "./skills/loader"
 import { buildSkillsPrompt } from "./skills/prompt"
 import { createReadSkillTool } from "./skills/tool"
@@ -95,45 +110,33 @@ import {
   type WriterWorktree,
 } from "./subagents/worktrees"
 import { containerNameForConversation } from "./env/container"
-import { flagForReworkTool } from "./tools/flag_for_rework"
-import { recordProofTool } from "./tools/record_proof"
-import { seatCommsTools } from "./tools/seat_comms_tools"
-import { mapTools } from "./tools/map_tools"
-import { isLeadSeat } from "../mission-control/map-tools"
-import { allowedForSeatProfile } from "./seat-tool-profile"
-import { deliverQueued } from "../mission-control/inbox"
-import type { SeatTurnIdentity } from "../mission-control/seat-turns"
 import { dashboardWriteTool } from "./tools/dashboard_write"
+import { presentChartTool } from "./tools/present_chart"
+import { presentTableTool } from "./tools/present_table"
+import { presentUiTool } from "./tools/present_ui"
+import {
+  isPresentationTool,
+  type ArtifactPresentation,
+} from "../../shared/conversation-artifacts"
 import { dashboardReadTool } from "./tools/dashboard_read"
 import { loadSystemPrompt } from "./system-prompt"
 import { logSystemPrompt } from "./prompt-log"
 import { buildIndexSummary } from "../index/summary"
 import { takeConversationNotes } from "../db/repositories/conversation-notes"
-import {
-  afterSeatTurn,
-  parseRefocusTrigger,
-  recordRefocusDelivered,
-  refocusInterval,
-  renderRefocusEvent,
-  REFOCUS_NOTE_SOURCE,
-} from "../mission-control/refocus"
-import {
-  recordSeatLessons,
-  seatMemorySection,
-} from "../mission-control/seat-memory"
 import { indexedWorkspaceFor } from "../index/indexed-workspace"
 import {
   contextBuilder,
   SECTION_PRIORITY,
   type ContextSection,
 } from "./context/context-builder"
-import { renderContextEnvelope } from "./context/provenance"
+import { renderContextEnvelope } from "../../shared/context-provenance"
 import {
   taskStateSection,
   approvalsSection,
   summarySection,
   environmentSection,
   browserStateSection,
+  electronStateSection,
 } from "./context/sections"
 import { repairDanglingToolCalls } from "./repair"
 import { replayToolCallArguments } from "./tool-call-arguments"
@@ -151,6 +154,18 @@ import {
   NoActiveProviderError,
   type LlmSelection,
 } from "./providers"
+import { ContextOverflowError } from "./providers/anthropic"
+import { contextWindowFor, isContextOverflow } from "./providers/context-limits"
+import {
+  buildWorkLedger,
+  clearOldToolResults,
+  clipToolResults,
+  latestRound,
+  compactionTiers,
+  compactionWatermarks,
+  continuationMessage,
+  pinnedInstructions,
+} from "./context/compaction"
 import {
   createCompletionRoundWithRetry,
   ModelRequestRetryExhaustedError,
@@ -167,14 +182,19 @@ import {
   REQUEST_SIZE_ESTIMATOR,
   type RequestSize,
 } from "./context/request-size"
-import { contextUsageLog, type ContextUsageOutcome } from "./context/usage-log"
+import {
+  contextUsageLog,
+  type ContextUsageEntry,
+  type ContextUsageOutcome,
+} from "./context/usage-log"
 import { generateTitle } from "./title"
 export { generateTitle } from "./title"
-import { sanitizeFailureContext } from "../tasks/process/failure-sanitizer"
+import { sanitizeFailureContext } from "../tasks/failure-sanitizer"
 import { replayToolMedia } from "../media/tool-media"
 import {
   appendMessage,
   listMessages,
+  listMessagesAfterSeq,
   getMaxMessageSeq,
   getMessage,
 } from "../db/repositories/messages"
@@ -227,6 +247,10 @@ import type { ToolCallRecord } from "../db/types"
 import { normalizeClaudeModel } from "./cli/claude"
 import { makePolicyEngine } from "./approval/engine"
 import { PlanModeClassifier } from "./approval/plan-mode-classifier"
+import {
+  unattendedSurfaceDecision,
+  type UnattendedSurfaceGuard,
+} from "./approval/unattended-classifier"
 import type {
   ActionKind,
   Gate,
@@ -299,12 +323,43 @@ export function nextOutputTokenCap(current: number): number | null {
   return OUTPUT_TOKEN_STEPS.find((step) => step > current) ?? null
 }
 
+// Forces a work-state summary of everything persisted so far (plan 118 tier
+// 2). Registered once by the main process with SummaryService.compactNow, so
+// every runAgentLoop caller gets it without importing the app entry.
+type TurnCompactor = (
+  conversationId: string,
+  signal: AbortSignal
+) => Promise<boolean>
+let turnCompactor: TurnCompactor | null = null
+export function registerTurnCompactor(fn: TurnCompactor | null): void {
+  turnCompactor = fn
+}
+
 // A provider that rejects the raised cap (the model's own output ceiling is
 // lower) — keep the original output-limit failure rather than this error.
 function rejectsOutputCap(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
   return /max_(completion_)?tokens|max.{0,20}output.{0,20}tokens|maximum.{0,40}tokens/i.test(
     message
+  )
+}
+// A non-retryable context-overflow failure naming the sizes involved. Its 4xx
+// status keeps the task and workflow runners from retrying it.
+function overflowFailure(
+  estimated: number | null,
+  window: number | null,
+  cause?: unknown
+): ContextOverflowError {
+  const threshold = settingsService.getIndexing().turnCompactionTokenThreshold
+  const k = (n: number) => `${Math.round(n / 1000)}k`
+  return new ContextOverflowError(
+    `The request exceeds the model's context window` +
+      (estimated ? ` (~${k(estimated)} tokens estimated` : " (") +
+      (window ? `, window ${k(window)}` : "") +
+      `, compaction threshold ${threshold ? k(threshold) : "off"}) and compaction could not shrink it. ` +
+      "Lower the turn compaction threshold in Settings or use a larger-context model.",
+    400,
+    { cause }
   )
 }
 const CHILD_APPROVAL_TIMEOUT_MS = 10 * 60_000
@@ -450,7 +505,7 @@ export interface ChatRequest {
   // The directory the agent's filesystem tools are confined to. Optional: the
   // Chat view runs without a workspace and relies on inlined attachments.
   workspace?: string
-  // Absolute paths of files to inline into the prompt (Chat view attachments).
+  // Absolute host paths explicitly attached by the user, readable on demand.
   attachments?: string[]
   // Skill names explicitly selected by the user through slash mentions.
   skills?: string[]
@@ -526,8 +581,6 @@ function agentFailure(input: {
   message: string
   retryable?: boolean
   taskId?: string
-  processRunId?: string
-  processPhaseRunId?: string
   cause?: string | null
   toolCallId?: string
 }): FailureContext {
@@ -538,8 +591,8 @@ function agentFailure(input: {
     retryable: input.retryable === true,
     attempt: null,
     maxAttempts: null,
-    runId: input.processRunId ?? null,
-    phaseRunId: input.processPhaseRunId ?? null,
+    runId: null,
+    phaseRunId: null,
     phaseId: null,
     taskId: input.taskId ?? null,
     workerTaskId: input.taskId ?? null,
@@ -790,7 +843,18 @@ function reconcileSideEffectingToolAction(input: {
 // tool-call `id` joins start↔done (and matches the persisted toolCallId), so the
 // live markers render identically to the ones rebuilt from storage on reload.
 export type ChatEvent =
+  | { type: "command_output"; id: string; result: string }
+  | { type: "steering_state"; state: SteeringState }
+  | {
+      type: "steering_delivered"
+      id: string
+      content: string
+      createdAt: number
+    }
   | { type: "token"; delta: string; attemptId?: string }
+  // Model reasoning for the transcript, in the same attempt as its tokens: a
+  // rolled-back attempt's reasoning is discarded with its text.
+  | { type: "reasoning"; delta: string; attemptId?: string }
   | {
       type: "stream_attempt"
       phase: "start" | "commit" | "rollback"
@@ -813,6 +877,7 @@ export type ChatEvent =
       result: string
       messageId?: string
       media?: import("../../shared/tool-media").ToolMediaReference[]
+      artifact?: import("../../shared/conversation-artifacts").ArtifactReference
     }
   // The agent wants to perform a gated action and needs the human to decide.
   // `id` is the tool-call id so the renderer can attach the approval card to the
@@ -852,6 +917,9 @@ export type ChatEvent =
   // The run is parked waiting for owned background command sessions to settle.
   // Stop remains available because this is still the same in-flight turn.
   | { type: "command_wait"; phase: "start" | "done"; sessionIds?: string[] }
+  // The in-memory request was compacted mid-turn (plan 118). Tier 1 cleared
+  // old tool results; tier 2 rebuilt it from a work-state summary.
+  | { type: "context_compacted"; tier: 1 | 2; before: number; after: number }
 
 type OnEvent = (event: ChatEvent) => void
 
@@ -866,7 +934,7 @@ export interface RunAgentLoopOptions {
   // The directory the agent's filesystem tools are confined to. Optional: the
   // Chat view runs without a workspace and relies on inlined attachments.
   workspace?: string
-  // Absolute paths of files to inline into the prompt (Chat view attachments).
+  // Absolute host paths explicitly attached by the user, readable on demand.
   attachments?: string[]
   // Skill names explicitly selected by the user through slash mentions.
   skills?: string[]
@@ -896,6 +964,11 @@ export interface RunAgentLoopOptions {
   // singleton) rather than imported — same cycle-avoidance as enqueueTask. Absent
   // in contexts with no browser (e.g. the durable task runner, unit tests).
   provideBrowser?: (signal: AbortSignal) => BrowserHandle
+  // Offer Electron app control. Defaults to live chat turns only; a workflow
+  // step opts in explicitly (plan 130).
+  provideElectron?: boolean
+  // Unattended browser/Electron limits, checked before auto mode approves.
+  unattendedGuard?: UnattendedSurfaceGuard
   // The durable task this run belongs to, when driven by the runner's runOne.
   // Absent on the live `chat` path (which has no task). Used only to surface this
   // task's prior gate decisions in the approvals context section (plan 021) so a
@@ -904,8 +977,7 @@ export interface RunAgentLoopOptions {
   taskId?: string
   // Interactive chat (runChat) and the subagents it spawns, at any depth: put
   // the app's Python venv first on PATH for this turn's local commands, unless
-  // the workspace has its own Python environment. Every other caller (Mission
-  // Control, Playbooks, background tasks) leaves it off, and so do subagents
+  // the workspace has its own Python environment. Other background callers leaves it off, and so do subagents
   // spawned from them, since they inherit the parent's value.
   chatPythonVenv?: boolean
   // Start this turn in plan mode: the agent may read/search and write only its
@@ -923,7 +995,7 @@ export interface RunAgentLoopOptions {
   autoMode?: boolean
   // Whether this run may receive conversation delegation tools. `runChat` passes
   // the default-off user preference as a turn-start snapshot. Omitted means
-  // enabled so independent Process/Mission Control callers preserve their semantics.
+  // enabled so independent callers preserve their semantics.
   conversationSubagentsEnabled?: boolean
   // Subagent-tree depth of this run: 0 for a top-level (user- or task-driven)
   // turn, incremented each time an agent spawns a child via spawn_subagent.
@@ -940,46 +1012,36 @@ export interface RunAgentLoopOptions {
   // directory as its parent (a Chat worker inherits neither a confinement
   // workspace nor the project link). Absent on top-level turns, which derive it.
   agentDir?: string
-  // Process phase context (plan 031.2): set only when this turn is a Process phase
-  // worker (makeRunPhase). Threaded into ToolContext so flag_for_rework can reach
-  // the run's graph + record a durable cross-phase rework flag. Absent otherwise.
-  processRunId?: string
-  processPhaseRunId?: string
-  // Process-only format instruction, refreshed even when resuming a transcript.
-  processCompletionInstruction?: string
   completionInstruction?: string
   reportOnly?: boolean
-  // Mission Control (plan 106.3): this worker runs a playbook's proof step, so
-  // it is offered record_proof. The tool re-derives the user story, criteria, and
-  // seats from the run itself; this flag only controls the offer.
-  processProofStep?: boolean
-  // Mission Control seat turn (plan 106.4): who is speaking on the rig and
-  // what the turn may do. Offers the Comms tools (except answer-only), delivers
-  // the seat's queued mail at each tool-round boundary, and — for a turn woken
-  // by mail (consult / answer_only) — narrows the toolset to read/search tools
-  // so a message can never cause a side effect.
-  missionControlSeat?: SeatTurnIdentity
-  // Extra system-block context sections supplied by the caller — e.g. the
-  // Mission Control seat context (charter, cultures, intent chain). Budgeted
-  // by the ContextBuilder like every other section.
+  llmSelectionOverride?: LlmSelection
+  // Replaces the conversation's effort for this turn (null = provider default).
+  effortOverride?: string | null
+  agentNameOverride?: string | null
+  // Additional caller-provided context, budgeted like other sections.
   extraContextSections?: ContextSection[]
   // Withhold the ask_user_question tool: this turn has NO interactive user to
   // answer a clarifying question, so offering the tool only lets the worker stall
-  // until it's interrupted. Set by every Process worker fork (phase / decompose /
-  // validate) — they run headless with a swallowed onEvent, unlike a durable task,
+  // until it's interrupted. Headless workers have no interactive event sink, unlike a durable task,
   // which surfaces the question in the activity panel. The worker proceeds on
   // reasonable assumptions instead (its kickoff frames the work as self-contained).
   suppressUserQuestions?: boolean
+  unattended?: boolean
   // Child-run overrides used by conversation subagents. They are runtime-only:
   // ephemeral identities are never persisted as conversation agent names.
   agentOverride?: AgentDefinition | null
   childInstructionPrefix?: string
   allowedToolNames?: Set<string>
+  // Offer only read-only tools (workflow step validation). CLI providers
+  // cannot enforce this, so they refuse the turn instead.
+  readOnlyTools?: boolean
   subagentRun?: boolean
   repositoryLeaseToken?: string
   beforeApproval?: (signal: AbortSignal) => Promise<() => void>
   onApprovalWaitingChange?: (waiting: boolean) => void
   registerAutoModeSetter?: (setter: (enabled: boolean) => void) => () => void
+  receiveSteering?: boolean
+  closeSteering?: () => void
 }
 
 // The on-disk directory associated with a conversation, used to discover
@@ -1017,12 +1079,13 @@ export async function runAgentLoop(
   const {
     conversationId,
     workspace,
-    attachments,
+    attachments: initialAttachments,
     userMessage,
     abort,
     taskId,
     skills: selectedSkillNames,
   } = opts
+  const attachments = [...(initialAttachments ?? [])]
   const onEvent: OnEvent = opts.onEvent ?? (() => {})
   const runId = randomUUID()
   const commandCompletionOwner: CommandCompletionOwner = {
@@ -1045,8 +1108,6 @@ export async function runAgentLoop(
           stage: "agent_setup",
           message,
           taskId,
-          processRunId: opts.processRunId,
-          processPhaseRunId: opts.processPhaseRunId,
         }),
       }
     }
@@ -1061,8 +1122,6 @@ export async function runAgentLoop(
             stage: "agent_setup",
             message,
             taskId,
-            processRunId: opts.processRunId,
-            processPhaseRunId: opts.processPhaseRunId,
           }),
         }
       }
@@ -1075,8 +1134,6 @@ export async function runAgentLoop(
           stage: "agent_setup",
           message,
           taskId,
-          processRunId: opts.processRunId,
-          processPhaseRunId: opts.processPhaseRunId,
         }),
       }
     }
@@ -1092,7 +1149,9 @@ export async function runAgentLoop(
   // none of North Star's internal orchestration leaks into the external CLI.
   const defaultLlm = settingsService.getLlm()
   const effectiveAccountId =
-    conversation?.accountId ?? defaultLlm.activeAccountId
+    opts.llmSelectionOverride !== undefined
+      ? (opts.llmSelectionOverride.accountId ?? defaultLlm.activeAccountId)
+      : (conversation?.accountId ?? defaultLlm.activeAccountId)
   const effectiveAccount = effectiveAccountId
     ? getAccount(effectiveAccountId)
     : undefined
@@ -1100,6 +1159,10 @@ export async function runAgentLoop(
     effectiveAccount?.provider === "claude_code" ||
     effectiveAccount?.provider === "codex_cli"
   ) {
+    if (attachments?.length)
+      return { error: "Attachments are not supported by CLI providers." }
+    if (opts.readOnlyTools)
+      return { error: "Read-only turns are not supported by CLI providers." }
     if (opts.bashCommand)
       return { error: "Run code is unavailable for CLI providers." }
     if (!conversation) return { error: "Conversation not found." }
@@ -1124,6 +1187,7 @@ export async function runAgentLoop(
       reportProvider: effectiveAccount.provider,
       // Lends the CLI North Star's browser over the bridge (plan 045).
       provideBrowser: opts.provideBrowser,
+      unattendedGuard: opts.unattendedGuard,
       // The CLI paths return before `agentDir` is resolved below, so scope their
       // memory the same way it would have been: confinement workspace, else the
       // conversation's own directory.
@@ -1134,9 +1198,10 @@ export async function runAgentLoop(
       abort,
       onEvent,
     }
+    const selection = opts.llmSelectionOverride ?? conversation
     const modelId =
-      conversation.modelId ??
-      (conversation.accountId === null ? defaultLlm.activeModelId : null)
+      selection.modelId ??
+      (selection.accountId === null ? defaultLlm.activeModelId : null)
     return effectiveAccount.provider === "claude_code"
       ? runClaudeConversation({
           ...cliTurn,
@@ -1163,11 +1228,15 @@ export async function runAgentLoop(
   // this turn is offered. Re-resolved from disk each turn (definitions are files,
   // not DB rows). Null (no selection, or the file vanished) → the built-in main
   // agent, exactly as before.
+  const selectedAgentName =
+    opts.agentNameOverride !== undefined
+      ? opts.agentNameOverride
+      : conversation?.agentName
   const agent =
     opts.agentOverride !== undefined
       ? opts.agentOverride
-      : conversation?.agentName
-        ? await loadAgent(conversation.agentName, agentDir)
+      : selectedAgentName
+        ? await loadAgent(selectedAgentName, agentDir)
         : null
   const capabilityPolicy = agentCapabilityPolicy(agent)
 
@@ -1223,10 +1292,14 @@ export async function runAgentLoop(
   // This conversation's LLM selection (provider account + model). Null fields
   // fall back to the global default inside resolveLlm, so a session that never
   // picked a model uses the default while one that did keeps its own.
-  const llmSelection: LlmSelection = {
+  const llmSelection: LlmSelection = opts.llmSelectionOverride ?? {
     accountId: conversation?.accountId ?? null,
     modelId: conversation?.modelId ?? null,
   }
+  const requestEffort =
+    opts.effortOverride !== undefined
+      ? opts.effortOverride
+      : conversation?.effort
 
   // The todo tool is gated by mode, not workspace: chat is the tool-light mode
   // and doesn't get it; interactive/north_star do, with or without a workspace.
@@ -1263,21 +1336,44 @@ export async function runAgentLoop(
   // for live turns (those with a renderer wired via provideBrowser). The durable
   // task runner and subagent spawns have no dropdown to toggle from, and keying
   // by conversation would let a background worker's entry clobber a live one.
-  const isLiveTurn = !!opts.provideBrowser
+  // Unattended turns (workflow steps) may borrow a browser but have no dropdown.
+  const isLiveTurn = !!opts.provideBrowser && !opts.unattended
   if (isLiveTurn) autoModeSetters.set(conversationId, setAutoMode)
 
   // Whether to surface the workspace index to the agent (plan 008/014): a
-  // workspace-backed non-chat session with the "use index for context" setting on.
+  // workspace-backed non-chat session with the "use index for context" setting on
+  // and an index that actually exists (its own, or its main checkout's), so the
+  // model is never offered a tool that can only answer "not indexed yet".
   // Gates BOTH the index_query_tool and the injected summary below.
-  const useIndex =
+  const indexWorkspacePath =
     showTodos &&
-    !!conversation?.workspaceId &&
+    conversation?.workspaceId &&
     settingsService.getIndexing().useIndexForContext
+      ? getWorkspace(conversation.workspaceId)?.path
+      : undefined
+  const indexedWorkspace = indexWorkspacePath
+    ? await indexedWorkspaceFor(indexWorkspacePath)
+    : null
+  const useIndex = !!indexedWorkspace
 
   // The agent browser is offered when the caller wired a provider (the live chat
   // path does; the durable task runner does not — a background task has no window
   // to drive). Bound to this turn's signal so Stop unwinds an in-flight browser op.
   const browser = opts.provideBrowser?.(abort.signal)
+
+  // Electron app control (plan 119): live turns in a local, writable workspace
+  // only. A container/remote backend would still run the app on the host, and
+  // a read-only profile must not launch workspace code.
+  const executionConfig = hasWorkspace
+    ? settingsService.getExecutionConfig()
+    : null
+  const electron =
+    (opts.provideElectron ?? isLiveTurn) &&
+    electronAppsEnabled() &&
+    executionConfig?.kind === "local" &&
+    executionConfig.profile !== "read-only"
+      ? electronApps.handleForTurn(conversationId, workspace!, abort.signal)
+      : undefined
 
   // Custom-agent tool restriction. When the selected agent declares a `tools`
   // frontmatter, this is the set of internal tool names it may be offered (plus
@@ -1291,7 +1387,7 @@ export async function runAgentLoop(
   )
 
   // Subagent spawning. Live conversations and chat-originated background tasks
-  // pass an explicit snapshot; independent Process/Mission Control callers omit
+  // pass an explicit snapshot; independent callers omit
   // the flag and retain their authored delegation behavior. The remaining agent
   // policy and depth gates only narrow that capability further.
   const delegationEnabled = opts.conversationSubagentsEnabled !== false
@@ -1377,8 +1473,18 @@ export async function runAgentLoop(
   // ever narrow, never widen (an agent granted `edit` in a bare Chat still gets
   // no filesystem tools; plan mode still drops mutating tools). Universal tools
   // (ask_user_question, read_skill, plan-mode handoff) bypass the allowlist.
-  const applyAgentTools = (defs: { function: { name: string } }[]) => {
+  const applyAgentTools = <T extends { function: { name: string } }>(
+    defs: T[]
+  ): T[] => {
     if (opts.reportOnly) return []
+    if (opts.unattended)
+      defs = defs.filter(
+        (d) =>
+          !UNATTENDED_DENIED_TOOLS.has(d.function.name) &&
+          (d.function.name !== "browser_evaluate" ||
+            !opts.unattendedGuard ||
+            opts.unattendedGuard.allowEvaluate)
+      )
     const agentFiltered = externalToolAllowed
       ? defs.filter((d) => externalToolAllowed(d.function.name))
       : agentToolNames === null
@@ -1388,41 +1494,16 @@ export async function runAgentLoop(
               isUniversalTool(d.function.name) ||
               agentToolNames.has(d.function.name)
           )
-    return opts.allowedToolNames
-      ? agentFiltered.filter((d) => opts.allowedToolNames!.has(d.function.name))
-      : agentFiltered
-  }
-  // A seat turn woken by mail may read and search but never mutate, execute,
-  // delegate, or reach out (plan 106.4 decision 4): keep only local read-only
-  // tools. MCP tools have no declared effects, so they are dropped too.
-  const seatProfile = opts.missionControlSeat?.profile
-  const readOnlyExtras = new Set([readSkillTool.definition.function.name])
-  const buildTools = () => {
-    const offered = buildBaseTools()
-    return (
-      seatProfile
-        ? offered.filter((d) =>
-            allowedForSeatProfile(d.function.name, seatProfile, readOnlyExtras)
-          )
-        : offered
-    ).concat(
-      // Comms (plan 106.4): process-structural like record_proof, so no agent
-      // or seat narrowing removes it. An answer-only wake answers in its final
-      // message instead.
-      seatProfile && seatProfile !== "answer_only" && !planMode
-        ? seatCommsTools.map((tool) => tool.definition)
-        : [],
-      // Map tools (plan 106.6): pod leads only. Rights are enforced when the
-      // tool runs, so a lead without a right still sees why it was refused.
-      seatProfile &&
-        seatProfile !== "answer_only" &&
-        !planMode &&
-        isLeadSeat(opts.missionControlSeat!)
-        ? mapTools.map((tool) => tool.definition)
-        : []
+    return agentFiltered.filter(
+      (d) =>
+        (!opts.allowedToolNames ||
+          opts.allowedToolNames.has(d.function.name)) &&
+        (!opts.readOnlyTools ||
+          isReadOnlyTool(d.function.name) ||
+          BROWSER_OBSERVATION_TOOLS.has(d.function.name))
     )
   }
-  const buildBaseTools = () =>
+  const buildTools = () =>
     applyAgentTools([
       ...(hasWorkspace
         ? planMode
@@ -1434,10 +1515,10 @@ export async function runAgentLoop(
             // Chat: read_file for attachments and skill:// resources, and the
             // command tools, which run in the conversation's scratch dir
             // (tools/chat_shell.ts).
-            ...(hasAttachments || skills.length > 0
+            ...(attachments.length > 0 || skills.length > 0
               ? [readFileTool.definition]
               : []),
-            ...(hasAttachments && attachedDocuments.length > 0
+            ...(attachments.some((path) => supportedDocumentKind(path) !== null)
               ? [readDocumentTool.definition]
               : []),
             ...(planMode
@@ -1455,6 +1536,7 @@ export async function runAgentLoop(
         : []),
       ...(useIndex ? [indexQueryTool.definition] : []),
       ...(browser ? browserToolDefinitions : []),
+      ...(electron && !planMode ? electronToolDefinitions : []),
       // Web tools are offered in every mode, independent of workspace/browser.
       // In plan mode, web_fetch remains behind its ordinary per-origin approval
       // gate; it researches external sources without mutating the workspace.
@@ -1466,15 +1548,19 @@ export async function runAgentLoop(
       // already required the `agent` category.
       ...(offerSpawn && !planMode ? [spawnSubagentTool.definition] : []),
       ...(offerSpawnBatch && !planMode ? [spawnSubagentsTool.definition] : []),
-      // flag_for_rework: offered only to a Process phase worker (plan 031.2 — when
-      // this run carries process context). Lets the worker send a defect back to an
-      // upstream phase instead of fixing out of lane. Not gated by the agent
-      // allowlist (it's a process-structural capability, like spawn).
-      ...(opts.processRunId && !planMode ? [flagForReworkTool.definition] : []),
       // dashboard_write (plan 033.2): offered in interactive modes (like
       // todo_write), withheld in plan mode as a side-effecting save. Subject to
       // the agent tool allowlist via its `dashboard` category.
       ...(showTodos && !planMode ? [dashboardWriteTool.definition] : []),
+      // Snapshots write conversation state, not workspace files. Native Chat
+      // supports them too; read-only and custom-agent filters still apply.
+      ...(!planMode
+        ? [
+            presentChartTool.definition,
+            presentTableTool.definition,
+            presentUiTool.definition,
+          ]
+        : []),
       // dashboard_read (plan 033.4): same modes as dashboard_write but kept in
       // plan mode — it only reads cached widget data. Subject to the allowlist
       // via the `dashboard` or `dashboard_read` category.
@@ -1492,8 +1578,7 @@ export async function runAgentLoop(
       // which have no conversationId path into a plan file anyway).
       ...(showTodos ? [readPlanTool.definition] : []),
       // ask_user_question is offered in every mode — clarification is universal —
-      // EXCEPT a headless worker with no interactive user to answer (a Process
-      // phase/decompose/validate worker), where it can only stall until interrupted.
+      // EXCEPT a headless worker with no interactive user to answer.
       ...(opts.suppressUserQuestions ? [] : [askUserQuestionTool.definition]),
       readSkillTool.definition,
     ])
@@ -1504,14 +1589,7 @@ export async function runAgentLoop(
         // is a side effect); regained the moment a plan is approved.
         planMode ? [] : mcpTools
       )
-      .concat(
-        // record_proof (plan 106.3): process-structural like flag_for_rework, and
-        // offered only to a Mission Control proof step, so no agent or seat tool
-        // narrowing may remove it.
-        opts.processProofStep && opts.processRunId && !planMode
-          ? [recordProofTool.definition]
-          : []
-      )
+      .map(withToolActivity)
   // The non-droppable base prompt (mode prompt). Everything else is a droppable
   // context SECTION handed to the ContextBuilder, which budgets + composes them
   // into the system block under one global budget with an explicit drop order
@@ -1543,11 +1621,6 @@ export async function runAgentLoop(
             agent.body.trim()
           )}\n\n${modePrompt}`
         : modePrompt) +
-    (opts.processRunId &&
-    opts.processPhaseRunId &&
-    opts.processCompletionInstruction
-      ? `\n\n${opts.processCompletionInstruction}`
-      : "") +
     (opts.completionInstruction ? `\n\n${opts.completionInstruction}` : "")
   const sections: ContextSection[] = [...(opts.extraContextSections ?? [])]
 
@@ -1565,21 +1638,6 @@ export async function runAgentLoop(
         source: "chat_python_venv",
       },
     })
-  }
-
-  // Seat memory (plan 106.7): the seat's active lessons, after its charter.
-  // Injecting records an exposure, so a retraction can find this session.
-  const seatIdentity =
-    opts.missionControlSeat && (opts.agentDepth ?? 0) === 0
-      ? opts.missionControlSeat
-      : null
-  if (seatIdentity) {
-    try {
-      const lessons = seatMemorySection(seatIdentity, conversationId)
-      if (lessons) sections.push(lessons)
-    } catch (err) {
-      console.warn("[seat-memory] injection failed:", err)
-    }
   }
 
   // Environment orientation: date + model always, and (when a workspace exists)
@@ -1605,6 +1663,12 @@ export async function runAgentLoop(
     buildTools().some((d) => d.function.name.startsWith("browser_"))
   ) {
     sections.push(browserStateSection(browser.state()))
+  }
+  if (
+    electron &&
+    buildTools().some((d) => d.function.name.startsWith("electron_"))
+  ) {
+    sections.push(electronStateSection(await electron.status()))
   }
 
   if (agent && capabilityPolicy) {
@@ -1699,8 +1763,17 @@ export async function runAgentLoop(
     })
   }
 
-  // Todo list: re-injected each turn so a multi-step plan survives context
-  // compression and tool round-trips (see todo_write). Mode-gated.
+  // Rolling conversation summary (plan 019), read up front because its boundary
+  // decides whether the todo list needs re-injecting (below).
+  const summary = summarySection(conversationId)
+
+  // Todo list: mode-gated, and injected only when the history being sent no
+  // longer shows it — a summary replaced the todo_write calls, or the list was
+  // seeded without one (a handed-off background task). Every successful
+  // todo_write result carries the full list, so while one is still in history
+  // the system-prompt copy would only repeat it, and each list change would
+  // rewrite the prompt prefix: a full prompt-cache miss and dropped thinking on
+  // the next turn.
   if (showTodos) {
     // On a genuine new user turn (not a durable-task resume, which passes no
     // userMessage), clear a FINISHED list so the next task plans from scratch.
@@ -1726,7 +1799,13 @@ export async function runAgentLoop(
         replaceTodos(conversationId, [])
       }
     }
-    const todoPrompt = buildTodoListPrompt(listTodos(conversationId))
+    const visible =
+      summary?.replacesHistoryThrough === undefined
+        ? listMessages(conversationId)
+        : listMessagesAfterSeq(conversationId, summary.replacesHistoryThrough)
+    const todoPrompt = todoListInHistory(visible)
+      ? null
+      : buildTodoListPrompt(listTodos(conversationId))
     if (todoPrompt) {
       sections.push({
         name: "todos",
@@ -1764,22 +1843,13 @@ export async function runAgentLoop(
   // decides where verbatim history resumes.
   // Highest-priority section (last dropped). Conversation memory applies to
   // every mode, including Chat, independently of the available toolset.
-  const summary = summarySection(conversationId)
   if (summary) sections.push(summary)
 
   // Workspace-index summary (plan 008): cheap structured orientation. Advisory,
   // most droppable. Gated by the "use index for context" setting + a workspace.
-  if (useIndex && conversation?.workspaceId) {
-    // A Mission Control worker works in a worktree but belongs to its feature's
-    // workspace, so this is the indexed checkout. A workspace the user picked
-    // may itself be an unindexed git worktree; summarize its main checkout then.
-    const workspacePath = getWorkspace(conversation.workspaceId)?.path
-    const indexed = workspacePath
-      ? await indexedWorkspaceFor(workspacePath)
-      : null
-    const indexSummary = buildIndexSummary(
-      indexed?.workspace.id ?? conversation.workspaceId
-    )
+  if (indexedWorkspace) {
+    // Summarize the main checkout when this workspace is an unindexed worktree.
+    const indexSummary = buildIndexSummary(indexedWorkspace.workspace.id)
     if (indexSummary) {
       sections.push({
         name: "index",
@@ -1829,7 +1899,7 @@ export async function runAgentLoop(
   // Recording it would double the reference log and spend a second extraction
   // call on text the retry is about to record anyway.
   let turnWillRetry = false
-  // Where this turn begins in the transcript, for seat lesson extraction.
+  // Where this turn begins in the transcript.
   const turnStartSeq = getMaxMessageSeq(conversationId)
   if (userMessage !== undefined) {
     let userContent = userMessage || "What files are in the workspace?"
@@ -1846,14 +1916,14 @@ export async function runAgentLoop(
       if (attachedTextFiles.length > 0) {
         noteParts.push(
           `read with read_file_tool: ${attachedTextFiles
-            .map((p) => basename(p))
+            .map((p) => JSON.stringify(p))
             .join(", ")}`
         )
       }
       if (attachedDocuments.length > 0) {
         noteParts.push(
           `read with read_document: ${attachedDocuments
-            .map((p) => basename(p))
+            .map((p) => JSON.stringify(p))
             .join(", ")}`
         )
       }
@@ -1892,17 +1962,6 @@ export async function runAgentLoop(
         break
       }
     }
-  }
-
-  // Seat mail held for this seat while its next playbook step was pending
-  // (plan 106.4) lands at the start of that step, after its kickoff.
-  if (seatProfile && seatProfile !== "answer_only") {
-    const mail = deliverQueued({
-      identity: opts.missionControlSeat!,
-      conversationId,
-      wakeTaskId: null,
-    })
-    if (mail) messages.push({ role: "user", content: mail.content })
   }
 
   for (const name of forcedSkills.names) {
@@ -2069,17 +2128,10 @@ export async function runAgentLoop(
     // token so the two pieces don't run together in the bubble.
     let streamedText = false
 
-    // Refocus (plan 106.7): a working seat is re-shown why its work exists
-    // every N model rounds of one step. Any other reminder (compaction,
-    // drift) restarts the count.
-    const refocusEvery =
-      seatIdentity?.profile === "work"
-        ? refocusInterval(seatIdentity.featureId)
-        : 0
-    let roundsSinceRefocus = 0
     // Per-round context usage log (plan 108). Measurement only: it never
     // changes the request and never fails the turn.
     let modelRound = 0
+    let compactionNote: ContextUsageEntry["compaction"] | null = null
     const logContextUsage = (input: {
       requestSize: RequestSize | null
       roundId: string
@@ -2106,16 +2158,11 @@ export async function runAgentLoop(
           accountId: llm.accountId,
           model: llm.model,
           mode: conversation?.mode ?? "chat",
-          seat: seatIdentity
-            ? {
-                address: seatIdentity.address,
-                profile: seatIdentity.profile,
-                featureId: seatIdentity.featureId,
-                anchor: seatIdentity.anchor,
-              }
-            : null,
+          seat: null,
           request: {
             reported,
+            cached: input.diagnostics?.usage?.cachedTokens ?? null,
+            cacheWrite: input.diagnostics?.usage?.cacheWriteTokens ?? null,
             estimated: size.total,
             estimator: REQUEST_SIZE_ESTIMATOR,
             ratio:
@@ -2134,23 +2181,20 @@ export async function runAgentLoop(
             finishReason: input.finishReason,
           },
           outcome: input.outcome,
+          ...(compactionNote ? { compaction: compactionNote } : {}),
         })
+        compactionNote = null
       } catch (error) {
         console.warn("[ctx] context usage logging failed:", error)
       }
     }
-    const deliverRefocus = (content: string) => {
-      appendMessage({ conversationId, role: "user", content })
-      messages.push({ role: "user", content })
-      roundsSinceRefocus = 0
-    }
-
     const executeCalls = async (
       toolCalls: ToolCallRecord[],
       text: string,
       logicalRoundId: string,
       offeredNames: Set<string>,
-      carrier?: CompletionRound["nativeAssistant"]
+      carrier?: CompletionRound["nativeAssistant"],
+      reasoning?: string
     ) => {
       // Record the assistant turn (text + the tool calls it requested) so the
       // follow-up request has the full context — both in-memory and persisted.
@@ -2172,6 +2216,7 @@ export async function runAgentLoop(
         role: "assistant",
         content: text || null,
         nativeAssistant: carrier,
+        reasoning,
         toolCalls: toolCalls.map((c) => ({
           id: c.id,
           name: c.name,
@@ -2232,6 +2277,7 @@ export async function runAgentLoop(
           } else {
             const lifecycle = markToolCallSettled({
               images: settled.images,
+              presentationArtifact: settled.presentationArtifact,
               conversationId,
               toolCallId: call.id,
               state:
@@ -2253,7 +2299,7 @@ export async function runAgentLoop(
               toolCallId: call.id,
               toolName: call.name,
             })
-            if (storedResult.media?.length)
+            if (storedResult.media?.length || storedResult.artifact)
               onEvent({
                 type: "tool",
                 phase: "done",
@@ -2262,6 +2308,7 @@ export async function runAgentLoop(
                 result,
                 messageId: storedResult.id,
                 media: storedResult.media,
+                artifact: storedResult.artifact,
               })
             if (call.name === "exec_command") {
               const sessionId = parseCommandSessionId(result)
@@ -2300,6 +2347,11 @@ export async function runAgentLoop(
           }),
         signal: abort.signal,
         execute: async (call, _index, callSignal) => {
+          if (opts.unattended && UNATTENDED_DENIED_TOOLS.has(call.name))
+            return {
+              result:
+                "This tool is unavailable in an unattended workflow. Complete the current step directly or report the blocker.",
+            }
           if (opts.reportOnly)
             return { result: "Tools are disabled for this report-only turn." }
           const persistLifecycle = <T>(action: () => T): T => {
@@ -2313,6 +2365,7 @@ export async function runAgentLoop(
             markToolCallStarted({ conversationId, toolCallId: call.id })
           )
           const callImages: ToolImage[] = []
+          let presentationArtifact: ArtifactPresentation | undefined
           let acceptingImages = true
           const unavailable = unavailableToolResult(call.name, offeredNames)
           if (unavailable) return { result: unavailable }
@@ -2322,7 +2375,8 @@ export async function runAgentLoop(
             callName: call.name,
             effects: effectsForCall(call.name),
           })
-          if (reconciled !== undefined) return { result: reconciled }
+          if (reconciled !== undefined && !isPresentationTool(call.name))
+            return { result: reconciled }
           // The model's streamed tool-call arguments are occasionally malformed JSON
           // even when the turn wasn't length-truncated (a mid-stream glitch, or an
           // unescaped character in a large blob — e.g. a big write_file_tool payload).
@@ -2337,6 +2391,18 @@ export async function runAgentLoop(
           let args: Record<string, unknown>
           try {
             args = JSON.parse(call.arguments || "{}")
+            const definition = buildTools().find(
+              (tool) => tool.function.name === call.name
+            )
+            if (
+              definition &&
+              acceptsToolActivity(definition) &&
+              args &&
+              typeof args === "object" &&
+              !Array.isArray(args)
+            ) {
+              args = executionArguments(args)
+            }
           } catch {
             const errResult =
               "ERROR[bad_tool_arguments]: your tool-call arguments were not valid " +
@@ -2369,6 +2435,8 @@ export async function runAgentLoop(
             // from buildTools()). Reads the LIVE flag, so once a plan is approved
             // this stops blocking and the same turn can implement.
             const decision =
+              (opts.unattendedGuard &&
+                unattendedSurfaceDecision(action, opts.unattendedGuard)) ??
               planModeClassifier.classify(action) ??
               policy.decide(action, {
                 workspacePath: workspace,
@@ -2515,6 +2583,7 @@ export async function runAgentLoop(
                 }
               : undefined,
             browser,
+            electron,
             emitImage: acceptsImages
               ? (image: ToolImage) => {
                   if (
@@ -2525,6 +2594,15 @@ export async function runAgentLoop(
                     callImages.push({ ...image })
                 }
               : undefined,
+            emitCommandOutput: (result: string) => {
+              onEvent({ type: "command_output", id: call.id, result })
+            },
+            emitArtifact: (snapshot: ArtifactPresentation) => {
+              callSignal.throwIfAborted()
+              if (!isPresentationTool(call.name) || presentationArtifact)
+                throw new Error("Invalid chart emission")
+              presentationArtifact = snapshot
+            },
             skillResourceRoots,
             // present_plan calls this on approval; the selected backend is already
             // running, so the next loop iteration can safely unlock mutations.
@@ -2599,9 +2677,6 @@ export async function runAgentLoop(
             agentAncestors: opts.agentAncestors ?? [],
             commandCompletions: commandCompletionInbox,
             commandCompletionOwner,
-            processRunId: opts.processRunId,
-            processPhaseRunId: opts.processPhaseRunId,
-            missionControlSeat: opts.missionControlSeat,
           }
           // MCP tool calls (mcp__<server>__<tool>) route to the connection pool via
           // the manager, not the static tool registry. Gate first: calling a
@@ -2647,7 +2722,11 @@ export async function runAgentLoop(
             }
             // Keep the actual gate result, including recovered successes and the
             // reason for a block, instead of a tool's generic blocked message.
-            return { result: gatedResult ?? result, images: callImages }
+            return {
+              result: gatedResult ?? result,
+              images: callImages,
+              presentationArtifact,
+            }
           } finally {
             acceptingImages = false
           }
@@ -2711,6 +2790,198 @@ export async function runAgentLoop(
     // tasks (and the todo list that tracks them) need more than a handful of
     // steps. A turn ends only on a tool-free reply or a thrown error (caught
     // below and surfaced/persisted).
+    if (opts.receiveSteering)
+      validateSteeringWith(conversationId, (input) => {
+        const selected = forcedSkillNames(input.message, input.skills)
+        const unknown = selected.names.find(
+          (name) => !availableSkillNames.has(name)
+        )
+        if (unknown)
+          throw new Error(
+            `No skill named "${unknown}" is available to this agent.`
+          )
+      })
+    const deliverSteering = () =>
+      opts.receiveSteering &&
+      consumeSteering(conversationId, (message) => {
+        for (const path of message.attachments)
+          if (!attachments.includes(path)) attachments.push(path)
+        const selected = forcedSkillNames(message.message, message.skills)
+        for (const name of selected.names) {
+          const skill = skills.find((item) => item.name === name)
+          if (!skill)
+            throw new Error(
+              `No skill named "${name}" is available to this agent.`
+            )
+          registerSkillResourceRootInMap(skillResourceRoots, {
+            name,
+            root: dirname(skill.path),
+          })
+        }
+        let content = message.message
+        if (message.attachments.length)
+          content += `\n\nAttached files: ${message.attachments.map((path) => `${JSON.stringify(path)} (read with ${supportedDocumentKind(path) ? "read_document" : "read_file_tool"})`).join(", ")}`
+        const stored = appendMessage({ conversationId, role: "user", content })
+        messages.push({
+          role: "user",
+          content:
+            (selected.modelMessage ?? message.message) +
+            content.slice(message.message.length) +
+            (selected.names.length
+              ? `\n\nUser-selected skills: ${selected.names.join(", ")}. Call read_skill for their full instructions before proceeding.`
+              : ""),
+        })
+        persistedUserContent = [persistedUserContent, content]
+          .filter(Boolean)
+          .join("\n\n")
+        onEvent({
+          type: "steering_delivered",
+          id: message.id,
+          content,
+          createdAt: stored.createdAt,
+        })
+      })
+    // In-turn compaction (plan 118), at the round boundary: every result of
+    // the previous round is persisted and no tool call is in flight. Changes
+    // only the in-memory request. `force` (an overflow) skips the watermark.
+    let compactFailedAt = 0
+    // The last round's provider-reported input size and our estimate of it.
+    let lastReported: { reported: number; estimate: number } | null = null
+    const compactionMarks = () =>
+      compactionWatermarks(
+        settingsService.getIndexing().turnCompactionTokenThreshold,
+        llm.provider
+          ? contextWindowFor(llm.provider, llm.accountId, llm.model)
+          : null
+      )
+    const compactRequest = async (
+      tools: unknown[],
+      force: boolean
+    ): Promise<{ before: number; after: number } | null> => {
+      const marks = compactionMarks()
+      const tiers = compactionTiers(llm.provider)
+      if (!marks || !(tiers.clear || tiers.rebuild)) return null
+      const measured = measureRequest(messages, tools).total
+      // Server-side clearing shrinks what the provider sees, not our estimate:
+      // judge by the last reported size plus what was added since.
+      const before =
+        tiers.serverClear && !force
+          ? lastReported
+            ? lastReported.reported + (measured - lastReported.estimate)
+            : 0
+          : measured
+      if (!force && before <= marks.high) return null
+      let total = before
+      if (tiers.clear) {
+        // An overflow means the real limit is below the watermark: halve.
+        const result = clearOldToolResults(messages, {
+          total,
+          target: force
+            ? Math.min(marks.low, Math.floor(total / 2))
+            : marks.low,
+        })
+        if (result.cleared > 0) {
+          messages.splice(0, messages.length, ...result.messages)
+          total = measureRequest(messages, tools).total
+          compactionNote = {
+            tier: 1,
+            before,
+            after: total,
+            clearedResults: result.cleared,
+          }
+          onEvent({ type: "context_compacted", tier: 1, before, after: total })
+          if (total <= marks.high || force) return { before, after: total }
+        }
+      }
+      // Nothing to fold yet (a fresh first round): summarizing can't shrink it.
+      if (
+        !tiers.rebuild ||
+        !turnCompactor ||
+        !messages.some((m) => m?.role === "assistant")
+      )
+        return { before, after: total }
+      // After a failed summary, wait for meaningful growth before retrying.
+      if (!force && compactFailedAt && total < compactFailedAt * 1.25)
+        return { before, after: total }
+      if (!(await turnCompactor(conversationId, abort.signal))) {
+        compactFailedAt = total
+        return { before, after: total }
+      }
+      compactFailedAt = 0
+      const turnMessages = listMessagesAfterSeq(conversationId, turnStartSeq)
+      const earlierUser = listMessages(conversationId).filter(
+        (m) => m.role === "user" && m.seq <= turnStartSeq
+      )
+      // A resumed or workflow turn's request was persisted before it began;
+      // an unattended step also keeps its original step prompt.
+      const opening = [
+        ...(opts.unattended && earlierUser[0] ? [earlierUser[0]] : []),
+        ...(userMessage === undefined && earlierUser.length
+          ? [earlierUser[earlierUser.length - 1]]
+          : []),
+      ]
+      const continuation = continuationMessage(
+        pinnedInstructions(turnMessages, opening),
+        buildWorkLedger(
+          turnMessages,
+          showTodos ? listTodos(conversationId) : []
+        )
+      )
+      const pinned = measureRequest([continuation]).total
+      if (pinned > marks.high)
+        throw new ContextOverflowError(
+          `This turn's instructions and work ledger alone (~${Math.round(pinned / 1000)}k tokens) exceed the compaction threshold (${Math.round(marks.high / 1000)}k). Raise the turn compaction threshold in Settings or use a larger-context model.`
+        )
+      // Refresh the summary and todo sections; everything else is unchanged.
+      const freshSections = sections.filter(
+        (section) => section.name !== "summary" && section.name !== "todos"
+      )
+      const todoPrompt = showTodos
+        ? buildTodoListPrompt(listTodos(conversationId))
+        : null
+      if (todoPrompt)
+        freshSections.push({
+          name: "todos",
+          priority: SECTION_PRIORITY.todos,
+          content: todoPrompt,
+        })
+      const summary = summarySection(conversationId)
+      if (summary) freshSections.push(summary)
+      const rebuilt = [
+        ...contextBuilder.build(conversationId, {
+          baseSystemPrompt,
+          sections: freshSections,
+          tokenBudget:
+            settingsService.getIndexing().summarizeTokenThreshold || undefined,
+          images: acceptsImages,
+        }),
+        continuation,
+      ]
+      // The results the model asked for last round, shortened if needed.
+      const round = latestRound(messages)
+      const roundBudget =
+        marks.high -
+        measureRequest(rebuilt, tools).total -
+        (round.length ? measureRequest(round.slice(0, 1)).total : 0)
+      messages.splice(
+        0,
+        messages.length,
+        ...rebuilt,
+        ...clipToolResults(round, roundBudget)
+      )
+      const after = measureRequest(messages, tools).total
+      compactionNote = {
+        tier: 2,
+        before,
+        after,
+        clearedResults: compactionNote?.clearedResults ?? 0,
+        summaryCoversThrough: summary?.replacesHistoryThrough ?? null,
+        pinnedTokens: pinned,
+      }
+      lastReported = null
+      onEvent({ type: "context_compacted", tier: 2, before, after })
+      return { before, after }
+    }
     while (true) {
       // Stop pressed during the previous step's tool execution: break before
       // starting another model round-trip. (An abort mid-stream is caught by the
@@ -2724,41 +2995,13 @@ export async function runAgentLoop(
         return { stopped: true }
       }
 
-      // Notes that arrived mid-turn (a user's nudge, or Mission Control
-      // telling a long phase to wrap up) join before the next model round.
+      deliverSteering()
+      // Notes that arrived mid-turn join before the next model round.
       for (const note of takeConversationNotes(conversationId)) {
-        if (note.source === REFOCUS_NOTE_SOURCE) {
-          // Only a seat turn can be refocused; anywhere else it's dropped.
-          const trigger = parseRefocusTrigger(note.body)
-          const content =
-            trigger && seatIdentity
-              ? renderRefocusEvent(seatIdentity, trigger)
-              : null
-          if (content) {
-            deliverRefocus(content)
-            recordRefocusDelivered(
-              seatIdentity!,
-              trigger!,
-              conversationId,
-              note.id
-            )
-          }
-          continue
-        }
-        const content = `${note.source === "user" ? "Note from the user while you work" : "Note from Mission Control"}:\n\n${note.body}`
+        const content = `${note.source === "user" ? "Note from the user while you work" : "Note while you work"}:\n\n${note.body}`
         appendMessage({ conversationId, role: "user", content })
         messages.push({ role: "user", content })
       }
-      if (refocusEvery > 0 && roundsSinceRefocus >= refocusEvery) {
-        const trigger = { kind: "interval" as const, rounds: refocusEvery }
-        const content = renderRefocusEvent(seatIdentity!, trigger)
-        if (content) {
-          deliverRefocus(content)
-          recordRefocusDelivered(seatIdentity!, trigger, conversationId, null)
-        } else roundsSinceRefocus = 0
-      }
-      roundsSinceRefocus++
-
       // Recompute the toolset from the live plan-mode flag: an approval during
       // the previous iteration's present_plan call flips planMode off, so this
       // round-trip regains the full filesystem toolset.
@@ -2775,17 +3018,30 @@ export async function runAgentLoop(
           baseRoundId,
           ...(outputCap > MAX_OUTPUT_TOKENS ? [`cap-${outputCap}`] : []),
           ...(stalls ? [`stall-${stalls}`] : []),
+          ...(overflowCompacted ? ["compacted"] : []),
         ].join(":")
       // The current attempt's connection, so a hung one can be closed without
       // stopping the turn.
       const current: { abort: AbortController | null } = { abort: null }
       modelRound += 1
+      await compactRequest(tools, false)
       let requestSize: RequestSize | null = null
       try {
         requestSize = measureRequest(messages, tools)
       } catch (error) {
         console.warn("[ctx] request measurement failed:", error)
       }
+      // Never send a request known to exceed the model's window.
+      const contextWindow = llm.provider
+        ? contextWindowFor(llm.provider, llm.accountId, llm.model)
+        : null
+      if (requestSize && contextWindow && requestSize.total > contextWindow)
+        throw overflowFailure(requestSize.total, contextWindow)
+      let overflowCompacted = false
+      // Only the Anthropic adapter takes the server-side clearing thresholds.
+      const clearMarks = compactionTiers(llm.provider).serverClear
+        ? compactionMarks()
+        : null
       // The transport attempt in flight, and whether its line is written: a
       // rolled-back attempt logs itself; one that throws without a rollback
       // (an abort) is logged by the catch below.
@@ -2857,6 +3113,14 @@ export async function runAgentLoop(
                     phase: "start",
                     attemptId: event.attemptId,
                     attempt: event.attempt,
+                  })
+                  return
+                }
+                if (event.type === "reasoning") {
+                  onEvent({
+                    type: "reasoning",
+                    delta: event.delta,
+                    attemptId: event.attemptId,
                   })
                   return
                 }
@@ -2946,6 +3210,20 @@ export async function runAgentLoop(
                     tools,
                     stream: true,
                     ...(streamOptions ? { stream_options: streamOptions } : {}),
+                    // The composer's pick; only these adapters offer one.
+                    ...(requestEffort &&
+                    (llm.provider === "anthropic" ||
+                      llm.provider === "codex_subscription")
+                      ? { reasoning_effort: requestEffort }
+                      : {}),
+                    ...(clearMarks
+                      ? {
+                          context_clearing: {
+                            trigger: clearMarks.high,
+                            clearAtLeast: clearMarks.high - clearMarks.low,
+                          },
+                        }
+                      : {}),
                   },
                   [
                     undefined,
@@ -2980,6 +3258,24 @@ export async function runAgentLoop(
             logicalRoundId = roundId()
             continue
           }
+          // An overflow is never resent unchanged: compact once and retry
+          // only if the request actually shrank.
+          if (isContextOverflow(error) && !abort.signal.aborted) {
+            const compacted = overflowCompacted
+              ? null
+              : await compactRequest(tools, true)
+            overflowCompacted = true
+            if (compacted && compacted.after < compacted.before) {
+              requestSize = measureRequest(messages, tools)
+              logicalRoundId = roundId()
+              continue
+            }
+            throw overflowFailure(
+              requestSize?.total ?? null,
+              contextWindow,
+              error
+            )
+          }
           if (outputCap > MAX_OUTPUT_TOKENS && rejectsOutputCap(error))
             throw new ModelResponseValidationError(
               "The model hit the output limit before returning a usable answer, and the provider rejected a higher output cap.",
@@ -2994,6 +3290,25 @@ export async function runAgentLoop(
       // tool fragments, so a retry cannot execute an abandoned partial tool call
       // or duplicate partial prose in the live UI.
       const usage = round.diagnostics.usage
+      // The provider cleared old tool results itself; show and log it like
+      // our own tier 1.
+      const serverCleared = usage?.contextCleared
+      if (serverCleared && usage?.promptTokens !== undefined) {
+        const before = usage.promptTokens + serverCleared.inputTokens
+        compactionNote = {
+          tier: 1,
+          before,
+          after: usage.promptTokens,
+          clearedResults: serverCleared.toolUses,
+          server: true,
+        }
+        onEvent({
+          type: "context_compacted",
+          tier: 1,
+          before,
+          after: usage.promptTokens,
+        })
+      }
       logContextUsage({
         requestSize,
         roundId: logicalRoundId,
@@ -3013,6 +3328,11 @@ export async function runAgentLoop(
         ),
         finishReason: round.finishReason,
       })
+      if (usage?.promptTokens && requestSize)
+        lastReported = {
+          reported: usage.promptTokens,
+          estimate: requestSize.total,
+        }
       if (usage) {
         hasTurnUsage = true
         turnUsage.promptTokens += usage.promptTokens ?? 0
@@ -3039,6 +3359,7 @@ export async function runAgentLoop(
           content: text
             ? `${text}\n\n${stopNote(abort.signal)}`
             : stopNote(abort.signal),
+          reasoning: round.reasoning,
         })
         return { stopped: true }
       }
@@ -3049,6 +3370,7 @@ export async function runAgentLoop(
           role: "assistant",
           content: text,
           nativeAssistant: round.nativeAssistant,
+          reasoning: round.reasoning,
         })
         completeModelRequestRetryBudget({ conversationId, logicalRoundId })
         return { content: text, ...(hasTurnUsage ? { usage: turnUsage } : {}) }
@@ -3086,6 +3408,29 @@ export async function runAgentLoop(
       }
 
       if (toolCalls.length === 0) {
+        if (opts.receiveSteering) {
+          if (
+            steeringState(conversationId).messages.some(
+              (message) => message.status === "queued"
+            )
+          ) {
+            appendMessage({
+              conversationId,
+              role: "assistant",
+              content: text,
+              nativeAssistant: round.nativeAssistant,
+              reasoning: round.reasoning,
+            })
+            messages.push({
+              role: "assistant",
+              content: text || null,
+              [nativeAssistant]: round.nativeAssistant,
+            })
+            completeModelRequestRetryBudget({ conversationId, logicalRoundId })
+            deliverSteering()
+            continue
+          }
+        }
         if (commandCompletionInbox.hasPending(commandCompletionOwner)) {
           if (text.trim()) {
             appendMessage({
@@ -3093,13 +3438,22 @@ export async function runAgentLoop(
               role: "assistant",
               content: text,
               nativeAssistant: round.nativeAssistant,
+              reasoning: round.reasoning,
             })
           }
           completeModelRequestRetryBudget({ conversationId, logicalRoundId })
           onEvent({ type: "command_wait", phase: "start" })
-          await commandCompletionInbox.waitForEvent(commandCompletionOwner, {
-            signal: abort.signal,
-          })
+          const waitAbort = new AbortController()
+          const releaseWake = opts.receiveSteering
+            ? setSteeringWake(conversationId, () => waitAbort.abort())
+            : undefined
+          try {
+            await commandCompletionInbox.waitForEvent(commandCompletionOwner, {
+              signal: AbortSignal.any([abort.signal, waitAbort.signal]),
+            })
+          } finally {
+            releaseWake?.()
+          }
           onEvent({ type: "command_wait", phase: "done" })
           if (abort.signal.aborted) {
             appendMessage({
@@ -3124,6 +3478,7 @@ export async function runAgentLoop(
           role: "assistant",
           content: text,
           nativeAssistant: round.nativeAssistant,
+          reasoning: round.reasoning,
         })
         completeModelRequestRetryBudget({ conversationId, logicalRoundId })
         return {
@@ -3138,24 +3493,14 @@ export async function runAgentLoop(
           text,
           logicalRoundId,
           offeredNames,
-          round.nativeAssistant
+          round.nativeAssistant,
+          round.reasoning
         ))
       ) {
         return failTurn(
           conversationId,
           "A tool outcome is unknown. Reconcile its effects before continuing."
         )
-      }
-      // Seat mail that arrived while this seat was busy (plan 106.4) lands
-      // here, at the tool-round boundary, as one tagged turn. The claim and the
-      // transcript row commit together, so it is delivered exactly once.
-      if (seatProfile && seatProfile !== "answer_only") {
-        const mail = deliverQueued({
-          identity: opts.missionControlSeat!,
-          conversationId,
-          wakeTaskId: null,
-        })
-        if (mail) messages.push({ role: "user", content: mail.content })
       }
     }
   } catch (error) {
@@ -3173,19 +3518,16 @@ export async function runAgentLoop(
     if (error instanceof ModelRequestRetryExhaustedError) {
       console.error("Model request retry budget exhausted:", error)
       turnWillRetry = error.retryable
-      const failure =
-        taskId || opts.processRunId || opts.processPhaseRunId
-          ? agentFailure({
-              code: "model_request_retry_exhausted",
-              stage: "model_request",
-              message: error.message,
-              retryable: error.retryable,
-              taskId,
-              processRunId: opts.processRunId,
-              processPhaseRunId: opts.processPhaseRunId,
-              cause: error.name,
-            })
-          : undefined
+      const failure = taskId
+        ? agentFailure({
+            code: "model_request_retry_exhausted",
+            stage: "model_request",
+            message: error.message,
+            retryable: error.retryable,
+            taskId,
+            cause: error.name,
+          })
+        : undefined
       return failTurn(
         conversationId,
         error.message,
@@ -3205,10 +3547,7 @@ export async function runAgentLoop(
       !(error instanceof ToolLifecycleError) && isTransientError(error)
     turnWillRetry = retryable
     const failure =
-      error instanceof ToolLifecycleError ||
-      taskId ||
-      opts.processRunId ||
-      opts.processPhaseRunId
+      error instanceof ToolLifecycleError || taskId
         ? agentFailure({
             toolCallId:
               error instanceof ToolLifecycleError
@@ -3227,27 +3566,12 @@ export async function runAgentLoop(
             message,
             retryable,
             taskId,
-            processRunId: opts.processRunId,
-            processPhaseRunId: opts.processPhaseRunId,
             cause: error instanceof Error ? error.name : null,
           })
         : undefined
     return failTurn(conversationId, message, retryable, undefined, failure)
   } finally {
-    // A seat turn (plan 106.7): its conversation may now be long enough to
-    // compact (the next turn then gets a Refocus), and a working turn may
-    // have taught the seat a lesson worth keeping for its successors.
-    if (!turnWillRetry && seatIdentity) {
-      afterSeatTurn(conversationId)
-      if (seatIdentity.profile === "work" && !abort.signal.aborted)
-        void recordSeatLessons({
-          identity: seatIdentity,
-          conversationId,
-          sinceSeq: turnStartSeq,
-        }).catch((err) =>
-          console.warn("[seat-memory] lesson record failed:", err)
-        )
-    }
+    opts.closeSteering?.()
     // Record the turn for automatic memory on EVERY terminal path, not only the
     // clean final-answer one. Turns that end in a user stop, an output-cap
     // truncation, or a thrown model error still carry durable user-stated facts,
@@ -3297,20 +3621,40 @@ export async function runAgentLoop(
 // kicks off title generation, and owns the conversation-keyed AbortController so
 // the Stop button (chat:stop → stopChat) can cancel it. A "live turn" is just a
 // task with a renderer attached; the durable task runner calls runAgentLoop
+// Tools that wait on a user or hand work elsewhere; an unattended workflow turn has neither.
+const UNATTENDED_DENIED_TOOLS = new Set([
+  "ask_user_question",
+  "run_todos_in_background",
+  "spawn_subagent",
+  "spawn_subagents",
+  "present_plan",
+  "write_plan",
+  "browser_handoff",
+  "electron_handoff",
+])
+
+// Browser reads a read-only turn (workflow validator) may use on a browser it was lent.
+// Excluded from isReadOnlyTool so read-only subagents never inherit them.
+const BROWSER_OBSERVATION_TOOLS = new Set([
+  "browser_snapshot",
+  "browser_screenshot",
+  "browser_console",
+  "browser_network",
+])
+
 const READ_ONLY_SUBAGENT_EXTRA_TOOLS = new Set([
   "read_skill",
   "read_plan",
   "write_plan",
 ])
 
+function isReadOnlyTool(name: string): boolean {
+  if (READ_ONLY_SUBAGENT_EXTRA_TOOLS.has(name)) return true
+  return getToolEffects(name)?.readOnly === true && !name.startsWith("browser_")
+}
+
 function readOnlyChildTools(parentToolNames: Set<string>): Set<string> {
-  return new Set(
-    [...parentToolNames].filter((name) => {
-      if (READ_ONLY_SUBAGENT_EXTRA_TOOLS.has(name)) return true
-      const effects = getToolEffects(name)
-      return effects?.readOnly === true && !name.startsWith("browser_")
-    })
-  )
+  return new Set([...parentToolNames].filter(isReadOnlyTool))
 }
 
 async function childInstructionResource(input: {
@@ -3896,6 +4240,15 @@ export async function runChat(
   return serializeConversationTurn(conversationId, async () => {
     const abort = new AbortController()
     abortControllers.set(conversationId, abort)
+    const accountId =
+      conversation?.accountId ?? settingsService.getLlm().activeAccountId
+    const provider = accountId ? getAccount(accountId)?.provider : undefined
+    const closeSteering =
+      provider !== "claude_code" && provider !== "codex_cli" && !bashCommand
+        ? openSteering(conversationId, randomUUID(), (state) =>
+            onEvent({ type: "steering_state", state })
+          )
+        : undefined
     try {
       return await runAgentLoop({
         conversationId,
@@ -3903,11 +4256,12 @@ export async function runChat(
         attachments,
         skills,
         userMessage: message,
+        receiveSteering: !!closeSteering,
+        closeSteering,
         bashCommand,
         planMode,
         autoMode,
-        // Snapshot the opt-in at turn start. Process workers call runAgentLoop
-        // directly and intentionally do not consult this conversation preference.
+        // Snapshot the opt-in at turn start.
         conversationSubagentsEnabled:
           settingsService.getConversations().allowConversationSubagents,
         chatPythonVenv: true,
@@ -3917,6 +4271,7 @@ export async function runChat(
         provideBrowser,
       })
     } finally {
+      closeSteering?.()
       // Release this turn's abort controller (only if it's still the current one —
       // defensive against a future overlapping turn replacing it).
       if (abortControllers.get(conversationId) === abort) {

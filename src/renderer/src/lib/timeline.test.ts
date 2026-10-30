@@ -23,6 +23,65 @@ function message(
 }
 
 describe("buildTimeline", () => {
+  it("shows an assistant row's reasoning before its text and tools", () => {
+    const assistant = {
+      ...message("a", "assistant", "Reading."),
+      reasoning: "Need the file first.",
+      toolCalls: [{ id: "c", name: "read_file_tool", arguments: "{}" }],
+    }
+    const timeline = buildTimeline([
+      assistant,
+      message("b", "assistant", "No thoughts here."),
+    ])
+    expect(timeline.map((item) => item.kind)).toEqual([
+      "reasoning",
+      "text",
+      "tools",
+      "text",
+    ])
+    expect(timeline[0]).toEqual({
+      kind: "reasoning",
+      key: "a:reasoning",
+      content: "Need the file first.",
+    })
+  })
+
+  it("attaches typed artifact references in declared call order despite reverse result completion", () => {
+    const assistant = message("assistant", "assistant", "Before")
+    assistant.toolCalls = ["first", "second"].map((id) => ({
+      id,
+      name: "present_chart",
+      arguments: "{}",
+    }))
+    const result = (id: string): Message => ({
+      ...message(id, "tool", "acknowledgement"),
+      toolCallId: id,
+      artifact: {
+        schemaVersion: 1,
+        artifactId: id,
+        revision: 1,
+        kind: "chart",
+        title: id,
+        rowCount: 1,
+      },
+    })
+    const timeline = buildTimeline([
+      assistant,
+      result("second"),
+      result("first"),
+      message("after", "assistant", "After"),
+    ])
+    expect(timeline.map((item) => item.kind)).toEqual(["text", "tools", "text"])
+    const group = timeline[1]
+    if (group.kind !== "tools") throw new Error("Expected tool group")
+    expect(group.calls.map((call) => call.artifact?.artifactId)).toEqual([
+      "first",
+      "second",
+    ])
+    expect(
+      group.calls.every((call) => call.conversationId === "conversation-1")
+    ).toBe(true)
+  })
   it("links durable media to its result message and conversation on reload", () => {
     const call = message("assistant", "assistant", "")
     call.toolCalls = [{ id: "call", name: "read_document", arguments: "{}" }]

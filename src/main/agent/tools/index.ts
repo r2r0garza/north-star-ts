@@ -68,16 +68,26 @@ import { browserEvaluateTool } from "./browser/evaluate"
 import { browserBackTool } from "./browser/back"
 import { browserCloseTool } from "./browser/close"
 import { browserHandoffTool } from "./browser/handoff"
+import { electronLaunchTool } from "./electron/launch"
+import { electronStatusTool } from "./electron/status"
+import { electronCloseTool } from "./electron/close"
+import {
+  electronSelectWindowTool,
+  electronSnapshotTool,
+  electronScreenshotTool,
+} from "./electron/inspect"
+import { electronInteractTool } from "./electron/interact"
+import { electronWaitTool, electronHandoffTool } from "./electron/wait-handoff"
+import { electronRunTool } from "./electron/run"
 import { webSearchTool } from "./web/search"
 import { webFetchTool } from "./web/fetch"
 import { spawnSubagentTool } from "./spawn_subagent"
 import { spawnSubagentsTool } from "./spawn_subagents"
-import { flagForReworkTool } from "./flag_for_rework"
-import { recordProofTool } from "./record_proof"
-import { seatCommsTools } from "./seat_comms_tools"
-import { mapTools } from "./map_tools"
 import { dashboardWriteTool } from "./dashboard_write"
 import { dashboardReadTool } from "./dashboard_read"
+import { presentChartTool } from "./present_chart"
+import { presentTableTool } from "./present_table"
+import { presentUiTool } from "./present_ui"
 
 // Workspace-gated tools — offered only when the agent has a workspace (they
 // touch the filesystem). Add a new filesystem tool by importing it and listing
@@ -143,22 +153,12 @@ const otherTools: Tool[] = [
   // toolDefinitions; dispatchable via runTool.
   spawnSubagentTool,
   spawnSubagentsTool,
-  // flag_for_rework: offered by runChat only to a Process phase worker (plan
-  // 031.2 — when opts.processRunId is set). Not in toolDefinitions.
-  flagForReworkTool,
-  // record_proof: offered by runChat only to a Mission Control playbook's proof
-  // step (plan 106.3 — opts.processProofStep). Not in toolDefinitions.
-  recordProofTool,
-  // Mission Control Comms (plan 106.4): send_message / reply / list_inbox /
-  // escalate, offered by runChat only to seat turns (opts.missionControlSeat)
-  // and never to an answer-only wake. Not in toolDefinitions.
-  ...seatCommsTools,
-  // Mission Control map tools (plan 106.6): offered by runChat only to pod-lead
-  // seat turns, never to an answer-only wake. Not in toolDefinitions.
-  ...mapTools,
   // dashboard_write: offered by runChat in interactive modes (plan 033.2 —
   // gated on showTodos like todo_write). Writes only its own tables; not gated.
   dashboardWriteTool,
+  presentChartTool,
+  presentTableTool,
+  presentUiTool,
   // dashboard_read: offered by runChat in interactive modes, INCLUDING plan mode
   // (plan 033.4 — read-only over cached widget data; never refreshes).
   dashboardReadTool,
@@ -189,6 +189,22 @@ export const browserTools: Tool[] = [
 ]
 export const browserToolDefinitions = browserTools.map((t) => t.definition)
 
+// Electron development-app tools (plan 119) — offered by runChat only when the
+// turn has an ElectronHandle (local workspace, outside plan mode, feature on).
+const electronTools: Tool[] = [
+  electronLaunchTool,
+  electronStatusTool,
+  electronSelectWindowTool,
+  electronSnapshotTool,
+  electronScreenshotTool,
+  electronInteractTool,
+  electronWaitTool,
+  electronHandoffTool,
+  electronRunTool,
+  electronCloseTool,
+]
+export const electronToolDefinitions = electronTools.map((t) => t.definition)
+
 // Web tools — headless web access, offered in every mode independent of the
 // workspace or the visible browser (a Chat session can search/fetch too).
 // web_search is not gated; web_fetch routes through the approval gate (kind
@@ -211,6 +227,7 @@ const byName = new Map(
     ...legacyTools,
     ...otherTools,
     ...browserTools,
+    ...electronTools,
     ...webTools,
   ].map((t) => [t.definition.function.name, t])
 )
@@ -220,6 +237,7 @@ export const builtInTools = [
   ...legacyTools,
   ...otherTools,
   ...browserTools,
+  ...electronTools,
   ...webTools,
 ]
 
@@ -262,10 +280,6 @@ export { writePlanTool } from "./write_plan_tool"
 export { readPlanTool } from "./read_plan_tool"
 export { presentPlanTool } from "./present_plan_tool"
 export { spawnSubagentsTool } from "./spawn_subagents"
-export { flagForReworkTool } from "./flag_for_rework"
-export { recordProofTool } from "./record_proof"
-export { seatCommsTools } from "./seat_comms_tools"
-export { mapTools } from "./map_tools"
 export { dashboardWriteTool } from "./dashboard_write"
 export { dashboardReadTool } from "./dashboard_read"
 export {

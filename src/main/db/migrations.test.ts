@@ -33,8 +33,8 @@ describe.skipIf(!sqliteLoads)("v70 process deletion", () => {
       INSERT INTO process_runs (id, process_id, status, created_at) VALUES ('r', 'p', 'completed', 0);
       INSERT INTO process_phase_runs (id, run_id, phase_id, status) VALUES ('pr', 'r', 'phase', 'completed');
     `)
-    runMigrations(db)
-    runMigrations(db)
+    runMigrations(db, { through: 70 })
+    runMigrations(db, { through: 70 })
     expect(
       db
         .prepare("SELECT deleted_at FROM process_definitions WHERE id = 'p'")
@@ -120,7 +120,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(70)
+    expect(db.pragma("user_version", { simple: true })).toBe(79)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
@@ -128,7 +128,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
   it("adds durable tool-call lifecycle records in v38", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
-    runMigrations(db)
+    runMigrations(db, { through: 70 })
     seedConversation(db, "conversation")
     db.prepare(
       "INSERT INTO messages (id, conversation_id, seq, role, tool_calls, created_at) VALUES ('assistant', 'conversation', 1, 'assistant', '[]', 0)"
@@ -155,7 +155,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
   it("adds durable linked model request retry budgets through v37", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
-    runMigrations(db)
+    runMigrations(db, { through: 70 })
     seedConversation(db, "conversation")
     db.prepare(
       `INSERT INTO model_request_retry_budgets
@@ -188,7 +188,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
   it("adds external agent model mappings in v33", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
-    runMigrations(db)
+    runMigrations(db, { through: 70 })
     db.prepare(
       `INSERT INTO provider_accounts
         (id, provider, display_name, api_mode, enabled, position, created_at)
@@ -214,7 +214,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
   it("adds message FTS recall index in v34", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
-    runMigrations(db)
+    runMigrations(db, { through: 70 })
     seedConversation(db, "conversation")
     db.prepare(
       "INSERT INTO messages (id, conversation_id, seq, role, content, created_at) VALUES ('m1', 'conversation', 1, 'user', 'remember the red adapter', 0)"
@@ -235,7 +235,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
   it("widens external agent model mappings for Copilot in v35", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
-    runMigrations(db)
+    runMigrations(db, { through: 70 })
     db.prepare(
       `INSERT INTO provider_accounts
         (id, provider, display_name, api_mode, enabled, position, created_at)
@@ -299,7 +299,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
   it("widens provider and api_mode constraints for Codex subscription (v43)", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
-    runMigrations(db)
+    runMigrations(db, { through: 70 })
 
     db.prepare(
       `INSERT INTO provider_accounts
@@ -410,9 +410,12 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
             "SELECT * FROM external_agent_model_mappings ORDER BY destination_account_id"
           )
           .all(),
-        conversations: db
-          .prepare("SELECT * FROM conversations ORDER BY id")
-          .all(),
+        // effort is also added later.
+        conversations: (
+          db
+            .prepare("SELECT * FROM conversations ORDER BY id")
+            .all() as Array<Record<string, unknown>>
+        ).map(({ effort: _effort, ...conversation }) => conversation),
         messages: db
           .prepare(
             "SELECT id, conversation_id, seq, role, content, tool_calls, tool_call_id, tool_name, token_estimate, created_at FROM messages ORDER BY id"
@@ -431,7 +434,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
           .all()
       ).toEqual([{ value: 1 }])
       expect(db.pragma("user_version", { simple: true })).toBe(
-        version === 999 ? 999 : 70
+        version === 999 ? 999 : 79
       )
       expect(db.pragma("foreign_keys", { simple: true })).toBe(1)
       expect(db.pragma("foreign_key_check")).toEqual([])
@@ -596,32 +599,6 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     db.close()
   })
 
-  it("replaces a prerelease-shaped workspace_analyses table (plan 106.11)", () => {
-    const db = new Database(":memory:")
-    db.pragma("foreign_keys = ON")
-    runMigrations(db)
-    db.exec(`
-      DROP TABLE workspace_analyses;
-      CREATE TABLE workspace_analyses (feature_id TEXT PRIMARY KEY, result TEXT);
-      INSERT INTO workspace_analyses VALUES ('f', '{}');
-    `)
-
-    runMigrations(db)
-
-    const columns = (
-      db.pragma("table_info(workspace_analyses)") as Array<{ name: string }>
-    ).map((c) => c.name)
-    expect(columns).toEqual(
-      expect.arrayContaining([
-        "data",
-        "dismissals",
-        "check_results",
-        "approvals",
-      ])
-    )
-    db.close()
-  })
-
   it("migrates Codex CLI aliases and legacy defaults (v32)", () => {
     const db = new Database(":memory:")
     db.exec(`
@@ -723,7 +700,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
   it("adds the process_runs.title column (v18)", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
-    runMigrations(db)
+    runMigrations(db, { through: 70 })
     const cols = (
       db.pragma("table_info(process_runs)") as Array<{ name: string }>
     ).map((c) => c.name)
@@ -734,7 +711,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
   it("adds the rework columns (v19, plan 029)", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
-    runMigrations(db)
+    runMigrations(db, { through: 70 })
     const phaseRunCols = db.pragma("table_info(process_phase_runs)") as Array<{
       name: string
       dflt_value: unknown
@@ -761,7 +738,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
   it("adds the process_phases.dot_folder column (v20, plan 030)", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
-    runMigrations(db)
+    runMigrations(db, { through: 70 })
     const phaseCols = db.pragma("table_info(process_phases)") as Array<{
       name: string
       dflt_value: unknown
@@ -777,7 +754,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
   it("adds the validator columns (v21, plan 031.1)", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
-    runMigrations(db)
+    runMigrations(db, { through: 70 })
     const phaseCols = db.pragma("table_info(process_phases)") as Array<{
       name: string
       dflt_value: unknown
@@ -810,7 +787,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
   it("adds the phase output identity column (v39, debug 085)", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
-    runMigrations(db)
+    runMigrations(db, { through: 70 })
     const phaseRunCols = (
       db.pragma("table_info(process_phase_runs)") as Array<{ name: string }>
     ).map((c) => c.name)
@@ -821,7 +798,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
   it("adds process runtime config/snapshot columns", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
-    runMigrations(db)
+    runMigrations(db, { through: 70 })
     const phaseCols = (
       db.pragma("table_info(process_phases)") as Array<{ name: string }>
     ).map((c) => c.name)
@@ -841,76 +818,10 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     db.close()
   })
 
-  it("repairs missing process runtime columns even when user_version is already current or newer", () => {
-    const db = new Database(":memory:")
-    db.pragma("foreign_keys = ON")
-    runMigrations(db)
-    db.pragma("foreign_keys = OFF")
-    db.exec(`
-      CREATE TABLE process_phases_without_runtime AS
-        SELECT id, process_id, key, name, routing, gate_policy, fan_out,
-               position, max_rework_rounds, dot_folder, validator,
-               validator_max_iterations, validator_agent, subprocess_id,
-               completion_contract
-        FROM process_phases;
-      DROP TABLE process_phases;
-      ALTER TABLE process_phases_without_runtime RENAME TO process_phases;
-
-      CREATE TABLE process_phase_agents_without_runtime AS
-        SELECT id, phase_id, agent_name, skills, tools, position
-        FROM process_phase_agents;
-      DROP TABLE process_phase_agents;
-      ALTER TABLE process_phase_agents_without_runtime RENAME TO process_phase_agents;
-
-      CREATE TABLE process_runs_without_runtime AS
-        SELECT id, process_id, source_conversation_id, task_id, objective,
-               status, started_at, finished_at, created_at, workspace_id,
-               title, parent_phase_run_id, completion_contracts
-        FROM process_runs;
-      DROP TABLE process_runs;
-      ALTER TABLE process_runs_without_runtime RENAME TO process_runs;
-
-      CREATE TABLE process_phase_runs_without_runtime AS
-        SELECT id, run_id, phase_id, parent_id, status, task_id, agent_name,
-               iteration, error, started_at, finished_at, title, rework_note,
-               rework_round, validator_round, source_child_run_id,
-               output_identity, failure, completion_receipt
-        FROM process_phase_runs;
-      DROP TABLE process_phase_runs;
-      ALTER TABLE process_phase_runs_without_runtime RENAME TO process_phase_runs;
-      PRAGMA user_version = 45;
-    `)
-
-    runMigrations(db)
-
-    expect(db.pragma("user_version", { simple: true })).toBe(70)
-    expect(
-      (db.pragma("table_info(process_phases)") as Array<{ name: string }>).map(
-        (c) => c.name
-      )
-    ).toContain("runtime_config")
-    expect(
-      (
-        db.pragma("table_info(process_phase_agents)") as Array<{ name: string }>
-      ).map((c) => c.name)
-    ).toContain("runtime_config")
-    expect(
-      (db.pragma("table_info(process_runs)") as Array<{ name: string }>).map(
-        (c) => c.name
-      )
-    ).toContain("runtime_config")
-    expect(
-      (
-        db.pragma("table_info(process_phase_runs)") as Array<{ name: string }>
-      ).map((c) => c.name)
-    ).toContain("runtime_snapshot")
-    db.close()
-  })
-
   it("adds process failure context columns and attempt audit table (v40, debug 069)", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
-    runMigrations(db)
+    runMigrations(db, { through: 70 })
     const phaseRunCols = (
       db.pragma("table_info(process_phase_runs)") as Array<{ name: string }>
     ).map((c) => c.name)
@@ -940,7 +851,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
   it("adds the flag-back schema (v22, plan 031.2)", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
-    runMigrations(db)
+    runMigrations(db, { through: 70 })
 
     // process_definitions.require_flag_approval, default 1.
     const defCols = db.pragma("table_info(process_definitions)") as Array<{
@@ -988,7 +899,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
   it("a flag survives its flagging instance's deletion (v23, plan 031.2 follow-up)", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
-    runMigrations(db)
+    runMigrations(db, { through: 70 })
 
     // Minimal graph + run + a flagging phase-run + a flag pointing at it.
     db.prepare(
@@ -1023,7 +934,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
   it("adds subprocess_id / parent_phase_run_id columns (v24, plan 038.1)", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
-    runMigrations(db)
+    runMigrations(db, { through: 70 })
     const phaseCols = (
       db.pragma("table_info(process_phases)") as Array<{ name: string }>
     ).map((c) => c.name)
@@ -1039,7 +950,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
   it("adds the dashboards tables (v26, plan 033)", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
-    runMigrations(db)
+    runMigrations(db, { through: 70 })
     const tables = (
       db
         .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -1099,7 +1010,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     })
 
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
-    runMigrations(db)
+    runMigrations(db, { through: 70 })
 
     expect(db.pragma("user_version", { simple: true })).toBe(70)
 
@@ -1130,7 +1041,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
 describe.skipIf(!sqliteLoads)("result content migration", () => {
   it("adds a nullable result_content snapshot to phase runs", () => {
     const db = new Database(":memory:")
-    runMigrations(db)
+    runMigrations(db, { through: 70 })
     const columns = (
       db.pragma("table_info(process_phase_runs)") as Array<{ name: string }>
     ).map((column) => column.name)
@@ -1151,7 +1062,7 @@ describe.skipIf(!sqliteLoads)("completion policy migration", () => {
       INSERT INTO process_runs (id, process_id, status, created_at) VALUES ('run', 'p', 'running', 1);
       INSERT INTO process_phase_runs (id, run_id, phase_id, status) VALUES ('pr', 'run', 'phase', 'running');
     `)
-    runMigrations(db)
+    runMigrations(db, { through: 70 })
     expect(
       db.prepare("SELECT completion_contract FROM process_phases").get()
     ).toEqual({ completion_contract: '{"policy":"legacy"}' })
@@ -1173,7 +1084,7 @@ describe.skipIf(!sqliteLoads)(
     it("rebuilds phase agents with a nullable agent name and keeps their rows", () => {
       const db = new Database(":memory:")
       db.pragma("foreign_keys = ON")
-      runMigrations(db)
+      runMigrations(db, { through: 70 })
       db.pragma("foreign_keys = OFF")
       db.exec(`
       DROP TABLE process_phase_agents;
@@ -1193,7 +1104,7 @@ describe.skipIf(!sqliteLoads)(
     `)
       db.pragma("foreign_keys = ON")
 
-      runMigrations(db)
+      runMigrations(db, { through: 70 })
 
       expect(db.pragma("user_version", { simple: true })).toBe(70)
       const columns = db.pragma("table_info(process_phase_agents)") as Array<{
@@ -1236,7 +1147,7 @@ describe.skipIf(!sqliteLoads)("mission control comms migration (v50)", () => {
   it("adds seat sessions, threads, messages, and the phase context mode", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
-    runMigrations(db)
+    runMigrations(db, { through: 70 })
     for (const table of ["seat_sessions", "seat_threads", "seat_messages"])
       expect(
         db
@@ -1254,23 +1165,6 @@ describe.skipIf(!sqliteLoads)("mission control comms migration (v50)", () => {
         .pluck()
         .get()
     ).toBe("step")
-    db.close()
-  })
-
-  it("self-heals a database stamped at v50 without the comms tables", () => {
-    const db = new Database(":memory:")
-    runMigrations(db, { through: 50 })
-    db.exec(
-      "DROP TABLE seat_messages; DROP TABLE seat_threads; DROP TABLE seat_sessions;"
-    )
-    runMigrations(db)
-    expect(
-      db
-        .prepare(
-          "SELECT name FROM sqlite_master WHERE type='table' AND name='seat_messages'"
-        )
-        .get()
-    ).toBeTruthy()
     db.close()
   })
 })
@@ -1297,7 +1191,7 @@ describe.skipIf(!sqliteLoads)("context scopes migration (v51)", () => {
       INSERT INTO process_phases (id, process_id, key, name, position, context_mode) VALUES
         ('a', 'd', 'a', 'A', 0, 'fresh'), ('b', 'd', 'b', 'B', 1, 'seat_session');
     `)
-    runMigrations(db)
+    runMigrations(db, { through: 70 })
     expect(db.pragma("user_version", { simple: true })).toBe(70)
     // v51 moved them to the initiative scope; v54 renamed it to feature.
     expect(
@@ -1395,7 +1289,7 @@ describe.skipIf(!sqliteLoads)("work terms migration (v54)", () => {
         VALUES ('q', 'm', 'a', 'queued', 'abc', 0, 0, 0);
     `)
 
-    runMigrations(db)
+    runMigrations(db, { through: 70 })
 
     expect(db.pragma("user_version", { simple: true })).toBe(70)
     const tables = db
@@ -1529,7 +1423,7 @@ describe.skipIf(!sqliteLoads)("work terms migration (v54)", () => {
       expect(db.prepare(`SELECT COUNT(*) FROM ${table}`).pluck().get()).toBe(0)
 
     // Running it again changes nothing.
-    runMigrations(db)
+    runMigrations(db, { through: 70 })
     expect(db.pragma("user_version", { simple: true })).toBe(70)
     db.close()
   })
@@ -1550,7 +1444,7 @@ describe("python extractor migration (v56)", () => {
     file.run("pyi", "src/stubs.pyi", ".pyi", now)
     file.run("ts", "web/app.ts", ".ts", now)
 
-    runMigrations(db)
+    runMigrations(db, { through: 70 })
 
     const stages = Object.fromEntries(
       (
@@ -1617,7 +1511,7 @@ describe.skipIf(!sqliteLoads)(
         "INSERT INTO index_runs (id, workspace_id, enabled, stage, priority, files_scanned, files_total, created_at, updated_at) VALUES ('ir', 'story', 1, 'file_map', 'low', 0, 0, ?, ?)"
       ).run(now, now)
 
-      runMigrations(db)
+      runMigrations(db, { through: 70 })
 
       expect(
         db.prepare("SELECT id FROM workspaces ORDER BY id").pluck().all()

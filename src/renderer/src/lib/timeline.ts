@@ -1,5 +1,7 @@
 import type { Message as DbMessage } from "@/types"
+import { projectCommandOutcomes } from "./command-outcomes"
 import type { ToolMediaReference } from "../../../shared/tool-media"
+import { activityLabel } from "../../../shared/tool-activity"
 import {
   formatSeatMessageEvent,
   isCommandCompletionEvent,
@@ -47,9 +49,12 @@ export interface ToolUse {
   rawArgs: string // original JSON string (shown verbatim if parse failed)
   result?: string // tool output (undefined while running)
   media?: ToolMediaReference[]
+  artifact?: import("../../../shared/conversation-artifacts").ArtifactReference
   resultMessageId?: string
   conversationId?: string
   status: ToolStatus
+  commandLive?: string
+  commandOutcome?: import("./command-presentation").CommandSnapshot
   approval?: ToolApproval // set while a gated action awaits a human decision
 }
 
@@ -73,6 +78,8 @@ export type TimelineItem =
       notice?: "refocus"
     }
   | { kind: "tools"; key: string; calls: ToolUse[] }
+  // A round's model reasoning, shown collapsed before its text and tools.
+  | { kind: "reasoning"; key: string; content: string }
 
 export function latestAssistantTextKey(items: TimelineItem[]): string | null {
   for (let i = items.length - 1; i >= 0; i--) {
@@ -180,6 +187,8 @@ export function deriveLabel(
   args: Record<string, unknown> | null,
   status: ToolStatus = "done"
 ): string {
+  const activity = activityLabel(args)
+  if (activity) return activity
   const a = args ?? {}
   const path = typeof a.path === "string" ? a.path : ""
   const mutationLabel = (stem: string, fallback: string) => {
@@ -210,10 +219,96 @@ export function deriveLabel(
       if (status === "error") return "Patch failed"
       if (status === "interrupted") return "Patch interrupted"
       return "Applied patch"
-    case "search_tool": {
-      const pat = typeof a.pattern === "string" ? a.pattern : ""
-      return pat ? `Searched "${pat}"` : "Searched"
+    case "search_tool":
+      return `${status === "running" ? "Searching" : "Searched"} ${path ? `files in ${path}` : "project files"}`
+    case "exec_command":
+    case "run_shell_tool":
+      return status === "running"
+        ? "Running workspace command"
+        : "Ran workspace command"
+    case "poll_command":
+      return "Checking command output"
+    case "write_stdin":
+      return "Sending input to command"
+    case "terminate_command":
+      return "Stopping command"
+    case "run_tests":
+      return status === "running" ? "Running tests" : "Ran tests"
+    case "get_test_results":
+      return "Checking test results"
+    case "workspace_diagnostics":
+      return "Checking workspace diagnostics"
+    case "index_query_tool":
+      return "Looking up workspace information"
+    case "workspace_symbols":
+    case "document_symbols":
+      return "Inspecting code symbols"
+    case "go_to_definition":
+      return "Finding code definition"
+    case "find_references":
+      return "Finding code references"
+    case "hover_type":
+      return "Inspecting code types"
+    case "read_document":
+      return path ? `Reading ${baseName(path)}` : "Reading document"
+    case "web_search":
+      return "Searching the web"
+    case "web_fetch":
+      return "Reading web page"
+    case "browser_navigate":
+      return "Opening browser page"
+    case "browser_snapshot":
+      return "Inspecting browser page"
+    case "browser_screenshot":
+      return "Capturing browser screenshot"
+    case "electron_launch":
+      if (status === "running") return "Launching test app"
+      if (status === "error") return "Test app launch failed"
+      return "Launched test app"
+    case "electron_status":
+      return "Checking test app"
+    case "electron_select_window":
+      return "Selecting test app window"
+    case "electron_snapshot":
+      return "Inspecting test app"
+    case "electron_screenshot":
+      return "Capturing test app screenshot"
+    case "electron_interact": {
+      const verbs: Record<string, string> = {
+        click: "Clicked",
+        hover: "Hovered",
+        drag: "Dragged",
+        fill: "Filled a field",
+        type: "Typed",
+        select: "Selected an option",
+        press: "Pressed a key",
+        scroll: "Scrolled",
+      }
+      const verb = typeof a.action === "string" ? verbs[a.action] : undefined
+      return `${verb ?? "Interacted"} in test app`
     }
+    case "electron_wait":
+      return status === "running" ? "Waiting on test app" : "Waited on test app"
+    case "electron_handoff":
+      return status === "running" ? "Waiting for you in test app" : "Handed test app to you"
+    case "electron_run": {
+      const check = a.check && typeof a.check === "object" ? (a.check as { name?: unknown }).name : undefined
+      const label = typeof check === "string" ? check : typeof a.file === "string" ? baseName(a.file) : ""
+      if (status === "running") return label ? `Running app check ${label}` : "Running app check"
+      return label ? `Ran app check ${label}` : "Ran app check"
+    }
+    case "electron_close":
+      return status === "running" ? "Closing test app" : "Closed test app"
+    case "git_status":
+      return "Checking Git working tree"
+    case "git_diff":
+      return "Reviewing Git changes"
+    case "git_log":
+      return "Reviewing commit history"
+    case "git_show":
+      return "Inspecting commit"
+    case "git_branches":
+      return "Inspecting Git branches"
     case "list_files_tool":
       return `Listed ${path || "files"}`
     case "read_skill": {
@@ -288,8 +383,32 @@ export function toToolUse(call: {
 export function buildTimeline(rows: DbMessage[]): TimelineItem[] {
   const items: TimelineItem[] = []
   const callById = new Map<string, ToolUse>()
+  const completions: ToolUse[] = []
 
   for (const m of rows) {
+    if (isCommandCompletionEvent(m.content)) {
+      const body = (m.content ?? "")
+        .split("\n")
+        .filter((line) => line.startsWith("DATA: "))
+        .map((line) => line.slice(6))
+        .join("\n")
+      try {
+        const parsed = JSON.parse(body)
+        completions.push({
+          id: m.id,
+          name: "wait_for_events",
+          label: "",
+          args: null,
+          rawArgs: "",
+          status: "done",
+          conversationId: m.conversationId,
+          result: JSON.stringify({ ...parsed, status: "completed" }),
+        })
+      } catch {
+        // A malformed runtime envelope must not break transcript replay.
+      }
+      continue
+    }
     if (m.role === "user") {
       // Compatibility for events persisted before runtime context switched from
       // the user role to the system role. They were never human-authored entries.
@@ -311,6 +430,13 @@ export function buildTimeline(rows: DbMessage[]): TimelineItem[] {
       continue
     }
     if (m.role === "assistant") {
+      if (m.reasoning?.trim()) {
+        items.push({
+          kind: "reasoning",
+          key: `${m.id}:reasoning`,
+          content: m.reasoning,
+        })
+      }
       if (m.content?.trim()) {
         items.push({
           kind: "text",
@@ -335,6 +461,7 @@ export function buildTimeline(rows: DbMessage[]): TimelineItem[] {
       if (use) {
         use.result = m.content ?? ""
         use.media = m.media
+        use.artifact = m.artifact
         use.resultMessageId = m.id
         use.conversationId = m.conversationId
         use.status = isErrorResult(use.result) ? "error" : "done"
@@ -358,5 +485,38 @@ export function buildTimeline(rows: DbMessage[]): TimelineItem[] {
     }
   }
 
-  return items
+  const projected = projectCommandOutcomes([
+    ...callById.values(),
+    ...completions,
+  ])
+  const byId = new Map(projected.map((call) => [call.id, call]))
+  return projectTimelineCommandOutcomes(
+    items.map((item) =>
+      item.kind === "tools"
+        ? {
+            ...item,
+            calls: item.calls.map((call) => byId.get(call.id) ?? call),
+          }
+        : item
+    )
+  )
+}
+
+export function projectTimelineCommandOutcomes<
+  T extends { kind: string; calls?: ToolUse[] },
+>(items: T[]): T[] {
+  const originals = items.flatMap((item) =>
+    item.kind === "tools" ? (item.calls ?? []) : []
+  )
+  const projected = projectCommandOutcomes(originals)
+  const byCall = new Map(
+    originals.map((call, index) => [call, projected[index]])
+  )
+  return items.map((item) => {
+    if (item.kind !== "tools" || !item.calls) return item
+    const calls = item.calls.map((call) => byCall.get(call) ?? call)
+    return calls.some((call, index) => call !== item.calls![index])
+      ? { ...item, calls }
+      : item
+  })
 }

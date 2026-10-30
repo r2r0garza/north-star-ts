@@ -10,6 +10,7 @@ import { DelegationClassifier } from "./delegation-classifier"
 import { BrowserActionClassifier } from "./browser-classifier"
 import { WebActionClassifier } from "./web-classifier"
 import { McpActionClassifier } from "./mcp-classifier"
+import { ElectronActionClassifier } from "./electron-classifier"
 import { actionAllowlist } from "../../db/repositories"
 import * as settingsService from "../../settings/service"
 
@@ -54,6 +55,8 @@ export function makePolicyEngine(): PolicyEngine {
       // MCP tool calls always prompt (no category → never sandbox-downgraded),
       // like web_fetch; returns null for non-mcp kinds.
       new McpActionClassifier(),
+      // Electron app launches take the protected tier; null for other kinds.
+      new ElectronActionClassifier(),
       new FileActionClassifier(() => settingsService.getPermissions()),
       new RegexCommandClassifier(),
     ],

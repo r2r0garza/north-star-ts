@@ -126,7 +126,7 @@ function CodeBlock({
       </div>
       <pre
         data-slot="markdown-code-scroll"
-        className="max-w-full overflow-x-auto px-3 pt-10 pb-3 text-xs leading-relaxed"
+        className="max-w-full px-3 pt-10 pb-3 text-xs leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]"
         {...props}
       >
         {children}

@@ -70,7 +70,6 @@ import type {
   IdeSettings,
   NotificationSettings,
   ConversationSettings,
-  SidebarSettings,
   Backend,
   LocalRuntimeProfile,
   LocalProfileCapabilities,
@@ -177,7 +176,6 @@ const SETTINGS_GROUPS: SettingsGroup[] = [
       "Personalize how the app looks, opens files, and gets your attention.",
     sections: [
       { value: "appearance", label: "Appearance" },
-      { value: "sidebar", label: "Sidebar" },
       { value: "editor", label: "Editor" },
       { value: "browser", label: "Browser" },
       { value: "notifications", label: "Notifications" },
@@ -312,7 +310,7 @@ const MCP_SOURCE_KIND_LABEL: Record<McpSourceRow["kind"], string> = {
 }
 
 const SUMMARY_TOKEN_MIN = 6000
-const SUMMARY_TOKEN_MAX = 150000
+const SUMMARY_TOKEN_MAX = 800000
 const DEFAULT_MODEL_VALUE = "__default__"
 
 function digitsOnly(raw: string): string {
@@ -483,17 +481,7 @@ export function SettingsScreen({
   // "providers"; the composer's "Configure model…" also lands there.
   initialTab?: string
 }) {
-  const [missionControlEnabled] = useState(
-    () => window.cowork.system().missionControlEnabled
-  )
-  const [settingsGroups] = useState(() =>
-    SETTINGS_GROUPS.map((group) => ({
-      ...group,
-      sections: group.sections.filter(
-        (section) => section.value !== "sidebar" || missionControlEnabled
-      ),
-    }))
-  )
+  const settingsGroups = SETTINGS_GROUPS
   const contentRef = useRef<HTMLDivElement | null>(null)
   const [activeSection, setActiveSection] = useState(() =>
     resolveSettingsSection(initialTab, settingsGroups)
@@ -512,6 +500,7 @@ export function SettingsScreen({
   >(null)
   const [summaryMessageDraft, setSummaryMessageDraft] = useState("")
   const [summaryTokenDraft, setSummaryTokenDraft] = useState("")
+  const [compactionDraft, setCompactionDraft] = useState("")
   const [browser, setBrowser] = useState<BrowserSettings | null>(null)
   const [ide, setIde] = useState<IdeSettings | null>(null)
   const [ideOptions, setIdeOptions] = useState<
@@ -521,7 +510,6 @@ export function SettingsScreen({
     useState<NotificationSettings | null>(null)
   const [conversations, setConversations] =
     useState<ConversationSettings | null>(null)
-  const [sidebar, setSidebar] = useState<SidebarSettings | null>(null)
   // The last-persisted theme override, and the in-progress draft the Appearance
   // pickers edit. The draft drives a live preview; Save persists it, Reset clears
   // the override, and closing without Save restores `savedTheme` (drops preview).
@@ -562,22 +550,6 @@ export function SettingsScreen({
     const group = settingsGroupFor(section, settingsGroups)
     lastSectionByGroup.current[group.value] = section
   }, [open, initialTab, settingsGroups])
-
-  // Sidebar destinations, loaded on their own so the rest of the screen
-  // doesn't wait on them.
-  useEffect(() => {
-    if (!open || !missionControlEnabled) return
-    let cancelled = false
-    window.cowork.settings
-      .getSidebar()
-      .then((next) => {
-        if (!cancelled) setSidebar(next)
-      })
-      .catch(() => {})
-    return () => {
-      cancelled = true
-    }
-  }, [open, missionControlEnabled])
 
   // Load current settings + runtime availability whenever the screen opens.
   useEffect(() => {
@@ -624,6 +596,7 @@ export function SettingsScreen({
         setMemoryModelOptions(memoryModels)
         setSummaryMessageDraft(String(idx.summarizeMessageThreshold))
         setSummaryTokenDraft(String(idx.summarizeTokenThreshold))
+        setCompactionDraft(String(idx.turnCompactionTokenThreshold))
         setBrowser(br)
         setIde(ideCfg)
         setIdeOptions(ideOpts)
@@ -784,6 +757,14 @@ export function SettingsScreen({
     if (!indexing) return
     setSummaryMessageDraft(String(indexing.summarizeMessageThreshold))
     setSummaryTokenDraft(String(indexing.summarizeTokenThreshold))
+    setCompactionDraft(String(indexing.turnCompactionTokenThreshold))
+  }
+
+  function saveCompactionThreshold(raw: string) {
+    if (!indexing) return
+    const n = clampInt(raw, 0, Number.MAX_SAFE_INTEGER)
+    if (n === null) return
+    saveIndexing({ ...indexing, turnCompactionTokenThreshold: n })
   }
 
   function saveSummaryMessageThreshold(raw: string) {
@@ -816,10 +797,6 @@ export function SettingsScreen({
   async function saveNotifications(next: NotificationSettings) {
     setNotifications(next)
     await window.cowork.settings.setNotifications(next)
-  }
-  async function saveSidebar(next: SidebarSettings) {
-    setSidebar(next)
-    await window.cowork.settings.setSidebar(next)
   }
   async function saveConversations(next: ConversationSettings) {
     setConversations(next)
@@ -1503,7 +1480,7 @@ export function SettingsScreen({
                                 <FieldDescription>
                                   Regenerate the summary once the un-summarized
                                   turns reach this many tokens (whichever
-                                  threshold is hit first). Range 6,000–150,000.
+                                  threshold is hit first). Range 6,000–800,000.
                                 </FieldDescription>
                               </FieldContent>
                               <Input
@@ -1526,6 +1503,38 @@ export function SettingsScreen({
                                     return
                                   setSummaryTokenDraft(next)
                                   saveSummaryTokenThreshold(next)
+                                }}
+                              />
+                            </Field>
+                            <Field orientation="horizontal">
+                              <FieldContent>
+                                <FieldLabel htmlFor="turn-compact">
+                                  Compact long turns at N tokens
+                                </FieldLabel>
+                                <FieldDescription>
+                                  When one agent turn's request grows past this
+                                  size, clear old tool results and then
+                                  summarize. The saved transcript is unchanged.
+                                  Set to 0 to turn off.
+                                </FieldDescription>
+                              </FieldContent>
+                              <Input
+                                id="turn-compact"
+                                type="text"
+                                inputMode="numeric"
+                                pattern="[0-9]*"
+                                className="w-28"
+                                value={compactionDraft}
+                                onBlur={restoreSummaryDrafts}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") {
+                                    e.currentTarget.blur()
+                                  }
+                                }}
+                                onChange={(e) => {
+                                  const next = digitsOnly(e.target.value)
+                                  setCompactionDraft(next)
+                                  saveCompactionThreshold(next)
                                 }}
                               />
                             </Field>
@@ -1833,8 +1842,31 @@ export function SettingsScreen({
                             checked={browser.revealOnAgentUse === "always"}
                             onCheckedChange={(checked) =>
                               saveBrowser({
+                                ...browser,
                                 revealOnAgentUse: checked ? "always" : "never",
                               })
+                            }
+                          />
+                        </Field>
+                        <Field orientation="horizontal">
+                          <FieldContent>
+                            <FieldLabel htmlFor="electron-apps">
+                              Let the agent launch Electron apps
+                            </FieldLabel>
+                            <FieldDescription>
+                              In a local workspace, the agent can launch an
+                              Electron app under development as a separate test
+                              instance, then inspect, operate and check it. Each
+                              launch asks for your approval, and the app runs
+                              with your user privileges. When off, these tools
+                              aren't offered.
+                            </FieldDescription>
+                          </FieldContent>
+                          <Switch
+                            id="electron-apps"
+                            checked={browser.electronApps}
+                            onCheckedChange={(checked) =>
+                              saveBrowser({ ...browser, electronApps: checked })
                             }
                           />
                         </Field>
@@ -1857,42 +1889,6 @@ export function SettingsScreen({
                           />
                         )}
                       </TabsContent>
-
-                      {/* Sidebar — optional destinations. Processes is legacy
-                        (plan 106.9): Mission Control runs Processes as
-                        playbooks, so its button is hidden unless turned on. */}
-                      {missionControlEnabled && (
-                        <TabsContent
-                          value="sidebar"
-                          className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-6"
-                        >
-                          {sidebar && (
-                            <Field orientation="horizontal">
-                              <FieldContent>
-                                <FieldLabel htmlFor="sidebar-legacy-processes">
-                                  Show legacy Processes in sidebar
-                                </FieldLabel>
-                                <FieldDescription>
-                                  Processes now live in Mission Control under
-                                  Playbooks, with Quick run and run history.
-                                  Turn this on to bring back the Processes
-                                  button. Nothing is deleted either way.
-                                </FieldDescription>
-                              </FieldContent>
-                              <Switch
-                                id="sidebar-legacy-processes"
-                                checked={sidebar.showLegacyProcesses}
-                                onCheckedChange={(checked) =>
-                                  saveSidebar({
-                                    ...sidebar,
-                                    showLegacyProcesses: checked,
-                                  })
-                                }
-                              />
-                            </Field>
-                          )}
-                        </TabsContent>
-                      )}
 
                       {/* Editor — which IDE a changed-file pill / "open in editor"
                         launches. Opens the repo root first (focusing an existing

@@ -19,7 +19,13 @@ export function getDb(): Database.Database {
     db.pragma("journal_mode = WAL")
     db.pragma("foreign_keys = ON")
     db.pragma("busy_timeout = 5000")
-    runMigrations(db)
+    try {
+      runMigrations(db)
+    } catch (error) {
+      db.close()
+      db = undefined
+      throw error
+    }
     cleanupToolMedia()
   }
   return db

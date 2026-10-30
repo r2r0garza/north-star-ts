@@ -76,6 +76,7 @@ const TOOL_CATEGORIES = [
   "diagnostics",
   "document_read",
   "edit",
+  "electron",
   "execute",
   "filesystem",
   "git_read",
@@ -113,6 +114,8 @@ const TOOL_CATEGORY_DESCRIPTIONS: Record<
   web: "Search and fetch web pages.",
   browser: "Navigate and interact with browser pages.",
   browser_advanced: "Evaluate JavaScript in the browser.",
+  electron:
+    "Launch, inspect, drive and check workspace Electron apps under development.",
   todo: "Manage todos and send todo work to the background.",
   dashboard: "Create, update, and read live dashboards.",
   dashboard_read: "Read saved live dashboards and their cached data.",

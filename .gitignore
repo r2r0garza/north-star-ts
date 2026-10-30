@@ -56,5 +56,7 @@ workspace-test.txt
 .cowork/.tmp/
 file-tests/
 codex-models-responses
+models-responses
 yt-transcript
 hermes-agent/
+.audit

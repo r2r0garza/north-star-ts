@@ -43,11 +43,39 @@ describe("background task handoff", () => {
     JSON.stringify({ ...handoff, taskId: "stale" }),
     JSON.stringify({ ...handoff, verification: [""] }),
     JSON.stringify({ ...handoff, status: "blocked" }),
+    JSON.stringify({
+      ...handoff,
+      status: "blocked",
+      unresolved: ["Missing credentials"],
+      nextAction: undefined,
+    }),
     "x".repeat(32_001),
   ])("rejects malformed or ungrounded output", (content) => {
     expect(() => parseTaskHandoff(content, "task-1")).toThrow(
       "valid structured handoff"
     )
+  })
+  it("treats an omitted nextAction on a completed handoff as null", () => {
+    expect(
+      parseTaskHandoff(
+        JSON.stringify({ ...handoff, nextAction: undefined }),
+        "task-1"
+      )
+    ).toEqual(handoff)
+  })
+  it("names the rule a rejected handoff broke", () => {
+    expect(() =>
+      parseTaskHandoff(
+        `${JSON.stringify(handoff)}\n${JSON.stringify(handoff)}`,
+        "task-1"
+      )
+    ).toThrow("found 2")
+    expect(() =>
+      parseTaskHandoff(
+        JSON.stringify({ ...handoff, verification: undefined }),
+        "task-1"
+      )
+    ).toThrow("verification must be")
   })
   it("preserves blocked outcomes and required next steps", () => {
     const blocked = {
@@ -57,6 +85,26 @@ describe("background task handoff", () => {
       nextAction: "Configure the account",
     }
     expect(parseTaskHandoff(JSON.stringify(blocked), "task-1")).toEqual(blocked)
+  })
+  it("accepts unfinished handoffs only with remaining work and a next action", () => {
+    const unfinished = {
+      ...handoff,
+      status: "unfinished",
+      unresolved: ["Renderer not wired"],
+      nextAction: "Wire the renderer",
+    }
+    expect(parseTaskHandoff(JSON.stringify(unfinished), "task-1")).toEqual(
+      unfinished
+    )
+    expect(() =>
+      parseTaskHandoff(
+        JSON.stringify({ ...unfinished, unresolved: [] }),
+        "task-1"
+      )
+    ).toThrow("needs unresolved entries")
+    expect(handoffInstruction("task-1")).toContain(
+      "remaining work, a large scope, or verification you cannot run here"
+    )
   })
   it("keeps worker evidence untrusted and never forwards malformed output", () => {
     const task = {

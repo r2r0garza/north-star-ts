@@ -36,3 +36,30 @@ describe("shipped mode prompt content", () => {
     expect(prompt).not.toContain("workspace index")
   })
 })
+
+it.each([
+  "chat-system-prompt.md",
+  "interactive-system-prompt.md",
+  "north-star-system-prompt.md",
+])(
+  "%s explains snapshots without promising unsupported runtimes",
+  async (name) => {
+    const prompt = await readPrompt(name)
+    for (const phrase of [
+      "`present_chart`",
+      "`present_table`",
+      "Obtain or calculate the data first",
+      "honest source/data-as-of",
+      "never auto-refresh",
+      "no refresh recipes",
+      "expectedBaseRevision",
+      "confirms storage",
+      "Markdown-table alternative",
+      "`present_ui`",
+      "controls are demo-only",
+      "`<user_design_choice>`",
+      "not as approval",
+    ])
+      expect(prompt).toContain(phrase)
+  }
+)

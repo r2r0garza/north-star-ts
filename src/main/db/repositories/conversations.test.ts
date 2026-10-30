@@ -100,6 +100,20 @@ describe.skipIf(!sqliteLoads)(
   }
 )
 
+describe.skipIf(!sqliteLoads)("conversations — reasoning effort", () => {
+  it("stores known levels and drops anything else", () => {
+    const conversation = createConversation({ mode: "chat", effort: "xhigh" })
+    expect(conversation.effort).toBe("xhigh")
+    expect(
+      updateConversation(conversation.id, { effort: "turbo" }).effort
+    ).toBeNull()
+    expect(updateConversation(conversation.id, { effort: "low" }).effort).toBe(
+      "low"
+    )
+    expect(updateConversation(conversation.id, { effort: null }).effort).toBeNull()
+  })
+})
+
 describe.skipIf(!sqliteLoads)("conversations — working directory", () => {
   it("works in its worktree until a workspace is chosen for it", () => {
     const workspace = upsertWorkspace("/code/app")

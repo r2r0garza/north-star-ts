@@ -210,6 +210,20 @@ describe("BrowserSession element picker", () => {
     expect(webContents.debugger.detach).toHaveBeenCalledOnce()
   })
 
+  it("enables focus emulation on attach so hidden-window clicks are delivered", async () => {
+    const session = new BrowserSession()
+    const webContents = electronMock.instances[0]
+    webContents.debugger.sendCommand.mockResolvedValue({})
+    session.setPickMode(true)
+
+    await vi.waitFor(() => {
+      expect(webContents.debugger.sendCommand).toHaveBeenCalledWith(
+        "Emulation.setFocusEmulationEnabled",
+        { enabled: true }
+      )
+    })
+  })
+
   it("detaches immediately when the user toggles pick mode off", async () => {
     const session = new BrowserSession()
     const webContents = electronMock.instances[0]
@@ -671,6 +685,9 @@ describe("BrowserSession advanced browser tools", () => {
             },
           }
         }
+        if (method === "DOM.getNodeForLocation") {
+          return { backendNodeId: Number(params?.x) < 50 ? 10 : 11 }
+        }
         return {}
       }
     )
@@ -698,6 +715,100 @@ describe("BrowserSession advanced browser tools", () => {
     expect(webContents.debugger.sendCommand).toHaveBeenCalledWith(
       "Input.dispatchMouseEvent",
       expect.objectContaining({ type: "mouseReleased", x: 110, y: 10 })
+    )
+  })
+
+  // Wrap the seeded CDP mock so individual hit-test commands can be overridden.
+  function overrideCdp(
+    webContents: Awaited<ReturnType<typeof seedTwoRefs>>,
+    overrides: Record<string, (params?: Record<string, unknown>) => unknown>
+  ) {
+    const base = webContents.debugger.sendCommand.getMockImplementation()!
+    webContents.debugger.sendCommand.mockImplementation(
+      async (method, params) =>
+        method && overrides[method]
+          ? overrides[method](params)
+          : base(method, params)
+    )
+  }
+
+  it("refuses to click an element with an all-zero box (hidden tab)", async () => {
+    const session = new BrowserSession()
+    const webContents = await seedTwoRefs(session)
+    overrideCdp(webContents, {
+      "DOM.getBoxModel": () => ({ model: { content: [0, 0, 0, 0, 0, 0, 0, 0] } }),
+    })
+
+    await expect(session.click("e1", 1_000)).rejects.toThrow(
+      /no on-screen box/
+    )
+    expect(webContents.debugger.sendCommand).not.toHaveBeenCalledWith(
+      "Input.dispatchMouseEvent",
+      expect.anything()
+    )
+  })
+
+  it("refuses to click when the point hits nothing", async () => {
+    const session = new BrowserSession()
+    const webContents = await seedTwoRefs(session)
+    overrideCdp(webContents, {
+      "DOM.getNodeForLocation": () => {
+        throw new Error("No node found at given location")
+      },
+    })
+
+    await expect(session.click("e1", 1_000)).rejects.toThrow(/hits nothing/)
+    expect(webContents.debugger.sendCommand).not.toHaveBeenCalledWith(
+      "Input.dispatchMouseEvent",
+      expect.anything()
+    )
+  })
+
+  it("refuses to click an element covered by another node", async () => {
+    const session = new BrowserSession()
+    const webContents = await seedTwoRefs(session)
+    overrideCdp(webContents, {
+      "DOM.getNodeForLocation": () => ({ backendNodeId: 99 }),
+      "DOM.resolveNode": (params) => ({
+        object: { objectId: `node-${params?.backendNodeId}` },
+      }),
+      "Runtime.callFunctionOn": () => ({ result: { value: false } }),
+      "DOM.describeNode": () => ({ node: { nodeName: "DIV" } }),
+    })
+
+    await expect(session.click("e1", 1_000)).rejects.toThrow(
+      /covered at \(10, 10\) by <div>/
+    )
+  })
+
+  it("clicks when the point hits a node inside the target", async () => {
+    const session = new BrowserSession()
+    const webContents = await seedTwoRefs(session)
+    overrideCdp(webContents, {
+      "DOM.getNodeForLocation": () => ({ backendNodeId: 99 }),
+      "DOM.resolveNode": (params) => ({
+        object: { objectId: `node-${params?.backendNodeId}` },
+      }),
+      "Runtime.callFunctionOn": (params) => ({
+        result: {
+          value:
+            params?.objectId === "node-10" &&
+            (params?.arguments as Array<{ objectId: string }>)[0]?.objectId ===
+              "node-99",
+        },
+      }),
+    })
+
+    await expect(session.click("e1", 1_000)).resolves.toMatchObject({
+      target: 'button "Source"',
+    })
+    expect(webContents.debugger.sendCommand).toHaveBeenCalledWith(
+      "Input.dispatchMouseEvent",
+      expect.objectContaining({ type: "mouseReleased", x: 10, y: 10 })
+    )
+    expect(webContents.debugger.sendCommand).toHaveBeenCalledWith(
+      "Runtime.releaseObject",
+      { objectId: "node-99" }
     )
   })
 

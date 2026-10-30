@@ -1,5 +1,6 @@
 import { WebContentsView } from "electron"
 import { sendCommand, withDeadline } from "./cdp"
+import { originAllowed } from "../agent/approval/unattended-classifier"
 import type {
   BrowserConsoleEntry,
   BrowserDialogState,
@@ -30,6 +31,12 @@ import type {
 // Dedicated partition so logins/cookies survive across runs but stay isolated
 // from anything else the app might load. See the plan's cookie-isolation note.
 const BROWSER_PARTITION = "persist:agent-browser"
+
+// A workflow step's tab: its own (in-memory) partition and origin allowlist.
+export interface WorkflowTabOptions {
+  partition: string
+  allowedOrigins: string[]
+}
 
 // Bounds for a screenshot fed to the model: cap the longest side and JPEG-encode
 // so a 4K page can't become a multi-MB base64 blob in the prompt / over IPC.
@@ -128,10 +135,10 @@ export class BrowserSession {
   >()
   private pendingDialog: BrowserDialogState | null = null
 
-  constructor() {
+  constructor(tab?: WorkflowTabOptions) {
     this.view = new WebContentsView({
       webPreferences: {
-        partition: BROWSER_PARTITION,
+        partition: tab?.partition ?? BROWSER_PARTITION,
         // The page is untrusted content the agent navigates to — keep it isolated
         // and sandboxed. Element picking is handled by CDP's native inspect mode,
         // so no page preload or page-world bridge is needed.
@@ -147,6 +154,19 @@ export class BrowserSession {
       // detach drops them; force a reinstall on the next ensureAttached.
       this.altPickInstalled = false
     })
+    // Workflow tabs (plan 130): the gate checks agent navigations; this catches
+    // page-driven ones (links, redirects) and refuses new windows outright.
+    if (tab) {
+      const wc = this.view.webContents
+      const offList = (url: string) => !originAllowed(url, tab)
+      wc.setWindowOpenHandler(() => ({ action: "deny" }))
+      wc.on("will-navigate", (event) => {
+        if (offList(event.url)) event.preventDefault()
+      })
+      wc.on("will-redirect", (event) => {
+        if (event.isMainFrame && offList(event.url)) event.preventDefault()
+      })
+    }
     // A document-level navigation invalidates every backendDOMNodeId, so drop the
     // ref map. (In-page navigations keep the DOM, so those don't clear it.)
     this.view.webContents.on("did-navigate", () => this.refs.clear())
@@ -318,6 +338,17 @@ export class BrowserSession {
     await sendCommand(dbg, "DOM.enable", undefined, timeoutMs, signal)
     await sendCommand(dbg, "Accessibility.enable", undefined, timeoutMs, signal)
     await sendCommand(dbg, "Page.enable", undefined, timeoutMs, signal)
+    // The host window starts hidden (workflow steps never reveal it), and a page
+    // in a hidden window is visibilityState=hidden: Chromium then drops CDP mouse
+    // input, so clicks only focus the page and links never activate. Focus
+    // emulation keeps the page visible+focused, as Playwright does for every page.
+    await sendCommand(
+      dbg,
+      "Emulation.setFocusEmulationEnabled",
+      { enabled: true },
+      timeoutMs,
+      signal
+    )
     await sendCommand(dbg, "Runtime.enable", undefined, timeoutMs, signal)
     await sendCommand(dbg, "Log.enable", undefined, timeoutMs, signal).catch(
       () => undefined
@@ -1540,7 +1571,110 @@ export class BrowserSession {
       throw new Error("Element is not visible on the page (no layout box).")
     }
     const q = model.content
-    return { x: (q[0] + q[4]) / 2, y: (q[1] + q[5]) / 2 }
+    // A hidden view has a 0×0 viewport and reports all-zero quads, so an
+    // unchecked click would land on nothing yet still report success.
+    if (q[0] === q[4] || q[1] === q[5]) {
+      throw new Error(
+        "Element has no on-screen box (zero size, or the browser tab is hidden with no viewport)."
+      )
+    }
+    const x = (q[0] + q[4]) / 2
+    const y = (q[1] + q[5]) / 2
+    await this.assertHitTarget(backendNodeId, x, y, timeoutMs, signal)
+    return { x, y }
+  }
+
+  // Verify the point actually hit-tests to the target (or a node inside it), so
+  // a covered, off-screen, or unrendered element fails loudly instead of the
+  // mouse event silently landing elsewhere.
+  private async assertHitTarget(
+    backendNodeId: number,
+    x: number,
+    y: number,
+    timeoutMs: number,
+    signal?: AbortSignal
+  ): Promise<void> {
+    const dbg = this.view.webContents.debugger
+    const point = `(${Math.round(x)}, ${Math.round(y)})`
+    const hit = await sendCommand<{ backendNodeId?: number }>(
+      dbg,
+      "DOM.getNodeForLocation",
+      {
+        x: Math.round(x),
+        y: Math.round(y),
+        includeUserAgentShadowDOM: true,
+      },
+      timeoutMs,
+      signal
+    ).catch(() => ({ backendNodeId: undefined }))
+    const hitId = hit.backendNodeId
+    if (hitId === backendNodeId) return
+    if (typeof hitId !== "number") {
+      throw new Error(
+        `Click point ${point} hits nothing; the element is off-screen or the browser tab is hidden.`
+      )
+    }
+    if (await this.nodeContains(backendNodeId, hitId, timeoutMs, signal)) return
+    const { node } = await sendCommand<{ node?: { nodeName?: string } }>(
+      dbg,
+      "DOM.describeNode",
+      { backendNodeId: hitId },
+      timeoutMs,
+      signal
+    ).catch(() => ({ node: undefined }))
+    const covering = node?.nodeName?.toLowerCase() ?? "another element"
+    throw new Error(
+      `Element is covered at ${point} by <${covering}>; close or scroll past it first.`
+    )
+  }
+
+  // Whether `outerId` is `innerId` or one of its ancestors, crossing shadow roots.
+  private async nodeContains(
+    outerId: number,
+    innerId: number,
+    timeoutMs: number,
+    signal?: AbortSignal
+  ): Promise<boolean> {
+    const dbg = this.view.webContents.debugger
+    const resolve = (id: number) =>
+      sendCommand<{ object?: { objectId?: string } }>(
+        dbg,
+        "DOM.resolveNode",
+        { backendNodeId: id },
+        timeoutMs,
+        signal
+      )
+        .then((r) => r.object?.objectId)
+        .catch(() => undefined)
+    const outer = await resolve(outerId)
+    const inner = await resolve(innerId)
+    try {
+      if (!outer || !inner) return false
+      const { result } = await sendCommand<{ result?: { value?: unknown } }>(
+        dbg,
+        "Runtime.callFunctionOn",
+        {
+          objectId: outer,
+          functionDeclaration:
+            "function(n){for(;n;n=n.parentNode||n.host){if(n===this)return true}return false}",
+          arguments: [{ objectId: inner }],
+          returnByValue: true,
+        },
+        timeoutMs,
+        signal
+      )
+      return result?.value === true
+    } finally {
+      for (const objectId of [outer, inner]) {
+        if (objectId)
+          await sendCommand(
+            dbg,
+            "Runtime.releaseObject",
+            { objectId },
+            timeoutMs
+          ).catch(() => undefined)
+      }
+    }
   }
 
   // Give the page a beat to navigate/repaint after an interaction, bounded by the

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
   buildCodexSubscriptionRequest,
+  parseCodexReasoningLevels,
   completeCodexSubscriptionDeviceAuth,
   codexSubscriptionResponseToChat,
   buildCodexSubscriptionClient,
@@ -115,6 +116,42 @@ describe("codex subscription adapter", () => {
       ],
     })
     expect(request).not.toHaveProperty("max_output_tokens")
+  })
+
+  it("sends the composer's effort when the model lists it, else medium", () => {
+    const efforts = parseCodexReasoningLevels({
+      models: [
+        {
+          slug: "gpt-6.1-sol",
+          supported_reasoning_levels: [
+            { effort: "low", description: "Fast responses" },
+            { effort: "medium", description: "Balanced" },
+            { effort: "high", description: "Deeper" },
+            { effort: "xhigh", description: "Extra high" },
+            { effort: "max", description: "Maximum" },
+            { effort: "ultra", description: "Delegates" },
+          ],
+        },
+      ],
+    }).get("gpt-6.1-sol")
+    expect(efforts).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"])
+    const effort = (reasoning_effort?: string, levels = efforts) =>
+      (
+        buildCodexSubscriptionRequest({
+          model: "gpt-6.1-sol",
+          maxOutputTokens: 123,
+          efforts: levels,
+          body: {
+            messages: [{ role: "user", content: "hi" }],
+            reasoning_effort,
+          },
+        }).reasoning as { effort: string }
+      ).effort
+    expect(effort("ultra")).toBe("ultra")
+    expect(effort()).toBe("medium")
+    // A stale pick another model listed falls back to the default.
+    expect(effort("ultra", ["low", "medium", "high"])).toBe("medium")
+    expect(effort("high", [])).toBe("medium")
   })
 
   it("preserves canonical tool images and attribution in Responses input", () => {
@@ -337,6 +374,79 @@ describe("codex subscription adapter", () => {
       done: false,
       value: { choices: [{ delta: { content: "lo" } }] },
     })
+  })
+
+  it("requests reasoning summaries and streams them as reasoning_content", async () => {
+    const event = (value: Record<string, unknown>) =>
+      `data: ${JSON.stringify(value)}\n\n`
+    const client = buildCodexSubscriptionClient({
+      clientVersion: "0.151.0",
+      bearerToken: "access-token",
+      fetchImpl: async (_url: RequestInfo | URL, init?: RequestInit) => {
+        expect(JSON.parse(String(init?.body))).toMatchObject({
+          reasoning: { effort: "medium", summary: "auto" },
+        })
+        return new Response(
+          [
+            event({
+              type: "response.reasoning_summary_text.delta",
+              item_id: "rs_1",
+              summary_index: 0,
+              delta: "Plan",
+            }),
+            event({
+              type: "response.reasoning_summary_text.delta",
+              item_id: "rs_1",
+              summary_index: 0,
+              delta: " first.",
+            }),
+            event({
+              type: "response.reasoning_summary_text.delta",
+              item_id: "rs_1",
+              summary_index: 1,
+              delta: "Then act.",
+            }),
+            // Streamed above, so its finished copy must not repeat.
+            event({
+              type: "response.output_item.done",
+              item: {
+                type: "reasoning",
+                id: "rs_1",
+                summary: [{ type: "summary_text", text: "Plan first." }],
+              },
+            }),
+            // Summary only on the finished item.
+            event({
+              type: "response.output_item.done",
+              item: {
+                type: "reasoning",
+                id: "rs_2",
+                summary: [{ type: "summary_text", text: "Check twice." }],
+              },
+            }),
+            event({ type: "response.output_text.delta", delta: "done" }),
+            event({
+              type: "response.completed",
+              response: { id: "resp_r", status: "completed" },
+            }),
+          ].join(""),
+          { headers: { "content-type": "text/event-stream" } }
+        )
+      },
+    })
+    const stream = (await client.chat.completions.create({
+      model: "gpt-5.5",
+      messages: [{ role: "user", content: "hi" }],
+      stream: true,
+    })) as AsyncIterable<any>
+    let reasoning = ""
+    let content = ""
+    for await (const chunk of stream) {
+      reasoning += chunk.choices?.[0]?.delta?.reasoning_content ?? ""
+      content += chunk.choices?.[0]?.delta?.content ?? ""
+    }
+    expect(reasoning).toBe("Plan first.\n\nThen act.\n\nCheck twice.")
+    expect(content).toBe("done")
   })
 
   it("assembles SSE streams that use event lines and omit event type in data", async () => {
@@ -670,6 +780,37 @@ describe("codex subscription adapter", () => {
       data: [{ id: "gpt-5.6-sol" }],
     })
     expect(persisted).toHaveLength(1)
+  })
+
+  it("reads per-model effort levels from one catalog fetch", async () => {
+    let catalogCalls = 0
+    const client = buildCodexSubscriptionClient({
+      clientVersion: "0.151.0",
+      bearerToken: jwtWithExp(Math.floor(Date.now() / 1000) + 3600),
+      fetchImpl: async () => {
+        catalogCalls += 1
+        return Response.json({
+          models: [
+            {
+              slug: "gpt-6.1-sol",
+              visibility: "list",
+              supported_reasoning_levels: [
+                { effort: "low" },
+                { effort: "medium" },
+                { effort: "ultra" },
+              ],
+            },
+          ],
+        })
+      },
+    })
+    expect(await client.effortLevels?.("gpt-6.1-sol")).toEqual([
+      "low",
+      "medium",
+      "ultra",
+    ])
+    expect(await client.effortLevels?.("gpt-6-luna")).toEqual([])
+    expect(catalogCalls).toBe(1)
   })
 
   it("classifies preflight auth failures without exposing tokens", async () => {
