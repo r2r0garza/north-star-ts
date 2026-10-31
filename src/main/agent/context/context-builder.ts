@@ -32,7 +32,7 @@ export interface ChatMessage {
 const DEFAULT_TOKEN_BUDGET = 12000
 
 // Fraction of the total budget that droppable context sections (skills, todos,
-// index summary, task state, approvals) may consume before the rest are dropped.
+// index summary, task state) may consume before the rest are dropped.
 // Caps sections so they can never starve the recent-message walk-back — the
 // non-negotiable core alongside the base system prompt.
 const DEFAULT_SECTION_BUDGET_SHARE = 0.5
@@ -65,7 +65,6 @@ export const SECTION_PRIORITY = {
   browserState: 8, // live agent-browser page (url/title) — small live orientation
   electronState: 8, // live Electron app sessions (plan 119) — small live orientation
   index: 10, // advisory workspace orientation — most droppable
-  approvals: 20,
   taskState: 30,
   todos: 40,
   skills: 50, // capability definitions

@@ -1,7 +1,4 @@
 import { listTasks } from "../../db/repositories/tasks"
-import { listRules } from "../../db/repositories/action-allowlist"
-import { KIND_WIDE_IDENTITY } from "../../../shared/approval-scope"
-import { listApprovals } from "../../db/repositories/approvals"
 import { getConversationSummary } from "../../db/repositories/conversation-summaries"
 import { readGitBranch } from "../../index/metadata"
 import { resolveModelLabel } from "../providers"
@@ -45,6 +42,35 @@ export function taskStateSection(
     "Tasks you have running in the background for this session (don't re-start these):\n" +
     lines.join("\n")
   return { name: "task_state", priority: SECTION_PRIORITY.taskState, content }
+}
+
+// Automatic-memory guidance, emitted only when memory skills are actually in
+// the catalog (memory on, and not filtered out by an agent's skill policy).
+// Fixed text: it sits in the cached system prompt, so it must not vary turn to
+// turn — what memory holds lives in the memory-* skills, read on demand.
+export function memorySection(): ContextSection {
+  return {
+    name: "memory",
+    priority: SECTION_PRIORITY.skills,
+    content: [
+      "## Memory",
+      "Automatic memory is on. A background service extracts durable facts from each finished turn and keeps them in the memory-* skills listed in the skill catalog:",
+      "- memory-identity and memory-preferences: who the user is and how they like to work. Shared across workspaces.",
+      "- memory-knowledge and memory-lessons: facts, conventions, decisions, and past failures for the current workspace.",
+      "- memory-recent: summaries of recent sessions; its reference/ folder holds the raw turns.",
+      "",
+      "Check memory before acting whenever earlier context could change what you do: the user's preferences or constraints, project conventions or decisions, gotchas hit before, or anything the user refers back to (\"last time\", \"as I said\", \"do you remember\"). Read the relevant skill with read_skill; skip one whose description says it is empty. Where workspace memory and global memory conflict, workspace memory wins.",
+      "",
+      "Memory records what was true when it was written. Before relying on a remembered file, function, command, or setting, check that it still exists, and trust what you observe now over what memory says.",
+      "",
+      "You never write memory yourself: don't edit the memory files or keep notes for later sessions (those writes are refused). When the user asks you to remember something, corrects a remembered fact, or you learn something durable, state it plainly in your reply; the service records it after the turn.",
+    ].join("\n"),
+    provenance: {
+      trust: "system",
+      channel: "runtime",
+      source: "memory_guidance",
+    },
+  }
 }
 
 // Live agent-browser state: what the conversation's browser tab is showing right
@@ -125,71 +151,6 @@ export function electronStateSection(sessions: SessionStatus[]): ContextSection 
       "\nTo run or verify a workspace Electron app, use the electron_* tools, not Electron/Playwright scripts via exec_command. Build it first if needed, then electron_launch. Explore with electron_snapshot/electron_interact; once the behavior is known, encode it as an electron_run check (a workspace .json file can be rerun). Use electron_handoff for native dialogs, menus or sign-in. Packaged apps are unsupported. Close apps you no longer need.",
     provenance: { trust: "system", channel: "runtime", source: "electron_state" },
   }
-}
-
-// Prior approval context (plan 021): what the user has already GRANTED or DECIDED,
-// so the agent doesn't re-request an action that's already allowlisted or retry
-// one the user denied. Two independent halves — both advisory, neither bypasses
-// the live gate (a still-`pending` decision is shown as pending, not granted):
-//   1. Durable "always allow" rules in scope (action_allowlist). Not task-scoped,
-//      so meaningful on any non-chat turn. Needs a workspace to resolve scope.
-//   2. This task's recent/pending gate decisions (approvals) — only when the turn
-//      belongs to a durable task (taskId present). Absent on the live chat path.
-// Returns null when neither half has anything (no empty block).
-export function approvalsSection(opts: {
-  conversationId: string
-  workspacePath?: string
-  taskId?: string
-}): ContextSection | null {
-  const blocks: string[] = []
-
-  // Allowlist half. Dedup by (kind, identity, scope) — the table can hold several
-  // rows for one identity at different scopes; the agent only needs to know it's
-  // allowed, once. Cap like taskStateSection.
-  const rules = listRules({
-    workspacePath: opts.workspacePath ?? null,
-    conversationId: opts.conversationId,
-  })
-  if (rules.length > 0) {
-    const seen = new Set<string>()
-    const ruleLines: string[] = []
-    for (const r of rules) {
-      const key = `${r.kind} ${r.identity} ${r.scope}`
-      if (seen.has(key)) continue
-      seen.add(key)
-      const identity = r.identity === KIND_WIDE_IDENTITY ? "(any)" : r.identity
-      ruleLines.push(`- ${r.kind} ${identity} [${r.scope}]`)
-      if (ruleLines.length >= 10) break
-    }
-    blocks.push(
-      "You've already been granted these — don't re-ask to run them:\n" +
-        ruleLines.join("\n")
-    )
-  }
-
-  // Task-approval half. The `request` blob is what the runner dual-wrote:
-  // { tool, summary, reason, requestId, toolCallId } (plan 012).
-  if (opts.taskId) {
-    const approvals = listApprovals({ taskId: opts.taskId }).slice(0, 10)
-    const decisionLines = approvals.map((a) => {
-      const req = (a.request ?? {}) as { summary?: string; tool?: string }
-      const label = req.summary ?? req.tool ?? "an action"
-      if (a.status === "pending") {
-        return `- still awaiting your decision (NOT yet granted): ${label}`
-      }
-      return `- ${a.status}: ${label}`
-    })
-    if (decisionLines.length > 0) {
-      blocks.push(
-        "Decisions already made for this task (don't re-request approved ones; don't retry denied ones):\n" +
-          decisionLines.join("\n")
-      )
-    }
-  }
-
-  if (blocks.length === 0) return null
-  const content = "## Prior approvals\n" + blocks.join("\n\n")
-  return { name: "approvals", priority: SECTION_PRIORITY.approvals, content }
 }
 
 // The rolling conversation summary (plan 019): a compact digest of the turns that

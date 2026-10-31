@@ -71,6 +71,7 @@ import { forcedSkillNames } from "./skills/forced"
 import { skillSources } from "./skills/sources"
 import { registerSkillResourceRootInMap } from "./tools/skill_resources"
 import { recordMemoryTurn } from "./memory/service"
+import { isManagedMemoryPath } from "./memory/paths"
 import { loadAgent, loadAgents } from "./agents/loader"
 import { agentSources } from "./agents/sources"
 import type { AgentDefinition } from "./agents/types"
@@ -133,11 +134,11 @@ import {
 import { renderContextEnvelope } from "../../shared/context-provenance"
 import {
   taskStateSection,
-  approvalsSection,
   summarySection,
   environmentSection,
   browserStateSection,
   electronStateSection,
+  memorySection,
 } from "./context/sections"
 import { repairDanglingToolCalls } from "./repair"
 import { replayToolCallArguments } from "./tool-call-arguments"
@@ -971,10 +972,8 @@ export interface RunAgentLoopOptions {
   // Unattended browser/Electron limits, checked before auto mode approves.
   unattendedGuard?: UnattendedSurfaceGuard
   // The durable task this run belongs to, when driven by the runner's runOne.
-  // Absent on the live `chat` path (which has no task). Used only to surface this
-  // task's prior gate decisions in the approvals context section (plan 021) so a
-  // resumed task doesn't re-request an already-decided action — advisory, never a
-  // gate bypass.
+  // Absent on the live `chat` path (which has no task). Ties lifecycle failure
+  // records to the task.
   taskId?: string
   // Interactive chat (runChat) and the subagents it spawns, at any depth: put
   // the app's Python venv first on PATH for this turn's local commands, unless
@@ -1246,7 +1245,12 @@ export async function runAgentLoop(
   // bodies are fetched on demand via the tool. When a custom agent declares a
   // `skills` frontmatter, filter to its allowlist (tri-state: omitted → all;
   // [] → none; [list] → only those) before building the tool + prompt.
-  const allSkills = await loadSkills(skillSources(agentDir))
+  // Automatic-memory skills stay on disk when memory is turned off; hide them
+  // so a disabled feature doesn't keep steering the model.
+  const memoryOn = settingsService.getMemory().enabled
+  const allSkills = (await loadSkills(skillSources(agentDir))).filter(
+    (skill) => memoryOn || !isManagedMemoryPath(skill.path)
+  )
   const skills = resolvePolicySkills(agent, allSkills, capabilityPolicy)
   const readSkillTool = createReadSkillTool(skills)
   const forcedSkills = forcedSkillNames(userMessage, selectedSkillNames)
@@ -1709,6 +1713,9 @@ export async function runAgentLoop(
       },
     })
   }
+  if (skills.some((skill) => isManagedMemoryPath(skill.path))) {
+    sections.push(memorySection())
+  }
   const selectedSkills = skills.filter((s) =>
     forcedSkills.names.includes(s.name)
   )
@@ -1822,21 +1829,6 @@ export async function runAgentLoop(
   if (showTodos) {
     const taskSection = taskStateSection(conversationId)
     if (taskSection) sections.push(taskSection)
-  }
-
-  // Prior approvals (plan 021): durable "always allow" grants in scope + this
-  // task's recent/pending gate decisions, so the agent doesn't re-ask for an
-  // already-granted action or retry a denied one. Advisory only — the live gate
-  // is still the authority. `workspace` is the path (matches allowlist scoping);
-  // `taskId` is undefined on the live path, set by the runner. Returns null (no
-  // block) for a bare turn with no grants and no task.
-  if (showTodos) {
-    const approvals = approvalsSection({
-      conversationId,
-      workspacePath: workspace,
-      taskId,
-    })
-    if (approvals) sections.push(approvals)
   }
 
   // Rolling conversation summary (plan 019): a compact digest of earlier turns.
