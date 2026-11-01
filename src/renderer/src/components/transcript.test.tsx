@@ -69,6 +69,9 @@ vi.mock("@/components/conversation-artifact", () => ({
     return <figure data-testid="artifact">Chart {reference.artifactId}</figure>
   },
 }))
+vi.mock("@/components/active-todo-indicator", () => ({
+  ActiveTodoIndicator: () => null,
+}))
 vi.mock("@/components/tool-group", () => ({
   ToolGroup: ({ calls }: { calls: ToolUse[] }) => {
     bump(`tools:${calls.map((c) => c.id).join(",")}`)

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useRef, useState, type ReactNode } from "react"
 import { Check, Copy } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
@@ -25,7 +25,13 @@ export function formatElapsed(ms: number): string {
 
 // Ticking elapsed time for the in-flight turn. It sits where the settled row's
 // timestamp and copy button appear, so settling swaps one for the other in place.
-export function ElapsedTimer({ startedAt }: { startedAt: number | null }) {
+export function ElapsedTimer({
+  startedAt,
+  children,
+}: {
+  startedAt: number | null
+  children?: ReactNode
+}) {
   // Mount time stands in when this renderer didn't see the turn start.
   const [mountedAt] = useState(() => Date.now())
   const start = startedAt ?? mountedAt
@@ -35,10 +41,11 @@ export function ElapsedTimer({ startedAt }: { startedAt: number | null }) {
     return () => clearInterval(id)
   }, [])
   return (
-    <MessageFooter className="h-6 justify-start px-0 font-normal tabular-nums">
-      <span role="timer" aria-label="Elapsed time">
+    <MessageFooter className="h-6 justify-start gap-2 px-0 font-normal tabular-nums">
+      <span role="timer" aria-label="Elapsed time" className="shrink-0">
         {formatElapsed(now - start)}
       </span>
+      {children}
     </MessageFooter>
   )
 }
