@@ -1,6 +1,5 @@
 import { renderContextEnvelope } from "../../../shared/context-provenance"
 
-export const COMMAND_OUTPUT_LIMIT = 4000
 export const INITIAL_COMPLETION_LIMIT = 5
 const snapshotTools = new Set([
   "exec_command",
@@ -115,11 +114,6 @@ export function snapshotLabel(s: CommandSnapshot): string {
       ? "Completed successfully"
       : `Exited with code ${s.exitCode}`
   return "Final outcome unavailable"
-}
-export function displayedCommandOutput(output: string): string {
-  return output.length > COMMAND_OUTPUT_LIMIT
-    ? `${output.slice(0, COMMAND_OUTPUT_LIMIT)}\n…[UI clipped at 4,000 characters]`
-    : output
 }
 function legacy(result: string): CommandSnapshot | null {
   const envelope = renderContextEnvelope(

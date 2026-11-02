@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { renderContextEnvelope } from "../../../shared/context-provenance"
-import {
-  commandPresentation,
-  displayedCommandOutput,
-} from "./command-presentation"
+import { commandPresentation } from "./command-presentation"
 const result = (fields: Record<string, unknown> = {}) =>
   JSON.stringify({
     status: "completed",
@@ -63,7 +60,7 @@ describe("command presentation", () => {
       )?.outcome
     ).toBe("success")
   })
-  it("parses the full envelope before independently clipping output", () => {
+  it("preserves large output and source omission metadata", () => {
     const output = "x".repeat(8000)
     const parsed = commandPresentation(
       "exec_command",
@@ -81,9 +78,6 @@ describe("command presentation", () => {
       droppedBytes: 10,
       omittedBytes: 20,
     })
-    expect(displayedCommandOutput(output)).toBe(
-      "x".repeat(4000) + "\n…[UI clipped at 4,000 characters]"
-    )
   })
   it("recognizes only anchored producer legacy status inside the exact envelope", () => {
     const wrap = (text: string) =>
