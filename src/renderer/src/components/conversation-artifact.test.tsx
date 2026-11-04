@@ -249,3 +249,38 @@ describe("artifact data and expanded presentation", () => {
     ).toEqual(["0", "1", "2"])
   })
 })
+
+describe("saved visual answer replay", () => {
+  it("loads a versioned visual revision, renders composed content and rejects unknown library replay", async () => {
+    const ref: ArtifactReference = {
+      ...reference,
+      kind: "visual",
+      title: "Summary",
+    }
+    const visual = {
+      kind: "visual",
+      schemaVersion: 1,
+      library: "north-star-static-v1",
+      title: "Summary",
+      document:
+        'root = Stack([Text("Stored evidence"),Metric("Completion",0.75,"percent")]);',
+      datasets: [],
+    }
+    read.mockResolvedValue({
+      artifact: envelope({ reference: ref, snapshot: visual }),
+    })
+    await render(ref)
+    expect(container.textContent).toContain("Stored evidence")
+    expect(container.textContent).toContain("75%")
+    expect(container.textContent).toContain("Expand")
+    read.mockResolvedValue({
+      artifact: envelope({
+        reference: { ...ref, revision: 2 },
+        snapshot: { ...visual, library: "unknown" },
+      }),
+    })
+    await render({ ...ref, revision: 2 })
+    expect(container.textContent).toContain("unsupported")
+    expect(container.textContent).not.toContain("Stored evidence")
+  })
+})

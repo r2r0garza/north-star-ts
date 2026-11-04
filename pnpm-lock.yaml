@@ -10,7 +10,7 @@ importers:
     dependencies:
       '@anthropic-ai/sdk':
         specifier: 0.131.0
-        version: 0.131.0(zod@3.25.76)
+        version: 0.131.0(zod@4.1.12)
       '@base-ui/react':
         specifier: ^1.6.0
         version: 1.6.0(@date-fns/tz@1.5.0)(@types/react@19.2.17)(date-fns@4.4.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -25,10 +25,13 @@ importers:
         version: 3.2.2(react@19.2.4)
       '@google/genai':
         specifier: 2.29.1
-        version: 2.29.1(@modelcontextprotocol/sdk@1.30.0(supports-color@7.2.0)(zod@3.25.76))(supports-color@7.2.0)
+        version: 2.29.1(@modelcontextprotocol/sdk@1.30.0(supports-color@7.2.0)(zod@4.1.12))(supports-color@7.2.0)
       '@modelcontextprotocol/sdk':
         specifier: ^1.30.0
-        version: 1.30.0(supports-color@7.2.0)(zod@3.25.76)
+        version: 1.30.0(supports-color@7.2.0)(zod@4.1.12)
+      '@openuidev/lang-core':
+        specifier: 1.0.2
+        version: 1.0.2(@modelcontextprotocol/sdk@1.30.0(supports-color@7.2.0)(zod@4.1.12))(zod@4.1.12)
       '@shadcn/react':
         specifier: ^0.1.0
         version: 0.1.0(@types/react@19.2.17)(react@19.2.4)
@@ -100,13 +103,13 @@ importers:
         version: 1.1.0
       openai:
         specifier: ^6.45.0
-        version: 6.49.0(ws@8.21.0)(zod@3.25.76)
+        version: 6.49.0(ws@8.21.0)(zod@4.1.12)
       pdfjs-dist:
         specifier: ^6.3.289
         version: 6.3.289
       portkey-ai:
         specifier: ^3.1.0
-        version: 3.1.0(zod@3.25.76)
+        version: 3.1.0(zod@4.1.12)
       radix-ui:
         specifier: ^1.6.0
         version: 1.6.0(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -164,10 +167,16 @@ importers:
       vaul:
         specifier: ^1.1.2
         version: 1.1.2(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      zod:
+        specifier: 4.1.12
+        version: 4.1.12
     devDependencies:
       '@electron/rebuild':
         specifier: ^4.0.4
         version: 4.0.4(supports-color@7.2.0)
+      '@openuidev/react-lang':
+        specifier: 1.0.2
+        version: 1.0.2(@modelcontextprotocol/sdk@1.30.0(supports-color@7.2.0)(zod@4.1.12))(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(zod@4.1.12)
       '@tailwindcss/postcss':
         specifier: ^4
         version: 4.3.1
@@ -989,6 +998,45 @@ packages:
   '@nodelib/fs.walk@1.2.8':
     resolution: {integrity: sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg==}
     engines: {node: '>= 8'}
+
+  '@openuidev/devtools@0.3.1':
+    resolution: {integrity: sha512-kOCCsRGwY0w6xL1rVL1zOa9CO97ZrG6YGasRZyCv7FXaDAzbFkEgFy+FhYx6EP7sPKhkgr/jBqunADzhevpBDw==}
+    peerDependencies:
+      '@openuidev/observability': '>=0.0.4 <0.1.0'
+      '@openuidev/react-lang': '>=1.0.0 <2.0.0'
+      react: ^18.3.1 || ^19.0.0
+      react-dom: ^18.0.0 || ^19.0.0
+    peerDependenciesMeta:
+      '@openuidev/react-lang':
+        optional: true
+
+  '@openuidev/lang-core@1.0.2':
+    resolution: {integrity: sha512-mxrWXgSmGx9N8ZHFiRgvqCmCH8j3x0PTHJVRvtRPlucxDAihthgMR4W6RXJN5KnCl/5fk1SzcT9JHrvGTKcBFw==}
+    peerDependencies:
+      '@modelcontextprotocol/sdk': '>=1.0.0'
+      zod: ^3.25.0 || ^4.0.0
+    peerDependenciesMeta:
+      '@modelcontextprotocol/sdk':
+        optional: true
+
+  '@openuidev/observability@0.0.4':
+    resolution: {integrity: sha512-4fjIrWu3TqTlfDE/m7cG10CH1vV7wQk5GPwMOmXeF9vJtkg92dg4Bdk3AjKgud7H7Xypwwjgt52VcLGZCE2CJQ==}
+
+  '@openuidev/react-lang@1.0.2':
+    resolution: {integrity: sha512-nCNALKj71GmKo5x0dR10hr3LKf88MHxlkVgnsbYQdJTxBd3TbD9wqlgJkBcAZNFD4kPHINJ0iTdUAbR871XWBw==}
+    peerDependencies:
+      '@modelcontextprotocol/sdk': '>=1.0.0'
+      react: '*'
+      react-dom: '*'
+      react-native: '*'
+      zod: ^3.25.0 || ^4.0.0
+    peerDependenciesMeta:
+      '@modelcontextprotocol/sdk':
+        optional: true
+      react-dom:
+        optional: true
+      react-native:
+        optional: true
 
   '@peculiar/asn1-schema@2.8.0':
     resolution: {integrity: sha512-7YT0U/ze0tF2QOBbE15gKZwy5tvgGyLRiRHLzhlbOpf7BT032oBSd0haZqXn5W6l26WLlu3dyxzjM+2638/z2Q==}
@@ -2352,6 +2400,7 @@ packages:
   '@xmldom/xmldom@0.8.13':
     resolution: {integrity: sha512-KRYzxepc14G/CEpEGc3Yn+JKaAeT63smlDr+vjB8jRfgTBBI9wRj/nkQEO+ucV8p8I9bfKLWp37uHgFrbntPvw==}
     engines: {node: '>=10.0.0'}
+    deprecated: this version has critical issues, please update to the latest version
 
   '@xterm/addon-fit@0.11.0':
     resolution: {integrity: sha512-jYcgT6xtVYhnhgxh3QgYDnnNMYTcf8ElbxxFzX0IZo+vabQqSPAjC3c1wJrKB5E19VwQei89QCiZZP86DCPF7g==}
@@ -4015,6 +4064,11 @@ packages:
     resolution: {integrity: sha512-Jo6dJ04CmSjuznwJSS3pUeWmd/H0ffTlkXXgwZi+eq1UCmqQwCh+eLsYOYCwY991i2Fah4h1BEMCx4qThGbsiA==}
     engines: {node: '>=10'}
 
+  lucide-react@0.575.0:
+    resolution: {integrity: sha512-VuXgKZrk0uiDlWjGGXmKV6MSk9Yy4l10qgVvzGn2AWBx1Ylt0iBexKOAoA6I7JO3m+M9oeovJd3yYENfkUbOeg==}
+    peerDependencies:
+      react: ^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0
+
   lucide-react@1.21.0:
     resolution: {integrity: sha512-reEZMXq8Qdd5jg5XYkQ5TR1fB/GiQ7ih4vcrthYDtgjSDwh0i6/YLiGjsWsIwgN49gpAnd4J2elSNzncMEEUUQ==}
     peerDependencies:
@@ -5616,6 +5670,9 @@ packages:
   zod@3.25.76:
     resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
 
+  zod@4.1.12:
+    resolution: {integrity: sha512-JInaHOamG8pt5+Ey8kGmdcAcg3OL9reK8ltczgHTAwNhMys/6ThXHityHxVV2p3fkw/c+MAvBHFVYHFZDmjMCQ==}
+
   zwitch@2.0.4:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
 
@@ -5628,12 +5685,12 @@ snapshots:
       package-manager-detector: 1.6.0
       tinyexec: 1.2.4
 
-  '@anthropic-ai/sdk@0.131.0(zod@3.25.76)':
+  '@anthropic-ai/sdk@0.131.0(zod@4.1.12)':
     dependencies:
       json-schema-to-ts: 3.1.1
       standardwebhooks: 1.1.1
     optionalDependencies:
-      zod: 3.25.76
+      zod: 4.1.12
 
   '@babel/code-frame@7.29.7':
     dependencies:
@@ -6181,14 +6238,14 @@ snapshots:
 
   '@floating-ui/utils@0.2.11': {}
 
-  '@google/genai@2.29.1(@modelcontextprotocol/sdk@1.30.0(supports-color@7.2.0)(zod@3.25.76))(supports-color@7.2.0)':
+  '@google/genai@2.29.1(@modelcontextprotocol/sdk@1.30.0(supports-color@7.2.0)(zod@4.1.12))(supports-color@7.2.0)':
     dependencies:
       google-auth-library: 10.9.1(supports-color@7.2.0)
       p-retry: 4.6.2
       protobufjs: 7.6.6
       ws: 8.21.0
     optionalDependencies:
-      '@modelcontextprotocol/sdk': 1.30.0(supports-color@7.2.0)(zod@3.25.76)
+      '@modelcontextprotocol/sdk': 1.30.0(supports-color@7.2.0)(zod@4.1.12)
     transitivePeerDependencies:
       - bufferutil
       - supports-color
@@ -6270,6 +6327,28 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  '@modelcontextprotocol/sdk@1.30.0(supports-color@7.2.0)(zod@4.1.12)':
+    dependencies:
+      '@hono/node-server': 1.19.14(hono@4.12.27)
+      ajv: 8.20.0
+      ajv-formats: 3.0.1(ajv@8.20.0)
+      content-type: 1.0.5
+      cors: 2.8.6
+      cross-spawn: 7.0.6
+      eventsource: 3.0.7
+      eventsource-parser: 3.1.0
+      express: 5.2.1(supports-color@7.2.0)
+      express-rate-limit: 8.5.2(express@5.2.1(supports-color@7.2.0))
+      hono: 4.12.27
+      jose: 6.2.3
+      json-schema-typed: 8.0.2
+      pkce-challenge: 5.0.1
+      raw-body: 3.0.2
+      zod: 4.1.12
+      zod-to-json-schema: 3.25.2(zod@4.1.12)
+    transitivePeerDependencies:
+      - supports-color
+
   '@napi-rs/canvas-android-arm64@1.0.8':
     optional: true
 
@@ -6333,6 +6412,35 @@ snapshots:
     dependencies:
       '@nodelib/fs.scandir': 2.1.5
       fastq: 1.20.1
+
+  '@openuidev/devtools@0.3.1(@openuidev/observability@0.0.4)(@openuidev/react-lang@1.0.2(@modelcontextprotocol/sdk@1.30.0(supports-color@7.2.0)(zod@4.1.12))(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(zod@4.1.12))(react-dom@19.2.4(react@19.2.4))(react@19.2.4)':
+    dependencies:
+      '@openuidev/observability': 0.0.4
+      lucide-react: 0.575.0(react@19.2.4)
+      react: 19.2.4
+      react-dom: 19.2.4(react@19.2.4)
+    optionalDependencies:
+      '@openuidev/react-lang': 1.0.2(@modelcontextprotocol/sdk@1.30.0(supports-color@7.2.0)(zod@4.1.12))(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(zod@4.1.12)
+
+  '@openuidev/lang-core@1.0.2(@modelcontextprotocol/sdk@1.30.0(supports-color@7.2.0)(zod@4.1.12))(zod@4.1.12)':
+    dependencies:
+      ci-info: 4.4.0
+      zod: 4.1.12
+    optionalDependencies:
+      '@modelcontextprotocol/sdk': 1.30.0(supports-color@7.2.0)(zod@4.1.12)
+
+  '@openuidev/observability@0.0.4': {}
+
+  '@openuidev/react-lang@1.0.2(@modelcontextprotocol/sdk@1.30.0(supports-color@7.2.0)(zod@4.1.12))(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(zod@4.1.12)':
+    dependencies:
+      '@openuidev/devtools': 0.3.1(@openuidev/observability@0.0.4)(@openuidev/react-lang@1.0.2(@modelcontextprotocol/sdk@1.30.0(supports-color@7.2.0)(zod@4.1.12))(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(zod@4.1.12))(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      '@openuidev/lang-core': 1.0.2(@modelcontextprotocol/sdk@1.30.0(supports-color@7.2.0)(zod@4.1.12))(zod@4.1.12)
+      '@openuidev/observability': 0.0.4
+      react: 19.2.4
+      zod: 4.1.12
+    optionalDependencies:
+      '@modelcontextprotocol/sdk': 1.30.0(supports-color@7.2.0)(zod@4.1.12)
+      react-dom: 19.2.4(react@19.2.4)
 
   '@peculiar/asn1-schema@2.8.0':
     dependencies:
@@ -9507,6 +9615,10 @@ snapshots:
     dependencies:
       yallist: 4.0.0
 
+  lucide-react@0.575.0(react@19.2.4):
+    dependencies:
+      react: 19.2.4
+
   lucide-react@1.21.0(react@19.2.4):
     dependencies:
       react: 19.2.4
@@ -10086,15 +10198,15 @@ snapshots:
       is-docker: 2.2.1
       is-wsl: 2.2.0
 
-  openai@6.49.0(ws@8.21.0)(zod@3.25.76):
+  openai@6.49.0(ws@8.21.0)(zod@4.1.12):
     optionalDependencies:
       ws: 8.21.0
-      zod: 3.25.76
+      zod: 4.1.12
 
-  openai@6.8.1(ws@8.21.0)(zod@3.25.76):
+  openai@6.8.1(ws@8.21.0)(zod@4.1.12):
     optionalDependencies:
       ws: 8.21.0
-      zod: 3.25.76
+      zod: 4.1.12
 
   ora@8.2.0:
     dependencies:
@@ -10227,11 +10339,11 @@ snapshots:
       path-data-parser: 0.1.0
       points-on-curve: 0.2.0
 
-  portkey-ai@3.1.0(zod@3.25.76):
+  portkey-ai@3.1.0(zod@4.1.12):
     dependencies:
       agentkeepalive: 4.6.0
       dotenv: 16.6.1
-      openai: 6.8.1(ws@8.21.0)(zod@3.25.76)
+      openai: 6.8.1(ws@8.21.0)(zod@4.1.12)
       ws: 8.21.0
     transitivePeerDependencies:
       - bufferutil
@@ -11396,6 +11508,12 @@ snapshots:
     dependencies:
       zod: 3.25.76
 
+  zod-to-json-schema@3.25.2(zod@4.1.12):
+    dependencies:
+      zod: 4.1.12
+
   zod@3.25.76: {}
+
+  zod@4.1.12: {}
 
   zwitch@2.0.4: {}

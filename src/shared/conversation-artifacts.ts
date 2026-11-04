@@ -1,3 +1,5 @@
+import { validateVisualSnapshot, type VisualSnapshot } from "./openui-visual"
+
 export const ARTIFACT_LIMITS = {
   rows: 1000,
   series: 12,
@@ -159,11 +161,13 @@ export type ConversationArtifact =
   | ChartSnapshot
   | TableSnapshot
   | UiConceptSnapshot
+  | VisualSnapshot
 // Tool name → artifact kind; the single list every presentation seam checks.
 export const PRESENTATION_TOOLS = {
   present_chart: "chart",
   present_table: "table",
   present_ui: "ui_concept",
+  present_visual: "visual",
 } as const satisfies Record<string, ConversationArtifact["kind"]>
 export function isPresentationTool(
   name: string | null | undefined
@@ -966,6 +970,7 @@ const VALIDATORS: {
   chart: validateChartSnapshot,
   table: validateTableSnapshot,
   ui_concept: validateUiConceptSnapshot,
+  visual: validateVisualSnapshot,
 }
 
 export function validateArtifactSnapshot(input: unknown): ConversationArtifact {
@@ -977,7 +982,14 @@ export function validateArtifactSnapshot(input: unknown): ConversationArtifact {
 
 // Rows for data artifacts; rendered nodes are not rows, so concepts report 0.
 export function artifactRowCount(snapshot: ConversationArtifact): number {
-  return snapshot.kind === "ui_concept" ? 0 : snapshot.data.length
+  return snapshot.kind === "visual"
+    ? snapshot.datasets.reduce(
+        (sum, dataset) => sum + dataset.snapshot.data.length,
+        0
+      )
+    : snapshot.kind === "ui_concept"
+      ? 0
+      : snapshot.data.length
 }
 
 export function validateArtifactPresentation(

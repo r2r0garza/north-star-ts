@@ -9,7 +9,6 @@ import {
 } from "@/components/ui/code-block"
 import {
   commandPresentation,
-  displayedCommandOutput,
   INITIAL_COMPLETION_LIMIT,
   snapshotLabel,
   snapshotOutcome,
@@ -149,7 +148,7 @@ export function CommandOutput({
             <LiteralBlock
               title="Output"
               followOutput
-              value={displayedCommandOutput(snapshot.output)}
+              value={snapshot.output}
               destructive={snapshotOutcome(snapshot) === "failure"}
             />
             {snapshot.output === "" && (
@@ -208,7 +207,7 @@ export function CommandOutput({
           {rawArgs}
         </pre>
         <pre className="max-h-64 overflow-auto [overflow-wrap:anywhere] whitespace-pre-wrap">
-          {displayedCommandOutput(result ?? "")}
+          {result ?? ""}
         </pre>
       </details>
     </div>

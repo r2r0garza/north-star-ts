@@ -1,5 +1,4 @@
 import { getRunByWorkspace } from "../db/repositories/index-runs"
-import { countByExt } from "../db/repositories/index-files"
 import { listMetadata } from "../db/repositories/index-metadata"
 import { countSymbols } from "../db/repositories/index-symbols"
 
@@ -14,30 +13,15 @@ export function buildIndexSummary(workspaceId: string): string | null {
 
   const lines: string[] = ["## Workspace index"]
 
-  // Indexing status / progress.
+  // No counts or file-type list anywhere below: this lands in the cached system
+  // prompt, and the watcher re-indexes on every file create/delete, so either
+  // would bust the prompt cache on each change. index_query_tool serves them.
   if (run.filesTotal > 0 && run.filesScanned < run.filesTotal) {
-    lines.push(
-      `Status: indexing in progress (${run.filesScanned}/${run.filesTotal} files, stage: ${run.stage}).`
-    )
+    lines.push(`Status: indexing in progress (stage: ${run.stage}).`)
   } else if (run.filesScanned > 0) {
-    lines.push(`Status: indexed (${run.filesScanned} files).`)
+    lines.push("Status: indexed.")
   } else {
     lines.push("Status: not yet indexed.")
-  }
-
-  // File counts by extension (top handful) — with a remainder so the numbers
-  // reconcile with the status-line total (which counts extensionless files and
-  // buckets past the top handful too; otherwise the two lines contradict).
-  const all = countByExt(workspaceId)
-  const total = all.reduce((sum, r) => sum + r.count, 0)
-  const withExt = all.filter((r) => r.ext)
-  const shown = withExt.slice(0, 8)
-  const shownSum = shown.reduce((sum, r) => sum + r.count, 0)
-  const other = total - shownSum
-  if (shown.length > 0) {
-    const parts = shown.map((r) => `${r.ext} ${r.count}`)
-    if (other > 0) parts.push(`other ${other}`)
-    lines.push(`Files by type: ${parts.join(", ")} (total ${total}).`)
   }
 
   // Key metadata: package manager / name, framework hints, git branch, configs.
@@ -81,9 +65,8 @@ export function buildIndexSummary(workspaceId: string): string | null {
   }
 
   // Symbol coverage — signals that index_query_tool can answer symbol lookups.
-  const symbols = countSymbols(workspaceId)
-  if (symbols > 0)
-    lines.push(`Indexed symbols: ${symbols} (queryable via index_query_tool).`)
+  if (countSymbols(workspaceId) > 0)
+    lines.push("Symbols are indexed (queryable via index_query_tool).")
 
   lines.push(
     "This is an advisory summary. Use index_query_tool to find symbols, list files, or see what " +

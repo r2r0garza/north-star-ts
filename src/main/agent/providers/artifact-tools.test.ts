@@ -2,15 +2,19 @@ import { expect, it, vi } from "vitest"
 import { presentChartTool } from "../tools/present_chart"
 import { presentTableTool } from "../tools/present_table"
 import { presentUiTool } from "../tools/present_ui"
+import { presentVisualTool } from "../tools/present_visual"
 import { withToolActivity } from "../../../shared/tool-activity"
 import { buildCodexSubscriptionRequest } from "./codex-subscription"
 import { validateRequest } from "./claude-subscription/request"
 import { createCompletion, type LlmClient } from "./index"
 
 it("preserves artifact schemas and bounded acknowledgements across native transports", async () => {
-  const tools = [presentChartTool, presentTableTool, presentUiTool].map(
-    (tool) => withToolActivity(tool.definition)
-  )
+  const tools = [
+    presentChartTool,
+    presentTableTool,
+    presentUiTool,
+    presentVisualTool,
+  ].map((tool) => withToolActivity(tool.definition))
   const acknowledgement = JSON.stringify({
     artifactId: "owned-id",
     revision: 2,
@@ -48,6 +52,7 @@ it("preserves artifact schemas and bounded acknowledgements across native transp
     "present_chart",
     "present_table",
     "present_ui",
+    "present_visual",
   ])
   expect(converted[1].parameters).toEqual(tools[1].function.parameters)
   expect(converted[2].parameters).toEqual(tools[2].function.parameters)
@@ -57,7 +62,7 @@ it("preserves artifact schemas and bounded acknowledgements across native transp
     max_tokens: 1000,
     ...body,
   })
-  expect(claude.tools).toHaveLength(3)
+  expect(claude.tools).toHaveLength(4)
   expect(JSON.stringify(claude)).toContain("goTo")
   expect(JSON.stringify(claude)).toContain("expectedBaseRevision")
   expect(JSON.stringify(claude)).toContain("saved_for_presentation")

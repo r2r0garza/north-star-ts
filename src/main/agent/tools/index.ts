@@ -88,6 +88,7 @@ import { dashboardReadTool } from "./dashboard_read"
 import { presentChartTool } from "./present_chart"
 import { presentTableTool } from "./present_table"
 import { presentUiTool } from "./present_ui"
+import { presentVisualTool } from "./present_visual"
 
 // Workspace-gated tools — offered only when the agent has a workspace (they
 // touch the filesystem). Add a new filesystem tool by importing it and listing
@@ -159,6 +160,7 @@ const otherTools: Tool[] = [
   presentChartTool,
   presentTableTool,
   presentUiTool,
+  presentVisualTool,
   // dashboard_read: offered by runChat in interactive modes, INCLUDING plan mode
   // (plan 033.4 — read-only over cached widget data; never refreshes).
   dashboardReadTool,

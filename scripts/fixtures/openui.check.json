@@ -1,0 +1,88 @@
+{
+  "name": "Phase B static OpenUI qualification",
+  "steps": [
+    {
+      "step": "select",
+      "target": { "role": "combobox", "name": "Fixture" },
+      "option": "mixed"
+    },
+    { "step": "assert", "that": { "pageText": { "contains": "75%" } } },
+    {
+      "step": "click",
+      "target": { "role": "button", "name": "Expand comparison" }
+    },
+    { "step": "assert", "that": { "visible": { "role": "dialog" } } },
+    { "step": "screenshot" },
+    { "step": "press", "key": "Escape" },
+    {
+      "step": "assert",
+      "that": { "focused": { "role": "button", "name": "Expand comparison" } }
+    },
+    {
+      "step": "select",
+      "target": { "role": "combobox", "name": "Fixture" },
+      "option": "comparison"
+    },
+    { "step": "click", "target": { "role": "tab", "name": "Overview" } },
+    { "step": "press", "key": "ArrowRight" },
+    {
+      "step": "assert",
+      "that": {
+        "state": { "role": "tab", "name": "Evidence" },
+        "selected": true
+      }
+    },
+    { "step": "assert", "that": { "pageText": { "contains": "No value" } } },
+    {
+      "step": "select",
+      "target": { "role": "combobox", "name": "Fixture" },
+      "option": "concept"
+    },
+    {
+      "step": "click",
+      "target": { "role": "button", "name": "Open details", "nth": 1 }
+    },
+    {
+      "step": "assert",
+      "that": { "pageText": { "contains": "Weekly digest details" } }
+    },
+    { "step": "click", "target": { "role": "tab", "name": "Grouped" } },
+    {
+      "step": "assert",
+      "that": { "pageText": { "contains": "Grouped preferences" } }
+    },
+    {
+      "step": "click",
+      "target": { "role": "button", "name": "Reset local state" }
+    },
+    {
+      "step": "assert",
+      "that": {
+        "state": { "role": "tab", "name": "Compact" },
+        "selected": true
+      }
+    },
+    {
+      "step": "select",
+      "target": { "role": "combobox", "name": "Fixture" },
+      "option": "large-and-empty"
+    },
+    { "step": "assert", "that": { "pageText": { "contains": "1000 rows" } } },
+    {
+      "step": "assert",
+      "that": { "pageText": { "contains": "No observations supplied." } }
+    },
+    {
+      "step": "select",
+      "target": { "role": "combobox", "name": "Fixture" },
+      "option": "prose-control"
+    },
+    { "step": "assert", "that": { "count": { "role": "table" }, "equals": 0 } },
+    {
+      "step": "select",
+      "target": { "role": "combobox", "name": "Fixture" },
+      "option": "rejected"
+    },
+    { "step": "assert", "that": { "visible": { "role": "alert" } } }
+  ]
+}

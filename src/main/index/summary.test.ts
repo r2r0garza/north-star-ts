@@ -60,7 +60,7 @@ describe.skipIf(!sqliteLoads)("buildIndexSummary", () => {
     expect(buildIndexSummary(ws2)).toBeNull()
   })
 
-  it("by-ext counts reconcile with the total (extensionless included in remainder)", async () => {
+  it("carries no volatile counts or file-type list", async () => {
     await writeFile(join(root, "a.ts"), "export const a = 1")
     await writeFile(join(root, "b.ts"), "export const b = 1")
     await writeFile(join(root, "c.md"), "# hi")
@@ -68,11 +68,10 @@ describe.skipIf(!sqliteLoads)("buildIndexSummary", () => {
     await buildIndex()
 
     const summary = buildIndexSummary(workspaceId)!
-    // Status line reports the true total (4 files).
-    expect(summary).toContain("indexed (4 files)")
-    // By-type line reconciles: .ts 2, .md 1, plus the extensionless remainder.
-    expect(summary).toContain("total 4")
-    expect(summary).toContain("other 1")
+    expect(summary).toContain("Status: indexed.")
+    expect(summary).not.toContain(".ts")
+    // Counts would change on every file create/delete and bust the prompt cache.
+    expect(summary).not.toMatch(/\d/)
   })
 
   it("advertises the query tool once symbols are indexed", async () => {

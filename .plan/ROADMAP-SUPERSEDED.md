@@ -1,5 +1,10 @@
 # Roadmap — Superseded
 
+- **`021` — Approvals context section.** Removed 2026-10-31 (see `133`). The harness gate is the
+  only authority on approvals; the model never requests permission itself, denials already reach
+  it as `ERROR[denied]` tool results, and a pending gate blocks the loop. The section added no
+  behaviour, and because grants and task decisions change between turns it invalidated the prompt
+  cache. The allowlist, approvals tables, gate, and approval UI are unchanged.
 - **`039` — Inspectable Process consultations / Agent exchanges.** Superseded by `106` Mission Control.
   Its result-integrity prerequisite (explicit phase results) is folded into `106.3` and applies to all
   Processes; same-run consultation is replaced by `106.4`'s addressable seat messaging, including an

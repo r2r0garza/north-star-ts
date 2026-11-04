@@ -16,6 +16,7 @@ import {
   type TableSnapshot,
   uiConceptAlternatives,
 } from "../../../shared/conversation-artifacts"
+import { VisualAnswer } from "./visual-answer"
 import { UiConceptPreview } from "@/components/ui-concept-preview"
 import { Button } from "@/components/ui/button"
 import {
@@ -52,6 +53,7 @@ const KIND_LABEL: Record<ArtifactReference["kind"], string> = {
   chart: "Chart",
   table: "Table",
   ui_concept: "UI concept",
+  visual: "Visual answer",
 }
 
 const SNAPSHOT_COLORS = Array.from(
@@ -225,7 +227,9 @@ export const ConversationArtifact = memo(function ConversationArtifact({
           {state.error}
         </p>
       ) : snapshot ? (
-        snapshot.kind === "ui_concept" || snapshot.data.length ? (
+        snapshot.kind === "ui_concept" ||
+        snapshot.kind === "visual" ||
+        snapshot.data.length ? (
           <SnapshotPresentation
             snapshot={snapshot}
             artifactId={artifactId}
@@ -255,7 +259,9 @@ function snapshotDescription(snapshot: ArtifactSnapshot): string {
       ? `${snapshot.chartKind} chart of ${snapshot.series.map((s) => s.label).join(", ")} by ${snapshot.xKey}.`
       : snapshot.kind === "table"
         ? `Table with ${snapshot.data.length} rows and ${snapshot.columns.length} columns.`
-        : "UI concept mockup.")
+        : snapshot.kind === "visual"
+          ? "Composed static visual answer."
+          : "UI concept mockup.")
   )
 }
 
@@ -451,7 +457,9 @@ const SnapshotPresentation = memo(function SnapshotPresentation({
     </div>
   )
   const content = (inDialog = false) =>
-    snapshot.kind === "ui_concept" ? (
+    snapshot.kind === "visual" ? (
+      <VisualAnswer snapshot={snapshot} />
+    ) : snapshot.kind === "ui_concept" ? (
       <div className="space-y-2">
         {multiple && (
           <>

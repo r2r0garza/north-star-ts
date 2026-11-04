@@ -60,3 +60,6 @@ models-responses
 yt-transcript
 hermes-agent/
 .audit
+kb/
+.north-star/skills/memory-*
+.north-star/.tmp/

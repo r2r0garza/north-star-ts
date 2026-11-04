@@ -192,6 +192,43 @@ afterEach(() => {
 })
 
 describe("workspace diagnostics and test tools", () => {
+  it.each([
+    [undefined, 120_000],
+    [0, 120_000],
+    [900_000, 900_000],
+    [3_600_000, 1_800_000],
+  ])(
+    "applies the checker timeout cap to %s ms",
+    async (requested, expected) => {
+      const env = fakeEnv({
+        packageJson: { scripts: { typecheck: "tsc --noEmit" } },
+      })
+      const exec = vi.spyOn(env, "exec")
+      await workspaceDiagnosticsTool.execute(
+        { timeout_ms: requested },
+        ctx(env)
+      )
+      expect(exec).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ timeoutMs: expected })
+      )
+    }
+  )
+
+  it.each([
+    [undefined, 120_000],
+    [0, 120_000],
+    [900_000, 900_000],
+    [3_600_000, 1_800_000],
+  ])("applies the test timeout cap to %s ms", async (requested, expected) => {
+    const env = fakeEnv({
+      packageJson: { scripts: { test: "vitest run" } },
+    })
+    const timer = vi.spyOn(globalThis, "setTimeout")
+    await runTestsTool.execute({ timeout_ms: requested }, ctx(env))
+    expect(timer).toHaveBeenCalledWith(expect.any(Function), expected)
+  })
+
   it("runs a declared checker through the approval gate and parses TypeScript diagnostics", async () => {
     const env = fakeEnv({
       lockfile: "pnpm-lock.yaml",

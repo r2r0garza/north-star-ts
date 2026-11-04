@@ -1,4 +1,5 @@
 import { memo } from "react"
+import { ActiveTodoIndicator } from "@/components/active-todo-indicator"
 import { Markdown } from "@/components/markdown"
 import { MessageScrollerItem } from "@/components/ui/message-scroller"
 import { Message, MessageContent } from "@/components/ui/message"
@@ -280,7 +281,15 @@ export function LiveTranscriptTurn({
               </TraceLine>
             </Trace>
           )}
-          <ElapsedTimer startedAt={startedAt} />
+          <ElapsedTimer startedAt={startedAt}>
+            {conversationId && (
+              // Keyed so a switch can't show the previous conversation's item.
+              <ActiveTodoIndicator
+                key={conversationId}
+                conversationId={conversationId}
+              />
+            )}
+          </ElapsedTimer>
         </MessageContent>
       </Message>
     </MessageScrollerItem>

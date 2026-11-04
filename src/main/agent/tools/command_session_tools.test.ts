@@ -286,6 +286,28 @@ afterEach(() => {
 })
 
 describe("command session tools", () => {
+  describe.each([execCommandTool, runShellTool])(
+    "$definition.function.name timeout",
+    (tool) => {
+      it.each([
+        [undefined, 30_000],
+        [0, 30_000],
+        [900_000, 900_000],
+        [3_600_000, 1_800_000],
+      ])(
+        "uses %s ms with an effective limit of %s ms",
+        async (requested, expected) => {
+          const timer = vi.spyOn(globalThis, "setTimeout")
+          await tool.execute(
+            { command: "echo ok", timeout_ms: requested },
+            ctx({ workspace: "/workspace", env: fakeEnv([]) })
+          )
+          expect(timer).toHaveBeenCalledWith(expect.any(Function), expected)
+        }
+      )
+    }
+  )
+
   it("returns completed output inline for quick commands", async () => {
     const result = parseResult(
       await execCommandTool.execute({ command: "echo hello" }, ctx())

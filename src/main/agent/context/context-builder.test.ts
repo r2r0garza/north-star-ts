@@ -256,8 +256,8 @@ describe("ContextBuilder — atomic summary-boundary admission (plan 102)", () =
       baseSystemPrompt: "BASE",
       sections: [
         {
-          name: "approvals",
-          priority: SECTION_PRIORITY.approvals,
+          name: "todos",
+          priority: SECTION_PRIORITY.todos,
           content: "APR",
         },
         summary("SUM", 1),

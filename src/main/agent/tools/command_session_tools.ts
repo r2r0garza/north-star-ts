@@ -23,7 +23,7 @@ import {
 } from "./skill_resources"
 
 const DEFAULT_TIMEOUT_MS = 30_000
-const MAX_TIMEOUT_MS = 600_000
+const MAX_TIMEOUT_MS = 1_800_000
 const DEFAULT_YIELD_MS = 1_000
 const MAX_YIELD_MS = 30_000
 const DEFAULT_OUTPUT_BYTES = 64 * 1024
@@ -105,7 +105,7 @@ export const execCommandTool: Tool = {
           timeout_ms: {
             type: "integer",
             description:
-              "Maximum lifetime in milliseconds. Defaults to 30000; capped at 600000.",
+              "Maximum lifetime in milliseconds. Defaults to 30000; capped at 1800000.",
           },
           max_output_bytes: {
             type: "integer",

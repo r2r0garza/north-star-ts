@@ -61,7 +61,7 @@ it("separates contextual titles, exact command, empty output and original detail
     triggers()[0].querySelector('[data-slot="code-block-copy-button"]')
   ).toBeNull()
 })
-it("copies only displayed text with UI clipping separate from source omissions", async () => {
+it("displays and copies all available output while preserving source omissions", async () => {
   const writeText = vi.fn().mockResolvedValue(undefined)
   Object.defineProperty(navigator, "clipboard", {
     value: { writeText },
@@ -82,8 +82,17 @@ it("copies only displayed text with UI clipping separate from source omissions",
     '[aria-label="Copy displayed output"]'
   )!
   await act(async () => copy.click())
-  expect(writeText).toHaveBeenCalledWith(
-    "x".repeat(4000) + "\n…[UI clipped at 4,000 characters]"
+  expect(writeText).toHaveBeenCalledWith("x".repeat(9000))
+  expect(
+    container.querySelectorAll('[data-slot="code-block-code"]')[1].textContent
+  ).toBe("x".repeat(9000))
+  expect(container.querySelectorAll("details pre")[1].textContent).toBe(
+    raw({
+      output: "x".repeat(9000),
+      droppedBytes: 10,
+      omittedBytes: 20,
+      truncated: true,
+    })
   )
   expect(container.textContent).toContain("10 bytes dropped")
   expect(container.textContent).toContain("20 bytes omitted")
@@ -267,11 +276,14 @@ it("follows appended output through the final completion update", async () => {
   panel.scrollTop = 544
   await act(async () => panel.dispatchEvent(new Event("scroll")))
   height = 1000
-  await renderOutput("first\nsecond\n")
+  const appended = "first\n" + "x".repeat(9000) + "\nsecond\n"
+  await renderOutput(appended)
   expect(outputPanel()).toBe(panel)
+  expect(panel.textContent).toBe(appended)
   expect(panel.scrollTop).toBe(1000)
   height = 1200
-  await renderOutput("first\nsecond\nlast\n", "completed")
+  await renderOutput(appended + "last\n", "completed")
+  expect(panel.textContent).toBe(appended + "last\n")
   expect(panel.scrollTop).toBe(1200)
 })
 

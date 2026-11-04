@@ -407,8 +407,32 @@ describe("staged-batch promotion", () => {
     await reconcilePendingMemoryOnStartup()
 
     const recent = await readFile(path.join(recentDir, "SKILL.md"), "utf-8")
-    expect(recent).toContain("Currently 1 records")
+    expect(recent).not.toContain("records")
     expect(recent).toContain("The build command is `pnpm build`.")
+  })
+  // An older build wrote a record count into the description; left in place it
+  // keeps that stale text in the cached prompt until the next batch lands.
+  it("rewrites an outdated memory-recent description and keeps its body", async () => {
+    // A fresh workspace, so no pending batch regenerates the body.
+    const fresh = await mkdtemp(path.join(tmpdir(), "memory-recent-"))
+    const skill = path.join(fresh, ".cowork", "skills", "memory-recent", "SKILL.md")
+    await mkdir(path.dirname(skill), { recursive: true })
+    await writeFile(
+      skill,
+      "---\nname: memory-recent\ndescription: |\n  Recent session memory.\n  Currently 0 records.\nmetadata:\n  managed-by: memory\n---\n\n# Recent Session Memory\n\n- kept body line\n",
+      "utf-8"
+    )
+    await recordMemoryTurn({
+      conversationId: "recent-refresh",
+      userText: "hello",
+      assistantText: "hi",
+      workspaceDir: fresh,
+    })
+
+    const recent = await readFile(skill, "utf-8")
+    expect(recent).not.toContain("records")
+    expect(recent).toContain("Keywords: recent session")
+    expect(recent).toContain("- kept body line")
   })
 })
 
@@ -505,7 +529,6 @@ describe("semantic merge", () => {
     // The superseded row stops being injected, rather than sitting alongside
     // its own contradiction forever.
     expect(stored).not.toContain(".plan/ROADMAP.md")
-    expect(stored).toContain("1 active fact.")
 
     const facts = JSON.parse(await readFile(knowledgeFacts, "utf-8"))
     expect(facts.facts).toHaveLength(2)
@@ -646,7 +669,7 @@ describe("semantic merge", () => {
     expect(stored).toContain(NPM_RULE)
     // Visible at prompt level, not only in the body nobody reads unprompted.
     expect(stored).toContain(
-      "1 overrides global memory — load before relying on global memory-preferences."
+      "Some facts override global memory — load before relying on global memory-preferences."
     )
     expect(
       warnings.some((message) => message.includes("cross-scope conflict"))
@@ -874,25 +897,22 @@ describe("category skill descriptions", () => {
     expect(text).toContain(
       "Lessons & Insights — load when prior failures, gotchas, or decisions may affect the task."
     )
-    expect(text).toContain("1 active fact.")
-    expect(text).not.toContain("Topics:")
     expect(text).not.toContain("override")
   })
 
-  it("lists topics derived from the facts", () => {
-    const text = description(
-      renderCategorySkillForTest(
-        "lessons",
-        storeOf([
-          "Electron IPC handlers must be registered before the window loads.",
-          "Electron IPC payloads are structured-cloned.",
-          "Recreate the python venv after upgrading Homebrew.",
-          "The python venv lives under .venv.",
-        ])
-      )
+  // Descriptions sit in the cached system prompt: a new fact must not change
+  // them, or every promotion invalidates the prompt cache.
+  it("keeps the description unchanged as facts are added", () => {
+    const one = storeOf(["Electron IPC payloads are structured-cloned."])
+    const four = storeOf([
+      "Electron IPC handlers must be registered before the window loads.",
+      "Electron IPC payloads are structured-cloned.",
+      "Recreate the python venv after upgrading Homebrew.",
+      "The python venv lives under .venv.",
+    ])
+    expect(description(renderCategorySkillForTest("lessons", four))).toBe(
+      description(renderCategorySkillForTest("lessons", one))
     )
-    expect(text).toContain("Topics: electron ipc, python venv.")
-    expect(text).toContain("4 active facts.")
   })
 
   it("only mentions overrides when a live conflict exists", () => {
@@ -916,7 +936,7 @@ describe("category skill descriptions", () => {
     expect(
       description(renderCategorySkillForTest("knowledge", store))
     ).toContain(
-      "1 overrides global memory — load before relying on global memory-preferences."
+      "Some facts override global memory — load before relying on global memory-preferences."
     )
   })
 
@@ -940,7 +960,6 @@ describe("category skill descriptions", () => {
     expect(text).toBeDefined()
     expect(text!.length).toBeLessThanOrEqual(400)
     expect(text).toContain("load when")
-    expect(text).toContain("200 active facts.")
   })
 
   it("round-trips through the skill loader", () => {
@@ -956,7 +975,6 @@ describe("category skill descriptions", () => {
     expect(parsed?.description.split("\n")[0]).toBe(
       "Workspace Domain Knowledge — load when project, product, business, workflow, architecture, or repo facts may affect the task."
     )
-    expect(parsed?.description).toContain("Topics: electron vite")
   })
 })
 
