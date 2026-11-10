@@ -20,3 +20,4 @@ allowBuilds:
   node-pty: true
   '@google/genai': false
   protobufjs: false
+  '@openuidev/lang-core': true
