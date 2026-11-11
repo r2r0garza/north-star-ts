@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process"
+import { watch as watchTree, type FSWatcher as TreeWatcher } from "node:fs"
 import { realpath } from "node:fs/promises"
 import { isAbsolute, relative, resolve, sep } from "node:path"
 import { promisify } from "node:util"
@@ -28,7 +29,7 @@ const RESUMABLE_STATUSES = new Set<TaskStatus>(["paused", "interrupted"])
 type WorkspaceWatchState = {
   workspaceId: string
   root: string
-  fileWatcher: FSWatcher | null
+  fileWatcher: TreeWatcher | null
   gitWatcher: FSWatcher | null
   fileTimer: ReturnType<typeof setTimeout> | null
   gitTimer: ReturnType<typeof setTimeout> | null
@@ -192,16 +193,11 @@ export class IndexWatcher {
         return gitignore?.ignores(rel) || gitignore?.ignores(`${rel}/`) || false
       }
       if (!this.enabled) return
-      state.fileWatcher = watch(root, {
-        ignoreInitial: true,
-        atomic: true,
-        awaitWriteFinish: { stabilityThreshold: 100, pollInterval: 20 },
-        ignored,
-      })
-      const queueFile = (path: string) => {
+      const queueFile = (path: string | null) => {
         if (state.closed) return
-        const rel = relativePath(root, path)
-        if (!rel || ignored(path)) return
+        // A null path means the OS dropped the filename; reindex to be safe.
+        const rel = path && relativePath(root, path)
+        if (path && (!rel || ignored(path))) return
         if (rel === ".gitignore") state.reloadIgnore = true
         if (state.fileTimer) clearTimeout(state.fileTimer)
         state.fileTimer = setTimeout(() => {
@@ -212,11 +208,12 @@ export class IndexWatcher {
           if (reloadIgnore) void this.restart(workspaceId)
         }, FILE_DEBOUNCE_MS)
       }
-      state.fileWatcher.on("add", queueFile)
-      state.fileWatcher.on("addDir", queueFile)
-      state.fileWatcher.on("change", queueFile)
-      state.fileWatcher.on("unlink", queueFile)
-      state.fileWatcher.on("unlinkDir", queueFile)
+      // Recursive fs.watch uses FSEvents on macOS (one handle per tree);
+      // chokidar 4+ opens one handle per file and exhausted the fd limit on
+      // large workspaces, breaking every child_process/pty spawn.
+      state.fileWatcher = watchTree(root, { recursive: true }, (_e, name) =>
+        queueFile(name ? resolve(root, name) : null)
+      )
       state.fileWatcher.on("error", (error) =>
         console.warn(
           `[index-watcher] workspace watch failed for ${root}:`,
