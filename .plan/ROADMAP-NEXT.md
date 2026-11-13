@@ -9,33 +9,39 @@
 > Mission Control, so Process UX investment remains worthwhile. `092.1` and `110`
 > moved to Deferred; low-value deferred plans were marked *dropped — pending re-review* in their own files.
 
-1. **`132` — Default-agent custom instructions.** Let users personalize built-in agents with an
+1. **`136` — Kanban board fed by external work trackers (PROPOSAL — open decisions pending).** Pull
+   work items from ADO, Jira and others through the user's own CLI or MCP server, filtered by multiple
+   tags and assignee (default: me). Agents (North Star by default, or a named agent per column) work each
+   card through user-defined columns in its own worktree. User-defined upstream actions (e.g. set
+   `Closed` or `Ready to Deploy`) run on column enter/exit with preview, approval and an audit log.
+   [Plan](136-kanban-work-item-board.md).
+2. **`132` — Default-agent custom instructions.** Let users personalize built-in agents with an
    application-wide preference that yields to named-agent instructions while preserving the built-in
    behavioral core, modes, permissions, and tool restrictions. [Plan](132-default-agent-custom-instructions.md).
-2. **`133` — Cache-stable system prompt.** Move changing browser, Electron, and task state from the
+3. **`133` — Cache-stable system prompt.** Move changing browser, Electron, and task state from the
    system prompt into a persisted user-turn block, keeping stable prompt prefixes cacheable across
    turns. [Plan](133-cache-stable-system-prompt.md).
-3. **`131` — OpenUI richer visual answers spike (INITIAL PHASE D COMPARISON RECORDED — conditional go for opt-in composition; no default rollout).** Evaluate composed metrics, charts, tables and UI
+4. **`131` — OpenUI richer visual answers spike (INITIAL PHASE D COMPARISON RECORDED — conditional go for opt-in composition; no default rollout).** Evaluate composed metrics, charts, tables and UI
    concepts using North Star components, preserving durable artifacts and a presentation-only boundary.
    Measure quality and integration cost before deciding on adoption; generated mini-apps are out of scope.
    [Plan](131-openui-visual-answers-spike.md).
-4. **`126` — Workflow command steps.** Run Python scripts or ordinary commands directly without an
+5. **`126` — Workflow command steps.** Run Python scripts or ordinary commands directly without an
    agent call, using existing execution policy and durable bounded results for subsequent steps.
    [Plan](126-workflow-command-steps.md).
-5. **`127` — Workflow command iteration.** After `126`, run a command sequentially for each item in an
+6. **`127` — Workflow command iteration.** After `126`, run a command sequentially for each item in an
    earlier step's JSON array, with safe argument bindings, bounded per-item receipts and explicit recovery.
    [Plan](127-workflow-command-iteration.md).
-6. **`123` — Google API provider (IMPLEMENTED — live verification pending; PR118 contract tests done).** Wire the reserved `google` provider as an API-key account on
+7. **`123` — Google API provider (IMPLEMENTED — live verification pending; PR118 contract tests done).** Wire the reserved `google` provider as an API-key account on
    `@google/genai`, stateless (Interactions API with `store: false`, or `generateContent` if Interactions
    is not GA), replaying thought signatures through the shared native carrier.
    [Plan](123-google-api-provider.md).
-7. **`128` — Qualify Electron app control on Windows.** Run PR119's qualification on Windows 11 and fix
+8. **`128` — Qualify Electron app control on Windows.** Run PR119's qualification on Windows 11 and fix
    what it requires: owned process-tree teardown, pipe transport, test-profile paths, child env and
    path handling. [Plan](128-electron-app-control-windows-qualification.md).
-8. **`129` — Qualify Electron app control on Linux.** Run PR119's qualification on X11, Wayland and Xvfb
+9. **`129` — Qualify Electron app control on Linux.** Run PR119's qualification on X11, Wayland and Xvfb
    and fix what it requires: display detection, Chromium sandbox failures as actionable errors (never
    `--no-sandbox`), child env and teardown. [Plan](129-electron-app-control-linux-qualification.md).
-9. **`130` — Browser and Electron tools in workflow steps (IMPLEMENTED — manual verification pending).** Per-step opt-in to the agent browser and
+10. **`130` — Browser and Electron tools in workflow steps (IMPLEMENTED — manual verification pending).** Per-step opt-in to the agent browser and
    Electron app control for unattended runs (self-verification, black-box URL testing), with per-step
    origin allowlists, consequential actions blocked despite auto mode, owned tab/app lifecycle and
    observation-only validator access. [Plan](130-workflow-browser-and-electron-tools.md).
