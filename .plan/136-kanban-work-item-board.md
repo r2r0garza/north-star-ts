@@ -1,7 +1,7 @@
 # PR136: Kanban board fed by external work trackers
 
-> Status: Proposal only. Drafted 2026-11-12 from the user's brief plus a light source read. No application
-> code changed. Open decisions settled 2026-11-12 (see **Decisions**).
+> Status: 136.1 built 2026-11-12 (`b0ba775`), verified against real GitHub Issues via `gh`. 136.2–136.4
+> not started. Open decisions settled 2026-11-12 (see **Decisions**).
 
 ## Objective
 
@@ -172,9 +172,12 @@ Two-way field sync beyond the defined actions, webhooks from trackers, moving ca
 
 ## Suggested slicing
 
-- `136.1` Storage, IPC, and a read-only board: MCP-tool recipe kind, structured intake filter (tags +
+- `136.1` **Done.** Storage, IPC, and a read-only board: MCP-tool recipe kind, structured intake filter (tags +
   assignee), `kanban_sync`, inbox populated from a real ADO, Jira, or GitHub source.
-- `136.2` Columns with agents: `kanban_card_run`, human gate, statuses, worktrees.
+- `136.2` Columns with agents: `kanban_card_run`, human gate, statuses, worktrees. Also: the board
+  settings sheet, including editing the intake filter in the UI (136.1 shows it read-only; the agent
+  edits it via `kanban_write`), and keying columns by id (136.1 replaces all columns when names change,
+  sending their cards back to the Inbox).
 - `136.3` Upstream actions: on-enter/on-exit recipes, preview, approval, idempotency, audit log.
 - `136.4` WIP limits, budget caps, upstream drift handling.
 
@@ -182,9 +185,30 @@ Two-way field sync beyond the defined actions, webhooks from trackers, moving ca
 
 - Unit: filter compilation for ADO, Jira, and GitHub (multiple tags any/all, excluded tags, `me`); local re-check
   drops an item whose tag was removed or assignee changed; upstream action refuses on a reassigned item.
-- Unit: recipe replay for each kind (command/url/mcp) and fail-closed paths; item normalization; idempotent
+- Unit: recipe replay for each kind (command/mcp) and fail-closed paths; item normalization; idempotent
   action keys; each approval level (and re-ask when an action recipe changes); done-condition transitions; WIP enforcement.
 - Injection test: an item body containing instructions does not change agent behavior or trigger tool calls
   beyond the column's scope.
 - Manual: real ADO board via `az boards` and via ADO MCP; real Jira via Atlassian MCP; real GitHub Issues via `gh` and via GitHub MCP; tag an item, see it in
   the inbox (and confirm a teammate's item with the same tag does not appear), promote, watch it run through columns, approve the exit action, confirm the upstream state changed once.
+
+## 136.1 as built
+
+- **Code:** `src/shared/kanban.ts` (types, normalization, filter re-check, filter → query compiler,
+  `{{query}}` binding), `src/main/kanban/service.ts` (`kanban_sync`), `src/main/db/kanban-schema.ts`
+  (v80: `kanban_boards`, `kanban_columns`, `kanban_cards`), `src/main/agent/tools/kanban_write.ts`,
+  `src/main/ipc/kanban-handlers.ts`, `src/renderer/src/components/kanban-screen.tsx`.
+- **Recipe kinds:** `command` and `mcp` only. `url` was dropped: trackers need auth a plain fetch can't
+  carry, and the brief routes sources through a CLI or MCP server.
+- **Query binding:** the recipe sets `tracker` and writes `{{query}}` in its command (shell-quoted as one
+  argument) or string MCP args; each sync fills in the compiled filter, or `filter.query` when the raw
+  escape hatch is set. The structured filter is always re-checked locally.
+- **Approval:** a board-level hash of the recipe plus the call it resolves to. Editing the recipe, or a
+  filter edit that changes the query, re-asks. Needed because MCP calls are explicit-approval-only, so
+  the dashboards allowlist path can't cover them.
+- **"me":** resolved each sync by a `whoami` recipe (GitHub `gh api user` → `login`); never stored.
+  `kanban_write` steers to `me`; `anyone` gets a warning on the approval banner.
+- **Known limits:** compiled WIQL excludes the default process states (`Closed`, `Done`, `Removed`);
+  custom processes need the raw query. GitHub search can't escape `"`, so such labels can't be matched.
+  Jira and ADO compilation is unit-tested only (no live tracker run).
+- **Tables left for later slices:** `kanban_card_runs` (136.2), `kanban_upstream_actions` (136.3).
