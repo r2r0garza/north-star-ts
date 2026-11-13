@@ -92,6 +92,39 @@ These are the gaps; each becomes a decision below.
   previewed once, then replayed with the item id bound in. **Never splice raw item text into a shell
   command**; bind it as a separate argument (same rule as `127` command iteration).
 
+### Column outcomes and outcome-based exit actions (136.3)
+A QA column needs a different write-back depending on the result: on passed, advance the state; on failed,
+send the item back to the dev; on incomplete, write nothing and let a person look. The handoff `status`
+can't carry this, because it describes the agent's task, not the work item's verdict. An agent that ran
+the tests and saw them fail still reports `completed`. Handoff `failed` means "couldn't do the assignment".
+
+- **Outcomes per column.** A column may declare a list of named outcomes (e.g. `passed`, `failed`,
+  `incomplete`). Each outcome sets what happens next: `advance` (to the next column), `wait` (needs a
+  person, whatever the column's gate), or `end` (the card finishes on this column, e.g. a failed item
+  that is going back to the dev). A column with no outcomes behaves as in 136.2.
+- **Reporting.** When a column has outcomes, the prompt lists them and the handoff carries a required
+  `outcome` field that must be one of them. A missing or unknown outcome counts as an invalid handoff and
+  gets the existing repair turn, then `wait`. The outcome is the agent's claim. Spot-checks and the
+  approval levels are the backstop. The agent may base its outcome on tool output (e.g. the QA script's
+  final status line), but ticket text never decides it.
+- **Actions filtered by outcome.** Every on-exit action has `when: any | [outcomes]` (default `any`).
+  Leaving the column runs only the actions that match the recorded outcome. For `advance`/`end`, the
+  actions run when the card leaves. For `wait`, they run when the person approves, using the recorded
+  outcome. The person can change the outcome first (e.g. turn `incomplete` into `failed` after looking).
+  Reject, rerun, and send back run no exit actions.
+- **Idempotency key** becomes card + column + action + outcome, so a rerun that flips the outcome can't
+  run the action for the other outcome twice.
+- **Pilot without this:** passes run the exit action; fails and incompletes both stop as `waiting`, and
+  the user moves failed items upstream by hand.
+
+Example: QA board on ADO (`Ready to Test` → `--env dev`):
+
+| Outcome | Next | On-exit actions |
+|---|---|---|
+| `passed` | advance | set state `Passed QA` |
+| `failed` | end | set state `Active`, assign to the PR author / dev |
+| `incomplete` | wait | none |
+
 ### Intake filter
 A structured filter, not a free-form query, so the UI can show and edit it:
 - **Tags**: a list plus a match mode, `any` (default) or `all`. Optional excluded tags (e.g. `agent-skip`).
@@ -178,7 +211,9 @@ Two-way field sync beyond the defined actions, webhooks from trackers, moving ca
   settings sheet, including editing the intake filter in the UI (136.1 shows it read-only; the agent
   edits it via `kanban_write`), and keying columns by id (136.1 replaces all columns when names change,
   sending their cards back to the Inbox).
-- `136.3` Upstream actions: on-enter/on-exit recipes, preview, approval, idempotency, audit log.
+- `136.3` Upstream actions: on-enter/on-exit recipes, preview, approval, idempotency, audit log. Column
+  outcomes with `advance | wait | end` and on-exit actions filtered by `when` (see **Column outcomes and
+  outcome-based exit actions**).
 - `136.4` WIP limits, budget caps, upstream drift handling.
 
 ## Verification (when built)
@@ -187,6 +222,9 @@ Two-way field sync beyond the defined actions, webhooks from trackers, moving ca
   drops an item whose tag was removed or assignee changed; upstream action refuses on a reassigned item.
 - Unit: recipe replay for each kind (command/mcp) and fail-closed paths; item normalization; idempotent
   action keys; each approval level (and re-ask when an action recipe changes); done-condition transitions; WIP enforcement.
+- Unit: column outcomes. A handoff with a missing or unknown outcome gets repaired, then waits; only
+  actions whose `when` matches run; a person changing the outcome on a waiting card runs the matching
+  actions on approve; reject/rerun run none; a rerun that flips the outcome doesn't run either side twice.
 - Injection test: an item body containing instructions does not change agent behavior or trigger tool calls
   beyond the column's scope.
 - Manual: real ADO board via `az boards` and via ADO MCP; real Jira via Atlassian MCP; real GitHub Issues via `gh` and via GitHub MCP; tag an item, see it in
@@ -236,7 +274,9 @@ Two-way field sync beyond the defined actions, webhooks from trackers, moving ca
   shows "needs approval" with the call's summary, and Allow / Deny on the card answer it. The wait is
   in memory, so a quit ends the run (marked interrupted at startup). The item enters the prompt as a `DATA:`-prefixed untrusted envelope after the column
   instructions; prior columns' results are bounded like workflow steps. The agent is told not to write
-  to the tracker.
+  to the tracker unless the column's instructions explicitly say to (e.g. a QA script that comments
+  and uploads test cases); item text can never authorize it. Those writes bypass approval and audit
+  until 136.3, the same as running the script by hand.
 - **Worktrees:** git workspaces get one worktree per card under `userData/kanban-worktrees/<board>/<card>`
   on branch `ns/kanban/<board-id>/<item-id>`, created on the first run and shared by all columns; a
   workspace subdirectory maps to the same subdirectory in the worktree. Removing a card or board removes
