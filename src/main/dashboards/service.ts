@@ -121,7 +121,7 @@ function summarizeStderr(result: ExecResult): string | null {
   return text.length > 500 ? `${text.slice(0, 500)}...` : text
 }
 
-function validateCommandResult(result: ExecResult): string | null {
+export function validateCommandResult(result: ExecResult): string | null {
   const detail = summarizeStderr(result)
   const withDetail = (message: string) =>
     detail ? `${message}: ${detail}` : message

@@ -49,6 +49,7 @@ async function renderSidebar() {
             onAgentsClick={vi.fn()}
             onMcpClick={vi.fn()}
             onDashboardsClick={vi.fn()}
+            onKanbanClick={vi.fn()}
             onWorkflowsClick={vi.fn()}
             refreshKey={0}
             runningConvos={new Set()}
@@ -140,6 +141,7 @@ describe("sidebar Mission Control visibility", () => {
       onAgentsClick: vi.fn(),
       onMcpClick: vi.fn(),
       onDashboardsClick: vi.fn(),
+      onKanbanClick: vi.fn(),
       onWorkflowsClick: vi.fn(),
       refreshKey: 0,
       runningConvos: new Set(),

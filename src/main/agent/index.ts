@@ -121,6 +121,7 @@ import {
   type ArtifactPresentation,
 } from "../../shared/conversation-artifacts"
 import { dashboardReadTool } from "./tools/dashboard_read"
+import { kanbanWriteTool } from "./tools/kanban_write"
 import { loadSystemPrompt } from "./system-prompt"
 import { logSystemPrompt } from "./prompt-log"
 import { buildIndexSummary } from "../index/summary"
@@ -1557,6 +1558,7 @@ export async function runAgentLoop(
       // todo_write), withheld in plan mode as a side-effecting save. Subject to
       // the agent tool allowlist via its `dashboard` category.
       ...(showTodos && !planMode ? [dashboardWriteTool.definition] : []),
+      ...(showTodos && !planMode ? [kanbanWriteTool.definition] : []),
       // Snapshots write conversation state, not workspace files. Native Chat
       // supports them too; read-only and custom-agent filters still apply.
       ...(!planMode

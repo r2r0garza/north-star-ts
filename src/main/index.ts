@@ -135,6 +135,8 @@ import { IndexWatcher } from "./index/watcher"
 import { SummaryService, SUMMARIZE_KIND } from "./summaries/service"
 import { DashboardService, DASHBOARD_REFRESH_KIND } from "./dashboards/service"
 import { registerDashboardHandlers } from "./ipc/dashboard-handlers"
+import { KanbanService, KANBAN_SYNC_KIND } from "./kanban/service"
+import { registerKanbanHandlers } from "./ipc/kanban-handlers"
 import { BrowserManager } from "./browser/manager"
 import { registerTerminalHandlers } from "./ipc/terminal-handlers"
 import { registerFileWatchHandlers } from "./ipc/file-handlers"
@@ -189,6 +191,8 @@ const summaryService = new SummaryService(taskRunner)
 // Deterministic dashboard refresh (plan 033.3): re-runs each widget's stored
 // recipe headless. Holds the runner reference so ensureRefresh can enqueue.
 const dashboardService = new DashboardService(taskRunner)
+// Kanban intake sync (plan 136.1): replays a board's approved recipe, no LLM.
+const kanbanService = new KanbanService(taskRunner)
 const terminalService = new TerminalService()
 
 // The agent's browser (secondary window + WebContentsView driven over CDP).
@@ -1513,6 +1517,13 @@ app.whenReady().then(async () => {
     hasIndependentSurface: true,
     run: dashboardService.execute,
   })
+  // kanban_sync: same shape as dashboard_refresh — driven from the board view.
+  taskRunner.registerKind(KANBAN_SYNC_KIND, {
+    autoResume: false,
+    lane: "background",
+    hasIndependentSurface: true,
+    run: kanbanService.execute,
+  })
   const workflowService = new WorkflowService(
     taskRunner,
     { service: indexService, watcher: indexWatcher },
@@ -1539,6 +1550,7 @@ app.whenReady().then(async () => {
   registerTaskHandlers(taskRunner)
   registerIndexHandlers(taskRunner, indexService, indexWatcher)
   registerDashboardHandlers(taskRunner, dashboardService)
+  registerKanbanHandlers(kanbanService)
   registerTerminalHandlers(terminalService)
   registerFileWatchHandlers()
   await indexWatcher.setEnabled(settingsService.getIndexing().watchWorkspaces)

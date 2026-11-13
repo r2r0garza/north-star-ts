@@ -14,6 +14,7 @@ import {
   FolderPlus,
   GripVertical,
   LayoutDashboard,
+  SquareKanban,
   Network,
   MoreHorizontal,
   Pin,
@@ -504,6 +505,7 @@ export function AppSidebar({
   onAgentsClick,
   onMcpClick,
   onDashboardsClick,
+  onKanbanClick,
   onWorkflowsClick,
   refreshKey,
   runningConvos,
@@ -522,6 +524,7 @@ export function AppSidebar({
   onAgentsClick: () => void
   onMcpClick: () => void
   onDashboardsClick: () => void
+  onKanbanClick: () => void
   onWorkflowsClick: () => void
   // Bumped by the app whenever conversations change, so the list refetches.
   refreshKey: number
@@ -960,6 +963,16 @@ export function AppSidebar({
         >
           <LayoutDashboard className="size-4" />
           Dashboards
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          onClick={onKanbanClick}
+          className="w-full justify-start"
+        >
+          <SquareKanban className="size-4" />
+          Boards
         </Button>
         <Button
           type="button"

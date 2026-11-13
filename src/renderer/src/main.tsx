@@ -23,6 +23,7 @@ import { SkillsScreen } from "@/components/skills-screen"
 import { AgentsScreen } from "@/components/agents-screen"
 import { McpScreen } from "@/components/mcp-screen"
 import { DashboardsScreen } from "@/components/dashboards-screen"
+import { KanbanScreen } from "@/components/kanban-screen"
 import { WorkflowsScreen } from "@/components/workflows-screen"
 import { WorkflowsSection } from "@/components/workflows-section"
 import { useConversationWorkflows } from "@/hooks/use-conversation-workflows"
@@ -126,6 +127,8 @@ function Shell() {
   // in-panel destination in the center region; authors/views live dashboards
   // (plan 033). Mutually exclusive with the other footer overlays.
   const [dashboardsOpen, setDashboardsOpen] = useState(false)
+  // Kanban boards fed by external trackers (plan 136).
+  const [kanbanOpen, setKanbanOpen] = useState(false)
   const [workflowsOpen, setWorkflowsOpen] = useState(false)
   const [startupGuideOpen, setStartupGuideOpen] = useState(false)
   // Which section Settings opens on. Normal entry starts in General; first launch
@@ -251,7 +254,12 @@ function Shell() {
     setActivity(!poppedOut)
   }
   const overlayViewOpen =
-    agentsOpen || skillsOpen || mcpOpen || dashboardsOpen || workflowsOpen
+    agentsOpen ||
+    skillsOpen ||
+    mcpOpen ||
+    dashboardsOpen ||
+    kanbanOpen ||
+    workflowsOpen
   // The activity panel and terminal only apply to the conversation, so an
   // overlay view hides them without touching their saved open state — they
   // reappear as they were when the user returns to the conversation.
@@ -286,6 +294,7 @@ function Shell() {
     setSkillsOpen(false)
     setMcpOpen(false)
     setDashboardsOpen(false)
+    setKanbanOpen(false)
     setWorkflowsOpen(true)
   }
   const terminalVisible = terminalAvailable && terminalOpen && !overlayViewOpen
@@ -440,6 +449,7 @@ function Shell() {
     setSkillsOpen(false)
     setMcpOpen(false)
     setDashboardsOpen(false)
+    setKanbanOpen(false)
     setWorkflowsOpen(false)
   }
 
@@ -454,6 +464,7 @@ function Shell() {
         setSkillsOpen(false)
         setMcpOpen(false)
         setDashboardsOpen(false)
+        setKanbanOpen(false)
         setWorkflowsOpen(false)
       }
     }
@@ -476,6 +487,7 @@ function Shell() {
     setSkillsOpen(false)
     setMcpOpen(false)
     setDashboardsOpen(false)
+    setKanbanOpen(false)
     setWorkflowsOpen(false)
   }
 
@@ -503,6 +515,7 @@ function Shell() {
     setSkillsOpen(false)
     setMcpOpen(false)
     setDashboardsOpen(false)
+    setKanbanOpen(false)
     setWorkflowsOpen(false)
   }
 
@@ -522,6 +535,7 @@ function Shell() {
     setSkillsOpen(false)
     setMcpOpen(false)
     setDashboardsOpen(false)
+    setKanbanOpen(false)
     setWorkflowsOpen(false)
   }
 
@@ -593,6 +607,7 @@ function Shell() {
             setAgentsOpen(false)
             setMcpOpen(false)
             setDashboardsOpen(false)
+            setKanbanOpen(false)
             setWorkflowsOpen(false)
           }}
           onAgentsClick={() => {
@@ -600,6 +615,7 @@ function Shell() {
             setSkillsOpen(false)
             setMcpOpen(false)
             setDashboardsOpen(false)
+            setKanbanOpen(false)
             setWorkflowsOpen(false)
           }}
           onMcpClick={() => {
@@ -607,12 +623,14 @@ function Shell() {
             setAgentsOpen(false)
             setSkillsOpen(false)
             setDashboardsOpen(false)
+            setKanbanOpen(false)
             setWorkflowsOpen(false)
           }}
           onWorkflowsClick={() => {
             setRequestedRun(null)
             setWorkflowsOpen(true)
             setDashboardsOpen(false)
+            setKanbanOpen(false)
             setMcpOpen(false)
             setAgentsOpen(false)
             setSkillsOpen(false)
@@ -620,6 +638,15 @@ function Shell() {
           onDashboardsClick={() => {
             setWorkflowsOpen(false)
             setDashboardsOpen(true)
+            setKanbanOpen(false)
+            setMcpOpen(false)
+            setAgentsOpen(false)
+            setSkillsOpen(false)
+          }}
+          onKanbanClick={() => {
+            setWorkflowsOpen(false)
+            setDashboardsOpen(false)
+            setKanbanOpen(true)
             setMcpOpen(false)
             setAgentsOpen(false)
             setSkillsOpen(false)
@@ -690,6 +717,7 @@ function Shell() {
           {dashboardsOpen && (
             <DashboardsScreen onClose={() => setDashboardsOpen(false)} />
           )}
+          {kanbanOpen && <KanbanScreen onClose={() => setKanbanOpen(false)} />}
           <TerminalDrawer
             open={terminalVisible}
             conversationId={terminalConversationId}

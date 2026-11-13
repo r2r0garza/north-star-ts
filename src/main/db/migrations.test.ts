@@ -120,7 +120,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(79)
+    expect(db.pragma("user_version", { simple: true })).toBe(80)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
@@ -412,9 +412,9 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
           .all(),
         // effort is also added later.
         conversations: (
-          db
-            .prepare("SELECT * FROM conversations ORDER BY id")
-            .all() as Array<Record<string, unknown>>
+          db.prepare("SELECT * FROM conversations ORDER BY id").all() as Array<
+            Record<string, unknown>
+          >
         ).map(({ effort: _effort, ...conversation }) => conversation),
         messages: db
           .prepare(
@@ -434,7 +434,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
           .all()
       ).toEqual([{ value: 1 }])
       expect(db.pragma("user_version", { simple: true })).toBe(
-        version === 999 ? 999 : 79
+        version === 999 ? 999 : 80
       )
       expect(db.pragma("foreign_keys", { simple: true })).toBe(1)
       expect(db.pragma("foreign_key_check")).toEqual([])
@@ -609,7 +609,9 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
 
     runMigrations(db)
 
-    const columns = db.pragma("table_info(workflows)") as Array<{ name: string }>
+    const columns = db.pragma("table_info(workflows)") as Array<{
+      name: string
+    }>
     expect(columns.map((c) => c.name)).toContain("default_objective")
     db.close()
   })

@@ -95,6 +95,7 @@ import type {
 } from "../main/agent/runtime/model-resolution"
 import type { IndexStatus } from "../main/ipc/index-handlers"
 import type { ApproveResult } from "../main/dashboards/service"
+import type { KanbanBoard, KanbanBoardGraph } from "../shared/kanban"
 import type {
   McpServerView,
   McpTree,
@@ -1513,6 +1514,25 @@ const api = {
         "dashboard:approveRecipe",
         widgetId
       ) as Promise<ApproveResult>,
+  },
+
+  // Kanban boards fed by external trackers (plan 136.1). Boards are authored by
+  // the kanban_write agent tool; sync replays the approved intake recipe.
+  kanban: {
+    list: () => ipcRenderer.invoke("kanban:list") as Promise<KanbanBoard[]>,
+    graph: (boardId: string) =>
+      ipcRenderer.invoke(
+        "kanban:graph",
+        boardId
+      ) as Promise<KanbanBoardGraph | null>,
+    delete: (boardId: string) =>
+      ipcRenderer.invoke("kanban:delete", boardId) as Promise<void>,
+    sync: (boardId: string) =>
+      ipcRenderer.invoke("kanban:sync", boardId) as Promise<string | null>,
+    approveSource: (boardId: string, hash: string) =>
+      ipcRenderer.invoke("kanban:approveSource", boardId, hash) as Promise<
+        { ok: true; taskId: string | null } | { ok: false; reason: string }
+      >,
   },
 
   // LLM provider accounts, their models, API keys, and the active selection.

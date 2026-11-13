@@ -76,6 +76,7 @@ export const CATEGORY_TOOLS: Record<string, string[]> = {
   // let a tool-restricted agent opt in.
   dashboard: ["dashboard_write", "dashboard_read"],
   dashboard_read: ["dashboard_read"],
+  kanban: ["kanban_write"],
   presentation: [
     "present_chart",
     "present_table",
