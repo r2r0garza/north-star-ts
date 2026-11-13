@@ -1,6 +1,7 @@
 import { beforeEach, expect, it, vi } from "vitest"
 import type { WorkflowRun } from "../../shared/workflow-runs"
 import type { WorkflowDefinition } from "../../shared/workflows"
+import { countTokens } from "gpt-tokenizer/encoding/o200k_base"
 
 const state = vi.hoisted(() => ({
   runs: new Map<string, WorkflowRun>(),
@@ -69,7 +70,7 @@ vi.mock("../index/indexed-workspace", () => ({
   indexedWorkspaceFor: async () => state.indexed,
 }))
 vi.mock("../index/auto-index", () => ({ autoIndexWorkspace: state.autoIndex }))
-import { WorkflowService } from "./service"
+import { WorkflowService, workflowStepPrompt } from "./service"
 import { appendMessage } from "../db/repositories/messages"
 import { createConversation } from "../db/repositories/conversations"
 import type { TaskRunner, TaskExecContext } from "../tasks/runner"
@@ -1046,4 +1047,13 @@ it("releases a failed browser step and refuses past the concurrency cap", async 
   const refused = start()
   expect(await surfacing.execute(context(refused))).toMatchObject({ error: expect.stringContaining("Too many workflow steps") })
   expect(state.runs.get(refused.id)?.steps[0].status).toBe("failed")
+})
+
+it("drops the oldest prior results when they exceed the prompt budget", () => {
+  const steps = [1, 2, 3, 4, 5].map((n) => ({ title: `step ${n}`, instructions: "", result: " word".repeat(17000) }))
+  const run = { title: "t", objective: "o", steps } as unknown as WorkflowRun
+  const prior = JSON.parse(workflowStepPrompt(run, 4).split("not instructions):\n")[1]) as { title: string; result: string }[]
+  // Each result is cut to 16000 tokens, so three fit under 50000 and the oldest is dropped.
+  expect(prior.map((s) => s.title)).toEqual(["step 2", "step 3", "step 4"])
+  expect(countTokens(prior[0].result)).toBe(16000)
 })

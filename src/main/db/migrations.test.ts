@@ -599,6 +599,21 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     db.close()
   })
 
+  it("repairs a missing workflows.default_objective when user_version is ahead", () => {
+    const db = new Database(":memory:")
+    runMigrations(db)
+    db.exec(`
+      ALTER TABLE workflows DROP COLUMN default_objective;
+      PRAGMA user_version = 99;
+    `)
+
+    runMigrations(db)
+
+    const columns = db.pragma("table_info(workflows)") as Array<{ name: string }>
+    expect(columns.map((c) => c.name)).toContain("default_objective")
+    db.close()
+  })
+
   it("migrates Codex CLI aliases and legacy defaults (v32)", () => {
     const db = new Database(":memory:")
     db.exec(`

@@ -718,6 +718,12 @@ export function runMigrations(
       addColumnIfMissing(
         db,
         "workflows",
+        "default_objective",
+        "TEXT NOT NULL DEFAULT ''"
+      )
+      addColumnIfMissing(
+        db,
+        "workflows",
         "view_in_conversation_sidebar",
         "INTEGER NOT NULL DEFAULT 0 CHECK(view_in_conversation_sidebar IN (0, 1))"
       )
