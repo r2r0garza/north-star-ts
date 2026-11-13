@@ -1,18 +1,18 @@
 # PR136: Kanban board fed by external work trackers
 
 > Status: Proposal only. Drafted 2026-11-12 from the user's brief plus a light source read. No application
-> code changed. Items under **Open decisions** must be settled before building.
+> code changed. Open decisions settled 2026-11-12 (see **Decisions**).
 
 ## Objective
 
-Let a user bring work items from an external tracker (Azure DevOps, Jira, others) onto a North Star
+Let a user bring work items from an external tracker (Azure DevOps, Jira, GitHub Issues, others) onto a North Star
 kanban board, have agents work each item column by column, and write a user-defined outcome back to
 the tracker when the item leaves the last column.
 
 ## The brief, restated
 
 1. **Sources through tools the user already has.** Either a CLI (`az boards`, `jira`, `gh`) or an MCP
-   server (ADO MCP, Atlassian MCP). North Star never holds tracker credentials; the CLI or MCP server does.
+   server (ADO MCP, Atlassian MCP, GitHub MCP). North Star never holds tracker credentials; the CLI or MCP server does.
 2. **User-defined intake filter.** Multiple tags plus the assignee. E.g. ADO: "tagged `agent-go`
    **and** assigned to me". Without the assignee filter, a shared tag would pull teammates' items onto
    your machine. See **Intake filter** below.
@@ -31,7 +31,7 @@ These are the gaps; each becomes a decision below.
   approve? Most columns probably want an optional **human gate** (e.g. review before "Done").
 - **Failure and blocked states.** An agent run can fail, get stuck, or ask a question. The card needs
   visible `running / waiting on you / failed` states, plus retry and send-back-to-previous-column.
-- **Where the code lives.** An item has to map to a workspace (ADO project / Jira project → local repo).
+- **Where the code lives.** An item has to map to a workspace (ADO project / Jira project / GitHub repo → local repo).
   Parallel items need isolation in separate worktrees. Mission Control (and its merge queue) was retired
   in `8443ec3`. What remains is the subagent writer-worktree code. See **Worktrees** below.
 - **Concurrency.** A WIP limit per column (and/or board-wide) so twenty tagged items don't start
@@ -50,10 +50,10 @@ These are the gaps; each becomes a decision below.
   (`src/shared/context-provenance.ts`), never as instructions. This matters more here than anywhere else
   in the app, because the board runs unattended.
 - **Normalized item shape.** Pick one internal shape (id, url, title, body, type, state, tags, assignee,
-  updatedAt) that every source maps into, so the board and agents never care whether it came from ADO or Jira.
+  updatedAt) that every source maps into, so the board and agents never care whether it came from ADO, Jira, or GitHub.
 - **Reassignment.** If an item is reassigned away from you mid-run, the card should stop at the next
   safe point and never write upstream on someone else's item.
-- **Multiple boards.** Probably one board per workspace, possibly several. Decide early because it shapes storage.
+- **Multiple boards.** Settled: many per workspace, user's choice. See Decision 6.
 
 ## What exists today (reuse, don't rebuild)
 
@@ -71,7 +71,7 @@ These are the gaps; each becomes a decision below.
 - **Named agents** (`src/main/agent/agents/`): the per-column agent picker is a selection from this
   catalog; empty means the built-in North Star agent.
 - **Workflows** (`src/main/workflows/`): a column could run a workflow instead of a single agent turn.
-  See Open decision 2. (The older Processes orchestration was retired with Mission Control.)
+  See Decision 2. (The older Processes orchestration was retired with Mission Control.)
 - **Worktree helpers** (`src/main/agent/subagents/worktrees.ts`): `createWriterWorktree`,
   `collectWriterHandback`, `removeWriterWorktree`, `stageIntegrationBranch` (`merge --no-ff` in a
   throwaway worktree), `mergeability` (`merge-tree --write-tree` conflict probe), and
@@ -84,7 +84,7 @@ These are the gaps; each becomes a decision below.
 ## Proposed shape
 
 ### Board configuration (per board)
-- Workspace, source (adapter kind `cli | mcp` + the intake recipe), intake filter (stored in the recipe:
+- Write-back approval level (Decision 4), workspace, source (adapter kind `cli | mcp` + the intake recipe), intake filter (stored in the recipe:
   tags / labels / JQL / WIQL), sync interval.
 - Ordered columns. Each has a name, an agent (default North Star), instructions, a done condition
   (`agent says done` or `human approves`), WIP limit, and optional on-enter/on-exit upstream actions.
@@ -96,10 +96,16 @@ These are the gaps; each becomes a decision below.
 A structured filter, not a free-form query, so the UI can show and edit it:
 - **Tags**: a list plus a match mode, `any` (default) or `all`. Optional excluded tags (e.g. `agent-skip`).
 - **Assigned to**: `me` (default), a specific person, or `anyone`. `me` is resolved by the tracker's
-  own identity for the signed-in CLI/MCP user (ADO WIQL `@Me`, Jira JQL `currentUser()`), never by
+  own identity for the signed-in CLI/MCP user (ADO WIQL `@Me`, Jira JQL `currentUser()`, GitHub `assignee:@me`), never by
   asking for or storing the user's email. If the source can't resolve `me`, intake fails closed.
-- Optional: work item types, states (e.g. only `New`/`Active`), area/iteration path or Jira project.
-- An **advanced** escape hatch: a raw WIQL/JQL query instead of the structured fields.
+- Optional: work item types, states (e.g. only `New`/`Active`), area/iteration path, Jira project, or GitHub repo.
+- An **advanced** escape hatch: a raw WIQL/JQL/GitHub search query instead of the structured fields.
+
+GitHub Issues notes: tags are **labels**. `gh issue list --label a --label b` is `all`; `any` needs the
+search syntax (`label:a,b`), and excluded tags use `-label:x`. Issues only have `open`/`closed` (with
+reason `completed`/`not planned`), so a state such as `Ready to Deploy` is expressed as an upstream action
+that adds a label or sets a GitHub Projects status field. Pull requests are filtered out of intake
+(`is:issue`).
 
 The filter compiles into the intake recipe's query. On every sync, the normalized result is also
 **re-checked locally** against the structured filter (tags present, assignee still matches), so a recipe
@@ -120,7 +126,7 @@ result on the card. The done condition then advances the card or flags it as wai
 
 ### Worktrees
 In a git workspace, each card gets one branch and worktree for its whole life on the board (e.g.
-`ns/kanban/<item-id>`), created with the writer-worktree helpers on its first column that writes code and
+`ns/kanban/<board-id>/<item-id>`), created with the writer-worktree helpers on its first column that writes code and
 removed when the card leaves the board. Columns share that worktree, so later columns see earlier work.
 Landing is a column action, not automatic: open a PR (`gh pr create`, `az repos pr create`) or a local
 merge checked first with `mergeability`. **No merge queue in v1.** WIP limits plus PR-based landing make
@@ -136,20 +142,28 @@ A full-screen board view in the renderer (same takeover pattern as dashboards/pr
 cards with status chips and a link to the upstream item, a card drawer with run history and transcripts,
 a board settings sheet for columns, agents, and actions. All main access goes through new `window.cowork.kanban.*` IPC.
 
-## Open decisions
+## Decisions (settled 2026-11-12)
 
-1. **Landing.** PR per card only, or also local merge? Proposal: PR per card via a column action. Local
-   merge is optional and checked with `mergeability` first. No merge queue.
-2. **Column = agent turn, or column = workflow?** An agent turn is simplest. Allowing a workflow per
-   column gives multi-step columns for free. Proposal: agent turn in v1, workflow as a v2 option.
-3. **Recipe authoring.** Is the intake recipe authored by the agent (like dashboards, which probes the real
-   CLI/MCP output first), or picked from built-in presets for ADO/Jira/GitHub? Proposal: agent-authored with
-   presets as starting prompts. No hardcoded per-tracker adapters in v1.
-4. **Write-back approval default.** Always ask, or ask once per board then auto? Proposal: ask once per
-   action recipe, then auto, with an audit log and a board-level kill switch.
-5. **Sync without a scheduler.** Manual + while-open polling (like dashboards), or build the `cron` backlog
-   item first? Proposal: manual + while-open for v1.
-6. **Board scope.** One board per workspace, or many?
+1. **Landing.** PR per card via a column action (`gh pr create`, `az repos pr create`). Local merge is
+   also allowed as a column action, checked with `mergeability` first. No merge queue.
+2. **Column = agent turn** in v1. Workflow-per-column is a v2 option.
+3. **Recipe authoring.** Agent-authored, probing the real CLI/MCP output first (like dashboards).
+   ADO/Jira/GitHub presets are only starting prompts. No hardcoded per-tracker adapters in v1.
+4. **Write-back approval is a board setting with four levels**, chosen by the user:
+   - `always` — every upstream write waits for approval.
+   - `once_per_action` (default) — the first run of each action recipe asks, later runs are automatic.
+   - `once_per_board` — one approval covers every action on the board.
+   - `auto` — no approval prompts.
+   Every level keeps the audit log, the board-level kill switch, idempotency keys, and the pre-action
+   re-fetch + assignee re-check. A changed action recipe counts as a new action and needs approval again
+   under `once_per_action`; under `once_per_board`, adding or changing any action re-asks.
+5. **Sync.** Manual Sync button plus polling at the board's interval while the board screen is open.
+   Card runs continue in the background; only intake waits for the screen. Revisit when `cron` lands.
+6. **Board scope.** Many boards per workspace, user's choice: one board holding bugs and features, or a
+   Bugs board and a Features board with different filters and columns. `kanban_boards` has no unique
+   constraint on workspace; the UI adds a board picker. An item that matches two boards' filters appears
+   on each; the per-item worktree branch includes the board id (`ns/kanban/<board-id>/<item-id>`) so the
+   two cards never share a branch.
 
 ## Out of scope for v1
 
@@ -159,18 +173,18 @@ Two-way field sync beyond the defined actions, webhooks from trackers, moving ca
 ## Suggested slicing
 
 - `136.1` Storage, IPC, and a read-only board: MCP-tool recipe kind, structured intake filter (tags +
-  assignee), `kanban_sync`, inbox populated from a real ADO or Jira source.
+  assignee), `kanban_sync`, inbox populated from a real ADO, Jira, or GitHub source.
 - `136.2` Columns with agents: `kanban_card_run`, human gate, statuses, worktrees.
 - `136.3` Upstream actions: on-enter/on-exit recipes, preview, approval, idempotency, audit log.
 - `136.4` WIP limits, budget caps, upstream drift handling.
 
 ## Verification (when built)
 
-- Unit: filter compilation for ADO and Jira (multiple tags any/all, excluded tags, `me`); local re-check
+- Unit: filter compilation for ADO, Jira, and GitHub (multiple tags any/all, excluded tags, `me`); local re-check
   drops an item whose tag was removed or assignee changed; upstream action refuses on a reassigned item.
 - Unit: recipe replay for each kind (command/url/mcp) and fail-closed paths; item normalization; idempotent
-  action keys; done-condition transitions; WIP enforcement.
+  action keys; each approval level (and re-ask when an action recipe changes); done-condition transitions; WIP enforcement.
 - Injection test: an item body containing instructions does not change agent behavior or trigger tool calls
   beyond the column's scope.
-- Manual: real ADO board via `az boards` and via ADO MCP; real Jira via Atlassian MCP; tag an item, see it in
+- Manual: real ADO board via `az boards` and via ADO MCP; real Jira via Atlassian MCP; real GitHub Issues via `gh` and via GitHub MCP; tag an item, see it in
   the inbox (and confirm a teammate's item with the same tag does not appear), promote, watch it run through columns, approve the exit action, confirm the upstream state changed once.
