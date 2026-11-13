@@ -136,6 +136,7 @@ import { SummaryService, SUMMARIZE_KIND } from "./summaries/service"
 import { DashboardService, DASHBOARD_REFRESH_KIND } from "./dashboards/service"
 import { registerDashboardHandlers } from "./ipc/dashboard-handlers"
 import { KanbanService, KANBAN_SYNC_KIND } from "./kanban/service"
+import { KanbanCardRuns, KANBAN_CARD_RUN_KIND } from "./kanban/card-runs"
 import { registerKanbanHandlers } from "./ipc/kanban-handlers"
 import { BrowserManager } from "./browser/manager"
 import { registerTerminalHandlers } from "./ipc/terminal-handlers"
@@ -1524,6 +1525,19 @@ app.whenReady().then(async () => {
     hasIndependentSurface: true,
     run: kanbanService.execute,
   })
+  // kanban_card_run (plan 136.2): one unattended agent turn per column a card
+  // enters, in the card's own worktree. Work lane, like workflow runs.
+  const kanbanCardRuns = new KanbanCardRuns(
+    taskRunner,
+    join(app.getPath("userData"), "kanban-worktrees")
+  )
+  kanbanCardRuns.recoverInterrupted()
+  taskRunner.registerKind(KANBAN_CARD_RUN_KIND, {
+    autoResume: false,
+    lane: "work",
+    hasIndependentSurface: true,
+    run: kanbanCardRuns.execute,
+  })
   const workflowService = new WorkflowService(
     taskRunner,
     { service: indexService, watcher: indexWatcher },
@@ -1550,7 +1564,7 @@ app.whenReady().then(async () => {
   registerTaskHandlers(taskRunner)
   registerIndexHandlers(taskRunner, indexService, indexWatcher)
   registerDashboardHandlers(taskRunner, dashboardService)
-  registerKanbanHandlers(kanbanService)
+  registerKanbanHandlers(kanbanService, kanbanCardRuns)
   registerTerminalHandlers(terminalService)
   registerFileWatchHandlers()
   await indexWatcher.setEnabled(settingsService.getIndexing().watchWorkspaces)

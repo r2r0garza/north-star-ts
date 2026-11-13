@@ -1,7 +1,7 @@
 # PR136: Kanban board fed by external work trackers
 
-> Status: 136.1 built 2026-11-12 (`b0ba775`), verified against real GitHub Issues via `gh`. 136.2–136.4
-> not started. Open decisions settled 2026-11-12 (see **Decisions**).
+> Status: 136.1 built 2026-11-12 (`b0ba775`), verified against real GitHub Issues via `gh`. 136.2 built
+> 2026-11-12, unit-tested, not yet run in the app. 136.3–136.4 not started. Open decisions settled 2026-11-12 (see **Decisions**).
 
 ## Objective
 
@@ -174,7 +174,7 @@ Two-way field sync beyond the defined actions, webhooks from trackers, moving ca
 
 - `136.1` **Done.** Storage, IPC, and a read-only board: MCP-tool recipe kind, structured intake filter (tags +
   assignee), `kanban_sync`, inbox populated from a real ADO, Jira, or GitHub source.
-- `136.2` Columns with agents: `kanban_card_run`, human gate, statuses, worktrees. Also: the board
+- `136.2` **Built.** Columns with agents: `kanban_card_run`, human gate, statuses, worktrees. Also: the board
   settings sheet, including editing the intake filter in the UI (136.1 shows it read-only; the agent
   edits it via `kanban_write`), and keying columns by id (136.1 replaces all columns when names change,
   sending their cards back to the Inbox).
@@ -212,3 +212,36 @@ Two-way field sync beyond the defined actions, webhooks from trackers, moving ca
   custom processes need the raw query. GitHub search can't escape `"`, so such labels can't be matched.
   Jira and ADO compilation is unit-tested only (no live tracker run).
 - **Tables left for later slices:** `kanban_card_runs` (136.2), `kanban_upstream_actions` (136.3).
+
+## 136.2 as built
+
+- **Code:** `src/main/kanban/card-runs.ts` (`kanban_card_run` executor + card moves),
+  `src/main/db/kanban-schema.ts` (`ensureKanbanRuns`, v81), `src/main/tasks/bounded-results.ts` (prior-result
+  bounding shared with workflow steps), `src/renderer/src/components/kanban-settings-sheet.tsx`.
+- **Columns:** name, agent (null = North Star), instructions, gate (`agent` | `human`). Empty instructions
+  = no run; the card just sits there (e.g. a final Done column). Columns keep their id across edits; the
+  agent tool matches by name. Removing a column that holds cards is refused.
+- **Card states:** `idle | running | waiting | blocked | failed | done`. `blocked` = the agent's handoff
+  reported an obstacle only the user can clear (credentials, login, permissions); shown as "needs you",
+  not as a failure. Entering a column with instructions creates
+  a `kanban_card_runs` row and enqueues `kanban_card_run` (work lane). A completed handoff advances the
+  card (agent gate) or waits (human gate); `done` after the last column. Actions: move to any column,
+  approve, reject (back to the Inbox), reject with feedback (rerun the same column with required
+  feedback), rerun, send back (rerun the previous column with feedback), stop, remove. Approve / Reject /
+  Reject with feedback show as buttons on a waiting card, not only in its menu.
+- **Run:** one unattended Auto-mode turn per column attempt in a new conversation (no questions, hard
+  blocks apply), with one handoff repair turn and up to 3 automatic continuation turns for an
+  `unfinished` handoff (workflow steps' budget). Unlike workflow steps, a tool call that still needs an
+  explicit yes in Auto mode (e.g. an MCP call) does not end the run: the agent waits on it, the card
+  shows "needs approval" with the call's summary, and Allow / Deny on the card answer it. The wait is
+  in memory, so a quit ends the run (marked interrupted at startup). The item enters the prompt as a `DATA:`-prefixed untrusted envelope after the column
+  instructions; prior columns' results are bounded like workflow steps. The agent is told not to write
+  to the tracker.
+- **Worktrees:** git workspaces get one worktree per card under `userData/kanban-worktrees/<board>/<card>`
+  on branch `ns/kanban/<board-id>/<item-id>`, created on the first run and shared by all columns; a
+  workspace subdirectory maps to the same subdirectory in the worktree. Removing a card or board removes
+  worktrees and keeps branches. Non-git workspaces run one card at a time (in-memory lock).
+- **Restart:** runs don't auto-resume; at startup a card left `running` is marked `failed` ("interrupted").
+- **Known limits:** continuation turns don't summarize the transcript between turns the way workflow
+  steps do (in-turn compaction still applies); moves are by menu, not drag-and-drop; no per-column model choice; any
+  number of cards can run at once until 136.4's WIP limits (the work lane caps it at 6).

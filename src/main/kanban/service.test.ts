@@ -63,7 +63,7 @@ describe.skipIf(!sqliteLoads)("KanbanService sync", () => {
         excludeTags: [],
         assignee: { mode: "me" },
       },
-      columns: ["Plan", "Build"],
+      columns: [{ name: "Plan" }, { name: "Build" }],
     })
 
   it("refuses to run an unapproved recipe", async () => {
@@ -90,7 +90,9 @@ describe.skipIf(!sqliteLoads)("KanbanService sync", () => {
     const calls: unknown[] = []
     const recording = new KanbanService({} as TaskRunner, async (call) => {
       calls.push(call.args)
-      return call.tool === "mcp__github__get_me" ? JSON.stringify({ login: "me" }) : "[]"
+      return call.tool === "mcp__github__get_me"
+        ? JSON.stringify({ login: "me" })
+        : "[]"
     })
     const filter = {
       tags: ["agent-go"],
@@ -135,7 +137,7 @@ describe.skipIf(!sqliteLoads)("KanbanService sync", () => {
       workspace: null,
       source: { ...source, args: { q: "x" } },
       filter: b.filter,
-      columns: ["Plan", "Build"],
+      columns: [{ name: "Plan" }, { name: "Build" }],
     })
     expect(service.graph(b.id)!.approved).toBe(false)
     expect(service.approveSource(b.id, "stale-hash")).toMatchObject({

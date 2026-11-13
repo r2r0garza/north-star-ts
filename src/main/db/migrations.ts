@@ -59,7 +59,7 @@ import { renameWorkTerms } from "./work-terms-migration"
 import { ensureWorkflows, ensureWorkflowRuns } from "./workflow-schema"
 import { ensureSteeringMessages } from "./steering-schema"
 import { ensureConversationArtifacts } from "./artifact-schema"
-import { ensureKanban } from "./kanban-schema"
+import { ensureKanban, ensureKanbanRuns } from "./kanban-schema"
 import {
   ORCHESTRATION_TABLES,
   retireOrchestration,
@@ -237,6 +237,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureMessageReasoningColumn,
   ensureConversationEffortColumn,
   ensureKanban,
+  ensureKanbanRuns,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {

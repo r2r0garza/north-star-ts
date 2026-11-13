@@ -95,7 +95,14 @@ import type {
 } from "../main/agent/runtime/model-resolution"
 import type { IndexStatus } from "../main/ipc/index-handlers"
 import type { ApproveResult } from "../main/dashboards/service"
-import type { KanbanBoard, KanbanBoardGraph } from "../shared/kanban"
+import type {
+  KanbanBoard,
+  KanbanBoardGraph,
+  KanbanCardRun,
+  KanbanColumnInput,
+} from "../shared/kanban"
+
+type KanbanResult = { ok: true } | { ok: false; reason: string }
 import type {
   McpServerView,
   McpTree,
@@ -1526,7 +1533,55 @@ const api = {
         boardId
       ) as Promise<KanbanBoardGraph | null>,
     delete: (boardId: string) =>
-      ipcRenderer.invoke("kanban:delete", boardId) as Promise<void>,
+      ipcRenderer.invoke("kanban:delete", boardId) as Promise<KanbanResult>,
+    saveSettings: (
+      boardId: string,
+      patch: {
+        name: string
+        filter: unknown
+        syncIntervalMs: number
+        columns: KanbanColumnInput[]
+      }
+    ) =>
+      ipcRenderer.invoke(
+        "kanban:saveSettings",
+        boardId,
+        patch
+      ) as Promise<KanbanResult>,
+    // Card moves (plan 136.2). Entering a column with instructions starts its run.
+    moveCard: (cardId: string, columnId: string | null) =>
+      ipcRenderer.invoke(
+        "kanban:moveCard",
+        cardId,
+        columnId
+      ) as Promise<KanbanResult>,
+    approveCard: (cardId: string) =>
+      ipcRenderer.invoke("kanban:approveCard", cardId) as Promise<KanbanResult>,
+    sendBack: (cardId: string, feedback?: string) =>
+      ipcRenderer.invoke(
+        "kanban:sendBack",
+        cardId,
+        feedback
+      ) as Promise<KanbanResult>,
+    retry: (cardId: string, feedback?: string) =>
+      ipcRenderer.invoke(
+        "kanban:retry",
+        cardId,
+        feedback
+      ) as Promise<KanbanResult>,
+    // Answer the tool call a running card's agent is waiting on.
+    answerApproval: (cardId: string, decision: "approved" | "denied") =>
+      ipcRenderer.invoke(
+        "kanban:answerApproval",
+        cardId,
+        decision
+      ) as Promise<KanbanResult>,
+    stop: (cardId: string) =>
+      ipcRenderer.invoke("kanban:stop", cardId) as Promise<KanbanResult>,
+    removeCard: (cardId: string) =>
+      ipcRenderer.invoke("kanban:removeCard", cardId) as Promise<KanbanResult>,
+    runs: (cardId: string) =>
+      ipcRenderer.invoke("kanban:runs", cardId) as Promise<KanbanCardRun[]>,
     sync: (boardId: string) =>
       ipcRenderer.invoke("kanban:sync", boardId) as Promise<string | null>,
     approveSource: (boardId: string, hash: string) =>

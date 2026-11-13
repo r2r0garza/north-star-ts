@@ -8,6 +8,7 @@ import {
   parseJsonOutput,
   resolveIntakeCall,
   type KanbanCall,
+  type KanbanColumnInput,
   type KanbanSource,
 } from "../../../shared/kanban"
 import { callProblem } from "../../kanban/service"
@@ -57,7 +58,13 @@ export const kanbanWriteTool: Tool = {
         "`query` is an escape hatch: a raw GitHub search / JQL / WIQL used instead of the compiled " +
         "one (only when the user asks for something the structured fields can't express); the " +
         "structured fields are still re-checked locally, so keep them consistent with it.\n" +
-        "columns: ordered column names (items land in an Inbox before the first column).\n" +
+        "columns: ordered columns (items land in an Inbox before the first). Each is a name, or " +
+        "{ name, instructions?, agent?, gate? }. instructions: what an agent does to a card in this " +
+        "column (empty = no agent run; the card just sits there, e.g. a final Done column). agent: " +
+        "a named agent (omit for the built-in North Star agent). gate: 'agent' (default; the card " +
+        "moves on when the agent reports done) or 'human' (the card waits for the user to approve). " +
+        "Columns are matched to existing ones by name, so renaming creates a new column; a removed " +
+        "column must be empty. Omit `columns` when updating to leave them unchanged.\n" +
         "sample: optionally paste the raw JSON you got; the result shows how it normalizes.\n\n" +
         "Pass boardId to update an existing board. The user must approve the intake recipe " +
         "on the board before it syncs; a changed recipe needs approval again.",
@@ -70,8 +77,9 @@ export const kanbanWriteTool: Tool = {
           filter: { type: "object", description: "Structured intake filter." },
           columns: {
             type: "array",
-            items: { type: "string" },
-            description: "Ordered column names.",
+            items: {},
+            description:
+              "Ordered columns: names or { name, instructions?, agent?, gate? }.",
           },
           syncIntervalMinutes: {
             type: "number",
@@ -154,11 +162,28 @@ export const kanbanWriteTool: Tool = {
       const whoProblem = callProblem(source.whoami, workspace)
       if (whoProblem) return toolError("bad_args", `whoami: ${whoProblem}`)
     }
-    const columns = (
-      Array.isArray(parsed(a.columns)) ? (parsed(a.columns) as unknown[]) : []
-    )
-      .filter((c): c is string => typeof c === "string" && !!c.trim())
-      .map((c) => c.trim())
+    const rawColumns = parsed(a.columns)
+    const columns: KanbanColumnInput[] | undefined = Array.isArray(rawColumns)
+      ? rawColumns
+          .map((c): KanbanColumnInput | null => {
+            if (typeof c === "string")
+              return c.trim() ? { name: c.trim() } : null
+            if (!c || typeof c !== "object") return null
+            const o = c as Record<string, unknown>
+            const text = (v: unknown) => (typeof v === "string" ? v.trim() : "")
+            return text(o.name)
+              ? {
+                  name: text(o.name),
+                  instructions: text(o.instructions),
+                  agentName: text(o.agent) || null,
+                  gate: o.gate === "human" ? "human" : "agent",
+                }
+              : null
+          })
+          .filter((c): c is KanbanColumnInput => c !== null)
+      : boardId
+        ? undefined
+        : []
     const minutes =
       typeof a.syncIntervalMinutes === "number"
         ? a.syncIntervalMinutes
@@ -174,19 +199,31 @@ export const kanbanWriteTool: Tool = {
       }
     }
 
-    const board = kanban.saveBoard({
-      id: boardId,
-      name,
-      workspace,
-      source,
-      filter,
-      columns,
-      syncIntervalMs: minutes ? minutes * 60_000 : undefined,
-    })
+    let board
+    try {
+      board = kanban.saveBoard({
+        id: boardId,
+        name,
+        workspace,
+        source,
+        filter,
+        columns,
+        syncIntervalMs: minutes ? minutes * 60_000 : undefined,
+      })
+    } catch (err) {
+      if (err instanceof kanban.KanbanColumnInUseError)
+        return toolError("column_in_use", err.message)
+      throw err
+    }
     return JSON.stringify({
       boardId: board.id,
       name: board.name,
-      columns,
+      columns: kanban.listColumns(board.id).map((c) => ({
+        name: c.name,
+        instructions: c.instructions,
+        agent: c.agentName,
+        gate: c.gate,
+      })),
       filter,
       query:
         source.tracker || filter.query

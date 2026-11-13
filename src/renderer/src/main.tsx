@@ -717,7 +717,14 @@ function Shell() {
           {dashboardsOpen && (
             <DashboardsScreen onClose={() => setDashboardsOpen(false)} />
           )}
-          {kanbanOpen && <KanbanScreen onClose={() => setKanbanOpen(false)} />}
+          {kanbanOpen && (
+            <KanbanScreen
+              onClose={() => setKanbanOpen(false)}
+              onOpenConversation={(id) =>
+                handleSelectConversation(id, "north_star")
+              }
+            />
+          )}
           <TerminalDrawer
             open={terminalVisible}
             conversationId={terminalConversationId}

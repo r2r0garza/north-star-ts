@@ -85,11 +85,53 @@ export interface KanbanBoard {
   updatedAt: number
 }
 
+// `agent`: the card advances when the agent reports done. `human`: it waits
+// for the user to approve.
+export type KanbanGate = "agent" | "human"
+
 export interface KanbanColumn {
   id: string
   boardId: string
   name: string
   position: number
+  agentName: string | null // null = the built-in North Star agent
+  instructions: string // empty = no agent run; the card just sits here
+  gate: KanbanGate
+}
+
+// What the user edits (settings sheet) or the agent sends (kanban_write).
+// `id` keeps an existing column; without it a new one is made.
+export interface KanbanColumnInput {
+  id?: string
+  name: string
+  agentName?: string | null
+  instructions?: string
+  gate?: KanbanGate
+}
+
+// idle: nothing to do here. waiting: the column's human gate needs approval.
+// done: finished the last column.
+// blocked: the agent reported an obstacle only the user can clear.
+export type KanbanRunState =
+  | "idle"
+  | "running"
+  | "waiting"
+  | "blocked"
+  | "failed"
+  | "done"
+
+export interface KanbanCardRun {
+  id: string
+  cardId: string
+  columnId: string | null
+  columnName: string
+  taskId: string | null
+  conversationId: string | null
+  status: "running" | "completed" | "failed"
+  result: string | null
+  error: string | null
+  startedAt: number
+  finishedAt: number | null
 }
 
 // `unmatched`: the item no longer passes the filter upstream (kept, not deleted,
@@ -103,6 +145,17 @@ export interface KanbanCard {
   item: KanbanItem
   columnId: string | null // null = Inbox
   status: KanbanCardStatus
+  runState: KanbanRunState
+  runError: string | null
+  worktree: string | null
+  branch: string | null
+  // Set while a running card is parked on a tool call needing the user's yes.
+  pendingApproval?: {
+    requestId: string
+    tool: string
+    summary: string
+    reason: string
+  } | null
   createdAt: number
   updatedAt: number
 }
