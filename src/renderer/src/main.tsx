@@ -564,6 +564,8 @@ function Shell() {
         style={
           {
             "--sidebar-width": overlayViewOpen ? "2.75rem" : "18.75rem",
+            // Collapsed width = just the rail.
+            "--sidebar-width-icon": "2.75rem",
           } as React.CSSProperties
         }
       >

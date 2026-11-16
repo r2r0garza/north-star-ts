@@ -35,6 +35,7 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  useSidebar,
 } from "@/components/ui/sidebar"
 import {
   Collapsible,
@@ -616,6 +617,10 @@ export function AppSidebar({
   // The main agent's brand name (MAIN_AGENT_NAME, e.g. "North Star"), read from
   // the synchronous system bridge. Brands the North Star tab's label.
   const agentName = window.cowork.system().mainAgentName
+  // Collapsing the sidebar (toggle or Cmd+B) keeps the rail and hides the list.
+  const { state: sidebarState, setOpen: setSidebarOpen } = useSidebar()
+  const listHidden =
+    activeDestination !== "conversations" || sidebarState === "collapsed"
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [projects, setProjects] = useState<Project[]>([])
   // Workspaces, kept so a workspace_id can be resolved to a readable path for the
@@ -920,7 +925,11 @@ export function AppSidebar({
       id: "conversations",
       label: "Conversations",
       icon: MessageSquare,
-      onClick: onConversationsClick,
+      onClick: () => {
+        // From the collapsed rail, Conversations also brings the list back.
+        setSidebarOpen(true)
+        onConversationsClick()
+      },
     },
     {
       id: "workflows",
@@ -942,7 +951,11 @@ export function AppSidebar({
     "flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-foreground aria-[current=page]:bg-sidebar-primary/15 aria-[current=page]:text-sidebar-primary"
 
   return (
-    <Sidebar>
+    // "icon" collapses to --sidebar-width-icon (the rail's width) instead of
+    // hiding. Its full-height edge border would run under the macOS traffic
+    // lights at rail width, so it's dropped: the rail draws its own divider
+    // below them, and the list column draws the outer edge.
+    <Sidebar collapsible="icon" className="group-data-[side=left]:border-r-0">
       <div className="flex h-full min-h-0">
         <nav
           aria-label="App"
@@ -976,8 +989,8 @@ export function AppSidebar({
         </nav>
         <div
           className={cn(
-            "flex min-w-0 flex-1 flex-col",
-            activeDestination !== "conversations" && "hidden"
+            "flex min-w-0 flex-1 flex-col border-r border-sidebar-border",
+            listHidden && "hidden"
           )}
         >
           {/* Top padding clears the macOS traffic lights / sidebar toggle. Window
