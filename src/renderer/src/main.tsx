@@ -548,7 +548,11 @@ function Shell() {
 
   return (
     <TooltipProvider>
-      <SidebarProvider className="relative">
+      {/* Wider than the 16rem default to make room for the nav icon rail. */}
+      <SidebarProvider
+        className="relative"
+        style={{ "--sidebar-width": "18.75rem" } as React.CSSProperties}
+      >
         {/* Top drag bar (replaces the OS title bar). Keep the open activity panel
           outside the drag surface so its tab strip remains interactive. */}
         <div className="pointer-events-none absolute inset-x-0 top-0 z-20 h-11">
