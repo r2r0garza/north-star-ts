@@ -907,7 +907,7 @@ export function AppSidebar({
       <div className="flex h-full min-h-0">
         <nav
           aria-label="App"
-          className="flex w-11 shrink-0 flex-col items-center gap-1 border-r border-sidebar-border pt-12 pb-2"
+          className="flex w-11 shrink-0 flex-col items-center gap-1 mt-12 border-r border-sidebar-border pb-2"
         >
           {navItems.map(({ label, icon: Icon, onClick }) => (
             <TooltipButton
