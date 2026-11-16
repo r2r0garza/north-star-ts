@@ -6,7 +6,12 @@ import "./globals.css"
 import { ThemeProvider } from "@/components/theme-provider"
 import { SidebarProvider } from "@/components/ui/sidebar"
 import { TooltipProvider } from "@/components/ui/tooltip"
-import { AppSidebar, MODE_TO_VIEW, type View } from "@/components/sidebar"
+import {
+  AppSidebar,
+  MODE_TO_VIEW,
+  type Destination,
+  type View,
+} from "@/components/sidebar"
 import { SidebarToggle } from "@/components/sidebar-toggle"
 import {
   ActivityPanel,
@@ -256,6 +261,17 @@ function Shell() {
   // overlay view hides them without touching their saved open state — they
   // reappear as they were when the user returns to the conversation.
   const activityVisible = activityOpen && !overlayViewOpen
+  const activeDestination: Destination = workflowsOpen
+    ? "workflows"
+    : dashboardsOpen
+      ? "dashboards"
+      : agentsOpen
+        ? "agents"
+        : mcpOpen
+          ? "mcp"
+          : skillsOpen
+            ? "skills"
+            : "conversations"
   const [workflowDraftKey, setWorkflowDraftKey] = useState(() =>
     crypto.randomUUID()
   )
@@ -433,14 +449,10 @@ function Shell() {
     })
   }, [])
 
+  // Settings is a sheet over the app, so it leaves the current screen open.
   function openSettings(tab = "appearance") {
     setSettingsTab(tab)
     setSettingsOpen(true)
-    setAgentsOpen(false)
-    setSkillsOpen(false)
-    setMcpOpen(false)
-    setDashboardsOpen(false)
-    setWorkflowsOpen(false)
   }
 
   // Cmd+, (macOS) / Ctrl+, (Windows/Linux) opens Settings — the platform's
@@ -449,12 +461,8 @@ function Shell() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "," && (event.metaKey || event.ctrlKey)) {
         event.preventDefault()
+        // Settings is a sheet over the app; leave the current screen open.
         setSettingsOpen(true)
-        setAgentsOpen(false)
-        setSkillsOpen(false)
-        setMcpOpen(false)
-        setDashboardsOpen(false)
-        setWorkflowsOpen(false)
       }
     }
     window.addEventListener("keydown", onKeyDown)
@@ -548,10 +556,16 @@ function Shell() {
 
   return (
     <TooltipProvider>
-      {/* Wider than the 16rem default to make room for the nav icon rail. */}
+      {/* Wider than the 16rem default to make room for the nav icon rail. A
+          screen opened from the rail shrinks the sidebar to just the rail
+          (2.75rem = the rail's w-11) so the screen gets the room. */}
       <SidebarProvider
         className="relative"
-        style={{ "--sidebar-width": "18.75rem" } as React.CSSProperties}
+        style={
+          {
+            "--sidebar-width": overlayViewOpen ? "2.75rem" : "18.75rem",
+          } as React.CSSProperties
+        }
       >
         {/* Top drag bar (replaces the OS title bar). Keep the open activity panel
           outside the drag surface so its tab strip remains interactive. */}
@@ -616,6 +630,14 @@ function Shell() {
           onWorkflowsClick={() => {
             setRequestedRun(null)
             setWorkflowsOpen(true)
+            setDashboardsOpen(false)
+            setMcpOpen(false)
+            setAgentsOpen(false)
+            setSkillsOpen(false)
+          }}
+          activeDestination={activeDestination}
+          onConversationsClick={() => {
+            setWorkflowsOpen(false)
             setDashboardsOpen(false)
             setMcpOpen(false)
             setAgentsOpen(false)

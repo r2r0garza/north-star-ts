@@ -334,7 +334,8 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
   // Matches the sidebar-navigation behavior (no discard prompt).
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      // defaultPrevented: a dialog on top (e.g. Settings) already took this Esc.
+      if (e.key === "Escape" && !e.defaultPrevented) {
         e.preventDefault()
         onClose()
       }
