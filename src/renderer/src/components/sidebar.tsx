@@ -29,7 +29,6 @@ import { Spinner } from "@/components/ui/spinner"
 import {
   Sidebar,
   SidebarContent,
-  SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
   SidebarHeader,
@@ -121,6 +120,21 @@ const NEW_LABEL: Record<View, string> = {
   Chat: "New Chat",
   Interactive: "New Session",
   "North Star": "New Task",
+}
+
+// Conversations shown per project section before "Show N more".
+const SECTION_CAP = 5
+
+// Collapsed project sections persist across restarts (per-viewer UI state, so
+// localStorage is enough). Key for the "No Project" bucket is NO_PROJECT_KEY.
+const COLLAPSED_KEY = "sidebar.collapsedProjects"
+const NO_PROJECT_KEY = "__none__"
+function loadCollapsed(): Set<string> {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? "[]"))
+  } catch {
+    return new Set()
+  }
 }
 
 type SortableHandleProps = Pick<
@@ -335,6 +349,8 @@ function ProjectSection({
   sortableHeaderRef,
   isSorting,
   sortingActive,
+  open,
+  onOpenChange,
 }: {
   // The project this section represents, or null for the "No Project" bucket.
   project: Project | null
@@ -364,15 +380,38 @@ function ProjectSection({
   sortableHeaderRef?: (node: HTMLElement | null) => void
   isSorting?: boolean
   sortingActive?: boolean
+  open: boolean
+  onOpenChange: (open: boolean) => void
 }) {
+  const [showAll, setShowAll] = useState(false)
+  // Cap the list, but never hide the active conversation or one that's
+  // running/waiting — those must stay one click away.
+  const visible = showAll
+    ? conversations
+    : conversations.filter(
+        (c, i) =>
+          i < SECTION_CAP ||
+          c.id === activeConversationId ||
+          runningConvos.has(c.id) ||
+          waitingConvos.has(c.id)
+      )
+  const hiddenCount = conversations.length - visible.length
+  const anyWaiting = conversations.some((c) => waitingConvos.has(c.id))
+  const anyRunning = conversations.some((c) => runningConvos.has(c.id))
   return (
     <Collapsible
       style={sortableStyle}
-      defaultOpen
+      open={open}
+      onOpenChange={onOpenChange}
       className={cn("group/section", isSorting && "opacity-60")}
     >
       <SidebarGroup className="py-1">
-        <div ref={sortableHeaderRef} className="flex items-center gap-1 px-2">
+        {/* Sticky so the header (and its "+") stays reachable while scrolling
+            through a long project. */}
+        <div
+          ref={sortableHeaderRef}
+          className="sticky top-0 z-10 flex items-center gap-1 bg-sidebar px-2 py-0.5"
+        >
           {project && sortableHandle && (
             <TooltipButton
               tooltip="Drag to reorder"
@@ -390,6 +429,21 @@ function ProjectSection({
             <span className="truncate" title={label}>
               {label}
             </span>
+            {conversations.length > 0 && (
+              <span className="shrink-0 rounded-full bg-muted px-1.5 text-[10px] font-normal tabular-nums">
+                {conversations.length}
+              </span>
+            )}
+            {/* Expanded sections show status per row; collapsed ones roll it up. */}
+            {!open &&
+              (anyWaiting ? (
+                <BellDot
+                  className="size-3 shrink-0 animate-pulse text-amber-500"
+                  aria-label="A conversation is waiting for your input"
+                />
+              ) : (
+                anyRunning && <Spinner className="size-3 shrink-0" />
+              ))}
           </CollapsibleTrigger>
           <TooltipButton
             tooltip={
@@ -437,7 +491,7 @@ function ProjectSection({
                     No conversations yet.
                   </p>
                 )}
-                {conversations.map((c) => (
+                {visible.map((c) => (
                   <SessionRow
                     key={c.id}
                     conversation={c}
@@ -454,6 +508,16 @@ function ProjectSection({
                     onTogglePin={() => onTogglePin(c.id)}
                   />
                 ))}
+                {(hiddenCount > 0 || showAll) &&
+                  conversations.length > SECTION_CAP && (
+                    <button
+                      type="button"
+                      onClick={() => setShowAll(!showAll)}
+                      className="px-2 py-1 text-left text-xs text-muted-foreground hover:text-foreground"
+                    >
+                      {showAll ? "Show less" : `Show ${hiddenCount} more`}
+                    </button>
+                  )}
               </SidebarMenu>
             </SidebarGroupContent>
           </CollapsibleContent>
@@ -558,6 +622,20 @@ export function AppSidebar({
   const [searchDialogOpen, setSearchDialogOpen] = useState(false)
   const [editingProject, setEditingProject] = useState<Project | null>(null)
   const [sortingProjectId, setSortingProjectId] = useState<string | null>(null)
+  const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed)
+  function setSectionOpen(key: string, open: boolean) {
+    setCollapsed((prev) => {
+      const next = new Set(prev)
+      if (open) next.delete(key)
+      else next.add(key)
+      try {
+        localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next]))
+      } catch {
+        // storage unavailable — collapse still works for this session
+      }
+      return next
+    })
+  }
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, {
@@ -815,206 +893,184 @@ export function AppSidebar({
     setProjectDialogOpen(true)
   }
 
+  // App destinations, shown as an icon rail beside the conversation list so they
+  // don't eat vertical space. Settings is pinned to the bottom of the rail.
+  const navItems = [
+    { label: "Workflows", icon: Workflow, onClick: onWorkflowsClick },
+    { label: "Dashboards", icon: LayoutDashboard, onClick: onDashboardsClick },
+    { label: "Boards", icon: SquareKanban, onClick: onKanbanClick },
+    { label: "Agents", icon: Bot, onClick: onAgentsClick },
+    { label: "MCP", icon: Plug, onClick: onMcpClick },
+    { label: "Skills", icon: BookOpen, onClick: onSkillsClick },
+  ]
+  const railButton =
+    "flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
+
   return (
     <Sidebar>
-      {/* Top padding clears the macOS traffic lights / sidebar toggle. Window
+      <div className="flex h-full min-h-0">
+        <nav
+          aria-label="App"
+          className="flex w-11 shrink-0 flex-col items-center gap-1 border-r border-sidebar-border pt-12 pb-2"
+        >
+          {navItems.map(({ label, icon: Icon, onClick }) => (
+            <TooltipButton
+              key={label}
+              tooltip={label}
+              side="right"
+              type="button"
+              aria-label={label}
+              onClick={onClick}
+              className={railButton}
+            >
+              <Icon className="size-4" />
+            </TooltipButton>
+          ))}
+          <div className="flex-1" />
+          <TooltipButton
+            tooltip="Settings"
+            side="right"
+            type="button"
+            aria-label="Settings"
+            onClick={onSettingsClick}
+            className={railButton}
+          >
+            <Settings className="size-4" />
+          </TooltipButton>
+        </nav>
+        <div className="flex min-w-0 flex-1 flex-col">
+          {/* Top padding clears the macOS traffic lights / sidebar toggle. Window
           dragging is handled by the top bar in Shell, not here — a drag region
           on the header would swallow the toggle button's clicks. */}
-      <SidebarHeader className="h-12" />
-      {/* View switcher — Chat / Interactive / North Star. The North Star tab's
+          <SidebarHeader className="h-12" />
+          {/* View switcher — Chat / Interactive / North Star. The North Star tab's
           LABEL is branded from MAIN_AGENT_NAME (the "North Star" value stays the
           internal key used for mode mapping). */}
-      <div className="px-2 pb-2">
-        <ButtonGroup className="w-full">
-          {VIEWS.map((v) => (
-            <Button
-              key={v}
-              type="button"
-              size="sm"
-              variant={view === v ? "default" : "outline"}
-              onClick={() => onViewChange(v)}
-              className="flex-1"
-            >
-              {v === "North Star" ? agentName : v}
-            </Button>
-          ))}
-        </ButtonGroup>
-      </div>
-      {/* "+ New" (unassigned) and "New Project". */}
-      <div className="flex gap-2 px-2 pb-2">
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          onClick={() => onNewConversation(null)}
-          className="flex-1 justify-start"
-        >
-          <Plus className="size-4" />
-          {NEW_LABEL[view]}
-        </Button>
-        <Tooltip>
-          <TooltipTrigger asChild>
+          <div className="px-2 pb-2">
+            <ButtonGroup className="w-full">
+              {VIEWS.map((v) => (
+                <Button
+                  key={v}
+                  type="button"
+                  size="sm"
+                  variant={view === v ? "default" : "outline"}
+                  onClick={() => onViewChange(v)}
+                  className="flex-1"
+                >
+                  {v === "North Star" ? agentName : v}
+                </Button>
+              ))}
+            </ButtonGroup>
+          </div>
+          {/* "+ New" (unassigned) and "New Project". */}
+          <div className="flex gap-2 px-2 pb-2">
             <Button
               type="button"
               size="sm"
               variant="outline"
-              onClick={() => setSearchDialogOpen(true)}
-              aria-label="Search conversations"
+              onClick={() => onNewConversation(null)}
+              className="flex-1 justify-start"
             >
-              <Search className="size-4" />
+              <Plus className="size-4" />
+              {NEW_LABEL[view]}
             </Button>
-          </TooltipTrigger>
-          <TooltipContent>Search conversations</TooltipContent>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={openCreateProject}
-              aria-label="New project"
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setSearchDialogOpen(true)}
+                  aria-label="Search conversations"
+                >
+                  <Search className="size-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Search conversations</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={openCreateProject}
+                  aria-label="New project"
+                >
+                  <FolderPlus className="size-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>New project</TooltipContent>
+            </Tooltip>
+          </div>
+          <ConversationSearchDialog
+            open={searchDialogOpen}
+            activeConversationId={activeConversationId}
+            onOpenChange={setSearchDialogOpen}
+            onSelectConversation={onSelectConversation}
+          />
+          <SidebarContent>
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCorners}
+              measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
+              onDragStart={startReorderingProjects}
+              onDragEnd={reorderProjects}
+              onDragCancel={() => setSortingProjectId(null)}
             >
-              <FolderPlus className="size-4" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>New project</TooltipContent>
-        </Tooltip>
+              <SortableContext
+                items={visibleProjects.map((p) => p.id)}
+                strategy={verticalListSortingStrategy}
+              >
+                {visibleProjects.map((p) => (
+                  <SortableProjectSection
+                    key={p.id}
+                    project={p}
+                    label={p.name}
+                    conversations={byProject.get(p.id) ?? []}
+                    canCreate={canCreateInProject(p)}
+                    createHint={CREATE_HINT}
+                    moveTargetsFor={moveTargetsFor}
+                    activeConversationId={activeConversationId}
+                    runningConvos={runningConvos}
+                    waitingConvos={waitingConvos}
+                    onNewConversation={() => onNewConversation(p.id)}
+                    onSelectConversation={onSelectConversation}
+                    onRenameConversation={renameConversation}
+                    onDeleteConversation={setPendingDelete}
+                    onMoveToProject={moveConversationToProject}
+                    onTogglePin={togglePin}
+                    onEditProject={() => openEditProject(p)}
+                    onDeleteProject={() => setPendingProjectDelete(p)}
+                    sortingActive={sortingProjectId !== null}
+                    open={!collapsed.has(p.id)}
+                    onOpenChange={(open) => setSectionOpen(p.id, open)}
+                  />
+                ))}
+              </SortableContext>
+            </DndContext>
+            {/* The "No Project" bucket — always shown (existing/ungrouped chats). */}
+            <ProjectSection
+              project={null}
+              label="No Project"
+              conversations={noProjectItems}
+              canCreate
+              moveTargetsFor={moveTargetsFor}
+              activeConversationId={activeConversationId}
+              runningConvos={runningConvos}
+              waitingConvos={waitingConvos}
+              onNewConversation={() => onNewConversation(null)}
+              onSelectConversation={onSelectConversation}
+              onRenameConversation={renameConversation}
+              onDeleteConversation={setPendingDelete}
+              onMoveToProject={moveConversationToProject}
+              onTogglePin={togglePin}
+              open={!collapsed.has(NO_PROJECT_KEY)}
+              onOpenChange={(open) => setSectionOpen(NO_PROJECT_KEY, open)}
+            />
+          </SidebarContent>
+        </div>
       </div>
-      <ConversationSearchDialog
-        open={searchDialogOpen}
-        activeConversationId={activeConversationId}
-        onOpenChange={setSearchDialogOpen}
-        onSelectConversation={onSelectConversation}
-      />
-      <SidebarContent>
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCorners}
-          measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
-          onDragStart={startReorderingProjects}
-          onDragEnd={reorderProjects}
-          onDragCancel={() => setSortingProjectId(null)}
-        >
-          <SortableContext
-            items={visibleProjects.map((p) => p.id)}
-            strategy={verticalListSortingStrategy}
-          >
-            {visibleProjects.map((p) => (
-              <SortableProjectSection
-                key={p.id}
-                project={p}
-                label={p.name}
-                conversations={byProject.get(p.id) ?? []}
-                canCreate={canCreateInProject(p)}
-                createHint={CREATE_HINT}
-                moveTargetsFor={moveTargetsFor}
-                activeConversationId={activeConversationId}
-                runningConvos={runningConvos}
-                waitingConvos={waitingConvos}
-                onNewConversation={() => onNewConversation(p.id)}
-                onSelectConversation={onSelectConversation}
-                onRenameConversation={renameConversation}
-                onDeleteConversation={setPendingDelete}
-                onMoveToProject={moveConversationToProject}
-                onTogglePin={togglePin}
-                onEditProject={() => openEditProject(p)}
-                onDeleteProject={() => setPendingProjectDelete(p)}
-                sortingActive={sortingProjectId !== null}
-              />
-            ))}
-          </SortableContext>
-        </DndContext>
-        {/* The "No Project" bucket — always shown (existing/ungrouped chats). */}
-        <ProjectSection
-          project={null}
-          label="No Project"
-          conversations={noProjectItems}
-          canCreate
-          moveTargetsFor={moveTargetsFor}
-          activeConversationId={activeConversationId}
-          runningConvos={runningConvos}
-          waitingConvos={waitingConvos}
-          onNewConversation={() => onNewConversation(null)}
-          onSelectConversation={onSelectConversation}
-          onRenameConversation={renameConversation}
-          onDeleteConversation={setPendingDelete}
-          onMoveToProject={moveConversationToProject}
-          onTogglePin={togglePin}
-        />
-      </SidebarContent>
-      <SidebarFooter className="p-2">
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          onClick={onWorkflowsClick}
-          className="w-full justify-start"
-        >
-          <Workflow className="size-4" />
-          Workflows
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          onClick={onDashboardsClick}
-          className="w-full justify-start"
-        >
-          <LayoutDashboard className="size-4" />
-          Dashboards
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          onClick={onKanbanClick}
-          className="w-full justify-start"
-        >
-          <SquareKanban className="size-4" />
-          Boards
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          onClick={onAgentsClick}
-          className="w-full justify-start"
-        >
-          <Bot className="size-4" />
-          Agents
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          onClick={onMcpClick}
-          className="w-full justify-start"
-        >
-          <Plug className="size-4" />
-          MCP
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          onClick={onSkillsClick}
-          className="w-full justify-start"
-        >
-          <BookOpen className="size-4" />
-          Skills
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          onClick={onSettingsClick}
-          className="w-full justify-start"
-        >
-          <Settings className="size-4" />
-          Settings
-        </Button>
-      </SidebarFooter>
 
       {/* Confirmation before deleting a session — deletion is irreversible. */}
       <AlertDialog

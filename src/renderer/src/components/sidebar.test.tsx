@@ -157,9 +157,9 @@ describe("sidebar Mission Control visibility", () => {
       )
     })
     const button = (label: string) =>
-      Array.from(container.querySelectorAll("button")).find(
-        (element) => element.textContent?.trim() === label
-      )
+      container.querySelector<HTMLButtonElement>(
+        `button[aria-label="${label}"]`
+      ) ?? undefined
     const workflows = button("Workflows")!
     const dashboards = button("Dashboards")!
     expect(
@@ -170,5 +170,66 @@ describe("sidebar Mission Control visibility", () => {
     expect(props.onWorkflowsClick).toHaveBeenCalledOnce()
     expect(button("Mission Control")).toBeUndefined()
     expect(button("Processes")).toBeUndefined()
+  })
+})
+
+describe("project section cap and collapse", () => {
+  it("caps a section at 5, keeps the active row, and persists collapse", async () => {
+    localStorage.removeItem("sidebar.collapsedProjects")
+    const convos = Array.from({ length: 8 }, (_, i) => ({
+      id: `c${i}`,
+      title: `Convo ${i}`,
+      mode: "chat",
+      projectId: null,
+      pinned: false,
+    }))
+    window.cowork.db.conversations.list = async () =>
+      convos as unknown as Awaited<
+        ReturnType<typeof window.cowork.db.conversations.list>
+      >
+    await act(async () => {
+      root.render(
+        <TooltipProvider>
+          <SidebarProvider>
+            <AppSidebar
+              view="Chat"
+              onViewChange={vi.fn()}
+              activeConversationId="c7"
+              onSelectConversation={vi.fn()}
+              onNewConversation={vi.fn()}
+              onConversationDeleted={vi.fn()}
+              onSettingsClick={vi.fn()}
+              onSkillsClick={vi.fn()}
+              onAgentsClick={vi.fn()}
+              onMcpClick={vi.fn()}
+              onDashboardsClick={vi.fn()}
+              onKanbanClick={vi.fn()}
+              onWorkflowsClick={vi.fn()}
+              refreshKey={0}
+              runningConvos={new Set()}
+              waitingConvos={new Set()}
+            />
+          </SidebarProvider>
+        </TooltipProvider>
+      )
+    })
+    const text = () => container.textContent ?? ""
+    // c0..c4 plus the active c7; c5 and c6 hidden.
+    expect(text()).toContain("Convo 4")
+    expect(text()).toContain("Convo 7")
+    expect(text()).not.toContain("Convo 5")
+    const more = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.startsWith("Show 2 more")
+    )!
+    await act(async () => more.click())
+    expect(text()).toContain("Convo 5")
+
+    const trigger = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("No Project")
+    )!
+    await act(async () => trigger.click())
+    expect(
+      JSON.parse(localStorage.getItem("sidebar.collapsedProjects")!)
+    ).toEqual(["__none__"])
   })
 })
