@@ -290,10 +290,10 @@ describe("command session tools", () => {
     "$definition.function.name timeout",
     (tool) => {
       it.each([
-        [undefined, 30_000],
-        [0, 30_000],
+        [undefined, 300_000],
+        [0, 300_000],
         [900_000, 900_000],
-        [3_600_000, 1_800_000],
+        [7_200_000, 5_400_000],
       ])(
         "uses %s ms with an effective limit of %s ms",
         async (requested, expected) => {
