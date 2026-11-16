@@ -292,3 +292,54 @@ describe("rail destinations", () => {
     expect(listHidden()).toBe(false)
   })
 })
+
+describe("collapsed sidebar", () => {
+  it("keeps the rail, hides the list, and Conversations reopens it", async () => {
+    const onConversationsClick = vi.fn()
+    await act(async () => {
+      root.render(
+        <TooltipProvider>
+          <SidebarProvider defaultOpen={false}>
+            <AppSidebar
+              view="Chat"
+              onViewChange={vi.fn()}
+              activeConversationId={null}
+              onSelectConversation={vi.fn()}
+              onNewConversation={vi.fn()}
+              onConversationDeleted={vi.fn()}
+              onSettingsClick={vi.fn()}
+              onSkillsClick={vi.fn()}
+              onAgentsClick={vi.fn()}
+              onMcpClick={vi.fn()}
+              onDashboardsClick={vi.fn()}
+              onKanbanClick={vi.fn()}
+              onWorkflowsClick={vi.fn()}
+              onConversationsClick={onConversationsClick}
+              activeDestination="conversations"
+              refreshKey={0}
+              runningConvos={new Set()}
+              waitingConvos={new Set()}
+            />
+          </SidebarProvider>
+        </TooltipProvider>
+      )
+    })
+    const nav = container.querySelector("nav")!
+    const listHidden = () =>
+      nav.nextElementSibling!.classList.contains("hidden")
+    expect(
+      container
+        .querySelector('[data-slot="sidebar"]')!
+        .getAttribute("data-collapsible")
+    ).toBe("icon")
+    expect(listHidden()).toBe(true)
+
+    await act(async () =>
+      nav
+        .querySelector<HTMLButtonElement>('button[aria-label="Conversations"]')!
+        .click()
+    )
+    expect(onConversationsClick).toHaveBeenCalledOnce()
+    expect(listHidden()).toBe(false)
+  })
+})
