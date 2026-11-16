@@ -150,7 +150,8 @@ export function McpScreen({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      // defaultPrevented: a dialog on top (e.g. Settings) already took this Esc.
+      if (e.key === "Escape" && !e.defaultPrevented) {
         e.preventDefault()
         onClose()
       }

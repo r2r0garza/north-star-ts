@@ -14,6 +14,7 @@ import {
   FolderPlus,
   GripVertical,
   LayoutDashboard,
+  MessageSquare,
   Network,
   MoreHorizontal,
   Pin,
@@ -98,6 +99,16 @@ import { CSS } from "@dnd-kit/utilities"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 import type { Conversation, Mode, Project, Workspace } from "@/types"
+
+// Where the app is: the conversations list or one of the full-width screens
+// opened from the rail.
+export type Destination =
+  | "conversations"
+  | "workflows"
+  | "dashboards"
+  | "agents"
+  | "mcp"
+  | "skills"
 
 export const VIEWS = ["Chat", "Interactive", "North Star"] as const
 export type View = (typeof VIEWS)[number]
@@ -569,6 +580,8 @@ export function AppSidebar({
   onMcpClick,
   onDashboardsClick,
   onWorkflowsClick,
+  onConversationsClick,
+  activeDestination,
   refreshKey,
   runningConvos,
   waitingConvos,
@@ -587,6 +600,11 @@ export function AppSidebar({
   onMcpClick: () => void
   onDashboardsClick: () => void
   onWorkflowsClick: () => void
+  // Rail's Conversations icon: close any open screen and show the list.
+  onConversationsClick: () => void
+  // Which rail destination is showing; anything but "conversations" collapses
+  // the sidebar to just the rail.
+  activeDestination: Destination
   // Bumped by the app whenever conversations change, so the list refetches.
   refreshKey: number
   // Conversations with a turn currently streaming — each shows a spinner.
@@ -892,30 +910,52 @@ export function AppSidebar({
 
   // App destinations, shown as an icon rail beside the conversation list so they
   // don't eat vertical space. Settings is pinned to the bottom of the rail.
-  const navItems = [
-    { label: "Workflows", icon: Workflow, onClick: onWorkflowsClick },
-    { label: "Dashboards", icon: LayoutDashboard, onClick: onDashboardsClick },
-    { label: "Agents", icon: Bot, onClick: onAgentsClick },
-    { label: "MCP", icon: Plug, onClick: onMcpClick },
-    { label: "Skills", icon: BookOpen, onClick: onSkillsClick },
+  const navItems: {
+    id: Destination
+    label: string
+    icon: typeof Workflow
+    onClick: () => void
+  }[] = [
+    {
+      id: "conversations",
+      label: "Conversations",
+      icon: MessageSquare,
+      onClick: onConversationsClick,
+    },
+    {
+      id: "workflows",
+      label: "Workflows",
+      icon: Workflow,
+      onClick: onWorkflowsClick,
+    },
+    {
+      id: "dashboards",
+      label: "Dashboards",
+      icon: LayoutDashboard,
+      onClick: onDashboardsClick,
+    },
+    { id: "agents", label: "Agents", icon: Bot, onClick: onAgentsClick },
+    { id: "mcp", label: "MCP", icon: Plug, onClick: onMcpClick },
+    { id: "skills", label: "Skills", icon: BookOpen, onClick: onSkillsClick },
   ]
   const railButton =
-    "flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
+    "flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-foreground aria-[current=page]:bg-sidebar-primary/15 aria-[current=page]:text-sidebar-primary"
 
   return (
     <Sidebar>
       <div className="flex h-full min-h-0">
         <nav
           aria-label="App"
-          className="flex w-11 shrink-0 flex-col items-center gap-1 mt-12 border-r border-sidebar-border pb-2"
+          className="mt-12 flex w-11 shrink-0 flex-col items-center gap-1 border-r border-sidebar-border pb-2"
         >
-          {navItems.map(({ label, icon: Icon, onClick }) => (
+          {navItems.map(({ id, label, icon: Icon, onClick }) => (
             <TooltipButton
-              key={label}
+              key={id}
               tooltip={label}
               side="right"
               type="button"
               aria-label={label}
+              aria-current={activeDestination === id ? "page" : undefined}
               onClick={onClick}
               className={railButton}
             >
@@ -934,7 +974,12 @@ export function AppSidebar({
             <Settings className="size-4" />
           </TooltipButton>
         </nav>
-        <div className="flex min-w-0 flex-1 flex-col">
+        <div
+          className={cn(
+            "flex min-w-0 flex-1 flex-col",
+            activeDestination !== "conversations" && "hidden"
+          )}
+        >
           {/* Top padding clears the macOS traffic lights / sidebar toggle. Window
           dragging is handled by the top bar in Shell, not here — a drag region
           on the header would swallow the toggle button's clicks. */}

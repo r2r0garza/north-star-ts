@@ -50,6 +50,8 @@ async function renderSidebar() {
             onMcpClick={vi.fn()}
             onDashboardsClick={vi.fn()}
             onWorkflowsClick={vi.fn()}
+            onConversationsClick={vi.fn()}
+            activeDestination="conversations"
             refreshKey={0}
             runningConvos={new Set()}
             waitingConvos={new Set()}
@@ -141,6 +143,8 @@ describe("sidebar Mission Control visibility", () => {
       onMcpClick: vi.fn(),
       onDashboardsClick: vi.fn(),
       onWorkflowsClick: vi.fn(),
+      onConversationsClick: vi.fn(),
+      activeDestination: "conversations",
       refreshKey: 0,
       runningConvos: new Set(),
       waitingConvos: new Set(),
@@ -202,6 +206,8 @@ describe("project section cap and collapse", () => {
               onMcpClick={vi.fn()}
               onDashboardsClick={vi.fn()}
               onWorkflowsClick={vi.fn()}
+              onConversationsClick={vi.fn()}
+              activeDestination="conversations"
               refreshKey={0}
               runningConvos={new Set()}
               waitingConvos={new Set()}
@@ -228,5 +234,57 @@ describe("project section cap and collapse", () => {
     expect(
       JSON.parse(localStorage.getItem("sidebar.collapsedProjects")!)
     ).toEqual(["__none__"])
+  })
+})
+
+describe("rail destinations", () => {
+  it("marks the active destination and hides the list off conversations", async () => {
+    const props = {
+      view: "Chat",
+      onViewChange: vi.fn(),
+      activeConversationId: null,
+      onSelectConversation: vi.fn(),
+      onNewConversation: vi.fn(),
+      onConversationDeleted: vi.fn(),
+      onSettingsClick: vi.fn(),
+      onSkillsClick: vi.fn(),
+      onAgentsClick: vi.fn(),
+      onMcpClick: vi.fn(),
+      onDashboardsClick: vi.fn(),
+      onWorkflowsClick: vi.fn(),
+      onConversationsClick: vi.fn(),
+      refreshKey: 0,
+      runningConvos: new Set<string>(),
+      waitingConvos: new Set<string>(),
+    } satisfies Omit<ComponentProps<typeof AppSidebar>, "activeDestination">
+    const render = (activeDestination: "conversations" | "skills") =>
+      act(async () => {
+        root.render(
+          <TooltipProvider>
+            <SidebarProvider>
+              <AppSidebar {...props} activeDestination={activeDestination} />
+            </SidebarProvider>
+          </TooltipProvider>
+        )
+      })
+    const rail = (label: string) =>
+      container.querySelector(`nav button[aria-label="${label}"]`)!
+    // The column beside the rail that holds the conversation list.
+    const listHidden = () =>
+      container
+        .querySelector("nav")!
+        .nextElementSibling!.classList.contains("hidden")
+
+    await render("skills")
+    expect(rail("Skills").getAttribute("aria-current")).toBe("page")
+    expect(rail("Conversations").getAttribute("aria-current")).toBeNull()
+    expect(listHidden()).toBe(true)
+
+    await act(async () => (rail("Conversations") as HTMLElement).click())
+    expect(props.onConversationsClick).toHaveBeenCalledOnce()
+
+    await render("conversations")
+    expect(rail("Conversations").getAttribute("aria-current")).toBe("page")
+    expect(listHidden()).toBe(false)
   })
 })
