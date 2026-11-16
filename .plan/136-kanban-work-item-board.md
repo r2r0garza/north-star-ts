@@ -100,8 +100,25 @@ the tests and saw them fail still reports `completed`. Handoff `failed` means "c
 
 - **Outcomes per column.** A column may declare a list of named outcomes (e.g. `passed`, `failed`,
   `incomplete`). Each outcome sets what happens next: `advance` (to the next column), `wait` (needs a
-  person, whatever the column's gate), or `end` (the card finishes on this column, e.g. a failed item
-  that is going back to the dev). A column with no outcomes behaves as in 136.2.
+  person, whatever the column's gate), `end` (the card finishes on this column, e.g. a failed item
+  that is going back to the dev), or `goto <column id>` (see below). A column with no outcomes behaves
+  as in 136.2.
+- **`goto` sends the card to a named column on the board.** It is for judging columns: a Code review
+  column's `changes_requested` → goto Development, or QA's `failed` → goto Development, instead of
+  `end` plus a tracker write-back. The target is a column id, not "previous", because the target isn't
+  always the column just before (Dev → Tests → Review). It works like an automatic Send back: the
+  target column reruns with the judging agent's handoff findings as the required feedback, on the same
+  card worktree and branch, so the agent fixes its own work instead of starting over.
+  - **Loop cap.** Each column with a `goto` outcome has `maxReturns` (default 2) per card. Once a card has
+    used them all, that outcome becomes `wait` with the reason "return limit reached", so a card can't
+    bounce between Dev and Review forever. Moving the card by hand resets the count.
+  - **Exit actions.** Leaving by `goto` runs the on-exit actions whose `when` matches the outcome (e.g.
+    post the review as a PR comment). This differs from manual send back, which runs none.
+  - **Missing target.** If the target column no longer exists, the outcome falls back to `wait`. Saving
+    the board rejects a `goto` to a column id that doesn't exist.
+  - **Idempotency across passes.** A card that comes back through `goto` re-enters a column it already
+    left, so the idempotency key also includes the card's pass number on that column. Otherwise its second
+    exit would skip the actions it needs.
 - **Reporting.** When a column has outcomes, the prompt lists them and the handoff carries a required
   `outcome` field that must be one of them. A missing or unknown outcome counts as an invalid handoff and
   gets the existing repair turn, then `wait`. The outcome is the agent's claim. Spot-checks and the
@@ -124,6 +141,14 @@ Example: QA board on ADO (`Ready to Test` → `--env dev`):
 | `passed` | advance | set state `Passed QA` |
 | `failed` | end | set state `Active`, assign to the PR author / dev |
 | `incomplete` | wait | none |
+
+Example: board-internal review loop (`Development` → `Code review` → `QA`). Development has no
+outcomes. Code review:
+
+| Outcome | Next | On-exit actions |
+|---|---|---|
+| `approved` | advance | none |
+| `changes_requested` | goto `development` (maxReturns 2) | post findings as a PR comment |
 
 ### Intake filter
 A structured filter, not a free-form query, so the UI can show and edit it:
@@ -200,8 +225,9 @@ a board settings sheet for columns, agents, and actions. All main access goes th
 
 ## Out of scope for v1
 
-Two-way field sync beyond the defined actions, webhooks from trackers, moving cards back upstream
-(only North Star → tracker writes via actions), cross-workspace boards, per-card agent override.
+Two-way field sync beyond the defined actions, webhooks from trackers, moving cards back upstream from
+tracker changes (only North Star → tracker writes via actions; on-board moves back use the `goto`
+outcome), cross-workspace boards, per-card agent override.
 
 ## Suggested slicing
 
@@ -212,7 +238,7 @@ Two-way field sync beyond the defined actions, webhooks from trackers, moving ca
   edits it via `kanban_write`), and keying columns by id (136.1 replaces all columns when names change,
   sending their cards back to the Inbox).
 - `136.3` Upstream actions: on-enter/on-exit recipes, preview, approval, idempotency, audit log. Column
-  outcomes with `advance | wait | end` and on-exit actions filtered by `when` (see **Column outcomes and
+  outcomes with `advance | wait | end | goto <column>` (with `maxReturns`) and on-exit actions filtered by `when` (see **Column outcomes and
   outcome-based exit actions**).
 - `136.4` WIP limits, budget caps, upstream drift handling.
 
@@ -225,6 +251,10 @@ Two-way field sync beyond the defined actions, webhooks from trackers, moving ca
 - Unit: column outcomes. A handoff with a missing or unknown outcome gets repaired, then waits; only
   actions whose `when` matches run; a person changing the outcome on a waiting card runs the matching
   actions on approve; reject/rerun run none; a rerun that flips the outcome doesn't run either side twice.
+- Unit: `goto`. The target column reruns with the findings as feedback on the same worktree; matching
+  exit actions run; the attempt after `maxReturns` waits with "return limit reached"; a manual move
+  resets the count; a deleted target falls back to `wait` and saving a board with a dangling target is
+  rejected; a column re-entered via `goto` runs its exit actions again on its next pass.
 - Injection test: an item body containing instructions does not change agent behavior or trigger tool calls
   beyond the column's scope.
 - Manual: real ADO board via `az boards` and via ADO MCP; real Jira via Atlassian MCP; real GitHub Issues via `gh` and via GitHub MCP; tag an item, see it in
