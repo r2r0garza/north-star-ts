@@ -2,8 +2,8 @@ import { TOOL_EFFECTS, type Tool, type ToolContext } from "./types"
 import { toolError } from "./output"
 import { runShellCompatibility } from "./command_session_tools"
 
-const DEFAULT_TIMEOUT_MS = 30_000
-const MAX_TIMEOUT_MS = 1_800_000
+const DEFAULT_TIMEOUT_MS = 300_000
+const MAX_TIMEOUT_MS = 5_400_000
 
 // Runs a shell command in the workspace. Gated through the shared approval
 // pipeline (ctx.gate): catastrophic commands are hard-blocked and never spawn,
@@ -33,7 +33,7 @@ export const runShellTool: Tool = {
           timeout_ms: {
             type: "integer",
             description:
-              "Optional timeout in milliseconds. Defaults to 30000; capped at 1800000.",
+              "Optional timeout in milliseconds. Defaults to 300000; capped at 5400000.",
           },
         },
         required: ["command"],
