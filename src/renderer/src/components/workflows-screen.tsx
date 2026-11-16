@@ -104,6 +104,19 @@ export function WorkflowsScreen({
     null
   )
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !e.defaultPrevented) {
+        e.preventDefault()
+        if (selectedRunId) setSelectedRunId(null)
+        else if (selectedWorkflowId) setSelectedWorkflowId(null)
+        else onClose()
+      }
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [onClose, selectedRunId, selectedWorkflowId])
+
   const [activeTab, setActiveTab] = useState("runs")
   const [newRunOpen, setNewRunOpen] = useState(false)
   const [initialWorkflowId, setInitialWorkflowId] = useState<string | null>(

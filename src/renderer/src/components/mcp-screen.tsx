@@ -148,18 +148,6 @@ export function McpScreen({ onClose }: { onClose: () => void }) {
     loadTree()
   }, [loadTree])
 
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      // defaultPrevented: a dialog on top (e.g. Settings) already took this Esc.
-      if (e.key === "Escape" && !e.defaultPrevented) {
-        e.preventDefault()
-        onClose()
-      }
-    }
-    window.addEventListener("keydown", onKeyDown)
-    return () => window.removeEventListener("keydown", onKeyDown)
-  }, [onClose])
-
   // Flatten every folder's servers into addressable catalog entries.
   const allServers = useMemo<CatalogServer[]>(() => {
     if (!tree) return []
@@ -181,6 +169,20 @@ export function McpScreen({ onClose }: { onClose: () => void }) {
     () => allServers.find((s) => s.key === selectedKey) ?? null,
     [allServers, selectedKey]
   )
+
+  const onBack = mode.kind === "create" || selected ? backToList : onClose
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      // defaultPrevented: a dialog on top (e.g. Settings) already took this Esc.
+      if (e.key === "Escape" && !e.defaultPrevented) {
+        e.preventDefault()
+        onBack()
+      }
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [onBack])
 
   // Writable target files (Global user file + each custom folder's mcp.json) for
   // the New-server location dropdown.
@@ -322,7 +324,7 @@ export function McpScreen({ onClose }: { onClose: () => void }) {
             "MCP Servers"
           )
         }
-        onBack={mode.kind === "create" || selected ? backToList : onClose}
+        onBack={onBack}
         backLabel={
           mode.kind === "create" || selected
             ? "Back to servers"

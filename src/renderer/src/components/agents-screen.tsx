@@ -330,19 +330,19 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
       .catch(() => setMcpServerNames([]))
   }, [loadTree])
 
-  // Esc closes the view, dropping the user back to their last open conversation.
-  // Matches the sidebar-navigation behavior (no discard prompt).
+  const onBack = mode.kind === "create" || selected ? backToCards : onClose
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       // defaultPrevented: a dialog on top (e.g. Settings) already took this Esc.
       if (e.key === "Escape" && !e.defaultPrevented) {
         e.preventDefault()
-        onClose()
+        onBack()
       }
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [onClose])
+  }, [onBack])
 
   // Drop a selection that vanished from a refreshed tree.
   useEffect(() => {
@@ -515,7 +515,7 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
               ? displayName(selected)
               : "Agents"
         }
-        onBack={mode.kind === "create" || selected ? backToCards : onClose}
+        onBack={onBack}
         backLabel={
           mode.kind === "create" || selected ? "Back to agents" : "Close agents"
         }

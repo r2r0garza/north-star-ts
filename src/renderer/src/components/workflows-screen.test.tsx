@@ -235,6 +235,76 @@ it("defaults to Runs and switches between all, unassigned, and project scopes", 
   expect(onClose).toHaveBeenCalledOnce()
 })
 
+it("closes on Escape unless another control already handled it", async () => {
+  const onClose = vi.fn()
+  await act(async () => root.render(<WorkflowsScreen onClose={onClose} />))
+  const handledEscape = new KeyboardEvent("keydown", {
+    key: "Escape",
+    cancelable: true,
+  })
+  handledEscape.preventDefault()
+  await act(async () => {
+    window.dispatchEvent(handledEscape)
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }))
+  })
+  expect(onClose).not.toHaveBeenCalled()
+
+  const escape = new KeyboardEvent("keydown", {
+    key: "Escape",
+    cancelable: true,
+  })
+  await act(async () => {
+    window.dispatchEvent(escape)
+  })
+  expect(onClose).toHaveBeenCalledOnce()
+  expect(escape.defaultPrevented).toBe(true)
+})
+
+it.each(["runs", "workflows"])(
+  "returns from a %s detail to its tab before closing on Escape",
+  async (tab) => {
+    const onClose = vi.fn()
+    await act(async () => root.render(<WorkflowsScreen onClose={onClose} />))
+    if (tab === "workflows") {
+      await act(async () => {
+        container
+          .querySelector<HTMLElement>('[role="tab"][id$="workflows"]')!
+          .dispatchEvent(
+            new MouseEvent("mousedown", { bubbles: true, button: 0 })
+          )
+      })
+      await act(async () => button("Code review").click())
+    } else {
+      await act(async () =>
+        container
+          .querySelector<HTMLElement>('[aria-label="Runs"] button')!
+          .click()
+      )
+    }
+    expect(container.querySelector('[data-slot="workflows-screen"]')).toBeNull()
+    const escape = () =>
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          cancelable: true,
+        })
+      )
+    await act(async () => {
+      escape()
+    })
+    expect(onClose).not.toHaveBeenCalled()
+    expect(
+      container
+        .querySelector(`[role="tab"][id$="${tab}"]`)
+        ?.getAttribute("aria-selected")
+    ).toBe("true")
+    await act(async () => {
+      escape()
+    })
+    expect(onClose).toHaveBeenCalledOnce()
+  }
+)
+
 it("imports workflows and reports import errors", async () => {
   const imported = { ...EXAMPLE_WORKFLOWS[0], id: "imported" }
   vi.mocked(window.cowork.db.workflows.importFile).mockResolvedValueOnce({
