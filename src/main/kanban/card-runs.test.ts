@@ -575,6 +575,48 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
     expect(writes).toHaveLength(1)
   })
 
+  it("waits for the user in their column without running an agent, then follows the outcome they pick", async () => {
+    const { card, cols } = customBoard(
+      [
+        { name: "Dev", instructions: "implement" },
+        {
+          name: "Deploy",
+          owner: "user",
+          instructions: "deploy to staging and smoke-test it",
+          outcomes: [
+            { name: "ok", next: "advance" },
+            { name: "broken", next: "goto", target: "Dev" },
+          ],
+          actions: [
+            { name: "label", phase: "enter", command: "gh issue edit {{id}}" },
+          ],
+        },
+        { name: "Done" },
+      ],
+      "auto"
+    )
+    const [dev, deploy, done] = cols
+    expect(deploy.owner).toBe("user")
+    await cards.enter(card.id, dev.id)
+    await exec(last()) // Dev → Deploy
+    expect(kanban.getCard(card.id)).toMatchObject({
+      columnId: deploy.id,
+      runState: "waiting",
+      runError: null,
+    })
+    expect(enqueued).toHaveLength(1) // no agent run for the user's column
+    expect(writes).toHaveLength(1) // its on-enter action still ran
+    expect(await cards.approve(card.id)).toMatchObject({ ok: false }) // pick one
+    expect(await cards.approve(card.id, "broken")).toEqual({ ok: true })
+    expect(kanban.getCard(card.id)).toMatchObject({
+      columnId: dev.id,
+      runState: "running",
+    })
+    await exec(last()) // Dev → Deploy again
+    expect(await cards.approve(card.id, "ok")).toEqual({ ok: true })
+    expect(kanban.getCard(card.id)!.columnId).toBe(done.id)
+  })
+
   it("rejects a goto to a missing column and a `when` that isn't an outcome", () => {
     const { board: b, cols } = qaBoard()
     expect(() =>

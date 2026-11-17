@@ -294,17 +294,18 @@ export function saveColumns(boardId: string, input: KanbanColumnInput[]): void {
         c.agentName?.trim() || null,
         c.instructions?.trim() ?? "",
         c.gate === "human" ? "human" : "agent",
+        c.owner === "user" ? "user" : "agent",
         JSON.stringify(c.outcomes),
         JSON.stringify(c.actions),
         i,
       ]
       if (c.isNew)
         db.prepare(
-          "INSERT INTO kanban_columns (name, agent_name, instructions, gate, outcomes, actions, position, id, board_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+          "INSERT INTO kanban_columns (name, agent_name, instructions, gate, owner, outcomes, actions, position, id, board_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         ).run(...values, c.id, boardId)
       else
         db.prepare(
-          "UPDATE kanban_columns SET name = ?, agent_name = ?, instructions = ?, gate = ?, outcomes = ?, actions = ?, position = ? WHERE id = ?"
+          "UPDATE kanban_columns SET name = ?, agent_name = ?, instructions = ?, gate = ?, owner = ?, outcomes = ?, actions = ?, position = ? WHERE id = ?"
         ).run(...values, c.id)
     })
   })()
@@ -324,6 +325,7 @@ export function listColumns(boardId: string): KanbanColumn[] {
       agent_name: string | null
       instructions: string
       gate: string
+      owner: string
       outcomes: string
       actions: string
     }>
@@ -335,6 +337,7 @@ export function listColumns(boardId: string): KanbanColumn[] {
     agentName: r.agent_name,
     instructions: r.instructions,
     gate: r.gate === "human" ? "human" : "agent",
+    owner: r.owner === "user" ? "user" : "agent",
     outcomes: asOutcomes(parse(r.outcomes)),
     actions: asActions(parse(r.actions)),
   }))

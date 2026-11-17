@@ -265,13 +265,23 @@ export function KanbanSettingsSheet({
     (KanbanColumnInput & { sortId: string })[]
   >(
     graph.columns.map(
-      ({ id, name, agentName, instructions, gate, outcomes, actions }) => ({
+      ({
+        id,
+        name,
+        agentName,
+        instructions,
+        gate,
+        owner,
+        outcomes,
+        actions,
+      }) => ({
         sortId: id,
         id,
         name,
         agentName,
         instructions,
         gate,
+        owner,
         outcomes,
         actions,
       })
@@ -283,6 +293,7 @@ export function KanbanSettingsSheet({
   const [saving, setSaving] = useState(false)
   const [selectedIndex, setSelectedIndex] = useState(0)
   const col = columns[selectedIndex]
+  const mine = col?.owner === "user"
   const occupied =
     !!col?.id && graph.cards.some((card) => card.columnId === col.id)
 
@@ -659,47 +670,72 @@ export function KanbanSettingsSheet({
                       />
                     </div>
                     <div className="flex min-w-0 flex-col gap-1.5">
-                      <Label htmlFor="kb-column-agent">Agent</Label>
+                      <Label htmlFor="kb-column-owner">Who works it</Label>
                       <NativeSelect
-                        id="kb-column-agent"
+                        id="kb-column-owner"
                         className="w-full"
-                        value={col.agentName ?? ""}
+                        value={col.owner ?? "agent"}
                         onChange={(e) =>
                           update(selectedIndex, {
-                            agentName: e.target.value || null,
+                            owner: e.target.value as "agent" | "user",
                           })
                         }
                       >
-                        <NativeSelectOption value="">
-                          North Star (default)
+                        <NativeSelectOption value="agent">
+                          An agent
                         </NativeSelectOption>
-                        {col.agentName &&
-                        !agents.some(
-                          (agent) => (agent.ref ?? agent.name) === col.agentName
-                        ) ? (
-                          <NativeSelectOption value={col.agentName}>
-                            {col.agentName}
-                          </NativeSelectOption>
-                        ) : null}
-                        {agents.map((agent) => (
-                          <NativeSelectOption
-                            key={agent.ref ?? agent.name}
-                            value={agent.ref ?? agent.name}
-                          >
-                            {agent.label || agent.name}
-                          </NativeSelectOption>
-                        ))}
+                        <NativeSelectOption value="user">Me</NativeSelectOption>
                       </NativeSelect>
                     </div>
+                    {mine ? null : (
+                      <div className="flex min-w-0 flex-col gap-1.5">
+                        <Label htmlFor="kb-column-agent">Agent</Label>
+                        <NativeSelect
+                          id="kb-column-agent"
+                          className="w-full"
+                          value={col.agentName ?? ""}
+                          onChange={(e) =>
+                            update(selectedIndex, {
+                              agentName: e.target.value || null,
+                            })
+                          }
+                        >
+                          <NativeSelectOption value="">
+                            North Star (default)
+                          </NativeSelectOption>
+                          {col.agentName &&
+                          !agents.some(
+                            (agent) =>
+                              (agent.ref ?? agent.name) === col.agentName
+                          ) ? (
+                            <NativeSelectOption value={col.agentName}>
+                              {col.agentName}
+                            </NativeSelectOption>
+                          ) : null}
+                          {agents.map((agent) => (
+                            <NativeSelectOption
+                              key={agent.ref ?? agent.name}
+                              value={agent.ref ?? agent.name}
+                            >
+                              {agent.label || agent.name}
+                            </NativeSelectOption>
+                          ))}
+                        </NativeSelect>
+                      </div>
+                    )}
                     <div className="flex flex-col gap-1.5">
                       <Label htmlFor="kb-column-instructions">
-                        Instructions
+                        {mine ? "What you need to do" : "Instructions"}
                       </Label>
                       <Textarea
                         id="kb-column-instructions"
                         className="min-h-36"
                         rows={6}
-                        placeholder="What should the agent do to an issue in this column?"
+                        placeholder={
+                          mine
+                            ? "Shown on the card while it waits for you, e.g. deploy to staging and smoke-test it."
+                            : "What should the agent do to an issue in this column?"
+                        }
                         value={col.instructions ?? ""}
                         onChange={(e) =>
                           update(selectedIndex, {
@@ -708,35 +744,38 @@ export function KanbanSettingsSheet({
                         }
                       />
                       <p className="text-xs text-muted-foreground">
-                        Entering this column runs its agent. Leave instructions
-                        empty for no agent run.
+                        {mine
+                          ? "No agent runs here. The card waits until you mark it done."
+                          : "Entering this column runs its agent. Leave instructions empty for no agent run."}
                       </p>
                     </div>
-                    <div className="flex items-start justify-between gap-4 rounded-lg border p-4">
-                      <div className="flex flex-col gap-1.5">
-                        <Label htmlFor="kb-column-approval">
-                          Wait for my approval
-                        </Label>
-                        <p
-                          id="kb-column-approval-description"
-                          className="text-xs text-muted-foreground"
-                        >
-                          {col.gate === "human"
-                            ? "Keep the issue here until you review and approve the result."
-                            : "Move on automatically when the agent finishes."}
-                        </p>
+                    {mine ? null : (
+                      <div className="flex items-start justify-between gap-4 rounded-lg border p-4">
+                        <div className="flex flex-col gap-1.5">
+                          <Label htmlFor="kb-column-approval">
+                            Wait for my approval
+                          </Label>
+                          <p
+                            id="kb-column-approval-description"
+                            className="text-xs text-muted-foreground"
+                          >
+                            {col.gate === "human"
+                              ? "Keep the issue here until you review and approve the result."
+                              : "Move on automatically when the agent finishes."}
+                          </p>
+                        </div>
+                        <Switch
+                          id="kb-column-approval"
+                          aria-describedby="kb-column-approval-description"
+                          checked={col.gate === "human"}
+                          onCheckedChange={(checked) =>
+                            update(selectedIndex, {
+                              gate: checked ? "human" : "agent",
+                            })
+                          }
+                        />
                       </div>
-                      <Switch
-                        id="kb-column-approval"
-                        aria-describedby="kb-column-approval-description"
-                        checked={col.gate === "human"}
-                        onCheckedChange={(checked) =>
-                          update(selectedIndex, {
-                            gate: checked ? "human" : "agent",
-                          })
-                        }
-                      />
-                    </div>
+                    )}
                     <OutcomesEditor
                       outcomes={col.outcomes ?? []}
                       columns={columns}

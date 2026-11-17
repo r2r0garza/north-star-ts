@@ -123,3 +123,14 @@ CREATE TABLE IF NOT EXISTS kanban_upstream_actions (
 CREATE INDEX IF NOT EXISTS idx_kanban_upstream_actions_card ON kanban_upstream_actions(card_id, created_at);
 `)
 }
+
+// A column worked by the user instead of an agent.
+export function ensureKanbanColumnOwner(db: Database.Database): void {
+  const cols = db.prepare("PRAGMA table_info(kanban_columns)").all() as Array<{
+    name: string
+  }>
+  if (!cols.some((c) => c.name === "owner"))
+    db.exec(
+      "ALTER TABLE kanban_columns ADD COLUMN owner TEXT NOT NULL DEFAULT 'agent';"
+    )
+}

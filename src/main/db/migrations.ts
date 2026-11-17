@@ -62,6 +62,7 @@ import { ensureConversationArtifacts } from "./artifact-schema"
 import {
   ensureKanban,
   ensureKanbanActions,
+  ensureKanbanColumnOwner,
   ensureKanbanRuns,
 } from "./kanban-schema"
 import {
@@ -243,6 +244,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureKanban,
   ensureKanbanRuns,
   ensureKanbanActions,
+  ensureKanbanColumnOwner,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {

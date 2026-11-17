@@ -306,13 +306,25 @@ function CardAttention({
         </div>
       </div>
     )
+  const mine = column?.owner === "user"
   if (card.runState === "waiting")
     return (
       <div className={cn(box, "bg-muted/60")}>
-        <span>
-          {card.runError ??
-            "Done here. Review the result, then approve or reject."}
-        </span>
+        {mine && !card.runError ? (
+          <>
+            <span className="font-medium">Your turn</span>
+            {column.instructions ? (
+              <span className="line-clamp-6 whitespace-pre-wrap">
+                {column.instructions}
+              </span>
+            ) : null}
+          </>
+        ) : (
+          <span>
+            {card.runError ??
+              "Done here. Review the result, then approve or reject."}
+          </span>
+        )}
         {column?.outcomes.length ? (
           <NativeSelect
             size="sm"
@@ -339,15 +351,17 @@ function CardAttention({
               onAction({ kind: "approve", outcome: outcome || undefined })
             }
           >
-            Approve
+            {mine ? "Done" : "Approve"}
           </Button>
-          <Button
-            size="xs"
-            variant="outline"
-            onClick={() => onAction({ kind: "rejectWithFeedback" })}
-          >
-            Reject with feedback
-          </Button>
+          {mine ? null : (
+            <Button
+              size="xs"
+              variant="outline"
+              onClick={() => onAction({ kind: "rejectWithFeedback" })}
+            >
+              Reject with feedback
+            </Button>
+          )}
           <Button
             size="xs"
             variant="ghost"
@@ -406,7 +420,10 @@ function Card({
   const badge =
     card.pendingApproval || (card.pendingAction && !card.pendingAction.approved)
       ? ({ label: "needs approval", variant: "default" } as const)
-      : RUN_BADGE[card.runState]
+      : card.runState === "waiting" &&
+          columns.find((c) => c.id === card.columnId)?.owner === "user"
+        ? ({ label: "your turn", variant: "default" } as const)
+        : RUN_BADGE[card.runState]
   return (
     <div
       className={cn(

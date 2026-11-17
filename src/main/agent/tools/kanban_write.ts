@@ -65,6 +65,9 @@ export const kanbanWriteTool: Tool = {
         "column (empty = no agent run; the card just sits there, e.g. a final Done column). agent: " +
         "a named agent (omit for the built-in North Star agent). gate: 'agent' (default; the card " +
         "moves on when the agent reports done) or 'human' (the card waits for the user to approve). " +
+        "owner: 'agent' (default) or 'user' for a step the user does themselves (e.g. deploy, sign off, " +
+        "test on a device): no agent runs there, instructions tell the user what to do, and the card " +
+        "waits until they mark it done (picking an outcome if the column has them). " +
         "outcomes (optional): the column's possible verdicts on the item, e.g. QA " +
         "[{ name: 'passed', next: 'advance' }, { name: 'failed', next: 'goto', target: 'Development', maxReturns: 2 }, " +
         "{ name: 'incomplete', next: 'wait' }]. The agent reports one in its handoff. next: 'advance' " +
@@ -192,6 +195,7 @@ export const kanbanWriteTool: Tool = {
                   instructions: text(o.instructions),
                   agentName: text(o.agent) || null,
                   gate: o.gate === "human" ? "human" : "agent",
+                  owner: o.owner === "user" ? "user" : "agent",
                   ...(o.outcomes !== undefined
                     ? { outcomes: asOutcomes(parsed(o.outcomes)) }
                     : {}),
@@ -253,6 +257,7 @@ export const kanbanWriteTool: Tool = {
         instructions: c.instructions,
         agent: c.agentName,
         gate: c.gate,
+        owner: c.owner,
         outcomes: c.outcomes,
         actions: c.actions,
       })),

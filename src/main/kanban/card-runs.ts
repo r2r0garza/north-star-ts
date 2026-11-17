@@ -394,7 +394,8 @@ export class KanbanCardRuns {
       ? columns.find((c) => c.id === cont.columnId)
       : null
     if (cont.columnId && !column) return refuse("column not found")
-    if (column?.instructions && !board.workspace)
+    const agentRun = !!column?.instructions && column.owner !== "user"
+    if (agentRun && !board.workspace)
       return refuse("the board has no workspace to run agents in")
     // A new visit (not a rerun) keys a fresh round of this column's actions.
     const visits =
@@ -423,7 +424,12 @@ export class KanbanCardRuns {
       }
     )
     if (stopped) return stopped
-    if (!column.instructions) return OK
+    // The user's column: wait for them to do their part and say done.
+    if (column.owner === "user") {
+      kanban.updateCard(card.id, { runState: "waiting", runError: null })
+      return OK
+    }
+    if (!agentRun) return OK
     getDb().transaction(() => {
       const run = kanban.createRun({
         cardId: card.id,

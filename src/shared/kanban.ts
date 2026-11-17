@@ -120,6 +120,10 @@ export interface KanbanBoard {
 // for the user to approve.
 export type KanbanGate = "agent" | "human"
 
+// Who works a column. `user`: no agent runs; entering waits for the person,
+// and `instructions` say what they need to do before the card continues.
+export type KanbanOwner = "agent" | "user"
+
 // What a column's reported outcome does next (plan 136.3). `wait` needs a
 // person whatever the gate; `end` finishes the card on this column; `goto`
 // reruns `target` (a column id) with this run's findings as feedback.
@@ -150,6 +154,7 @@ export interface KanbanColumn {
   agentName: string | null // null = the built-in North Star agent
   instructions: string // empty = no agent run; the card just sits here
   gate: KanbanGate
+  owner: KanbanOwner
   outcomes: KanbanOutcome[]
   actions: KanbanAction[]
 }
@@ -163,6 +168,7 @@ export interface KanbanColumnInput {
   agentName?: string | null
   instructions?: string
   gate?: KanbanGate
+  owner?: KanbanOwner
   outcomes?: KanbanOutcome[]
   actions?: KanbanAction[]
 }
