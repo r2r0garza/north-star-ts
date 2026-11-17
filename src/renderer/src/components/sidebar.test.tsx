@@ -15,6 +15,7 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
   window.cowork = {
     system: () => ({ mainAgentName: "North Star" }),
+    kanban: { list: async () => [] },
     db: {
       conversations: { list: async () => [] },
       projects: { list: async () => [] },

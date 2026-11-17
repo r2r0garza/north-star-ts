@@ -917,6 +917,21 @@ export function AppSidebar({
     setProjectDialogOpen(true)
   }
 
+  // Same 3s poll the Boards screen uses; there is no push event for board state.
+  const [boardsNeedAttention, setBoardsNeedAttention] = useState(false)
+  useEffect(() => {
+    const check = () =>
+      void window.cowork.kanban
+        .list()
+        .then((list) =>
+          setBoardsNeedAttention(list.some((b) => b.needsAttention))
+        )
+        .catch(() => {})
+    check()
+    const timer = setInterval(check, 3000)
+    return () => clearInterval(timer)
+  }, [])
+
   // App destinations, shown as an icon rail beside the conversation list so they
   // don't eat vertical space. Settings is pinned to the bottom of the rail.
   const navItems: {
@@ -977,12 +992,22 @@ export function AppSidebar({
               tooltip={label}
               side="right"
               type="button"
-              aria-label={label}
+              aria-label={
+                id === "boards" && boardsNeedAttention
+                  ? `${label} (needs your attention)`
+                  : label
+              }
               aria-current={activeDestination === id ? "page" : undefined}
               onClick={onClick}
-              className={railButton}
+              className={cn(railButton, "relative")}
             >
               <Icon className="size-4" />
+              {id === "boards" && boardsNeedAttention && (
+                <BellDot
+                  className="absolute -top-0.5 -right-0.5 size-3 animate-pulse text-amber-500"
+                  aria-hidden
+                />
+              )}
             </TooltipButton>
           ))}
           <div className="flex-1" />
