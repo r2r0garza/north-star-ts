@@ -32,6 +32,12 @@ describe("startup guide", () => {
     })
     expect(document.body.textContent).toContain("Dashboards")
     expect(document.body.textContent).toContain("Workflows")
+    const kanbanSection = Array.from(document.querySelectorAll("section")).find(
+      (section) => section.querySelector("h3")?.textContent === "Kanban Board"
+    )
+    expect(kanbanSection?.textContent).toContain(
+      "Sync work items into a board, move cards through columns"
+    )
     expect(document.body.textContent).toContain("Create and save reusable workflows")
     expect(document.body.textContent).not.toContain("Processes")
     expect(document.body.textContent).not.toContain("Mission Control")
