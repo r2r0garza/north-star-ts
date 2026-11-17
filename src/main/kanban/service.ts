@@ -10,6 +10,7 @@ import { createEnvironment } from "../agent/env/factory"
 import { getMcpManager, parsePrefixedName } from "../agent/mcp"
 import { validateCommandResult } from "../dashboards/service"
 import * as settingsService from "../settings/service"
+import { workspaceLayout } from "./layout"
 import {
   matchesFilter,
   normalizeItems,
@@ -314,6 +315,7 @@ export class KanbanService {
         pendingAction: card.continuation ? kanban.pendingAction(card.id) : null,
       })),
       sourceHash: hash,
+      layout: workspaceLayout(board.workspace).layout,
       intakeCall: "call" in resolved ? resolved.call : null,
       intakeError: "error" in resolved ? resolved.error : null,
       approved: !!hash && board.approvedHash === hash,

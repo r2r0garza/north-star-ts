@@ -1546,12 +1546,21 @@ const api = {
         columns: KanbanColumnInput[]
         writeApproval: KanbanWriteApproval
         actionsPaused: boolean
+        worktrees: boolean
+        parallelCommands: boolean
       }
     ) =>
       ipcRenderer.invoke(
         "kanban:saveSettings",
         boardId,
         patch
+      ) as Promise<KanbanResult>,
+    // The card's own worktree choice (null = the board's), until it first runs (136.6).
+    setOwnWorktree: (cardId: string, value: boolean | null) =>
+      ipcRenderer.invoke(
+        "kanban:setOwnWorktree",
+        cardId,
+        value
       ) as Promise<KanbanResult>,
     // Card moves (plan 136.2). Entering a column with instructions starts its run.
     moveCard: (cardId: string, columnId: string | null) =>

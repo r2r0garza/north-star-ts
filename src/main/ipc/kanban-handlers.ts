@@ -33,6 +33,7 @@ export function registerKanbanHandlers(
       for (const card of graph.cards) {
         card.pendingApproval = cards.pendingApproval(card.id)
         card.queued = cards.queued(card.id)
+        card.started = cards.started(card.id)
       }
     return graph
   })
@@ -66,6 +67,8 @@ export function registerKanbanHandlers(
         columns: KanbanColumnInput[]
         writeApproval: KanbanWriteApproval
         actionsPaused: boolean
+        worktrees: boolean
+        parallelCommands: boolean
       }
     ) => {
       const board = kanban.getBoard(boardId)
@@ -88,6 +91,10 @@ export function registerKanbanHandlers(
         kanban.setActionSettings(boardId, {
           writeApproval: patch.writeApproval,
           actionsPaused: !!patch.actionsPaused,
+        })
+        kanban.setRunSettings(boardId, {
+          worktrees: patch.worktrees !== false,
+          parallelCommands: patch.parallelCommands === true,
         })
       } catch (err) {
         if (err instanceof kanban.KanbanColumnInUseError)
@@ -123,6 +130,11 @@ export function registerKanbanHandlers(
     cards.retry(cardId, feedback)
   )
   ipcMain.handle("kanban:stop", (_e, cardId: string) => cards.stop(cardId))
+  ipcMain.handle(
+    "kanban:setOwnWorktree",
+    (_e, cardId: string, value: unknown) =>
+      cards.setOwnWorktree(cardId, typeof value === "boolean" ? value : null)
+  )
   ipcMain.handle("kanban:removeCard", (_e, cardId: string) =>
     cards.remove(cardId)
   )

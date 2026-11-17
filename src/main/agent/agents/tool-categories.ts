@@ -106,6 +106,8 @@ const UNIVERSAL = new Set([
   "write_plan",
   "read_plan",
   "present_plan",
+  // Board infrastructure: offered only on board runs that need it (136.6).
+  "kanban_open_repo",
 ])
 
 export function isUniversalTool(name: string): boolean {

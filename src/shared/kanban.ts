@@ -109,6 +109,10 @@ export interface KanbanBoard {
   approvedActions: string[]
   // Kill switch: while set, every upstream action waits for the user.
   actionsPaused: boolean
+  // 136.6: the default for whether cards get their own worktree, and (only
+  // with worktrees off) whether command columns run cards in parallel.
+  worktrees: boolean
+  parallelCommands: boolean
   syncIntervalMs: number
   lastSyncAt: number | null
   lastSyncError: string | null
@@ -224,6 +228,22 @@ export type KanbanRunState =
   | "failed"
   | "done"
 
+// A repo a layout-B card opened: `path` relative to the workspace (and to the
+// card's folder), on `branch`, created from `base`.
+export interface KanbanCardRepo {
+  path: string
+  branch: string
+  base: string
+}
+
+// How the board's workspace holds code (136.6). repo: the workspace is (in) a
+// git repo. repos: a plain folder holding repos. none: no repos at all.
+export type KanbanLayout = "repo" | "repos" | "none"
+
+// Command columns run up to this many cards at once across a board with
+// parallel commands on.
+export const MAX_PARALLEL_COMMANDS = 4
+
 export interface KanbanCardRun {
   id: string
   // agent: an agent turn. command: a user column's command (136.5).
@@ -254,8 +274,13 @@ export interface KanbanCard {
   status: KanbanCardStatus
   runState: KanbanRunState
   runError: string | null
+  // Layout A: the card's worktree. Layout B: the card's own folder, holding
+  // a worktree for each repo the agent opened (`repos`).
   worktree: string | null
   branch: string | null
+  // 136.6: null = follow the board's `worktrees` setting.
+  ownWorktree: boolean | null
+  repos: KanbanCardRepo[]
   // The outcome the current column's run reported (the person may change it).
   outcome: string | null
   // Visits per column id (keys idempotency) and automatic gotos per column id.
@@ -267,6 +292,8 @@ export interface KanbanCard {
   pendingAction?: KanbanUpstreamAction | null
   // Set while the card waits its turn for its column's command (attached by the graph).
   queued?: boolean
+  // Set once the card has run anything; its worktree choice is then fixed.
+  started?: boolean
   // Set while a running card is parked on a tool call needing the user's yes.
   pendingApproval?: {
     requestId: string
@@ -309,6 +336,7 @@ export interface KanbanBoardGraph {
   cards: KanbanCard[]
   sourceHash: string | null
   approved: boolean
+  layout: KanbanLayout
   // What a sync runs (query bound in), or why it can't run.
   intakeCall: KanbanCall | null
   intakeError: string | null

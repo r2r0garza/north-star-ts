@@ -52,6 +52,7 @@ import {
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuCheckboxItem,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuSub,
@@ -103,6 +104,7 @@ type CardAction =
   | { kind: "reject" | "stop" | "remove" | "history" | "resume" }
   | { kind: "allow" | "deny" }
   | { kind: "approveAction" | "skipAction"; actionId: string }
+  | { kind: "ownWorktree"; value: boolean }
   | { kind: FeedbackKind }
 
 type FeedbackKind = "sendBack" | "retry" | "rejectWithFeedback"
@@ -168,10 +170,12 @@ function RecipePreview({
 function CardMenu({
   card,
   columns,
+  worktreeDefault,
   onAction,
 }: {
   card: KanbanCard
   columns: KanbanColumn[]
+  worktreeDefault: boolean | null
   onAction: (action: CardAction) => void
 }) {
   const running = card.runState === "running"
@@ -226,6 +230,18 @@ function CardMenu({
         <DropdownMenuItem onSelect={() => onAction({ kind: "history" })}>
           Run history
         </DropdownMenuItem>
+        {worktreeDefault !== null ? (
+          // Fixed once the card has run: its work already lives in one place.
+          <DropdownMenuCheckboxItem
+            checked={card.ownWorktree ?? worktreeDefault}
+            disabled={!!card.started}
+            onCheckedChange={(value) =>
+              onAction({ kind: "ownWorktree", value: value === true })
+            }
+          >
+            Own worktree
+          </DropdownMenuCheckboxItem>
+        ) : null}
         <DropdownMenuSeparator />
         <DropdownMenuItem
           variant="destructive"
@@ -425,10 +441,13 @@ function CardAttention({
 function Card({
   card,
   columns,
+  worktreeDefault,
   onAction,
 }: {
   card: KanbanCard
   columns: KanbanColumn[]
+  // The board's worktree setting; null when the workspace has no repos.
+  worktreeDefault: boolean | null
   onAction: (action: CardAction) => void
 }) {
   const { item } = card
@@ -485,7 +504,12 @@ function Card({
               <ExternalLink className="size-3.5 text-muted-foreground hover:text-foreground" />
             </a>
           ) : null}
-          <CardMenu card={card} columns={columns} onAction={onAction} />
+          <CardMenu
+            card={card}
+            columns={columns}
+            worktreeDefault={worktreeDefault}
+            onAction={onAction}
+          />
         </span>
       </div>
       <button
@@ -502,6 +526,11 @@ function Card({
       />
       <div className="flex flex-wrap gap-1">
         {badge ? <Badge variant={badge.variant}>{badge.label}</Badge> : null}
+        {card.repos.map((r) => (
+          <Badge key={r.path} variant="outline" title={`On ${r.branch}`}>
+            {r.path}
+          </Badge>
+        ))}
         {item.type ? <Badge variant="outline">{item.type}</Badge> : null}
         {item.state ? <Badge variant="outline">{item.state}</Badge> : null}
         {card.outcome ? (
@@ -528,12 +557,14 @@ function Column({
   name,
   cards,
   columns,
+  worktreeDefault,
   onAction,
 }: {
   id: string | null // null = Inbox
   name: string
   cards: KanbanCard[]
   columns: KanbanColumn[]
+  worktreeDefault: boolean | null
   onAction: (card: KanbanCard, action: CardAction) => void
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: id ?? INBOX_DROP_ID })
@@ -557,6 +588,7 @@ function Column({
             key={c.id}
             card={c}
             columns={columns}
+            worktreeDefault={worktreeDefault}
             onAction={(action) => onAction(c, action)}
           />
         ))}
@@ -864,6 +896,8 @@ export function KanbanScreen({
         )
       )
     else if (action.kind === "stop") void act(k.stop(card.id))
+    else if (action.kind === "ownWorktree")
+      void act(k.setOwnWorktree(card.id, action.value))
     else if (action.kind === "remove") setPendingRemove(card)
     else if (action.kind === "history") setHistoryCard(card)
     else setFeedbackFor({ card, kind: action.kind })
@@ -927,6 +961,9 @@ export function KanbanScreen({
     if (columnId !== card.columnId)
       onCardAction(card, { kind: "move", columnId })
   }
+  // null hides the card's "Own worktree" toggle: no repos to make one from.
+  const worktreeDefault =
+    graph && graph.layout !== "none" ? graph.board.worktrees : null
 
   return (
     <div
@@ -1120,6 +1157,7 @@ export function KanbanScreen({
                     name="Inbox"
                     cards={inbox}
                     columns={graph.columns}
+                    worktreeDefault={worktreeDefault}
                     onAction={onCardAction}
                   />
                   {graph.columns.map((col) => (
@@ -1129,6 +1167,7 @@ export function KanbanScreen({
                       name={col.name}
                       cards={graph.cards.filter((c) => c.columnId === col.id)}
                       columns={graph.columns}
+                      worktreeDefault={worktreeDefault}
                       onAction={onCardAction}
                     />
                   ))}

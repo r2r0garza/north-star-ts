@@ -130,6 +130,8 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
     },
     cancel: vi.fn(),
   } as unknown as TaskRunner
+  // Runs at the start of every agent turn, with its options (136.6).
+  let onTurn: ((opts: Record<string, unknown>) => Promise<void>) | undefined
   const runTurn = (async (opts: {
     conversationId: string
     workspace: string
@@ -137,6 +139,7 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
     userMessage?: string
     onEvent: (e: unknown) => void
   }) => {
+    await onTurn?.(opts as never)
     cwds.push(opts.workspace)
     const row = db
       .prepare(
@@ -204,6 +207,7 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
     failWrite = false
     commandResults = []
     commands = []
+    onTurn = undefined
     vi.mocked(runner.cancel).mockClear()
     workspace = gitRepo()
     cards = new KanbanCardRuns(
@@ -670,6 +674,163 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
     expect(kanban.getCard(card.id)!.columnId).toBe(done.id)
   })
 
+  describe("worktree choices and folders of repos (136.6)", () => {
+    // A plain folder holding two repos, each with main and dev branches.
+    function folderOfRepos(): string {
+      const dir = mkdtempSync(path.join(tmpdir(), "kanban-repos-"))
+      for (const name of ["backend", "frontend"]) {
+        const repo = path.join(dir, name)
+        mkdirSync(repo)
+        const git = (...args: string[]) =>
+          execFileSync("git", args, { cwd: repo, stdio: "ignore" })
+        git("init", "-q", "-b", "main")
+        git("config", "user.email", "t@t")
+        git("config", "user.name", "t")
+        writeFileSync(path.join(repo, "README.md"), `${name}\n`)
+        git("add", ".")
+        git("commit", "-qm", "init")
+        git("branch", "dev")
+      }
+      mkdirSync(path.join(dir, "node_modules", "pkg", ".git"), {
+        recursive: true,
+      })
+      return dir
+    }
+    const branchExists = (repo: string, branch: string) => {
+      try {
+        execFileSync("git", ["show-ref", "--verify", `refs/heads/${branch}`], {
+          cwd: repo,
+          stdio: "ignore",
+        })
+        return true
+      } catch {
+        return false
+      }
+    }
+
+    it("lets a card in a folder of repos open the repos it needs, as worktrees on its branch", async () => {
+      workspace = folderOfRepos()
+      const { board: b, card, cols } = board()
+      const seen: Record<string, unknown>[] = []
+      onTurn = async (opts) => {
+        seen.push(opts)
+        if (seen.length > 1) return
+        const open = opts.kanbanOpenRepo as (
+          repo: string,
+          base?: string
+        ) => Promise<{ path: string; branch: string; base: string }>
+        await expect(open("node_modules/pkg")).rejects.toThrow(
+          /not one of the workspace's repos/
+        )
+        await expect(open("backend", "nope")).rejects.toThrow(/not a branch/)
+        const [backend, again] = await Promise.all([
+          open("backend"),
+          open("./backend/"),
+        ])
+        expect(again).toEqual(backend)
+        expect(await open("frontend", "dev")).toMatchObject({ base: "dev" })
+      }
+      await cards.enter(card.id, cols[0].id)
+      await exec(last())
+      const ran = kanban.getCard(card.id)!
+      const branch = `ns/kanban/${b.id}/7`
+      expect(seen[0]).toMatchObject({
+        workspace: ran.worktree,
+        readOnlyRoots: { "kanban-workspace": workspace },
+      })
+      expect(prompts[0]).toContain(
+        'a folder of git repos: "backend", "frontend"'
+      )
+      expect(ran.repos).toEqual([
+        { path: "backend", branch, base: "HEAD" },
+        { path: "frontend", branch, base: "dev" },
+      ])
+      expect(existsSync(path.join(ran.worktree!, "backend", "README.md"))).toBe(
+        true
+      )
+      // The next column works in the same folder and is told what's open.
+      await exec(last())
+      expect(seen[1].workspace).toBe(ran.worktree)
+      expect(prompts[1]).toContain('Already open here: "backend", "frontend"')
+
+      // Removing the card removes its worktrees and folder, not its branches.
+      kanban.updateCard(card.id, { runState: "idle" })
+      expect(await cards.remove(card.id)).toEqual({ ok: true })
+      expect(existsSync(ran.worktree!)).toBe(false)
+      expect(branchExists(path.join(workspace, "backend"), branch)).toBe(true)
+    })
+
+    it("works in place with no branch when worktrees are off, and a card can override that before it runs", async () => {
+      const { board: b, card, cols } = board()
+      kanban.setRunSettings(b.id, { worktrees: false, parallelCommands: false })
+      const seen: Record<string, unknown>[] = []
+      onTurn = async (opts) => {
+        seen.push(opts)
+      }
+      await cards.enter(card.id, cols[0].id)
+      await exec(last())
+      expect(cwds[0]).toBe(workspace)
+      // In place, the checkout is the workspace itself: nothing read-only.
+      expect(seen[0].readOnlyRoots).toBeUndefined()
+      expect(kanban.getCard(card.id)).toMatchObject({
+        worktree: null,
+        branch: null,
+      })
+      expect(prompts[0]).not.toContain("git worktree")
+      // Its choice is fixed once it has run.
+      expect(cards.setOwnWorktree(card.id, true)).toMatchObject({ ok: false })
+
+      kanban.applySync(b.id, [item("7"), item("8")])
+      const other = kanban.listCards(b.id)[1]
+      expect(cards.setOwnWorktree(other.id, true)).toEqual({ ok: true })
+      await cards.enter(other.id, cols[0].id)
+      await exec(last())
+      expect(kanban.getCard(other.id)!.worktree).not.toBeNull()
+      expect(cwds[1]).not.toBe(workspace)
+      // A worktree card reads the user's whole repo, read-only.
+      const top = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+        cwd: workspace,
+        encoding: "utf8",
+      }).trim()
+      expect(seen[1].readOnlyRoots).toEqual({ "kanban-workspace": top })
+      expect(seen[1].kanbanOpenRepo).toBeUndefined()
+      expect(prompts[1]).toContain(
+        `checkout at ${JSON.stringify(top)} is read-only`
+      )
+    })
+
+    it("runs up to 4 commands at once across the board with parallel commands on", async () => {
+      const { board: b, cols } = customBoard([
+        { name: "A", owner: "user", command: "a" },
+        { name: "B", owner: "user", command: "b" },
+      ])
+      kanban.setRunSettings(b.id, { worktrees: false, parallelCommands: true })
+      kanban.applySync(
+        b.id,
+        ["1", "2", "3", "4", "5"].map((id) => item(id))
+      )
+      const all = kanban.listCards(b.id)
+      for (const [i, c] of all.entries())
+        await cards.enter(c.id, cols[i % 2].id)
+      expect(enqueued).toHaveLength(4)
+      expect(cards.queued(all[4].id)).toBe(true)
+      await execCommand(enqueued[0])
+      expect(enqueued).toHaveLength(5)
+      expect(commands[0]).toMatchObject({ cwd: workspace })
+    })
+
+    it("ignores parallel commands while the board uses worktrees", async () => {
+      const { board: b, cols } = customBoard([
+        { name: "A", owner: "user", command: "a" },
+      ])
+      kanban.setRunSettings(b.id, { worktrees: true, parallelCommands: true })
+      kanban.applySync(b.id, [item("1"), item("2")])
+      for (const c of kanban.listCards(b.id))
+        await cards.enter(c.id, cols[0].id)
+      expect(enqueued).toHaveLength(1)
+    })
+  })
+
   describe("user-column commands (136.5)", () => {
     function commandBoard(deploy: Partial<KanbanColumnInput> = {}) {
       const result = customBoard([
@@ -707,6 +868,7 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
             KANBAN_ITEM_TITLE: "Issue 7",
             KANBAN_ITEM_URL: "https://github.com/o/r/issues/7",
             KANBAN_BRANCH: `ns/kanban/${b.id}/7`,
+            KANBAN_WORKSPACE: workspace,
           },
         },
       ])

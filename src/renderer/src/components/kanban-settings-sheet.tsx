@@ -38,6 +38,7 @@ import {
   DEFAULT_MAX_RETURNS,
   type KanbanBoardGraph,
   type KanbanColumnInput,
+  MAX_PARALLEL_COMMANDS,
   type KanbanIntakeFilter,
   type KanbanOutcome,
   type KanbanOutcomeNext,
@@ -296,6 +297,10 @@ export function KanbanSettingsSheet({
   )
   const [writeApproval, setWriteApproval] = useState(board.writeApproval)
   const [paused, setPaused] = useState(board.actionsPaused)
+  const [worktrees, setWorktrees] = useState(board.worktrees)
+  const [parallel, setParallel] = useState(board.parallelCommands)
+  // Worktrees need repos; without them, cards always share the workspace.
+  const canWorktree = graph.layout !== "none"
   const [agents, setAgents] = useState<AgentSummary[]>([])
   const [saving, setSaving] = useState(false)
   const [selectedIndex, setSelectedIndex] = useState(0)
@@ -354,6 +359,8 @@ export function KanbanSettingsSheet({
         })),
         writeApproval,
         actionsPaused: paused,
+        worktrees,
+        parallelCommands: parallel,
       })
       if (!result.ok) {
         toast.error(result.reason)
@@ -558,6 +565,60 @@ export function KanbanSettingsSheet({
                     onCheckedChange={setPaused}
                   />
                 </div>
+              </fieldset>
+
+              <fieldset className="flex flex-col gap-3">
+                <legend className="mb-2 text-sm font-medium">
+                  Running cards
+                </legend>
+                {canWorktree ? (
+                  <div className="flex items-start justify-between gap-4 rounded-lg border p-4">
+                    <div className="flex flex-col gap-1.5">
+                      <Label htmlFor="kb-worktrees">Worktrees</Label>
+                      <p
+                        id="kb-worktrees-description"
+                        className="text-xs text-muted-foreground"
+                      >
+                        {graph.layout === "repos"
+                          ? "Each card gets its own folder, and its agent opens a worktree for each repo it changes. Cards work in parallel."
+                          : "Each card gets its own worktree and branch, so cards work in parallel."}{" "}
+                        Off: cards work in your checkout, one at a time. A card
+                        can override this before it first runs.
+                      </p>
+                    </div>
+                    <Switch
+                      id="kb-worktrees"
+                      aria-describedby="kb-worktrees-description"
+                      checked={worktrees}
+                      onCheckedChange={setWorktrees}
+                    />
+                  </div>
+                ) : null}
+                {!worktrees || !canWorktree ? (
+                  <div className="flex items-start justify-between gap-4 rounded-lg border p-4">
+                    <div className="flex flex-col gap-1.5">
+                      <Label htmlFor="kb-parallel">
+                        Run column commands in parallel
+                      </Label>
+                      <p
+                        id="kb-parallel-description"
+                        className="text-xs text-muted-foreground"
+                      >
+                        Up to {MAX_PARALLEL_COMMANDS} cards&apos; commands run
+                        at once across the board. Only turn this on if your
+                        commands keep their own work apart (for example, a
+                        script that makes its own worktrees). Agents still work
+                        one card at a time.
+                      </p>
+                    </div>
+                    <Switch
+                      id="kb-parallel"
+                      aria-describedby="kb-parallel-description"
+                      checked={parallel}
+                      onCheckedChange={setParallel}
+                    />
+                  </div>
+                ) : null}
               </fieldset>
             </div>
           </TabsContent>

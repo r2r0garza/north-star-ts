@@ -149,3 +149,20 @@ export function ensureKanbanColumnCommands(db: Database.Database): void {
   add("kanban_columns", "command_timeout_ms", "INTEGER")
   add("kanban_card_runs", "kind", "TEXT NOT NULL DEFAULT 'agent'")
 }
+
+// Plan 136.6: worktrees on/off per board (default on: today's behavior) and per
+// card (null = follow the board), parallel command runs, and the repos a card
+// in a folder of repos has opened (JSON list of { path, branch, base }).
+export function ensureKanbanWorktreeChoices(db: Database.Database): void {
+  const add = (table: string, column: string, definition: string) => {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+      name: string
+    }>
+    if (!cols.some((c) => c.name === column))
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`)
+  }
+  add("kanban_boards", "worktrees", "INTEGER NOT NULL DEFAULT 1")
+  add("kanban_boards", "parallel_commands", "INTEGER NOT NULL DEFAULT 0")
+  add("kanban_cards", "own_worktree", "INTEGER")
+  add("kanban_cards", "repos", "TEXT NOT NULL DEFAULT '[]'")
+}

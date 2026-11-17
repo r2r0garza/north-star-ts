@@ -46,6 +46,8 @@ const graph: KanbanBoardGraph = {
     writeApproval: "once_per_action",
     approvedActions: [],
     actionsPaused: false,
+    worktrees: true,
+    parallelCommands: false,
     syncIntervalMs: 300_000,
     lastSyncAt: null,
     lastSyncError: null,
@@ -87,6 +89,7 @@ const graph: KanbanBoardGraph = {
   approved: false,
   intakeCall: null,
   intakeError: null,
+  layout: "repo",
 }
 const button = (name: string) =>
   [...document.querySelectorAll<HTMLButtonElement>("button")].find(
@@ -435,4 +438,49 @@ it("edits a command and its time limit only on the user's own columns", async ()
     command: "npm run deploy",
     commandTimeoutMs: 30 * 60_000,
   })
+})
+
+const openGeneral = () =>
+  act(() => {
+    button("General & filters").dispatchEvent(
+      new MouseEvent("mousedown", { bubbles: true, button: 0 })
+    )
+  })
+
+it("shows the parallel-commands switch only with worktrees off, and saves both", async () => {
+  await act(async () =>
+    root.render(
+      <KanbanSettingsSheet graph={graph} onClose={vi.fn()} onSaved={vi.fn()} />
+    )
+  )
+  await openGeneral()
+  expect(document.querySelector("#kb-worktrees")).not.toBeNull()
+  expect(document.querySelector("#kb-parallel")).toBeNull()
+  await act(async () =>
+    (document.querySelector("#kb-worktrees") as HTMLButtonElement).click()
+  )
+  await act(async () =>
+    (document.querySelector("#kb-parallel") as HTMLButtonElement).click()
+  )
+  await click("Save changes")
+  const saved = saveSettings.mock.calls[0] as unknown as [
+    string,
+    { worktrees: boolean; parallelCommands: boolean },
+  ]
+  expect(saved[1]).toMatchObject({ worktrees: false, parallelCommands: true })
+})
+
+it("hides the worktrees switch when the workspace has no repos", async () => {
+  await act(async () =>
+    root.render(
+      <KanbanSettingsSheet
+        graph={{ ...graph, layout: "none" }}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+      />
+    )
+  )
+  await openGeneral()
+  expect(document.querySelector("#kb-worktrees")).toBeNull()
+  expect(document.querySelector("#kb-parallel")).not.toBeNull()
 })

@@ -122,6 +122,7 @@ import {
 } from "../../shared/conversation-artifacts"
 import { dashboardReadTool } from "./tools/dashboard_read"
 import { kanbanWriteTool } from "./tools/kanban_write"
+import { kanbanOpenRepoTool } from "./tools/kanban_open_repo"
 import { loadSystemPrompt } from "./system-prompt"
 import { logSystemPrompt } from "./prompt-log"
 import { buildIndexSummary } from "../index/summary"
@@ -1021,6 +1022,11 @@ export interface RunAgentLoopOptions {
   agentNameOverride?: string | null
   // Additional caller-provided context, budgeted like other sections.
   extraContextSections?: ContextSection[]
+  // Extra read-only folders for this run, addressed as skill://<name>/<path>
+  // like skill resources (plan 136.6: a board card reading the real workspace).
+  readOnlyRoots?: Record<string, string>
+  // Offers kanban_open_repo (plan 136.6).
+  kanbanOpenRepo?: ToolContext["kanbanOpenRepo"]
   // Withhold the ask_user_question tool: this turn has NO interactive user to
   // answer a clarifying question, so offering the tool only lets the worker stall
   // until it's interrupted. Headless workers have no interactive event sink, unlike a durable task,
@@ -1265,7 +1271,9 @@ export async function runAgentLoop(
       error: `No skill named "${unknownSkill}". Available skills: ${available}`,
     }
   }
-  const skillResourceRoots: Record<string, string> = {}
+  const skillResourceRoots: Record<string, string> = {
+    ...(opts.readOnlyRoots ?? {}),
+  }
   for (const name of forcedSkills.names) {
     const skill = skills.find((s) => s.name === name)
     if (skill) {
@@ -1559,6 +1567,9 @@ export async function runAgentLoop(
       // the agent tool allowlist via its `dashboard` category.
       ...(showTodos && !planMode ? [dashboardWriteTool.definition] : []),
       ...(showTodos && !planMode ? [kanbanWriteTool.definition] : []),
+      ...(opts.kanbanOpenRepo && hasWorkspace && !planMode
+        ? [kanbanOpenRepoTool.definition]
+        : []),
       // Snapshots write conversation state, not workspace files. Native Chat
       // supports them too; read-only and custom-agent filters still apply.
       ...(!planMode
@@ -2600,6 +2611,7 @@ export async function runAgentLoop(
               presentationArtifact = snapshot
             },
             skillResourceRoots,
+            kanbanOpenRepo: opts.kanbanOpenRepo,
             // present_plan calls this on approval; the selected backend is already
             // running, so the next loop iteration can safely unlock mutations.
             setPlanMode: (on: boolean) => {

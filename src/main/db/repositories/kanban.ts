@@ -15,6 +15,7 @@ import {
   type KanbanWriteApproval,
   type KanbanCard,
   type KanbanCardRun,
+  type KanbanCardRepo,
   type KanbanColumn,
   type KanbanColumnInput,
   type KanbanRunState,
@@ -47,6 +48,8 @@ interface BoardRow {
   write_approval: string
   approved_actions: string
   actions_paused: number
+  worktrees: number
+  parallel_commands: number
   sync_interval_ms: number
   last_sync_at: number | null
   last_sync_error: string | null
@@ -69,6 +72,8 @@ function toBoard(r: BoardRow): KanbanBoard {
       : "once_per_action",
     approvedActions: (parse(r.approved_actions) as string[] | null) ?? [],
     actionsPaused: r.actions_paused === 1,
+    worktrees: r.worktrees !== 0,
+    parallelCommands: r.parallel_commands === 1,
     syncIntervalMs: r.sync_interval_ms,
     lastSyncAt: r.last_sync_at,
     lastSyncError: r.last_sync_error,
@@ -88,6 +93,8 @@ interface CardRow {
   run_error: string | null
   worktree: string | null
   branch: string | null
+  own_worktree: number | null
+  repos: string
   outcome: string | null
   visits: string
   returns: string
@@ -122,6 +129,8 @@ function toCard(r: CardRow): KanbanCard {
     runError: r.run_error,
     worktree: r.worktree,
     branch: r.branch,
+    ownWorktree: r.own_worktree === null ? null : r.own_worktree === 1,
+    repos: (parse(r.repos) as KanbanCardRepo[] | null) ?? [],
     outcome: r.outcome,
     visits: counts(r.visits),
     returns: counts(r.returns),
@@ -225,6 +234,17 @@ export function setActionSettings(
       "UPDATE kanban_boards SET write_approval = ?, actions_paused = ? WHERE id = ?"
     )
     .run(settings.writeApproval, settings.actionsPaused ? 1 : 0, id)
+}
+
+export function setRunSettings(
+  id: string,
+  settings: { worktrees: boolean; parallelCommands: boolean }
+): void {
+  getDb()
+    .prepare(
+      "UPDATE kanban_boards SET worktrees = ?, parallel_commands = ? WHERE id = ?"
+    )
+    .run(settings.worktrees ? 1 : 0, settings.parallelCommands ? 1 : 0, id)
 }
 
 export function addApprovedAction(id: string, hash: string): void {
@@ -379,6 +399,8 @@ export function updateCard(
     runError?: string | null
     worktree?: string | null
     branch?: string | null
+    ownWorktree?: boolean | null
+    repos?: KanbanCardRepo[]
     outcome?: string | null
     visits?: Record<string, number>
     returns?: Record<string, number>
@@ -391,12 +413,14 @@ export function updateCard(
     runError: "run_error",
     worktree: "worktree",
     branch: "branch",
+    ownWorktree: "own_worktree",
+    repos: "repos",
     outcome: "outcome",
     visits: "visits",
     returns: "returns",
     continuation: "continuation",
   }
-  const json = new Set(["visits", "returns", "continuation"])
+  const json = new Set(["visits", "returns", "continuation", "repos"])
   const keys = Object.keys(patch).filter((k) => k in map)
   if (!keys.length) return
   getDb()
@@ -406,6 +430,7 @@ export function updateCard(
     .run(
       ...keys.map((k) => {
         const v = patch[k as keyof typeof patch] ?? null
+        if (typeof v === "boolean") return v ? 1 : 0
         return json.has(k) && v !== null ? JSON.stringify(v) : v
       }),
       Date.now(),
@@ -529,15 +554,17 @@ export function listRuns(cardId: string): KanbanCardRun[] {
   ).map(toRun)
 }
 
-// A column's unfinished command runs, oldest first: the one with a task is
-// running, the rest wait their turn (136.5).
-export function listColumnCommandRuns(columnId: string): KanbanCardRun[] {
+// A board's unfinished command runs, oldest first: those with a task are
+// running, the rest wait their turn (136.5/136.6).
+export function listBoardCommandRuns(boardId: string): KanbanCardRun[] {
   return (
     getDb()
       .prepare(
-        "SELECT * FROM kanban_card_runs WHERE column_id = ? AND kind = 'command' AND status = 'running' ORDER BY started_at, rowid"
+        `SELECT r.* FROM kanban_card_runs r JOIN kanban_cards c ON c.id = r.card_id
+         WHERE c.board_id = ? AND r.kind = 'command' AND r.status = 'running'
+         ORDER BY r.started_at, r.rowid`
       )
-      .all(columnId) as RunRow[]
+      .all(boardId) as RunRow[]
   ).map(toRun)
 }
 

@@ -2,7 +2,7 @@
 
 > Status: 136.1 built 2026-11-12 (`b0ba775`), verified against real GitHub Issues via `gh`. 136.2 built
 > 2026-11-12, unit-tested, not yet run in the app. 136.3 built 2026-11-16, unit-tested, not yet run in the
-> app or against a live tracker. 136.4 not started. 136.5 built 2026-11-16, unit-tested, not yet run in the app. 136.6 planned 2026-11-17. Open decisions settled 2026-11-12 (see **Decisions**).
+> app or against a live tracker. 136.4 not started. 136.5 built 2026-11-16, unit-tested, not yet run in the app. 136.6 built 2026-11-17, unit-tested, not yet run in the app. Open decisions settled 2026-11-12 (see **Decisions**).
 
 ## Objective
 
@@ -465,7 +465,7 @@ The user wrote it, so it skips the approval prompt and can run with no timeout. 
   symlink (macOS `/var` → `/private/var`). It now asks git (`rev-parse --show-prefix`). The tests run on
   unresolved temp paths to cover it.
 
-## 136.6 Worktree choices and folders of repos (planned; decisions settled 2026-11-17)
+## 136.6 Worktree choices and folders of repos (built 2026-11-17; decisions settled the same day)
 
 Today every card in a git workspace gets its own worktree, and a workspace that holds several repos (no
 git at the top) runs every card in place, one at a time, with no branches. Real teams need both, chosen
@@ -570,4 +570,35 @@ which.
   checkout either way).
 - Layout C (repos nested in a repo).
 - The agent suggesting a card's repos for the person to confirm.
+
+**136.6 as built**
+
+- **Code:** `src/main/kanban/layout.ts` (`workspaceLayout`); `place`, `openRepo`, `startNextCommands`,
+  `setOwnWorktree` and `removeCardFolders` in `src/main/kanban/card-runs.ts`; `kanban_open_repo` in
+  `src/main/agent/tools/kanban_open_repo.ts`; `ensureKanbanWorktreeChoices` (v85); settings sheet
+  "Running cards" section; "Own worktree" in the card's menu; repo badges on cards.
+- **Different from the plan:**
+  - **No `extraTools` option.** Tools are dispatched by name from a static registry, so
+    `kanban_open_repo` is registered there and offered only when the run passes a `kanbanOpenRepo`
+    callback (the same pattern as the Electron handle). It's in the universal set, so a column's custom
+    agent keeps it whatever its tool categories.
+  - **The read-only workspace reuses skill resource roots.** Runs take `readOnlyRoots`, seeded into the
+    same map; the real workspace is `skill://kanban-workspace/<path>`. Write tools already refuse
+    `skill://` paths, and the shell check already protects those folders from writes.
+  - **Layout A keeps `worktree` as before**; `repos` is only filled in layout B, so no migration of
+    existing cards was needed.
+  - **The layout is found from the file system** (a `.git` in the workspace or above it, else repos up to
+    two levels down, skipping dependency, build and hidden folders), not with `git rev-parse`, so the
+    board view can show it without running git.
+- **Base branch:** `origin/<base>` after a fetch when it exists, else the local branch; with no base,
+  `origin/HEAD`'s branch; offline or with no remote, the repo's `HEAD`. A base that doesn't exist fails
+  the tool call with that reason.
+- **Every worktree card's real checkout is read-only** (added after review): layout B's workspace, and
+  layout A's whole repo (`--show-toplevel`, since the worktree copies all of it). Before, layout A's
+  checkout was only "outside the workspace", which Auto mode approves, so a shell write there would run.
+  Now visible shell writes there are hard-blocked. Programs the agent runs (a script, `git -C`,
+  `npm install`) can still change it; only a sandbox (container execution) stops that. Cards working in
+  place have no read-only root: their workspace is the checkout.
+- **Not covered by tests:** the card-menu toggle in the board view (the IPC and service behind it are
+  tested).
 
