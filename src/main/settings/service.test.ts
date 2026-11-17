@@ -232,6 +232,19 @@ describe("settings service — agent sources", () => {
       visibleExternalSources: {},
     })
   })
+
+  it("persists the starred default agent", () => {
+    service.setAgentSources({
+      folders: [],
+      visibleExternalSources: {},
+      defaultAgent: "north_star:user:/a/reviewer.agent.md",
+    })
+    service._resetCacheForTests()
+
+    expect(service.getAgentSources().defaultAgent).toBe(
+      "north_star:user:/a/reviewer.agent.md"
+    )
+  })
 })
 
 describe("settings service — conversations", () => {
