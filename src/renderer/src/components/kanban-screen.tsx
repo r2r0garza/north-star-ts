@@ -1,9 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import {
+  DndContext,
+  DragOverlay,
+  KeyboardSensor,
+  PointerSensor,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core"
+import {
   ArrowLeft,
   Bell,
   ChevronDown,
   ExternalLink,
+  GripVertical,
   MoreHorizontal,
   RefreshCw,
   Settings2,
@@ -420,6 +432,11 @@ function Card({
   onAction: (action: CardAction) => void
 }) {
   const { item } = card
+  // Only an idle card can be dragged, by its handle; a running one moves
+  // through its menu. A handle keeps the card's own buttons plain buttons.
+  const draggable = card.runState !== "running"
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, isDragging } =
+    useDraggable({ id: card.id, disabled: !draggable })
   const badge =
     card.pendingApproval || (card.pendingAction && !card.pendingAction.approved)
       ? ({ label: "needs approval", variant: "default" } as const)
@@ -431,13 +448,27 @@ function Card({
           : RUN_BADGE[card.runState]
   return (
     <div
+      ref={setNodeRef}
       className={cn(
         "flex flex-col gap-1.5 rounded-md border bg-card p-2.5",
-        card.status === "unmatched" && "opacity-60"
+        card.status === "unmatched" && "opacity-60",
+        isDragging && "opacity-40"
       )}
     >
       <div className="flex items-start justify-between gap-2">
         <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          {draggable ? (
+            <button
+              type="button"
+              ref={setActivatorNodeRef}
+              {...attributes}
+              {...listeners}
+              aria-label={`Drag #${item.id} to another column`}
+              className="-ml-1 cursor-grab touch-none rounded text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none active:cursor-grabbing"
+            >
+              <GripVertical className="size-3.5" />
+            </button>
+          ) : null}
           #{item.id}
           {card.runState === "running" && !card.queued ? (
             <Spinner className="size-3" />
@@ -489,22 +520,32 @@ function Card({
   )
 }
 
+// Drop-target id for the Inbox (a column id otherwise).
+const INBOX_DROP_ID = "inbox"
+
 function Column({
+  id,
   name,
   cards,
   columns,
   onAction,
 }: {
+  id: string | null // null = Inbox
   name: string
   cards: KanbanCard[]
   columns: KanbanColumn[]
   onAction: (card: KanbanCard, action: CardAction) => void
 }) {
+  const { setNodeRef, isOver } = useDroppable({ id: id ?? INBOX_DROP_ID })
   return (
     // Columns share the width; past min-w-56 the board scrolls sideways.
     <section
+      ref={setNodeRef}
       aria-label={name}
-      className="flex min-h-0 max-w-80 min-w-56 flex-1 flex-col rounded-lg bg-muted/40"
+      className={cn(
+        "flex min-h-0 max-w-80 min-w-56 flex-1 flex-col rounded-lg bg-muted/40",
+        isOver && "ring-2 ring-primary/40"
+      )}
     >
       <div className="flex h-9 shrink-0 items-center justify-between px-3">
         <span className="truncate text-xs font-medium">{name}</span>
@@ -870,6 +911,22 @@ export function KanbanScreen({
 
   const board = graph?.board
   const inbox = graph?.cards.filter((c) => c.columnId === null) ?? []
+  // Drag and drop: the same move as the card's "Move to" menu (idle cards only).
+  // The distance lets a click on the card's buttons through.
+  const dragSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor)
+  )
+  const [dragging, setDragging] = useState<string | null>(null)
+  const draggedCard = graph?.cards.find((c) => c.id === dragging) ?? null
+  const onCardDrop = ({ active, over }: DragEndEvent) => {
+    setDragging(null)
+    const card = graph?.cards.find((c) => c.id === active.id)
+    if (!card || !over || card.runState === "running") return
+    const columnId = over.id === INBOX_DROP_ID ? null : String(over.id)
+    if (columnId !== card.columnId)
+      onCardAction(card, { kind: "move", columnId })
+  }
 
   return (
     <div
@@ -1051,23 +1108,45 @@ export function KanbanScreen({
                 ) : null}
               </div>
               {/* Native overflow: the house ScrollArea is vertical-only. */}
-              <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto p-4">
-                <Column
-                  name="Inbox"
-                  cards={inbox}
-                  columns={graph.columns}
-                  onAction={onCardAction}
-                />
-                {graph.columns.map((col) => (
+              <DndContext
+                sensors={dragSensors}
+                onDragStart={(e) => setDragging(String(e.active.id))}
+                onDragCancel={() => setDragging(null)}
+                onDragEnd={onCardDrop}
+              >
+                <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto p-4">
                   <Column
-                    key={col.id}
-                    name={col.name}
-                    cards={graph.cards.filter((c) => c.columnId === col.id)}
+                    id={null}
+                    name="Inbox"
+                    cards={inbox}
                     columns={graph.columns}
                     onAction={onCardAction}
                   />
-                ))}
-              </div>
+                  {graph.columns.map((col) => (
+                    <Column
+                      key={col.id}
+                      id={col.id}
+                      name={col.name}
+                      cards={graph.cards.filter((c) => c.columnId === col.id)}
+                      columns={graph.columns}
+                      onAction={onCardAction}
+                    />
+                  ))}
+                </div>
+                {/* A floating copy: the columns scroll, so the card itself would be clipped. */}
+                <DragOverlay>
+                  {draggedCard ? (
+                    <div className="flex max-w-72 flex-col gap-1 rounded-md border bg-card p-2.5 shadow-lg">
+                      <span className="text-xs text-muted-foreground">
+                        #{draggedCard.item.id}
+                      </span>
+                      <span className="text-sm leading-snug">
+                        {draggedCard.item.title}
+                      </span>
+                    </div>
+                  ) : null}
+                </DragOverlay>
+              </DndContext>
             </>
           ) : (
             <div className="flex flex-1 items-center justify-center p-8 text-center text-sm text-muted-foreground">

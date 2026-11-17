@@ -3,9 +3,28 @@ import { act } from "react"
 import { createRoot } from "react-dom/client"
 import { expect, it, vi } from "vitest"
 import { KanbanScreen } from "./kanban-screen"
-import type { KanbanBoardSummary } from "../../../shared/kanban"
+import type { DragEndEvent } from "@dnd-kit/core"
+import type {
+  KanbanBoardSummary,
+  KanbanCard,
+  KanbanColumn,
+} from "../../../shared/kanban"
 
 vi.mock("./dashboards-screen", () => ({ waitForTask: vi.fn() }))
+// Capture the board's drop handler; dragging itself needs real layout.
+const drag = vi.hoisted(() => ({
+  end: undefined as undefined | ((event: DragEndEvent) => void),
+}))
+vi.mock("@dnd-kit/core", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@dnd-kit/core")>()
+  return {
+    ...actual,
+    DndContext: (props: React.ComponentProps<typeof actual.DndContext>) => {
+      drag.end = props.onDragEnd
+      return <actual.DndContext {...props} />
+    },
+  }
+})
 
 it("sorts boards alphabetically and refreshes attention for unselected boards", async () => {
   vi.useFakeTimers()
@@ -88,6 +107,115 @@ it("sorts boards alphabetically and refreshes attention for unselected boards", 
     act(() => root.unmount())
     container.remove()
     vi.useRealTimers()
+    vi.unstubAllGlobals()
+  }
+})
+
+it("moves an idle card to the column it's dropped on, but never a running one", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
+  const board = {
+    id: "b",
+    name: "Board",
+    needsAttention: false,
+    workspace: "/Projects/test",
+    source: null,
+    filter: {
+      tags: [],
+      match: "all",
+      excludeTags: [],
+      assignee: { mode: "anyone" },
+    },
+    approvedHash: null,
+    writeApproval: "always",
+    approvedActions: [],
+    actionsPaused: false,
+    syncIntervalMs: 300000,
+    lastSyncAt: null,
+    lastSyncError: null,
+    createdAt: 0,
+    updatedAt: 0,
+  } as KanbanBoardSummary
+  const dev = { id: "dev", name: "Dev", owner: "agent" } as KanbanColumn
+  const card = (id: string, columnId: string | null, runState: string) =>
+    ({
+      id,
+      boardId: "b",
+      externalId: id,
+      item: {
+        id,
+        url: null,
+        title: `Issue ${id}`,
+        body: "",
+        type: null,
+        state: null,
+        tags: [],
+        assignees: [],
+        updatedAt: null,
+      },
+      columnId,
+      status: "active",
+      runState,
+      runError: null,
+      worktree: null,
+      branch: null,
+      outcome: null,
+      visits: {},
+      returns: {},
+      continuation: null,
+      createdAt: 0,
+      updatedAt: 0,
+    }) as KanbanCard
+  const moveCard = vi.fn(async () => ({ ok: true }))
+  Object.assign(window, {
+    cowork: {
+      kanban: {
+        list: vi.fn(async () => [board]),
+        graph: vi.fn(async () => ({
+          board,
+          columns: [dev],
+          cards: [card("1", null, "idle"), card("2", "dev", "running")],
+          sourceHash: null,
+          approved: true,
+          intakeCall: null,
+          intakeError: null,
+        })),
+        moveCard,
+        sync: vi.fn(async () => null),
+      },
+    },
+  })
+  const container = document.createElement("div")
+  document.body.append(container)
+  const root = createRoot(container)
+  const drop = (cardId: string, over: string | null) =>
+    act(async () => {
+      drag.end!({
+        active: { id: cardId },
+        over: over ? { id: over } : null,
+      } as DragEndEvent)
+    })
+  try {
+    await act(async () =>
+      root.render(
+        <KanbanScreen onClose={vi.fn()} onOpenConversation={vi.fn()} />
+      )
+    )
+    // Only the idle card has a drag handle.
+    const handle = (id: string) =>
+      document.querySelector(`[aria-label="Drag #${id} to another column"]`)
+    expect(handle("1")?.tagName).toBe("BUTTON")
+    expect(handle("2")).toBeNull()
+
+    await drop("1", "inbox") // same column
+    await drop("1", null) // dropped outside any column
+    await drop("2", "inbox") // running
+    expect(moveCard).not.toHaveBeenCalled()
+
+    await drop("1", "dev")
+    expect(moveCard).toHaveBeenCalledWith("1", "dev")
+  } finally {
+    act(() => root.unmount())
+    container.remove()
     vi.unstubAllGlobals()
   }
 })
