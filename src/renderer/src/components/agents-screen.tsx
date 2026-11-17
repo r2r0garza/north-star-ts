@@ -5,6 +5,7 @@ import {
   FolderOpen,
   Plus,
   Search,
+  Star,
   Trash2,
   Upload,
   XIcon,
@@ -241,6 +242,8 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
   const [mcpServerNames, setMcpServerNames] = useState<string[]>([])
   // Whether the import (upload) modal is open.
   const [importOpen, setImportOpen] = useState(false)
+  // refId of the starred agent new conversations start with (null = main agent).
+  const [defaultAgent, setDefaultAgent] = useState<string | null>(null)
 
   // Flatten every folder's agents into one addressable list (tagged with kind).
   const allAgents = useMemo<CatalogAgent[]>(() => {
@@ -304,7 +307,10 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
     loadTree()
     window.cowork.settings
       .getAgentSources()
-      .then((settings) => setEnabledSources(settings.visibleExternalSources))
+      .then((settings) => {
+        setEnabledSources(settings.visibleExternalSources)
+        setDefaultAgent(settings.defaultAgent ?? null)
+      })
     window.cowork.skills
       .list()
       .then((rows) => setSkillNames(rows.map((s) => s.name)))
@@ -483,6 +489,19 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
     }
   }
 
+  // Star/unstar an agent as the default. Only one can be starred: setting a new
+  // one replaces the old. `clear` unstars only if `refId` is the current default.
+  async function setDefault(refId: string | null) {
+    const current = await window.cowork.settings.getAgentSources()
+    const { defaultAgent: _old, ...rest } = current
+    await window.cowork.settings.setAgentSources(
+      refId ? { ...rest, defaultAgent: refId } : rest
+    )
+    setDefaultAgent(refId)
+  }
+  const toggleDefault = (a: CatalogAgent) =>
+    void setDefault(a.refId === defaultAgent ? null : a.refId)
+
   async function deleteAgent(a: CatalogAgent) {
     if (!isWritable(a.kind)) return
     if (!window.confirm(`Delete agent “${a.name}”? This cannot be undone.`)) {
@@ -490,6 +509,7 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
     }
     try {
       await window.cowork.agents.delete(a.path)
+      if (a.refId === defaultAgent) await setDefault(null)
       if (selectedKey === a.key) {
         setSelectedKey(null)
         setMode({ kind: "view" })
@@ -686,6 +706,8 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
                             selectAgent(a.refId ?? agentKey(f.path, a.name))
                           }
                           onDelete={deleteAgent}
+                          defaultAgent={defaultAgent}
+                          onToggleDefault={toggleDefault}
                         />
                       ))
                   )
@@ -708,6 +730,8 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
                     enabledSources={enabledSources}
                     onOpen={selectAgent}
                     onDelete={deleteAgent}
+                    defaultAgent={defaultAgent}
+                    onToggleDefault={toggleDefault}
                   />
                 ))}
               </TabsContent>
@@ -742,6 +766,8 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
                               )
                             }
                             onDelete={deleteAgent}
+                            defaultAgent={defaultAgent}
+                            onToggleDefault={toggleDefault}
                           />
                         ))}
                       </CardGrid>
@@ -1222,12 +1248,17 @@ function AgentCard({
   agent,
   onOpen,
   onDelete,
+  defaultAgent,
+  onToggleDefault,
 }: {
   agent: CatalogAgent
   onOpen: () => void
   onDelete: (a: CatalogAgent) => void
+  defaultAgent: string | null
+  onToggleDefault: (a: CatalogAgent) => void
 }) {
   const writable = isWritable(agent.kind)
+  const isDefault = !!agent.refId && agent.refId === defaultAgent
   return (
     <Card
       size="sm"
@@ -1245,6 +1276,28 @@ function AgentCard({
       <CardHeader>
         <CardTitle className="truncate">{displayName(agent)}</CardTitle>
         <CardAction className="flex items-center gap-1">
+          {writable && (
+            <button
+              type="button"
+              aria-label={`${isDefault ? "Unset" : "Set"} ${agent.name} as default agent`}
+              aria-pressed={isDefault}
+              title={isDefault ? "Default agent" : "Set as default agent"}
+              onClick={(e) => {
+                e.stopPropagation()
+                onToggleDefault(agent)
+              }}
+              className={cn(
+                "rounded p-1 transition-opacity hover:bg-accent",
+                isDefault
+                  ? "text-amber-500"
+                  : "text-muted-foreground opacity-0 group-hover/card:opacity-100 hover:text-foreground"
+              )}
+            >
+              <Star
+                className={cn("size-3.5", isDefault && "fill-current")}
+              />
+            </button>
+          )}
           {writable ? (
             <button
               type="button"
@@ -1281,12 +1334,16 @@ function WorkspaceSection({
   enabledSources,
   onOpen,
   onDelete,
+  defaultAgent,
+  onToggleDefault,
 }: {
   ws: AgentTree["workspaces"][number]
   query: string
   enabledSources: Record<string, boolean>
   onOpen: (key: string) => void
   onDelete: (a: CatalogAgent) => void
+  defaultAgent: string | null
+  onToggleDefault: (a: CatalogAgent) => void
 }) {
   const [open, setOpen] = useState(false)
   const filtering =
@@ -1330,6 +1387,8 @@ function WorkspaceSection({
                   onOpen(agent.refId ?? agentKey(folder.path, agent.name))
                 }
                 onDelete={onDelete}
+                defaultAgent={defaultAgent}
+                onToggleDefault={onToggleDefault}
               />
             ))}
           </CardGrid>

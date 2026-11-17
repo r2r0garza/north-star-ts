@@ -1161,8 +1161,14 @@ function App(
       setSelAccountId(null)
       setSelModelId(null)
       setSelEffort(null)
-      // No custom agent by default (null = built-in main agent).
+      // Start with the starred default agent, if any (null = built-in main agent).
       setSelAgentName(null)
+      void window.cowork.settings
+        .getAgentSources()
+        .then((s) => {
+          if (!cancelled) setSelAgentName(s.defaultAgent ?? null)
+        })
+        .catch(() => {})
       // If starting in a project that has a directory, adopt + lock it; otherwise
       // clear the picker (unassigned / directory-less project).
       if (pendingProjectId) {
@@ -2974,7 +2980,7 @@ function App(
   // Custom agent picker. Only shown when the user has at least one invocable
   // agent on disk (~/.cowork/agents or the workspace agent dirs). A type-to-filter
   // combobox mirroring the model picker: a flat item list where value "" is the
-  // "Default (no agent)" entry (clears the selection → built-in main agent) and
+  // built-in main agent entry (labelled with its brand name) (clears the selection → built-in main agent) and
   // each other item is an agent (filtered by name). Compact (icon-only) when the
   // right panel squeezes the toolbar. The selected agent's prompt is prepended
   // to ours per turn.
@@ -2983,7 +2989,7 @@ function App(
   )
   const [agentSearchQuery, setAgentSearchQuery] = useState("")
   const agentItems: AgentPickerItem[] = [
-    { value: "", label: "Default (no agent)" },
+    { value: "", label: agentName },
     ...agents.map((a) => ({
       value: a.ref ?? a.name,
       label: a.label ?? a.name,

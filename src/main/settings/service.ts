@@ -129,6 +129,9 @@ export interface AgentSourcesSettings {
   // External providers shown in agent catalog and picker surfaces. Missing keys
   // default to visible so newly added providers preserve existing behavior.
   visibleExternalSources: Record<string, boolean>
+  // Agent refId pre-selected in the picker for every new conversation (starred
+  // in the Agents screen). Absent = the built-in main agent.
+  defaultAgent?: string
 }
 
 // Extra MCP-source folders the user registers in Settings → Capabilities, on top
@@ -519,6 +522,9 @@ function loadAgentSources(): AgentSourcesSettings {
                 )
               )
             : DEFAULT_AGENT_SOURCES.visibleExternalSources,
+        ...(typeof parsed.defaultAgent === "string"
+          ? { defaultAgent: parsed.defaultAgent }
+          : {}),
       }
       return agentSourcesCache
     } catch {
