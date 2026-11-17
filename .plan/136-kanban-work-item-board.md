@@ -2,7 +2,7 @@
 
 > Status: 136.1 built 2026-11-12 (`b0ba775`), verified against real GitHub Issues via `gh`. 136.2 built
 > 2026-11-12, unit-tested, not yet run in the app. 136.3 built 2026-11-16, unit-tested, not yet run in the
-> app or against a live tracker. 136.4 not started. 136.5 built 2026-11-16, unit-tested, not yet run in the app. Open decisions settled 2026-11-12 (see **Decisions**).
+> app or against a live tracker. 136.4 not started. 136.5 built 2026-11-16, unit-tested, not yet run in the app. 136.6 planned 2026-11-17. Open decisions settled 2026-11-12 (see **Decisions**).
 
 ## Objective
 
@@ -244,6 +244,8 @@ outcome), cross-workspace boards, per-card agent override.
 - `136.4` WIP limits, budget caps, upstream drift handling.
 - `136.5` User-column commands: a user column can run a command the user wrote on each card that enters
   (see **136.5 User-column commands**).
+- `136.6` Worktree choices and folders of repos: worktrees on or off per board and per card, parallel
+  command runs, and cards that open worktrees only for the repos they need (see **136.6**).
 
 ## 136.5 User-column commands (built 2026-11-16; decisions settled the same day)
 
@@ -462,4 +464,110 @@ The user wrote it, so it skips the approval prompt and can run with no timeout. 
   resolved top folder and the workspace as given, which broke when the workspace path went through a
   symlink (macOS `/var` → `/private/var`). It now asks git (`rev-parse --show-prefix`). The tests run on
   unresolved temp paths to cover it.
+
+## 136.6 Worktree choices and folders of repos (planned; decisions settled 2026-11-17)
+
+Today every card in a git workspace gets its own worktree, and a workspace that holds several repos (no
+git at the top) runs every card in place, one at a time, with no branches. Real teams need both, chosen
+per card: devs isolate unrelated tickets but work related ones one by one in their checkout, and the QA
+pipeline's own script already makes its worktrees, so North Star must not add another. A ticket may touch
+one repo or several (an endpoint in the backend and the button in the frontend), and tickets don't say
+which.
+
+**Layouts**
+
+- **A. The workspace is a repo.** The usual case.
+- **B. The workspace is a plain folder of repos** (`repo-1/`, `repo-2/`, `repo-3/`). Both devs and QA use
+  this today.
+- **C. A repo with repos nested in it.** Not handled in 136.6 (see **Later**).
+
+**Decisions**
+
+- **Board "Worktrees" setting**, default **on** so existing boards keep today's behavior. Shown for A
+  and B; hidden when the workspace has no repos.
+- **Board "Run cards in parallel" setting**, shown only when worktrees are off. It applies to **command
+  columns only**: up to **4** command runs at once **across the board**. Agent runs on cards without a
+  worktree stay one at a time (they share one checkout and don't isolate themselves). This is the QA case:
+  their script isolates its own work.
+- **Per card, "Own worktree"** in the card's menu: starts from the board setting, and can be changed until
+  the card's first run.
+- **Layout A:** unchanged. A worktree card gets its worktree up front; without one, the card works in
+  the checkout on whatever branch is checked out (no branches made or switched; `KANBAN_BRANCH` empty).
+- **Layout B, worktree card:** starts with an empty card folder. The agent decides which repos the work
+  needs, the way a person would, and opens each one through a board tool **when its work reaches that
+  repo**. Each opened repo becomes `card-folder/<repo>`, a worktree on the card's branch. Nothing is
+  picked up front and no unused worktree is made.
+- **Base branch:** the repo's default branch on `origin` (`origin/HEAD`); the agent may pass another (its
+  own or the column's instructions name it, e.g. `develop` for one repo and `dev` for another).
+- **Reading and writing:** the agent may **read** the real workspace (to decide which repos are involved)
+  and **write** only in the card's folder.
+- **Layout B, card without a worktree:** works in place at `{workspace}`, as today, with no open-repo tool.
+- **Commands** get `KANBAN_WORKSPACE` (the real workspace path), so a worktree card can reach things that
+  aren't committed (a local script, the real `node_modules` or `.venv`). They run in the card's folder
+  (or the workspace for a card without a worktree).
+- **Dropped:** a "Run in" folder for commands. `cd repo-3 && ./script.sh` does the same.
+
+**Shape**
+
+- **Board:** `worktrees` (default 1) and `parallel_commands` (default 0), additive migration.
+- **Card:** `own_worktree` (null = follow the board), and `repos` (JSON list of `{ path, branch, base }`,
+  one per opened repo; layout A records its one worktree the same way). `worktree` becomes the card's
+  folder. Migration: an existing card with a worktree gets a one-entry `repos`.
+- **Finding repos (layout B):** the workspace's folders up to two levels down that hold a `.git` folder or
+  file, skipping the usual dependency and build folders (reuse `DEFAULT_SKIP_DIRS`). The list goes to the
+  agent as context and limits what the tool accepts.
+- **The open-repo tool** (`kanban_open_repo`, `{ repo, base? }`), offered only on layout-B worktree cards:
+  - refuses a repo not in the list;
+  - fetches the base from `origin` (bounded; falls back to the local ref offline);
+  - creates the worktree at the repo's relative path inside the card folder, on
+    `ns/kanban/<board>/<item>` (reuses that branch if it exists, as `workdir()` does today);
+  - records it on the card; returns the path. Opening an already-open repo just returns its path.
+  - No approval prompt: the worktree lives in the app's folder and can't touch the user's checkout.
+- **Later columns** of the same card see the same folder and repos and can open more.
+- **Removing a card** removes every repo's worktree and keeps the branches.
+- **Concurrency:**
+  - worktree cards: as today (the task runner's work lane);
+  - cards without a worktree: agent runs share the existing one-at-a-time lock per workspace (it now also
+    applies in layout A when worktrees are off);
+  - commands: with parallel off, one at a time per column (136.5); with parallel on, up to 4 across the
+    board, and they skip the workspace lock. The column queue becomes a board-wide count of running
+    command tasks.
+- **Card UI:** the menu gains "Own worktree" (until the first run); the card shows the repos it opened.
+- **Agent prompt:** for layout-B worktree cards, it says each opened repo is on the card's branch and to
+  commit in each repo it changes; it lists the repos and how to open one.
+
+**Engine work this needs** (checked in the code 2026-11-17)
+
+- **A tool for one run only.** `runAgentLoop` has no way to add a tool for a single run today (only
+  flags like `provideElectron` and an `allowedToolNames` filter). Add an `extraTools` option and pass the
+  open-repo tool from `card-runs.ts`; repos-list context goes in through `extraContextSections`.
+- **Read-only access to a second folder.** File tools are confined to `ctx.workspace` by
+  `resolveInWorkspace`. The precedent is skill resources: `skill://` roots that read and search tools
+  resolve, and the shell approval check receives as `readOnlyRoots`. Add the real workspace as a
+  read-only root for these runs the same way. Limit: a shell command can still write outside the card
+  folder as far as the existing shell policy allows today; this is no weaker than any agent run.
+- **Card folder as the workspace:** the run's `workspace` is the card folder, so writes stay confined
+  there by the existing checks.
+
+**Tests**
+
+- Settings: defaults keep today's behavior; "Run cards in parallel" only shows with worktrees off; "Own
+  worktree" can't change after the first run.
+- Open-repo tool: refuses unknown repos and paths outside the workspace; creates the worktree at the
+  mirrored path on the card's branch from `origin/HEAD` or the given base; reopening returns the same
+  path; recorded on the card; a second column sees it; removing the card removes all of them.
+- Concurrency: parallel off → one command per column; on → up to 4 across the board, the 5th waits;
+  agent runs on non-worktree cards stay one at a time while commands run in parallel.
+- Layout A with worktrees off: the card runs in the checkout with no branch.
+- Read-only root: reading the real workspace works; writing there is refused.
+- Commands receive `KANBAN_WORKSPACE`.
+
+**Later**
+
+- Tracker actions per repo (e.g. one PR per repo, run inside each repo's worktree).
+- Linking `node_modules` / `.venv` into worktrees (Node resolves imports from the code's own folder, so a
+  worktree can't use the real `node_modules` without a link; a Python editable install points at the real
+  checkout either way).
+- Layout C (repos nested in a repo).
+- The agent suggesting a card's repos for the person to confirm.
 
