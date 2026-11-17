@@ -4,8 +4,10 @@ import {
   cardNeedsAttention,
   compileIntakeQuery,
   matchesFilter,
+  mergeAgentColumns,
   normalizeItems,
   resolveIntakeCall,
+  type KanbanColumn,
   type KanbanItem,
   type KanbanSource,
 } from "./kanban"
@@ -367,5 +369,73 @@ describe("resolveIntakeCall", () => {
       resolveIntakeCall({ ...github, command: "gh x {{query}}" }, f)
     ).toThrow(/tracker/)
     expect(resolveIntakeCall(github, f).command).toBe(github.command)
+  })
+})
+
+describe("mergeAgentColumns", () => {
+  const column = (name: string, owner: "agent" | "user"): KanbanColumn => ({
+    id: name.toLowerCase(),
+    boardId: "b",
+    name,
+    position: 0,
+    agentName: null,
+    instructions: "",
+    gate: "agent",
+    owner,
+    outcomes: [],
+    actions: [],
+    command: owner === "user" ? "npm run deploy" : null,
+    commandTimeoutMs: null,
+  })
+  const existing = [
+    column("Plan", "agent"),
+    column("Deploy", "user"),
+    column("Review", "agent"),
+    column("Sign off", "user"),
+  ]
+
+  it("keeps each user column right after the agent column it followed, with its settings", () => {
+    const merged = mergeAgentColumns(existing, [
+      { name: "Plan" },
+      { name: "Build", owner: "user", command: "rm -rf ." },
+      { name: "Review" },
+    ])
+    expect(merged.map((c) => c.name)).toEqual([
+      "Plan",
+      "Deploy",
+      "Build",
+      "Review",
+      "Sign off",
+    ])
+    // The agent can't make a user column or give one a command.
+    expect(merged[2]).toEqual({ name: "Build", owner: "agent" })
+    expect(merged[1]).toMatchObject({
+      id: "deploy",
+      owner: "user",
+      command: "npm run deploy",
+    })
+  })
+
+  it("falls back to the same count of agent columns when its column was removed", () => {
+    expect(
+      mergeAgentColumns(existing, [{ name: "Build" }, { name: "Review" }]).map(
+        (c) => c.name
+      )
+    ).toEqual(["Build", "Deploy", "Review", "Sign off"])
+  })
+
+  it("keeps user columns when the agent sends fewer columns", () => {
+    expect(
+      mergeAgentColumns(existing, [{ name: "Plan" }]).map((c) => c.name)
+    ).toEqual(["Plan", "Deploy", "Sign off"])
+    expect(mergeAgentColumns([], [{ name: "A" }])).toEqual([
+      { name: "A", owner: "agent" },
+    ])
+  })
+
+  it("refuses a name that is one of the user's columns", () => {
+    expect(() => mergeAgentColumns(existing, [{ name: "Deploy" }])).toThrow(
+      /user's own columns/
+    )
   })
 })

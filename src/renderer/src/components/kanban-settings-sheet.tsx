@@ -64,6 +64,9 @@ const splitTags = (text: string) =>
     .map((t) => t.trim())
     .filter(Boolean)
 
+// Time-limit choices for a user column's command (5–90 minutes, or off).
+const COMMAND_TIMEOUT_MINUTES = [5, 10, 15, 20, 30, 45, 60, 75, 90]
+
 function SortableColumn({
   id,
   name,
@@ -274,6 +277,8 @@ export function KanbanSettingsSheet({
         owner,
         outcomes,
         actions,
+        command,
+        commandTimeoutMs,
       }) => ({
         sortId: id,
         id,
@@ -284,6 +289,8 @@ export function KanbanSettingsSheet({
         owner,
         outcomes,
         actions,
+        command,
+        commandTimeoutMs,
       })
     )
   )
@@ -745,10 +752,68 @@ export function KanbanSettingsSheet({
                       />
                       <p className="text-xs text-muted-foreground">
                         {mine
-                          ? "No agent runs here. The card waits until you mark it done."
+                          ? col.command?.trim()
+                            ? "No agent runs here. Each card that enters runs your command below."
+                            : "No agent runs here. The card waits until you mark it done."
                           : "Entering this column runs its agent. Leave instructions empty for no agent run."}
                       </p>
                     </div>
+                    {mine ? (
+                      <div className="flex flex-col gap-4 rounded-lg border p-4">
+                        <div className="flex flex-col gap-1.5">
+                          <Label htmlFor="kb-column-command">Command</Label>
+                          <Textarea
+                            id="kb-column-command"
+                            className="font-mono text-xs"
+                            rows={3}
+                            placeholder="Optional, e.g. npm run deploy:staging"
+                            value={col.command ?? ""}
+                            onChange={(e) =>
+                              update(selectedIndex, {
+                                command: e.target.value,
+                              })
+                            }
+                          />
+                          <p className="text-xs text-muted-foreground">
+                            Runs in the card&apos;s working folder, one card at
+                            a time. Exit code 0 counts as passed; anything else
+                            as failed (use outcomes named &quot;passed&quot; and
+                            &quot;failed&quot; to route them). The card&apos;s
+                            details are in KANBAN_ITEM_ID, KANBAN_ITEM_TITLE,
+                            KANBAN_ITEM_URL, KANBAN_BRANCH and KANBAN_CARD_ID.
+                          </p>
+                        </div>
+                        <div className="flex min-w-0 flex-col gap-1.5">
+                          <Label htmlFor="kb-column-timeout">Time limit</Label>
+                          <NativeSelect
+                            id="kb-column-timeout"
+                            className="w-full"
+                            disabled={!col.command?.trim()}
+                            value={String(col.commandTimeoutMs ?? "off")}
+                            onChange={(e) =>
+                              update(selectedIndex, {
+                                commandTimeoutMs:
+                                  e.target.value === "off"
+                                    ? null
+                                    : Number(e.target.value),
+                              })
+                            }
+                          >
+                            <NativeSelectOption value="off">
+                              Off (runs until it finishes)
+                            </NativeSelectOption>
+                            {COMMAND_TIMEOUT_MINUTES.map((m) => (
+                              <NativeSelectOption
+                                key={m}
+                                value={String(m * 60_000)}
+                              >
+                                {m} minutes
+                              </NativeSelectOption>
+                            ))}
+                          </NativeSelect>
+                        </div>
+                      </div>
+                    ) : null}
                     {mine ? null : (
                       <div className="flex items-start justify-between gap-4 rounded-lg border p-4">
                         <div className="flex flex-col gap-1.5">

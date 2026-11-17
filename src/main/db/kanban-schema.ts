@@ -134,3 +134,18 @@ export function ensureKanbanColumnOwner(db: Database.Database): void {
       "ALTER TABLE kanban_columns ADD COLUMN owner TEXT NOT NULL DEFAULT 'agent';"
     )
 }
+
+// Plan 136.5: a user column's own command and its time limit (null = off), and
+// which runs are commands rather than agent turns.
+export function ensureKanbanColumnCommands(db: Database.Database): void {
+  const add = (table: string, column: string, definition: string) => {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+      name: string
+    }>
+    if (!cols.some((c) => c.name === column))
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`)
+  }
+  add("kanban_columns", "command", "TEXT")
+  add("kanban_columns", "command_timeout_ms", "INTEGER")
+  add("kanban_card_runs", "kind", "TEXT NOT NULL DEFAULT 'agent'")
+}

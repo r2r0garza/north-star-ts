@@ -88,6 +88,30 @@ export function callProblem(
 
 const policy = makePolicyEngine()
 
+// Board commands skip the approval prompt (the user granted them), but a
+// command the policy hard-blocks never runs.
+function isHardBlocked(command: string, workspace: string): boolean {
+  return (
+    policy.decide(
+      shellActionForCommand(command, {
+        tool: "run_shell_tool",
+        cwd: workspace,
+        workspace,
+      }),
+      { workspacePath: workspace }
+    ).level === "hard_block"
+  )
+}
+
+export interface CommandRunResult {
+  exitCode: number | null
+  timedOut: boolean
+  output: string
+}
+
+// The tail of a user-column command's output kept on its run.
+const COMMAND_OUTPUT_TAIL_CHARS = 4_000
+
 const defaultRunCall: RunCall = async (call, board, signal) => {
   if (call.tool) {
     const text = await getMcpManager().callTool(
@@ -103,15 +127,7 @@ const defaultRunCall: RunCall = async (call, board, signal) => {
   const workspace = board.workspace!
   // The board approval is the user's explicit grant for this recipe; a
   // hard-blocked command still never runs.
-  const decision = policy.decide(
-    shellActionForCommand(command, {
-      tool: "run_shell_tool",
-      cwd: workspace,
-      workspace,
-    }),
-    { workspacePath: workspace }
-  )
-  if (decision.level === "hard_block")
+  if (isHardBlocked(command, workspace))
     throw new Error("recipe command is blocked and cannot run")
   const env = await createEnvironment(
     workspace,
@@ -222,6 +238,49 @@ export class KanbanService {
     const problem = callProblem(call, board.workspace)
     if (problem) return Promise.reject(new Error(problem))
     return this.runCall(call, board, AbortSignal.timeout(120_000))
+  }
+
+  // A user column's own command (136.5), run for one card in `cwd` through the
+  // user's execution settings. No approval prompt; hard-blocked commands throw.
+  // timeoutMs null = no time limit.
+  async runCommand(
+    command: string,
+    board: KanbanBoard,
+    opts: {
+      cwd: string
+      env: Record<string, string>
+      timeoutMs: number | null
+      signal: AbortSignal
+    }
+  ): Promise<CommandRunResult> {
+    if (isHardBlocked(command, opts.cwd))
+      throw new Error(
+        "the column's command is blocked by policy and did not run"
+      )
+    const env = await createEnvironment(
+      opts.cwd,
+      `kanban:${board.id}`,
+      settingsService.getExecutionConfig()
+    )
+    try {
+      const result = await env.exec(command, {
+        cwd: opts.cwd,
+        timeoutMs: opts.timeoutMs ?? Infinity,
+        maxOutputBytes: MAX_OUTPUT_BYTES,
+        env: opts.env,
+        signal: opts.signal,
+      })
+      if (result.spawnError) throw new Error(result.spawnError)
+      return {
+        exitCode: result.exitCode,
+        timedOut: result.timedOut,
+        output: stripAnsi(result.stdout.toString("utf8")).slice(
+          -COMMAND_OUTPUT_TAIL_CHARS
+        ),
+      }
+    } finally {
+      await env.dispose()
+    }
   }
 
   ensureSync(boardId: string): Task | null {

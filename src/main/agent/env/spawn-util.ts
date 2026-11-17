@@ -166,10 +166,13 @@ function captureChildProcess<T extends ExecResult | CapturedProcessResult>(
       }
     }
 
-    const timer = setTimeout(() => {
-      timedOut = true
-      terminate("timeout")
-    }, opts.timeoutMs)
+    // setTimeout can't wait forever (Infinity fires at once), so skip it.
+    const timer = Number.isFinite(opts.timeoutMs)
+      ? setTimeout(() => {
+          timedOut = true
+          terminate("timeout")
+        }, opts.timeoutMs)
+      : undefined
 
     // Abort seam: a fired signal kills the child the same way a timeout does. The
     // listener is removed on close so an aborted-after-completion signal can't

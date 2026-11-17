@@ -37,7 +37,11 @@ export interface ExecResult {
 export interface ExecOptions {
   // Absolute working directory within this environment's filesystem view.
   cwd: string
+  // Infinity = no time limit: only a user-written board command (136.5) passes
+  // it; agent tools always pass a capped number.
   timeoutMs: number
+  // Extra environment variables, layered over the normal command environment.
+  env?: Record<string, string | undefined>
   // Hard cap on captured output bytes, so a runaway command can't exhaust memory.
   maxOutputBytes: number
   // Abort seam (see .plan/005): when it fires, the running process is killed.
@@ -45,9 +49,7 @@ export interface ExecOptions {
   signal?: AbortSignal
 }
 
-export interface ExecFileOptions extends ExecOptions {
-  env?: Record<string, string | undefined>
-}
+export type ExecFileOptions = ExecOptions
 
 export type CommandStream = "stdout" | "stderr" | "pty"
 

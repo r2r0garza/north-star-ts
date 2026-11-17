@@ -21,6 +21,7 @@ import {
 import { renderContextEnvelope } from "../../shared/context-provenance"
 import {
   bindActionCall,
+  commandTimeoutProblem,
   DEFAULT_MAX_RETURNS,
   type KanbanAction,
   type KanbanBoard,
@@ -32,9 +33,11 @@ import {
   type KanbanOutcome,
   type KanbanUpstreamAction,
 } from "../../shared/kanban"
-import { actionHash, boardActionsHash } from "./service"
+import { actionHash, boardActionsHash, type CommandRunResult } from "./service"
 
 export const KANBAN_CARD_RUN_KIND = "kanban_card_run"
+// A user column's own command for one card (136.5).
+export const KANBAN_COMMAND_RUN_KIND = "kanban_command_run"
 
 type Result = { ok: true } | { ok: false; reason: string }
 
@@ -55,6 +58,16 @@ const OK: Result = { ok: true }
 export interface Upstream {
   stillMatches(board: KanbanBoard, card: KanbanCard): Promise<boolean>
   runAction(call: KanbanCall, board: KanbanBoard): Promise<string>
+  runCommand(
+    command: string,
+    board: KanbanBoard,
+    opts: {
+      cwd: string
+      env: Record<string, string>
+      timeoutMs: number | null
+      signal: AbortSignal
+    }
+  ): Promise<CommandRunResult>
 }
 
 const message = (error: unknown) =>
@@ -181,7 +194,11 @@ export class KanbanCardRuns {
   ): Promise<Result> {
     const card = kanban.getCard(cardId)
     if (!card) return refuse("card not found")
-    if (card.runState === "running")
+    // Leaving a column drops its queued command or stops the running one.
+    if (
+      card.runState === "running" &&
+      !this.dropCommand(card.id, "the card was moved")
+    )
       return refuse("the card is running; stop it first")
     kanban.skipPendingActions(card.id, "the card was moved")
     kanban.updateCard(card.id, { returns: {}, continuation: null })
@@ -424,6 +441,27 @@ export class KanbanCardRuns {
       }
     )
     if (stopped) return stopped
+    // The user's command runs for the card, one card at a time per column.
+    if (column.owner === "user" && column.command) {
+      if (!board.workspace)
+        return this.park(
+          card.id,
+          "The board has no workspace to run this column's command in.",
+          undefined,
+          "failed"
+        )
+      getDb().transaction(() => {
+        kanban.createRun({
+          cardId: card.id,
+          columnId: column.id,
+          columnName: column.name,
+          kind: "command",
+        })
+        kanban.updateCard(card.id, { runState: "running", runError: null })
+      })()
+      this.startNextCommand(column.id)
+      return OK
+    }
     // The user's column: wait for them to do their part and say done.
     if (column.owner === "user") {
       kanban.updateCard(card.id, { runState: "waiting", runError: null })
@@ -561,7 +599,50 @@ export class KanbanCardRuns {
     }
   }
 
+  // The card's unfinished command run, if it has one.
+  private commandRun(cardId: string) {
+    return kanban
+      .listRuns(cardId)
+      .findLast((r) => r.kind === "command" && r.status === "running")
+  }
+
+  // Waiting for its column's command to start (shown as Queued).
+  queued(cardId: string): boolean {
+    const run = this.commandRun(cardId)
+    return !!run && !run.taskId
+  }
+
+  // Start the oldest waiting command in a column when none is running there.
+  private startNextCommand(columnId: string): void {
+    const runs = kanban.listColumnCommandRuns(columnId)
+    if (runs.some((r) => r.taskId)) return
+    const next = runs[0]
+    if (!next) return
+    const card = kanban.getCard(next.cardId)
+    const task = this.runner.enqueueKind({
+      kind: KANBAN_COMMAND_RUN_KIND,
+      title: `${next.columnName}: #${card?.item.id ?? next.cardId}`,
+      input: { cardId: next.cardId, columnId, runId: next.id },
+    })
+    kanban.setRunTask(next.id, task.id)
+  }
+
+  // End a card's queued or running command (its task is cancelled) and let the
+  // column's next card start. False when the card has no command run.
+  private dropCommand(cardId: string, reason: string): boolean {
+    const run = this.commandRun(cardId)
+    if (!run) return false
+    kanban.finishRun(run.id, { error: reason })
+    if (run.taskId) this.runner.cancel(run.taskId)
+    if (run.columnId) this.startNextCommand(run.columnId)
+    return true
+  }
+
   stop(cardId: string): Result {
+    if (this.dropCommand(cardId, "stopped")) {
+      kanban.updateCard(cardId, { runState: "failed", runError: "stopped" })
+      return OK
+    }
     const card = kanban.getCard(cardId)
     const run =
       card && kanban.listRuns(card.id).findLast((r) => r.status === "running")
@@ -608,7 +689,11 @@ export class KanbanCardRuns {
     workspace: string
   ): Promise<string> {
     const top = await runGit(workspace, ["rev-parse", "--show-toplevel"])
-    const sub = path.relative(top, workspace)
+    // Git's own subfolder answer: path math between `top` (symlinks resolved)
+    // and `workspace` (as given) breaks when the path goes through a symlink.
+    const sub = (
+      await runGit(workspace, ["rev-parse", "--show-prefix"])
+    ).replace(/\/$/, "")
     if (card.worktree && existsSync(card.worktree))
       return path.join(card.worktree, sub)
     const safe = card.externalId.replace(/[^a-zA-Z0-9._-]/g, "-")
@@ -827,5 +912,128 @@ export class KanbanCardRuns {
     } finally {
       release()
     }
+  }
+
+  // Run a user column's command for one card (136.5). The exit code is the
+  // outcome: 0 → "passed", anything else → "failed". A column with outcome
+  // rules routes by them; without, a pass advances and a failure fails the card.
+  readonly executeCommand: TaskExecutor = async ({ task, signal }) => {
+    const input = task.input as { cardId?: string; runId?: string }
+    const run = input.cardId
+      ? kanban.listRuns(input.cardId).find((r) => r.id === input.runId)
+      : undefined
+    // Dropped or stopped while queued: the card has moved on.
+    if (!run || run.status !== "running" || run.taskId !== task.id)
+      return { stopped: true }
+    const columnId = run.columnId!
+    try {
+      return await this.runCommandFor(run.id, run.cardId, columnId, signal)
+    } finally {
+      this.startNextCommand(columnId)
+    }
+  }
+
+  private async runCommandFor(
+    runId: string,
+    cardId: string,
+    columnId: string,
+    signal: AbortSignal
+  ) {
+    const card = kanban.getCard(cardId)
+    const board = card ? kanban.getBoard(card.boardId) : null
+    const column = board
+      ? kanban.listColumns(board.id).find((c) => c.id === columnId)
+      : null
+    // The run may have been dropped (card moved, stopped) at any await.
+    const current = () =>
+      kanban.listRuns(cardId).find((r) => r.id === runId)?.status === "running"
+    // The run keeps the output's tail; the card shows its first and last lines.
+    const fail = (error: string) => {
+      if (!current()) return { stopped: true }
+      const lines = error.trimEnd().split("\n")
+      kanban.finishRun(runId, { error })
+      kanban.updateCard(cardId, {
+        runState: "failed",
+        runError:
+          lines.length > 4
+            ? [lines[0], "…", ...lines.slice(-3)].join("\n")
+            : error,
+      })
+      return { error }
+    }
+    if (!card || !board?.workspace || !column?.command)
+      return fail(
+        "the card, its column's command, or the board workspace is gone"
+      )
+    const problem = commandTimeoutProblem(column.commandTimeoutMs)
+    if (problem) return fail(problem)
+    const workspace = board.workspace
+
+    const isGit = await gitSucceeds(workspace, [
+      "rev-parse",
+      "--is-inside-work-tree",
+    ])
+    let release = () => {}
+    if (!isGit) {
+      const prior = this.locks.get(workspace) ?? Promise.resolve()
+      const mine = new Promise<void>((resolve) => (release = resolve))
+      this.locks.set(
+        workspace,
+        prior.then(() => mine)
+      )
+      await prior
+    }
+    let result: CommandRunResult
+    try {
+      if (signal.aborted || !current()) return { stopped: true }
+      const cwd = isGit ? await this.workdir(card, board, workspace) : workspace
+      result = await this.upstream.runCommand(column.command, board, {
+        cwd,
+        // Values from the tracker reach the command as data, never as its text.
+        env: {
+          KANBAN_BOARD_ID: board.id,
+          KANBAN_CARD_ID: card.id,
+          KANBAN_ITEM_ID: card.item.id,
+          KANBAN_ITEM_TITLE: card.item.title,
+          KANBAN_ITEM_URL: card.item.url ?? "",
+          KANBAN_BRANCH: card.branch ?? "",
+        },
+        timeoutMs: column.commandTimeoutMs,
+        signal,
+      })
+    } catch (error) {
+      return fail(message(error))
+    } finally {
+      release()
+    }
+    if (signal.aborted || !current()) return { stopped: true }
+    if (result.timedOut)
+      return fail(
+        `timed out after ${Math.round((column.commandTimeoutMs ?? 0) / 60_000)} min\n${result.output}`
+      )
+    const passed = result.exitCode === 0
+    const name = passed ? "passed" : "failed"
+    const outcome = column.outcomes.find((o) => o.name === name) ?? null
+    const summary = `${passed ? "exit 0" : `exit ${result.exitCode ?? "(killed)"}`}\n${result.output}`
+    if (!outcome && !passed) return fail(summary)
+    kanban.finishRun(runId, { result: summary, outcome: outcome?.name ?? null })
+    kanban.updateCard(cardId, { outcome: outcome?.name ?? null })
+    if (column.outcomes.length && !outcome) {
+      kanban.updateCard(cardId, {
+        runState: "waiting",
+        runError: `The command passed, but this column has no "passed" outcome. Pick one, then approve.`,
+      })
+    } else if (outcome?.next === "wait") {
+      kanban.updateCard(cardId, { runState: "waiting", runError: null })
+    } else {
+      kanban.updateCard(cardId, { runState: "idle", runError: null })
+      const moved = await this.leave(cardId, column, outcome, false)
+      if (!moved.ok)
+        kanban.updateCard(cardId, {
+          runState: "failed",
+          runError: moved.reason,
+        })
+    }
+    return { content: summary }
   }
 }

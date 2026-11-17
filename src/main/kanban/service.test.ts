@@ -11,7 +11,8 @@ vi.mock("../db/connection", () => ({ getDb: () => db }))
 import { KanbanService, approvalHash, type RunCall } from "./service"
 import * as kanban from "../db/repositories/kanban"
 import type { TaskRunner } from "../tasks/runner"
-import type { KanbanSource } from "../../shared/kanban"
+import type { KanbanBoard, KanbanSource } from "../../shared/kanban"
+import { tmpdir } from "node:os"
 
 const source: KanbanSource = {
   tool: "mcp__github__search_issues",
@@ -143,5 +144,19 @@ describe.skipIf(!sqliteLoads)("KanbanService sync", () => {
     expect(service.approveSource(b.id, "stale-hash")).toMatchObject({
       ok: false,
     })
+  })
+})
+
+describe("KanbanService.runCommand", () => {
+  it("refuses a hard-blocked command without running it", async () => {
+    const service = new KanbanService({} as TaskRunner)
+    await expect(
+      service.runCommand("rm -rf /", { id: "b" } as KanbanBoard, {
+        cwd: tmpdir(),
+        env: {},
+        timeoutMs: null,
+        signal: new AbortController().signal,
+      })
+    ).rejects.toThrow(/blocked by policy/)
   })
 })

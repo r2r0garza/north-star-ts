@@ -30,8 +30,10 @@ export function registerKanbanHandlers(
   ipcMain.handle("kanban:graph", (_e, boardId: string) => {
     const graph = service.graph(boardId)
     if (graph)
-      for (const card of graph.cards)
+      for (const card of graph.cards) {
         card.pendingApproval = cards.pendingApproval(card.id)
+        card.queued = cards.queued(card.id)
+      }
     return graph
   })
   ipcMain.handle(

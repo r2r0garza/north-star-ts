@@ -5,6 +5,7 @@ import {
   asFilter,
   asOutcomes,
   columnProblem,
+  commandTimeoutProblem,
   WRITE_APPROVALS,
   type KanbanAction,
   type KanbanBoard,
@@ -255,6 +256,17 @@ export function saveColumns(boardId: string, input: KanbanColumnInput[]): void {
         isNew: !match,
         actions: c.actions ? asActions(c.actions) : (match?.actions ?? []),
         outcomes: c.outcomes ? asOutcomes(c.outcomes) : (match?.outcomes ?? []),
+        // Only a user column has a command; omitted keeps the stored one.
+        command:
+          c.owner !== "user"
+            ? null
+            : c.command !== undefined
+              ? c.command?.trim() || null
+              : (match?.command ?? null),
+        commandTimeoutMs:
+          c.commandTimeoutMs !== undefined
+            ? c.commandTimeoutMs
+            : (match?.commandTimeoutMs ?? null),
       }
     })
     // goto targets may name a column (the agent tool doesn't know ids).
@@ -276,6 +288,9 @@ export function saveColumns(boardId: string, input: KanbanColumnInput[]): void {
       )
       if (problem)
         throw new KanbanColumnInUseError(`column "${c.name}": ${problem}`)
+      const timeout = commandTimeoutProblem(c.commandTimeoutMs)
+      if (timeout)
+        throw new KanbanColumnInUseError(`column "${c.name}": ${timeout}`)
     }
     for (const col of existing) {
       if (kept.has(col.id)) continue
@@ -297,15 +312,17 @@ export function saveColumns(boardId: string, input: KanbanColumnInput[]): void {
         c.owner === "user" ? "user" : "agent",
         JSON.stringify(c.outcomes),
         JSON.stringify(c.actions),
+        c.command,
+        c.commandTimeoutMs,
         i,
       ]
       if (c.isNew)
         db.prepare(
-          "INSERT INTO kanban_columns (name, agent_name, instructions, gate, owner, outcomes, actions, position, id, board_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+          "INSERT INTO kanban_columns (name, agent_name, instructions, gate, owner, outcomes, actions, command, command_timeout_ms, position, id, board_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         ).run(...values, c.id, boardId)
       else
         db.prepare(
-          "UPDATE kanban_columns SET name = ?, agent_name = ?, instructions = ?, gate = ?, owner = ?, outcomes = ?, actions = ?, position = ? WHERE id = ?"
+          "UPDATE kanban_columns SET name = ?, agent_name = ?, instructions = ?, gate = ?, owner = ?, outcomes = ?, actions = ?, command = ?, command_timeout_ms = ?, position = ? WHERE id = ?"
         ).run(...values, c.id)
     })
   })()
@@ -328,6 +345,8 @@ export function listColumns(boardId: string): KanbanColumn[] {
       owner: string
       outcomes: string
       actions: string
+      command: string | null
+      command_timeout_ms: number | null
     }>
   ).map((r) => ({
     id: r.id,
@@ -340,6 +359,8 @@ export function listColumns(boardId: string): KanbanColumn[] {
     owner: r.owner === "user" ? "user" : "agent",
     outcomes: asOutcomes(parse(r.outcomes)),
     actions: asActions(parse(r.actions)),
+    command: r.owner === "user" ? r.command : null,
+    commandTimeoutMs: r.command_timeout_ms,
   }))
 }
 
@@ -407,6 +428,7 @@ export function listRunningCards(): KanbanCard[] {
 
 interface RunRow {
   id: string
+  kind: string
   card_id: string
   column_id: string | null
   column_name: string
@@ -423,6 +445,7 @@ interface RunRow {
 function toRun(r: RunRow): KanbanCardRun {
   return {
     id: r.id,
+    kind: r.kind === "command" ? "command" : "agent",
     cardId: r.card_id,
     columnId: r.column_id,
     columnName: r.column_name,
@@ -442,13 +465,21 @@ export function createRun(input: {
   cardId: string
   columnId: string
   columnName: string
+  kind?: "agent" | "command"
 }): KanbanCardRun {
   const id = randomUUID()
   getDb()
     .prepare(
-      "INSERT INTO kanban_card_runs (id, card_id, column_id, column_name, status, started_at) VALUES (?, ?, ?, ?, 'running', ?)"
+      "INSERT INTO kanban_card_runs (id, kind, card_id, column_id, column_name, status, started_at) VALUES (?, ?, ?, ?, ?, 'running', ?)"
     )
-    .run(id, input.cardId, input.columnId, input.columnName, Date.now())
+    .run(
+      id,
+      input.kind ?? "agent",
+      input.cardId,
+      input.columnId,
+      input.columnName,
+      Date.now()
+    )
   return listRuns(input.cardId).find((r) => r.id === id)!
 }
 
@@ -495,6 +526,18 @@ export function listRuns(cardId: string): KanbanCardRun[] {
         "SELECT * FROM kanban_card_runs WHERE card_id = ? ORDER BY started_at, rowid"
       )
       .all(cardId) as RunRow[]
+  ).map(toRun)
+}
+
+// A column's unfinished command runs, oldest first: the one with a task is
+// running, the rest wait their turn (136.5).
+export function listColumnCommandRuns(columnId: string): KanbanCardRun[] {
+  return (
+    getDb()
+      .prepare(
+        "SELECT * FROM kanban_card_runs WHERE column_id = ? AND kind = 'command' AND status = 'running' ORDER BY started_at, rowid"
+      )
+      .all(columnId) as RunRow[]
   ).map(toRun)
 }
 

@@ -63,6 +63,7 @@ import {
   ensureKanban,
   ensureKanbanActions,
   ensureKanbanColumnOwner,
+  ensureKanbanColumnCommands,
   ensureKanbanRuns,
 } from "./kanban-schema"
 import {
@@ -245,6 +246,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureKanbanRuns,
   ensureKanbanActions,
   ensureKanbanColumnOwner,
+  ensureKanbanColumnCommands,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {

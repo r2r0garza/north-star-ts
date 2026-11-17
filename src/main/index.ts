@@ -136,7 +136,11 @@ import { SummaryService, SUMMARIZE_KIND } from "./summaries/service"
 import { DashboardService, DASHBOARD_REFRESH_KIND } from "./dashboards/service"
 import { registerDashboardHandlers } from "./ipc/dashboard-handlers"
 import { KanbanService, KANBAN_SYNC_KIND } from "./kanban/service"
-import { KanbanCardRuns, KANBAN_CARD_RUN_KIND } from "./kanban/card-runs"
+import {
+  KanbanCardRuns,
+  KANBAN_CARD_RUN_KIND,
+  KANBAN_COMMAND_RUN_KIND,
+} from "./kanban/card-runs"
 import { registerKanbanHandlers } from "./ipc/kanban-handlers"
 import { BrowserManager } from "./browser/manager"
 import { registerTerminalHandlers } from "./ipc/terminal-handlers"
@@ -1538,6 +1542,14 @@ app.whenReady().then(async () => {
     lane: "work",
     hasIndependentSurface: true,
     run: kanbanCardRuns.execute,
+  })
+  // kanban_command_run (plan 136.5): a user column's own command for one card.
+  // The column queue keeps it to one at a time per column.
+  taskRunner.registerKind(KANBAN_COMMAND_RUN_KIND, {
+    autoResume: false,
+    lane: "work",
+    hasIndependentSurface: true,
+    run: kanbanCardRuns.executeCommand,
   })
   const workflowService = new WorkflowService(
     taskRunner,

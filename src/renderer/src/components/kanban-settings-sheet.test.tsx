@@ -64,6 +64,8 @@ const graph: KanbanBoardGraph = {
       owner: "agent",
       outcomes: [],
       actions: [],
+      command: null,
+      commandTimeoutMs: null,
     },
     {
       id: "doing",
@@ -76,6 +78,8 @@ const graph: KanbanBoardGraph = {
       owner: "agent",
       outcomes: [],
       actions: [],
+      command: null,
+      commandTimeoutMs: null,
     },
   ],
   cards: [],
@@ -385,4 +389,50 @@ it("saves goto outcomes by column id and the tracker-write settings, keeping sto
     ],
   })
   expect("actions" in saved[1].columns[1]).toBe(false)
+})
+
+it("edits a command and its time limit only on the user's own columns", async () => {
+  const withUser = {
+    ...graph,
+    columns: graph.columns.map((c) =>
+      c.id === "doing" ? { ...c, owner: "user", command: "npm run deploy" } : c
+    ),
+  } as KanbanBoardGraph
+  await act(async () =>
+    root.render(
+      <KanbanSettingsSheet
+        graph={withUser}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+      />
+    )
+  )
+  expect(document.querySelector("#kb-column-command")).toBeNull() // agent column
+  await act(() => button("In progress").click())
+  const command = document.querySelector(
+    "#kb-column-command"
+  ) as HTMLTextAreaElement
+  const limit = document.querySelector(
+    "#kb-column-timeout"
+  ) as HTMLSelectElement
+  expect(command.value).toBe("npm run deploy")
+  expect(limit.value).toBe("off")
+  const minutes = [...limit.options].map((o) => o.value).slice(1)
+  expect(Number(minutes[0])).toBe(5 * 60_000)
+  expect(Number(minutes.at(-1))).toBe(90 * 60_000)
+  await act(() => {
+    limit.value = String(30 * 60_000)
+    limit.dispatchEvent(new Event("change", { bubbles: true }))
+  })
+  await click("Save changes")
+  const saved = saveSettings.mock.calls[0] as unknown as [
+    string,
+    { columns: Record<string, unknown>[] },
+  ]
+  expect(saved[1].columns[1]).toMatchObject({
+    id: "doing",
+    owner: "user",
+    command: "npm run deploy",
+    commandTimeoutMs: 30 * 60_000,
+  })
 })

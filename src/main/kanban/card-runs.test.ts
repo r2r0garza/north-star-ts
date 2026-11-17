@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest"
 import Database from "better-sqlite3"
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { runMigrations } from "../db/migrations"
@@ -18,7 +18,12 @@ vi.mock("../agent", () => ({
   resolveApproval: vi.fn((id: string, d: string) => gates.get(id)?.(d)),
 }))
 
-import { KanbanCardRuns, cardPrompt } from "./card-runs"
+import {
+  KanbanCardRuns,
+  KANBAN_COMMAND_RUN_KIND,
+  cardPrompt,
+} from "./card-runs"
+import type { CommandRunResult } from "./service"
 import * as kanban from "../db/repositories/kanban"
 import type { TaskRunner } from "../tasks/runner"
 import type { runAgentLoop } from "../agent"
@@ -42,6 +47,8 @@ const item = (id: string, body = "Do the thing"): KanbanItem => ({
 })
 
 function gitRepo(): string {
+  // Not resolved on purpose: macOS temp folders go through the /var →
+  // /private/var symlink, which the worktree path must survive.
   const dir = mkdtempSync(path.join(tmpdir(), "kanban-repo-"))
   const git = (...args: string[]) =>
     execFileSync("git", args, { cwd: dir, stdio: "ignore" })
@@ -55,7 +62,11 @@ function gitRepo(): string {
 }
 
 describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
-  let enqueued: Array<{ id: string; input: Record<string, unknown> }>
+  let enqueued: Array<{
+    id: string
+    kind?: string
+    input: Record<string, unknown>
+  }>
   let prompts: string[]
   let cwds: string[]
   let status: "completed" | "failed" | "blocked" | "unfinished"
@@ -68,7 +79,38 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
   let writes: KanbanCall[]
   let matches: boolean
   let failWrite: boolean
+  // Fake column-command results, in order; then exit 0.
+  let commandResults: Array<CommandRunResult | Error>
+  let commands: Array<{
+    command: string
+    cwd: string
+    env: Record<string, string>
+    timeoutMs: number | null
+  }>
   const upstream = {
+    runCommand: async (
+      command: string,
+      _board: unknown,
+      opts: {
+        cwd: string
+        env: Record<string, string>
+        timeoutMs: number | null
+      }
+    ) => {
+      commands.push({
+        command,
+        cwd: opts.cwd,
+        env: opts.env,
+        timeoutMs: opts.timeoutMs,
+      })
+      const next = commandResults.shift() ?? {
+        exitCode: 0,
+        timedOut: false,
+        output: "ok",
+      }
+      if (next instanceof Error) throw next
+      return next
+    },
     stillMatches: async () => matches,
     runAction: async (call: KanbanCall) => {
       if (failWrite) throw new Error("tracker said no")
@@ -77,8 +119,12 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
     },
   }
   const runner = {
-    enqueueKind: (x: { input: Record<string, unknown> }) => {
-      const task = { id: `t${enqueued.length}`, input: { ...x.input } }
+    enqueueKind: (x: { kind: string; input: Record<string, unknown> }) => {
+      const task = {
+        id: `t${enqueued.length}`,
+        kind: x.kind,
+        input: { ...x.input },
+      }
       enqueued.push(task)
       return task
     },
@@ -137,6 +183,10 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
       emit: () => {},
     } as never)
   const last = () => enqueued.at(-1)!
+  const execCommand = (
+    task: { id: string; input: Record<string, unknown> },
+    signal = new AbortController().signal
+  ) => cards.executeCommand({ task, signal, emit: () => {} } as never)
 
   beforeEach(() => {
     db = new Database(":memory:")
@@ -152,6 +202,9 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
     writes = []
     matches = true
     failWrite = false
+    commandResults = []
+    commands = []
+    vi.mocked(runner.cancel).mockClear()
     workspace = gitRepo()
     cards = new KanbanCardRuns(
       runner,
@@ -615,6 +668,236 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
     await exec(last()) // Dev → Deploy again
     expect(await cards.approve(card.id, "ok")).toEqual({ ok: true })
     expect(kanban.getCard(card.id)!.columnId).toBe(done.id)
+  })
+
+  describe("user-column commands (136.5)", () => {
+    function commandBoard(deploy: Partial<KanbanColumnInput> = {}) {
+      const result = customBoard([
+        { name: "Dev", instructions: "implement" },
+        {
+          name: "Deploy",
+          owner: "user",
+          command: "npm run deploy",
+          commandTimeoutMs: 5 * 60_000,
+          ...deploy,
+        },
+        { name: "Done" },
+      ])
+      kanban.applySync(result.board.id, [item("7"), item("8")])
+      return { ...result, cards: kanban.listCards(result.board.id) }
+    }
+
+    it("runs the command for a card that enters, with its details as env vars, and advances on exit 0", async () => {
+      const { board: b, card, cols } = commandBoard()
+      const [, deploy, done] = cols
+      expect(await cards.enter(card.id, deploy.id)).toEqual({ ok: true })
+      expect(last()).toMatchObject({ kind: KANBAN_COMMAND_RUN_KIND })
+      expect(kanban.getCard(card.id)!.runState).toBe("running")
+      expect(cards.queued(card.id)).toBe(false)
+      await execCommand(last())
+      expect(commands).toEqual([
+        {
+          command: "npm run deploy",
+          cwd: kanban.getCard(card.id)!.worktree,
+          timeoutMs: 5 * 60_000,
+          env: {
+            KANBAN_BOARD_ID: b.id,
+            KANBAN_CARD_ID: card.id,
+            KANBAN_ITEM_ID: "7",
+            KANBAN_ITEM_TITLE: "Issue 7",
+            KANBAN_ITEM_URL: "https://github.com/o/r/issues/7",
+            KANBAN_BRANCH: `ns/kanban/${b.id}/7`,
+          },
+        },
+      ])
+      expect(kanban.getCard(card.id)).toMatchObject({
+        columnId: done.id,
+        runState: "idle",
+      })
+      expect(kanban.listRuns(card.id)).toMatchObject([
+        { kind: "command", status: "completed", result: "exit 0\nok" },
+      ])
+    })
+
+    it("runs in the same subfolder of the card's worktree when the workspace is one", async () => {
+      const repo = workspace
+      mkdirSync(path.join(repo, "app"))
+      writeFileSync(path.join(repo, "app", "x.txt"), "x\n")
+      execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" })
+      execFileSync("git", ["commit", "-qm", "app"], {
+        cwd: repo,
+        stdio: "ignore",
+      })
+      workspace = path.join(repo, "app") // still the unresolved symlinked path
+      const { card, cols } = commandBoard()
+      await cards.enter(card.id, cols[1].id)
+      await execCommand(last())
+      const { worktree } = kanban.getCard(card.id)!
+      expect(commands[0].cwd).toBe(path.join(worktree!, "app"))
+      expect(existsSync(path.join(commands[0].cwd, "x.txt"))).toBe(true)
+    })
+
+    it("fails the card on a non-zero exit when the column has no outcomes, showing the last lines", async () => {
+      const { card, cols } = commandBoard()
+      commandResults = [
+        { exitCode: 2, timedOut: false, output: "a\nb\nc\nd\ne" },
+      ]
+      await cards.enter(card.id, cols[1].id)
+      await execCommand(last())
+      expect(kanban.getCard(card.id)).toMatchObject({
+        columnId: cols[1].id,
+        runState: "failed",
+        runError: "exit 2\n…\nc\nd\ne",
+      })
+      expect(kanban.listRuns(card.id)[0]).toMatchObject({
+        status: "failed",
+        error: "exit 2\na\nb\nc\nd\ne",
+      })
+    })
+
+    it("routes by passed/failed outcomes", async () => {
+      const { card, cols } = commandBoard({
+        outcomes: [
+          { name: "passed", next: "advance" },
+          { name: "failed", next: "goto", target: "Dev" },
+        ],
+      })
+      const [dev, deploy] = cols
+      commandResults = [{ exitCode: 1, timedOut: false, output: "boom" }]
+      await cards.enter(card.id, deploy.id)
+      await execCommand(last())
+      expect(kanban.getCard(card.id)).toMatchObject({
+        columnId: dev.id,
+        runState: "running",
+      })
+      expect(prompts).toHaveLength(0)
+      await exec(last()) // Dev's agent gets the findings
+      expect(prompts[0]).toContain("boom")
+    })
+
+    it("fails on a timeout, and when the command is blocked or can't start", async () => {
+      const {
+        cards: [a, b],
+        cols,
+      } = commandBoard()
+      commandResults = [
+        { exitCode: null, timedOut: true, output: "slow" },
+        new Error("the column's command is blocked by policy and did not run"),
+      ]
+      await cards.enter(a.id, cols[1].id)
+      await execCommand(last())
+      expect(kanban.getCard(a.id)!.runError).toBe("timed out after 5 min\nslow")
+      await cards.enter(b.id, cols[1].id)
+      await execCommand(last())
+      expect(kanban.getCard(b.id)!.runError).toContain("blocked by policy")
+    })
+
+    it("runs one card at a time per column, and other columns in parallel", async () => {
+      const {
+        board: b,
+        cards: [a, c],
+        cols,
+      } = commandBoard()
+      // A second user column with its own command.
+      kanban.saveColumns(b.id, [
+        ...cols.map((col) => ({ ...col })),
+        { name: "Smoke", owner: "user", command: "npm run smoke" },
+      ])
+      const smoke = kanban.listColumns(b.id)[3]
+      kanban.applySync(b.id, [item("7"), item("8"), item("9")])
+      const third = kanban.listCards(b.id)[2]
+
+      await cards.enter(a.id, cols[1].id)
+      await cards.enter(c.id, cols[1].id)
+      await cards.enter(third.id, smoke.id)
+      expect(enqueued.map((t) => t.input.cardId)).toEqual([a.id, third.id])
+      expect(cards.queued(c.id)).toBe(true)
+      expect(kanban.getCard(c.id)!.runState).toBe("running")
+
+      await execCommand(enqueued[0]) // a finishes → c starts
+      expect(enqueued.map((t) => t.input.cardId)).toEqual([
+        a.id,
+        third.id,
+        c.id,
+      ])
+      expect(cards.queued(c.id)).toBe(false)
+    })
+
+    it("drops a queued run and stops a running one when the card leaves the column", async () => {
+      const {
+        cards: [a, c],
+        cols,
+      } = commandBoard()
+      const [dev, deploy] = cols
+      await cards.enter(a.id, deploy.id)
+      await cards.enter(c.id, deploy.id)
+      const running = enqueued.at(-1)!
+
+      // The queued card moves away: its run ends and never starts.
+      expect(await cards.enter(c.id, null)).toEqual({ ok: true })
+      expect(kanban.listRuns(c.id)[0]).toMatchObject({
+        status: "failed",
+        error: "the card was moved",
+      })
+      expect(kanban.getCard(c.id)).toMatchObject({
+        columnId: null,
+        runState: "idle",
+      })
+
+      // The running card moves away: its task is cancelled; the late result is ignored.
+      expect(await cards.enter(a.id, dev.id)).toEqual({ ok: true })
+      expect(runner.cancel).toHaveBeenCalledWith(running.id)
+      const abort = new AbortController()
+      abort.abort()
+      expect(await execCommand(running, abort.signal)).toEqual({
+        stopped: true,
+      })
+      expect(commands).toHaveLength(0)
+      expect(kanban.getCard(a.id)).toMatchObject({
+        columnId: dev.id,
+        runState: "running", // Dev's agent run
+      })
+      expect(enqueued).toHaveLength(2) // no command started for c
+    })
+
+    it("Stop ends a queued command and marks the card stopped", async () => {
+      const {
+        cards: [a, c],
+        cols,
+      } = commandBoard()
+      await cards.enter(a.id, cols[1].id)
+      await cards.enter(c.id, cols[1].id)
+      expect(cards.stop(c.id)).toEqual({ ok: true })
+      expect(kanban.getCard(c.id)).toMatchObject({
+        runState: "failed",
+        runError: "stopped",
+      })
+      expect(cards.queued(c.id)).toBe(false)
+    })
+
+    it("stores a command only on user columns and refuses a time limit outside 5–90 minutes", () => {
+      const { board: b, cols } = commandBoard()
+      expect(cols[1]).toMatchObject({
+        command: "npm run deploy",
+        commandTimeoutMs: 5 * 60_000,
+      })
+      kanban.saveColumns(b.id, [
+        { ...cols[0], command: "nope" },
+        { id: cols[1].id, name: "Deploy", owner: "user" }, // omitted: kept
+        cols[2],
+      ])
+      const saved = kanban.listColumns(b.id)
+      expect(saved[0].command).toBeNull()
+      expect(saved[1].command).toBe("npm run deploy")
+      for (const bad of [60_000, 91 * 60_000, 5 * 60_000 + 0.5])
+        expect(() =>
+          kanban.saveColumns(b.id, [
+            cols[0],
+            { ...cols[1], commandTimeoutMs: bad },
+            cols[2],
+          ])
+        ).toThrow(/5–90 minutes/)
+    })
   })
 
   it("rejects a goto to a missing column and a `when` that isn't an outcome", () => {

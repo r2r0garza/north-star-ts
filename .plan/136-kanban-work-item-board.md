@@ -2,7 +2,7 @@
 
 > Status: 136.1 built 2026-11-12 (`b0ba775`), verified against real GitHub Issues via `gh`. 136.2 built
 > 2026-11-12, unit-tested, not yet run in the app. 136.3 built 2026-11-16, unit-tested, not yet run in the
-> app or against a live tracker. 136.4 not started. Open decisions settled 2026-11-12 (see **Decisions**).
+> app or against a live tracker. 136.4 not started. 136.5 built 2026-11-16, unit-tested, not yet run in the app. Open decisions settled 2026-11-12 (see **Decisions**).
 
 ## Objective
 
@@ -242,6 +242,96 @@ outcome), cross-workspace boards, per-card agent override.
   outcomes with `advance | wait | end | goto <column>` (with `maxReturns`) and on-exit actions filtered by `when` (see **Column outcomes and
   outcome-based exit actions**).
 - `136.4` WIP limits, budget caps, upstream drift handling.
+- `136.5` User-column commands: a user column can run a command the user wrote on each card that enters
+  (see **136.5 User-column commands**).
+
+## 136.5 User-column commands (built 2026-11-16; decisions settled the same day)
+
+A user column (`owner: "user"`) can carry a shell command that the user writes in the settings sheet. When
+a card enters, the command runs for that card instead of the card waiting for the person to mark it done.
+The user wrote it, so it skips the approval prompt and can run with no timeout. The agent can never write it.
+
+**Decisions**
+
+- **Who writes it:** only the user, through the settings sheet (IPC). The agent never sees or sets it.
+- **Kind of command:** finite jobs only (build, test, deploy), not long-running services. The exit code
+  decides the outcome.
+- **Concurrency:** one run at a time **per column**, first in, first out. Other columns keep working in
+  parallel.
+- **Card context:** every run is tied to one card. Its environment has the card's values (below), and it
+  gets its own run record.
+- **Card leaves the column:** a queued run is dropped and a running one is stopped.
+- **Where it runs:** through `createEnvironment` with the user's execution settings, like the board's
+  other commands. No approval prompt, but the policy engine still runs first: a `hard_block` command fails
+  the run with that reason (the same check as `defaultRunCall` in `src/main/kanban/service.ts`).
+- **Timeout:** a column setting: Off, or On with 5–90 minutes. Main checks it again before each run and
+  refuses anything else (the setting is saved data, not only UI).
+
+**Agent and user columns (changes to `kanban_write`)**
+
+- `owner` is removed from the tool's description and parameters. Every column the agent writes is an
+  agent column.
+- The agent sees user columns **read-only** (name and position), so its outcomes can `goto` them and an
+  `advance` can land in one.
+- On save, user columns stay where they are: each one stays right after the agent column it followed
+  (first, if it was first). If the agent removed that column, it stays after as many agent columns as
+  before (`mergeAgentColumns` in `src/shared/kanban.ts`). The agent can add, reorder, rename and remove its own
+  columns, but never moves, renames or removes a user column. A name in the agent's list that matches a
+  user column is refused.
+- Today `saveColumns` (`src/main/db/repositories/kanban.ts`) replaces the whole list and removes any
+  column left out, so this merge needs to happen before it on the agent path. The settings sheet
+  (user path) keeps full control.
+
+**Shape**
+
+- `KanbanColumn` gets `command: string | null` and `commandTimeoutMs: number | null` (null = Off). It's an
+  additive migration with defaults `null` / `null`. `KanbanColumnInput` from the user path carries both
+  fields; the agent path never does, and keeps the stored values.
+- **Entering a user column with a command:** the enter actions run as today. Then, instead of `waiting`,
+  the card goes into that column's queue (`runState: "running"`, shown as *Queued* until it starts). A new
+  `kanban_card_runs` row records the run (with a kind that marks it as a command run, not an agent run).
+- **Working folder:** the card's working folder (`workdir`: its own worktree in a git workspace, otherwise
+  the workspace). The existing one-at-a-time lock for non-git workspaces still applies.
+- **Environment variables:** `KANBAN_BOARD_ID`, `KANBAN_CARD_ID`, `KANBAN_ITEM_ID`, `KANBAN_ITEM_TITLE`,
+  `KANBAN_ITEM_URL`, `KANBAN_BRANCH`. They're passed as environment variables, never substituted into the
+  command text, so a tracker title can't change what the command runs.
+- **Outcome:** exit 0 reports `passed`, anything else `failed`. If the column has outcome rules, they take
+  over from there (advance, wait, end, goto). If it has none, 0 means done (the card advances) and a failure
+  sets the card to `failed` with the end of the output as `runError`. A timeout sets `failed` ("timed out
+  after N min").
+- **Output:** the end of the output is kept on the run record, bounded by the existing output cap.
+- **Stop:** the card's existing Stop (`stop()` in `card-runs.ts`) gets a command-run branch. Moving a card
+  out of the column calls the same path for a running card and removes a queued one.
+- **Restart:** the startup sweep that marks `running` cards `failed` ("interrupted") already covers this.
+  Queued cards are marked the same way. Nothing reruns on its own; the user reruns by moving the card back
+  in.
+
+**Engine changes**
+
+- `ExecOptions.timeoutMs` is a required number today (`src/main/agent/env/types.ts`). For Off it becomes
+  optional (no timer). Only the board command path may leave it out; the agent tools keep passing a capped
+  number. Check both `local.ts` and `container.ts`.
+- `exec` needs an `env` option for the card variables (`ExecFileOptions` already has one).
+- The per-column queue: check whether the task runner can limit a column to one run at a time. If it
+  can't, add a small in-memory queue keyed by column id in `card-runs.ts`.
+
+**UI**
+
+- Settings sheet, user columns only: a command field, and a timeout control (Off / On + 5–90 min).
+- Card: *Queued*, *Running* (with Stop), and on finish the outcome or `failed` reason, with the end of the
+  output.
+
+**Tests**
+
+- `kanban_write`: `owner` is not accepted, user columns keep their position across agent updates, a name
+  clash with a user column is refused, and user columns appear read-only in what the agent can read.
+- `card-runs`: enter → queued → running → passed/failed → outcome routing; one at a time per column, while
+  another column runs in parallel; leaving the column drops a queued run and stops a running one; timeout;
+  a hard-blocked command fails the run without running it; the env vars reach the command.
+- Repository: migration defaults; the user path saves `command`/`commandTimeoutMs` and the agent path keeps
+  them.
+- Settings sheet: the command and timeout fields show only on user columns, and the timeout is limited to
+  Off or 5–90 min.
 
 ## 136.3 as built
 
@@ -271,6 +361,10 @@ outcome), cross-workspace boards, per-card agent override.
 - **Before writing,** the intake recipe is replayed once per batch and the item must still match the
   filter. If not (or the re-check fails), the card is `blocked` and nothing is written. A failed write
   marks the card `failed`, and Retry resumes the parked move.
+- **User columns** (added 2026-11-16, v83): a column's `owner` is `agent` (default) or `user`, for a step the
+  user does themselves (deploy, sign-off, device test). No agent runs there. On-enter actions still run,
+  then the card waits as "your turn", with the column's instructions shown as what to do. "Done" (picking
+  an outcome if the column has any) leaves it like an approval: exit actions, `advance`/`end`/`goto`.
 - **Known limits:** actions and the re-check run inline in the IPC call or the card-run task, with up to
   2 minutes each and no Stop for an in-flight write. The re-check replays the whole intake query rather
   than one item. Actions are added or edited only through the agent. There's no live tracker run yet.
@@ -348,3 +442,24 @@ outcome), cross-workspace boards, per-card agent override.
 - **Known limits:** continuation turns don't summarize the transcript between turns the way workflow
   steps do (in-turn compaction still applies); moves are by menu, not drag-and-drop; no per-column model choice; any
   number of cards can run at once until 136.4's WIP limits (the work lane caps it at 6).
+
+**136.5 as built**
+
+- **Code:** `mergeAgentColumns` and `commandTimeoutProblem` in `src/shared/kanban.ts`;
+  `ensureKanbanColumnCommands` (v84) in `src/main/db/kanban-schema.ts`; `listColumnCommandRuns` in the
+  repository; `KanbanService.runCommand`; the queue (`startNextCommand`, `dropCommand`) and
+  `executeCommand` in `src/main/kanban/card-runs.ts`, registered as the `kanban_command_run` task kind
+  (work lane).
+- **Queue:** kept in the database. A column's unfinished command runs are the queue; the one with a task
+  is running. The next one starts when a run finishes, is stopped, or its card moves away. A quit marks
+  them all interrupted (the existing startup sweep).
+- **No time limit:** `ExecOptions.timeoutMs` stays a required number; `Infinity` means no timer. Only
+  this path passes it. `exec` gained an `env` option (local and container).
+- **Card:** a waiting card shows *queued*; a command card can be moved or sent back while it runs. A
+  failure shows the exit code and the last three output lines; the run history keeps the last 4,000
+  characters.
+- **Fixed alongside:** `workdir()` used to compute the worktree subfolder with `path.relative` between git's
+  resolved top folder and the workspace as given, which broke when the workspace path went through a
+  symlink (macOS `/var` → `/private/var`). It now asks git (`rev-parse --show-prefix`). The tests run on
+  unresolved temp paths to cover it.
+

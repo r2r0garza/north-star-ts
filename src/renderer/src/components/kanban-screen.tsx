@@ -164,6 +164,9 @@ function CardMenu({
 }) {
   const running = card.runState === "running"
   const index = columns.findIndex((c) => c.id === card.columnId)
+  // A column command (136.5) is dropped or stopped when its card moves away.
+  const locked =
+    running && !(columns[index]?.owner === "user" && columns[index]?.command)
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -187,13 +190,13 @@ function CardMenu({
             Rerun this column…
           </DropdownMenuItem>
         ) : null}
-        {!running && index >= 0 ? (
+        {!locked && index >= 0 ? (
           <DropdownMenuItem onSelect={() => onAction({ kind: "sendBack" })}>
             Send back to {columns[index - 1]?.name ?? "Inbox"}…
           </DropdownMenuItem>
         ) : null}
         <DropdownMenuSub>
-          <DropdownMenuSubTrigger disabled={running}>
+          <DropdownMenuSubTrigger disabled={locked}>
             Move to
           </DropdownMenuSubTrigger>
           <DropdownMenuSubContent>
@@ -420,10 +423,12 @@ function Card({
   const badge =
     card.pendingApproval || (card.pendingAction && !card.pendingAction.approved)
       ? ({ label: "needs approval", variant: "default" } as const)
-      : card.runState === "waiting" &&
-          columns.find((c) => c.id === card.columnId)?.owner === "user"
-        ? ({ label: "your turn", variant: "default" } as const)
-        : RUN_BADGE[card.runState]
+      : card.queued
+        ? ({ label: "queued", variant: "outline" } as const)
+        : card.runState === "waiting" &&
+            columns.find((c) => c.id === card.columnId)?.owner === "user"
+          ? ({ label: "your turn", variant: "default" } as const)
+          : RUN_BADGE[card.runState]
   return (
     <div
       className={cn(
@@ -434,7 +439,9 @@ function Card({
       <div className="flex items-start justify-between gap-2">
         <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
           #{item.id}
-          {card.runState === "running" ? <Spinner className="size-3" /> : null}
+          {card.runState === "running" && !card.queued ? (
+            <Spinner className="size-3" />
+          ) : null}
         </span>
         <span className="flex items-center gap-1.5">
           {item.url ? (

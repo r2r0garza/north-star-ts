@@ -157,6 +157,24 @@ export interface KanbanColumn {
   owner: KanbanOwner
   outcomes: KanbanOutcome[]
   actions: KanbanAction[]
+  // User columns only (136.5): a shell command the user wrote, run for each
+  // card that enters. null timeout = no time limit.
+  command: string | null
+  commandTimeoutMs: number | null
+}
+
+// A user-column command's time limit: off (null) or 5–90 minutes.
+export const COMMAND_TIMEOUT_MIN_MS = 5 * 60_000
+export const COMMAND_TIMEOUT_MAX_MS = 90 * 60_000
+
+export function commandTimeoutProblem(value: unknown): string | null {
+  if (value === null) return null
+  return typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= COMMAND_TIMEOUT_MIN_MS &&
+    value <= COMMAND_TIMEOUT_MAX_MS
+    ? null
+    : "the command time limit must be off or 5–90 minutes"
 }
 
 // What the user edits (settings sheet) or the agent sends (kanban_write).
@@ -171,6 +189,9 @@ export interface KanbanColumnInput {
   owner?: KanbanOwner
   outcomes?: KanbanOutcome[]
   actions?: KanbanAction[]
+  // User path only; the agent path never sends these (stored values are kept).
+  command?: string | null
+  commandTimeoutMs?: number | null
 }
 
 // One upstream action attempt: the audit log and the idempotency record.
@@ -205,6 +226,8 @@ export type KanbanRunState =
 
 export interface KanbanCardRun {
   id: string
+  // agent: an agent turn. command: a user column's command (136.5).
+  kind: "agent" | "command"
   cardId: string
   columnId: string | null
   columnName: string
@@ -242,6 +265,8 @@ export interface KanbanCard {
   continuation: KanbanContinuation | null
   // The upstream action the card is parked on, if any (attached by the graph).
   pendingAction?: KanbanUpstreamAction | null
+  // Set while the card waits its turn for its column's command (attached by the graph).
+  queued?: boolean
   // Set while a running card is parked on a tool call needing the user's yes.
   pendingApproval?: {
     requestId: string
@@ -724,4 +749,58 @@ export function columnProblem(
       return `action "${a.name}" runs when "${unknown}", which is not an outcome of this column`
   }
   return null
+}
+
+// The agent's column list merged with the user's columns (136.5). The agent
+// writes only agent columns. Each user column keeps its settings and stays
+// right after the agent column it followed (or first, if it was first); if the
+// agent removed that column, it stays after as many agent columns as before.
+// A name that clashes with a user column is refused.
+export function mergeAgentColumns(
+  existing: KanbanColumn[],
+  input: KanbanColumnInput[]
+): KanbanColumnInput[] {
+  const users = existing.filter((c) => c.owner === "user")
+  const clash = input.find((c) =>
+    users.some((u) => u.name.trim() === c.name.trim())
+  )
+  if (clash)
+    throw new Error(
+      `"${clash.name}" is one of the user's own columns; you can't change it. Pick another name.`
+    )
+  const merged: KanbanColumnInput[] = input.map(
+    ({ command: _c, commandTimeoutMs: _t, ...c }) => ({ ...c, owner: "agent" })
+  )
+  const isUser = (c: KanbanColumnInput) => c.owner === "user"
+  for (const u of users) {
+    const prior = existing
+      .slice(0, existing.indexOf(u))
+      .filter((c) => c.owner !== "user")
+    const anchor = prior.at(-1)
+    let at = anchor
+      ? merged.findIndex(
+          (c) =>
+            !isUser(c) &&
+            (c.id === anchor.id || c.name.trim() === anchor.name.trim())
+        ) + 1
+      : 0
+    if (anchor && at === 0)
+      for (let seen = 0; at < merged.length && seen < prior.length; at++)
+        if (!isUser(merged[at])) seen++
+    // After any user columns already placed there (they came first before).
+    while (at < merged.length && isUser(merged[at])) at++
+    merged.splice(at, 0, {
+      id: u.id,
+      name: u.name,
+      agentName: u.agentName,
+      instructions: u.instructions,
+      gate: u.gate,
+      owner: "user",
+      outcomes: u.outcomes,
+      actions: u.actions,
+      command: u.command,
+      commandTimeoutMs: u.commandTimeoutMs,
+    })
+  }
+  return merged
 }

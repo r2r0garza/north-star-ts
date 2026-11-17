@@ -116,6 +116,23 @@ describe("LocalEnvironment.exec", () => {
     expect(r.timedOut).toBe(true)
   })
 
+  it("runs with no time limit (Infinity) and layers extra env vars", async () => {
+    const r = await env.exec(
+      nodeCmd(
+        "setTimeout(() => process.stdout.write(process.env.KANBAN_CARD_ID), 50)"
+      ),
+      {
+        cwd: workspace,
+        timeoutMs: Infinity,
+        maxOutputBytes: 1024 * 1024,
+        env: { KANBAN_CARD_ID: "card-1" },
+      }
+    )
+    expect(r.timedOut).toBe(false)
+    expect(r.exitCode).toBe(0)
+    expect(r.stdout.toString("utf8")).toBe("card-1")
+  })
+
   it("preserves multibyte UTF-8 (decodes the Buffer once)", async () => {
     const r = await env.exec(
       nodeCmd("process.stdout.write('日本語 — café 🚀')"),
