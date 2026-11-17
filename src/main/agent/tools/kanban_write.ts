@@ -2,7 +2,9 @@ import { TOOL_EFFECTS, type Tool } from "./types"
 import { toolError } from "./output"
 import * as kanban from "../../db/repositories/kanban"
 import {
+  asActions,
   asFilter,
+  asOutcomes,
   compileIntakeQuery,
   normalizeItems,
   parseJsonOutput,
@@ -63,6 +65,19 @@ export const kanbanWriteTool: Tool = {
         "column (empty = no agent run; the card just sits there, e.g. a final Done column). agent: " +
         "a named agent (omit for the built-in North Star agent). gate: 'agent' (default; the card " +
         "moves on when the agent reports done) or 'human' (the card waits for the user to approve). " +
+        "outcomes (optional): the column's possible verdicts on the item, e.g. QA " +
+        "[{ name: 'passed', next: 'advance' }, { name: 'failed', next: 'goto', target: 'Development', maxReturns: 2 }, " +
+        "{ name: 'incomplete', next: 'wait' }]. The agent reports one in its handoff. next: 'advance' " +
+        "(next column), 'wait' (a person decides), 'end' (the card finishes here), or 'goto' (rerun the " +
+        "`target` column, by name, with this column's findings; after maxReturns automatic returns, " +
+        "default 2, the card waits for a person). Only judging columns (review, QA) need outcomes.\n" +
+        "actions (optional): tracker writes, run without an LLM: { name, phase: 'enter'|'exit', " +
+        "when?: [outcome names] (exit only; omit for any), command | tool+args }. Placeholders " +
+        "{{id}} {{url}} {{branch}} {{result}} (the column's handoff text, exit only) are bound per card, " +
+        "shell-quoted in a command (do NOT add quotes), e.g. `gh issue edit {{id}} --add-label in-review`, " +
+        "`gh issue comment {{id}} --body {{result}}`. Probe the CLI/MCP call yourself first on a test item. " +
+        "Every write is audited and goes through the board's write-approval level, which only the user sets. " +
+        "Omit outcomes/actions on an existing column to keep them.\n" +
         "Columns are matched to existing ones by name, so renaming creates a new column; a removed " +
         "column must be empty. Omit `columns` when updating to leave them unchanged.\n" +
         "sample: optionally paste the raw JSON you got; the result shows how it normalizes.\n\n" +
@@ -79,7 +94,7 @@ export const kanbanWriteTool: Tool = {
             type: "array",
             items: {},
             description:
-              "Ordered columns: names or { name, instructions?, agent?, gate? }.",
+              "Ordered columns: names or { name, instructions?, agent?, gate?, outcomes?, actions? }.",
           },
           syncIntervalMinutes: {
             type: "number",
@@ -177,6 +192,12 @@ export const kanbanWriteTool: Tool = {
                   instructions: text(o.instructions),
                   agentName: text(o.agent) || null,
                   gate: o.gate === "human" ? "human" : "agent",
+                  ...(o.outcomes !== undefined
+                    ? { outcomes: asOutcomes(parsed(o.outcomes)) }
+                    : {}),
+                  ...(o.actions !== undefined
+                    ? { actions: asActions(parsed(o.actions)) }
+                    : {}),
                 }
               : null
           })
@@ -184,6 +205,15 @@ export const kanbanWriteTool: Tool = {
       : boardId
         ? undefined
         : []
+    for (const column of columns ?? [])
+      for (const action of column.actions ?? []) {
+        const actionProblem = callProblem(action, workspace)
+        if (actionProblem)
+          return toolError(
+            "bad_args",
+            `column "${column.name}", action "${action.name}": ${actionProblem}`
+          )
+      }
     const minutes =
       typeof a.syncIntervalMinutes === "number"
         ? a.syncIntervalMinutes
@@ -212,7 +242,7 @@ export const kanbanWriteTool: Tool = {
       })
     } catch (err) {
       if (err instanceof kanban.KanbanColumnInUseError)
-        return toolError("column_in_use", err.message)
+        return toolError("bad_columns", err.message)
       throw err
     }
     return JSON.stringify({
@@ -223,6 +253,8 @@ export const kanbanWriteTool: Tool = {
         instructions: c.instructions,
         agent: c.agentName,
         gate: c.gate,
+        outcomes: c.outcomes,
+        actions: c.actions,
       })),
       filter,
       query:
@@ -231,7 +263,8 @@ export const kanbanWriteTool: Tool = {
           : undefined,
       resolvedCall,
       preview,
-      next: "Ask the user to open Boards and approve the intake recipe; it syncs after approval.",
+      writeApproval: board.writeApproval,
+      next: "Ask the user to open Boards and approve the intake recipe; it syncs after approval. Tracker writes from actions ask for approval on the card per the board's write-approval level (Settings).",
     })
   },
 }

@@ -71,6 +71,31 @@ export interface KanbanItem {
   updatedAt: string | null
 }
 
+// How upstream (tracker) writes are approved (plan 136 Decision 4).
+export type KanbanWriteApproval =
+  | "always"
+  | "once_per_action"
+  | "once_per_board"
+  | "auto"
+
+export const WRITE_APPROVALS: KanbanWriteApproval[] = [
+  "always",
+  "once_per_action",
+  "once_per_board",
+  "auto",
+]
+
+export type KanbanBoardSummary = KanbanBoard & { needsAttention: boolean }
+
+export function cardNeedsAttention(
+  card: Pick<KanbanCard, "runState" | "pendingApproval">
+): boolean {
+  return (
+    !!card.pendingApproval ||
+    ["waiting", "blocked", "failed"].includes(card.runState)
+  )
+}
+
 export interface KanbanBoard {
   id: string
   name: string
@@ -78,6 +103,12 @@ export interface KanbanBoard {
   source: KanbanSource | null
   filter: KanbanIntakeFilter
   approvedHash: string | null
+  writeApproval: KanbanWriteApproval
+  // Hashes of approved action recipes (once_per_action) or of the whole
+  // board's actions (once_per_board).
+  approvedActions: string[]
+  // Kill switch: while set, every upstream action waits for the user.
+  actionsPaused: boolean
   syncIntervalMs: number
   lastSyncAt: number | null
   lastSyncError: string | null
@@ -89,6 +120,28 @@ export interface KanbanBoard {
 // for the user to approve.
 export type KanbanGate = "agent" | "human"
 
+// What a column's reported outcome does next (plan 136.3). `wait` needs a
+// person whatever the gate; `end` finishes the card on this column; `goto`
+// reruns `target` (a column id) with this run's findings as feedback.
+export type KanbanOutcomeNext = "advance" | "wait" | "end" | "goto"
+
+export interface KanbanOutcome {
+  name: string
+  next: KanbanOutcomeNext
+  target?: string
+  maxReturns?: number // goto only; default DEFAULT_MAX_RETURNS
+}
+
+export const DEFAULT_MAX_RETURNS = 2
+
+// An upstream write, authored once as a recipe and replayed with the card's
+// values bound in. `when` (exit only) limits it to those outcomes; omitted = any.
+export interface KanbanAction extends KanbanCall {
+  name: string
+  phase: "enter" | "exit"
+  when?: string[]
+}
+
 export interface KanbanColumn {
   id: string
   boardId: string
@@ -97,16 +150,40 @@ export interface KanbanColumn {
   agentName: string | null // null = the built-in North Star agent
   instructions: string // empty = no agent run; the card just sits here
   gate: KanbanGate
+  outcomes: KanbanOutcome[]
+  actions: KanbanAction[]
 }
 
 // What the user edits (settings sheet) or the agent sends (kanban_write).
-// `id` keeps an existing column; without it a new one is made.
+// `id` keeps an existing column; without it a new one is made. A goto
+// `target` may be a column id or name. `actions` omitted keeps the stored ones.
 export interface KanbanColumnInput {
   id?: string
   name: string
   agentName?: string | null
   instructions?: string
   gate?: KanbanGate
+  outcomes?: KanbanOutcome[]
+  actions?: KanbanAction[]
+}
+
+// One upstream action attempt: the audit log and the idempotency record.
+export interface KanbanUpstreamAction {
+  id: string
+  cardId: string
+  columnId: string | null
+  columnName: string
+  actionName: string
+  phase: "enter" | "exit"
+  outcome: string | null
+  recipeHash: string
+  call: KanbanCall
+  status: "pending" | "ok" | "failed" | "skipped"
+  approved: boolean
+  output: string | null
+  error: string | null
+  createdAt: number
+  finishedAt: number | null
 }
 
 // idle: nothing to do here. waiting: the column's human gate needs approval.
@@ -128,6 +205,7 @@ export interface KanbanCardRun {
   taskId: string | null
   conversationId: string | null
   status: "running" | "completed" | "failed"
+  outcome: string | null
   result: string | null
   error: string | null
   startedAt: number
@@ -149,6 +227,15 @@ export interface KanbanCard {
   runError: string | null
   worktree: string | null
   branch: string | null
+  // The outcome the current column's run reported (the person may change it).
+  outcome: string | null
+  // Visits per column id (keys idempotency) and automatic gotos per column id.
+  visits: Record<string, number>
+  returns: Record<string, number>
+  // A move parked on an upstream action (approval or failure), resumed later.
+  continuation: KanbanContinuation | null
+  // The upstream action the card is parked on, if any (attached by the graph).
+  pendingAction?: KanbanUpstreamAction | null
   // Set while a running card is parked on a tool call needing the user's yes.
   pendingApproval?: {
     requestId: string
@@ -159,6 +246,31 @@ export interface KanbanCard {
   createdAt: number
   updatedAt: number
 }
+
+// enter: put the card in a column (running its on-enter actions, then its
+// agent). leave: run the column's exit actions for `outcome`, then go `to`.
+// `findings`: a goto's reason, handed to the target column as untrusted data.
+export interface KanbanFindings {
+  column: string
+  outcome: string
+  result: string
+}
+
+export type KanbanContinuation =
+  | {
+      kind: "enter"
+      columnId: string | null
+      feedback?: string
+      findings?: KanbanFindings
+    }
+  | {
+      kind: "leave"
+      fromColumnId: string
+      outcome: string | null
+      to: { columnId: string } | { done: true }
+      findings?: KanbanFindings
+      countReturn?: boolean
+    }
 
 export interface KanbanBoardGraph {
   board: KanbanBoard
@@ -241,6 +353,33 @@ function safeUrl(raw: string | null): string | null {
   }
 }
 
+function itemUrl(row: unknown, path: KanbanPath | undefined): string | null {
+  const mapped = safeUrl(scalar(row, path))
+  if (!mapped) return null
+  const url = new URL(mapped)
+  const api = url.pathname.match(/^(.*)\/_apis\/wit\/workitems\/(\d+)\/?$/i)
+  if (
+    !api ||
+    !(
+      url.hostname.endsWith(".visualstudio.com") ||
+      url.hostname === "dev.azure.com"
+    )
+  )
+    return mapped
+
+  const html = safeUrl(scalar(row, ["_links", "html", "href"]))
+  if (html) return html
+  const project = scalar(row, ["fields", "System.TeamProject"])
+  let prefix = api[1]
+  const organizationOnly =
+    url.hostname === "dev.azure.com" ? /^\/[^/]+$/.test(prefix) : !prefix
+  if (organizationOnly && project) prefix += `/${encodeURIComponent(project)}`
+  url.pathname = `${prefix}/_workitems/edit/${api[2]}`
+  url.search = ""
+  url.hash = ""
+  return url.href
+}
+
 // MCP results arrive as text; commands as stdout. Both must be JSON.
 export function parseJsonOutput(output: string): unknown {
   try {
@@ -270,7 +409,7 @@ export function normalizeItems(
     if (!id || !title) continue
     items.push({
       id,
-      url: safeUrl(scalar(row, f.url)),
+      url: itemUrl(row, f.url),
       title,
       body: (scalar(row, f.body) ?? "").slice(0, MAX_BODY_CHARS),
       type: scalar(row, f.type),
@@ -453,4 +592,130 @@ export function resolveIntakeCall(
       ? (replaceInArgs(source.args, query) as Record<string, unknown>)
       : undefined,
   }
+}
+
+// ── column outcomes and upstream actions (plan 136.3) ───────────────────────
+
+const ACTION_VARS = ["id", "url", "branch", "result"] as const
+export type KanbanActionVars = Record<(typeof ACTION_VARS)[number], string>
+
+function bindArgs(value: unknown, vars: KanbanActionVars): unknown {
+  if (typeof value === "string")
+    return ACTION_VARS.reduce(
+      (s, k) => s.split(`{{${k}}}`).join(vars[k]),
+      value
+    )
+  if (Array.isArray(value)) return value.map((v) => bindArgs(v, vars))
+  if (value && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k, bindArgs(v, vars)])
+    )
+  return value
+}
+
+// The call an action runs for one card. Values go into a command shell-quoted
+// as one argument each (never spliced raw), into MCP args as plain strings.
+export function bindActionCall(
+  action: KanbanAction,
+  vars: KanbanActionVars
+): KanbanCall {
+  return {
+    command: action.command
+      ? ACTION_VARS.reduce(
+          (s, k) => s.split(`{{${k}}}`).join(shellQuote(vars[k])),
+          action.command
+        )
+      : undefined,
+    tool: action.tool,
+    args: action.args
+      ? (bindArgs(action.args, vars) as Record<string, unknown>)
+      : undefined,
+  }
+}
+
+const NEXTS = new Set(["advance", "wait", "end", "goto"])
+
+// Coerce stored/model-supplied outcomes; drops nameless or duplicate ones.
+export function asOutcomes(raw: unknown): KanbanOutcome[] {
+  if (!Array.isArray(raw)) return []
+  const seen = new Set<string>()
+  const out: KanbanOutcome[] = []
+  for (const r of raw) {
+    const o = (r && typeof r === "object" ? r : {}) as Record<string, unknown>
+    const name = typeof o.name === "string" ? o.name.trim() : ""
+    if (!name || seen.has(name)) continue
+    seen.add(name)
+    const next = NEXTS.has(o.next as string)
+      ? (o.next as KanbanOutcomeNext)
+      : "advance"
+    out.push(
+      next === "goto"
+        ? {
+            name,
+            next,
+            target: typeof o.target === "string" ? o.target.trim() : "",
+            maxReturns:
+              typeof o.maxReturns === "number" && o.maxReturns >= 0
+                ? Math.floor(o.maxReturns)
+                : DEFAULT_MAX_RETURNS,
+          }
+        : { name, next }
+    )
+  }
+  return out
+}
+
+// Coerce stored/model-supplied actions, keeping only recipe keys (anything else
+// would be stored and hashed). Shape problems are reported by `actionProblem`.
+export function asActions(raw: unknown): KanbanAction[] {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .filter((r) => r && typeof r === "object")
+    .map((r) => {
+      const o = r as Record<string, unknown>
+      const when = Array.isArray(o.when)
+        ? o.when.filter((w): w is string => typeof w === "string" && !!w.trim())
+        : []
+      return {
+        name: typeof o.name === "string" ? o.name.trim() : "",
+        phase: o.phase === "enter" ? "enter" : "exit",
+        ...(typeof o.command === "string" && o.command.trim()
+          ? { command: o.command.trim() }
+          : {}),
+        ...(typeof o.tool === "string" && o.tool.trim()
+          ? { tool: o.tool.trim() }
+          : {}),
+        ...(o.args && typeof o.args === "object" && !Array.isArray(o.args)
+          ? { args: o.args as Record<string, unknown> }
+          : {}),
+        ...(o.phase !== "enter" && when.length ? { when } : {}),
+      } satisfies KanbanAction
+    })
+}
+
+// Why a column's outcomes/actions can't be saved, or null. `columns` is every
+// column's id and name after the save (goto targets are already resolved).
+export function columnProblem(
+  column: { name: string; outcomes: KanbanOutcome[]; actions: KanbanAction[] },
+  columns: Array<{ id: string; name: string }>
+): string | null {
+  for (const o of column.outcomes)
+    if (o.next === "goto" && !columns.some((c) => c.id === o.target))
+      return `outcome "${o.name}" goes to "${o.target}", which is not a column on this board`
+  const names = new Set<string>()
+  for (const a of column.actions) {
+    if (!a.name) return "every action needs a name"
+    if (names.has(a.name)) return `two actions are named "${a.name}"`
+    names.add(a.name)
+    if (!!a.command === !!a.tool)
+      return `action "${a.name}" needs exactly one of command or tool`
+    if (a.tool && !/^mcp__[^_].*__.+/.test(a.tool))
+      return `action "${a.name}": tool must be an MCP tool name like mcp__<server>__<tool>`
+    const unknown = a.when?.find(
+      (w) => !column.outcomes.some((o) => o.name === w)
+    )
+    if (unknown)
+      return `action "${a.name}" runs when "${unknown}", which is not an outcome of this column`
+  }
+  return null
 }

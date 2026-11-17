@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
   asFilter,
+  cardNeedsAttention,
   compileIntakeQuery,
   matchesFilter,
   normalizeItems,
@@ -43,6 +44,34 @@ const item = (patch: Partial<KanbanItem>): KanbanItem => ({
   assignees: [],
   updatedAt: null,
   ...patch,
+})
+
+describe("cardNeedsAttention", () => {
+  it.each(["waiting", "blocked", "failed"] as const)(
+    "flags %s cards",
+    (runState) => {
+      expect(cardNeedsAttention({ runState })).toBe(true)
+    }
+  )
+  it.each(["idle", "running", "done"] as const)(
+    "does not flag %s cards without approvals",
+    (runState) => {
+      expect(cardNeedsAttention({ runState })).toBe(false)
+    }
+  )
+  it("flags running cards waiting on a tool approval", () => {
+    expect(
+      cardNeedsAttention({
+        runState: "running",
+        pendingApproval: {
+          requestId: "r",
+          tool: "exec_command",
+          summary: "Run command",
+          reason: "Approval required",
+        },
+      })
+    ).toBe(true)
+  })
 })
 
 describe("normalizeItems", () => {
@@ -89,6 +118,94 @@ describe("normalizeItems", () => {
       assignees: ["a@b.c"],
       state: "New",
     })
+  })
+
+  it.each([
+    [
+      "https://org.visualstudio.com/_apis/wit/workItems/42",
+      "My Project",
+      "https://org.visualstudio.com/My%20Project/_workitems/edit/42",
+    ],
+    [
+      "https://dev.azure.com/org/_apis/wit/workItems/42?api-version=7.1",
+      "My Project",
+      "https://dev.azure.com/org/My%20Project/_workitems/edit/42",
+    ],
+    [
+      "https://org.visualstudio.com/Project/_apis/wit/workItems/42",
+      undefined,
+      "https://org.visualstudio.com/Project/_workitems/edit/42",
+    ],
+    [
+      "https://dev.azure.com/org/Project/_apis/wit/workItems/42",
+      undefined,
+      "https://dev.azure.com/org/Project/_workitems/edit/42",
+    ],
+    [
+      "https://org.visualstudio.com/_apis/wit/workItems/42",
+      undefined,
+      "https://org.visualstudio.com/_workitems/edit/42",
+    ],
+    [
+      "https://org.visualstudio.com/Project/_workitems/edit/42",
+      "Other",
+      "https://org.visualstudio.com/Project/_workitems/edit/42",
+    ],
+    [
+      "https://example.com/_apis/wit/workItems/42",
+      "Project",
+      "https://example.com/_apis/wit/workItems/42",
+    ],
+  ])("maps work item URL %s to its browser page", (url, project, expected) => {
+    const [i] = normalizeItems(
+      [
+        {
+          id: 42,
+          url,
+          fields: { "System.Title": "Item", "System.TeamProject": project },
+        },
+      ],
+      { ...ado, fields: { ...ado.fields, url: "url" } }
+    )
+    expect(i.url).toBe(expected)
+  })
+
+  it("prefers ADO's HTML link over its REST API URL", () => {
+    const [i] = normalizeItems(
+      [
+        {
+          id: 42,
+          url: "https://org.visualstudio.com/_apis/wit/workItems/42",
+          fields: { "System.Title": "Item" },
+          _links: {
+            html: {
+              href: "https://org.visualstudio.com/Project/_workitems/edit/42",
+            },
+          },
+        },
+      ],
+      { ...ado, fields: { ...ado.fields, url: "url" } }
+    )
+    expect(i.url).toBe(
+      "https://org.visualstudio.com/Project/_workitems/edit/42"
+    )
+  })
+
+  it("rejects unsafe ADO HTML links and builds the browser URL instead", () => {
+    const [i] = normalizeItems(
+      [
+        {
+          id: 42,
+          url: "https://org.visualstudio.com/_apis/wit/workItems/42",
+          fields: { "System.Title": "Item", "System.TeamProject": "Project" },
+          _links: { html: { href: "javascript:alert(1)" } },
+        },
+      ],
+      { ...ado, fields: { ...ado.fields, url: "url" } }
+    )
+    expect(i.url).toBe(
+      "https://org.visualstudio.com/Project/_workitems/edit/42"
+    )
   })
 
   it("reads itemsPath, drops rows without id/title, rejects non-http urls", () => {

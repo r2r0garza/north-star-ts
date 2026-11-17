@@ -1,8 +1,17 @@
 import { randomUUID } from "crypto"
 import { getDb } from "../connection"
 import {
+  asActions,
   asFilter,
+  asOutcomes,
+  columnProblem,
+  WRITE_APPROVALS,
+  type KanbanAction,
   type KanbanBoard,
+  type KanbanCall,
+  type KanbanContinuation,
+  type KanbanUpstreamAction,
+  type KanbanWriteApproval,
   type KanbanCard,
   type KanbanCardRun,
   type KanbanColumn,
@@ -34,6 +43,9 @@ interface BoardRow {
   source: string | null
   filter: string
   approved_hash: string | null
+  write_approval: string
+  approved_actions: string
+  actions_paused: number
   sync_interval_ms: number
   last_sync_at: number | null
   last_sync_error: string | null
@@ -49,6 +61,13 @@ function toBoard(r: BoardRow): KanbanBoard {
     source: parse(r.source) as KanbanSource | null,
     filter: asFilter(parse(r.filter)),
     approvedHash: r.approved_hash,
+    writeApproval: WRITE_APPROVALS.includes(
+      r.write_approval as KanbanWriteApproval
+    )
+      ? (r.write_approval as KanbanWriteApproval)
+      : "once_per_action",
+    approvedActions: (parse(r.approved_actions) as string[] | null) ?? [],
+    actionsPaused: r.actions_paused === 1,
     syncIntervalMs: r.sync_interval_ms,
     lastSyncAt: r.last_sync_at,
     lastSyncError: r.last_sync_error,
@@ -68,9 +87,16 @@ interface CardRow {
   run_error: string | null
   worktree: string | null
   branch: string | null
+  outcome: string | null
+  visits: string
+  returns: string
+  continuation: string | null
   created_at: number
   updated_at: number
 }
+
+const counts = (text: string) =>
+  (parse(text) as Record<string, number> | null) ?? {}
 
 const RUN_STATES = new Set([
   "idle",
@@ -95,6 +121,10 @@ function toCard(r: CardRow): KanbanCard {
     runError: r.run_error,
     worktree: r.worktree,
     branch: r.branch,
+    outcome: r.outcome,
+    visits: counts(r.visits),
+    returns: counts(r.returns),
+    continuation: parse(r.continuation) as KanbanContinuation | null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   }
@@ -182,7 +212,27 @@ export function setSyncResult(id: string, error: string | null): void {
     .run(Date.now(), error, id)
 }
 
+// A board edit that can't be saved; the message is shown to the user.
 export class KanbanColumnInUseError extends Error {}
+
+export function setActionSettings(
+  id: string,
+  settings: { writeApproval: KanbanWriteApproval; actionsPaused: boolean }
+): void {
+  getDb()
+    .prepare(
+      "UPDATE kanban_boards SET write_approval = ?, actions_paused = ? WHERE id = ?"
+    )
+    .run(settings.writeApproval, settings.actionsPaused ? 1 : 0, id)
+}
+
+export function addApprovedAction(id: string, hash: string): void {
+  const board = getBoard(id)
+  if (!board || board.approvedActions.includes(hash)) return
+  getDb()
+    .prepare("UPDATE kanban_boards SET approved_actions = ? WHERE id = ?")
+    .run(JSON.stringify([...board.approvedActions, hash]), id)
+}
 
 // Set a board's columns in order. A column keeps its id (and its cards and run
 // history) when matched by `id`, or by name when no id is sent (the agent tool
@@ -199,8 +249,34 @@ export function saveColumns(boardId: string, input: KanbanColumnInput[]): void {
           ? undefined
           : existing.find((e) => e.name === c.name && !kept.has(e.id)))
       if (match) kept.add(match.id)
-      return { ...c, id: match?.id ?? randomUUID(), isNew: !match }
+      return {
+        ...c,
+        id: match?.id ?? randomUUID(),
+        isNew: !match,
+        actions: c.actions ? asActions(c.actions) : (match?.actions ?? []),
+        outcomes: c.outcomes ? asOutcomes(c.outcomes) : (match?.outcomes ?? []),
+      }
     })
+    // goto targets may name a column (the agent tool doesn't know ids).
+    for (const c of rows) {
+      c.outcomes = c.outcomes.map((o) =>
+        o.next === "goto"
+          ? {
+              ...o,
+              target:
+                rows.find((r) => r.id === o.target)?.id ??
+                rows.find((r) => r.name.trim() === o.target)?.id ??
+                o.target,
+            }
+          : o
+      )
+      const problem = columnProblem(
+        { name: c.name, outcomes: c.outcomes, actions: c.actions },
+        rows
+      )
+      if (problem)
+        throw new KanbanColumnInUseError(`column "${c.name}": ${problem}`)
+    }
     for (const col of existing) {
       if (kept.has(col.id)) continue
       const held = db
@@ -218,15 +294,17 @@ export function saveColumns(boardId: string, input: KanbanColumnInput[]): void {
         c.agentName?.trim() || null,
         c.instructions?.trim() ?? "",
         c.gate === "human" ? "human" : "agent",
+        JSON.stringify(c.outcomes),
+        JSON.stringify(c.actions),
         i,
       ]
       if (c.isNew)
         db.prepare(
-          "INSERT INTO kanban_columns (name, agent_name, instructions, gate, position, id, board_id) VALUES (?, ?, ?, ?, ?, ?, ?)"
+          "INSERT INTO kanban_columns (name, agent_name, instructions, gate, outcomes, actions, position, id, board_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
         ).run(...values, c.id, boardId)
       else
         db.prepare(
-          "UPDATE kanban_columns SET name = ?, agent_name = ?, instructions = ?, gate = ?, position = ? WHERE id = ?"
+          "UPDATE kanban_columns SET name = ?, agent_name = ?, instructions = ?, gate = ?, outcomes = ?, actions = ?, position = ? WHERE id = ?"
         ).run(...values, c.id)
     })
   })()
@@ -246,6 +324,8 @@ export function listColumns(boardId: string): KanbanColumn[] {
       agent_name: string | null
       instructions: string
       gate: string
+      outcomes: string
+      actions: string
     }>
   ).map((r) => ({
     id: r.id,
@@ -255,6 +335,8 @@ export function listColumns(boardId: string): KanbanColumn[] {
     agentName: r.agent_name,
     instructions: r.instructions,
     gate: r.gate === "human" ? "human" : "agent",
+    outcomes: asOutcomes(parse(r.outcomes)),
+    actions: asActions(parse(r.actions)),
   }))
 }
 
@@ -273,6 +355,10 @@ export function updateCard(
     runError?: string | null
     worktree?: string | null
     branch?: string | null
+    outcome?: string | null
+    visits?: Record<string, number>
+    returns?: Record<string, number>
+    continuation?: KanbanContinuation | null
   }
 ): void {
   const map: Record<string, string> = {
@@ -281,7 +367,12 @@ export function updateCard(
     runError: "run_error",
     worktree: "worktree",
     branch: "branch",
+    outcome: "outcome",
+    visits: "visits",
+    returns: "returns",
+    continuation: "continuation",
   }
+  const json = new Set(["visits", "returns", "continuation"])
   const keys = Object.keys(patch).filter((k) => k in map)
   if (!keys.length) return
   getDb()
@@ -289,7 +380,10 @@ export function updateCard(
       `UPDATE kanban_cards SET ${keys.map((k) => `${map[k]} = ?`).join(", ")}, updated_at = ? WHERE id = ?`
     )
     .run(
-      ...keys.map((k) => patch[k as keyof typeof patch] ?? null),
+      ...keys.map((k) => {
+        const v = patch[k as keyof typeof patch] ?? null
+        return json.has(k) && v !== null ? JSON.stringify(v) : v
+      }),
       Date.now(),
       id
     )
@@ -316,6 +410,7 @@ interface RunRow {
   task_id: string | null
   conversation_id: string | null
   status: string
+  outcome: string | null
   result: string | null
   error: string | null
   started_at: number
@@ -332,6 +427,7 @@ function toRun(r: RunRow): KanbanCardRun {
     conversationId: r.conversation_id,
     status:
       r.status === "completed" || r.status === "failed" ? r.status : "running",
+    outcome: r.outcome,
     result: r.result,
     error: r.error,
     startedAt: r.started_at,
@@ -367,19 +463,26 @@ export function setRunConversation(id: string, conversationId: string): void {
 
 export function finishRun(
   id: string,
-  outcome: { result: string } | { error: string }
+  outcome: { result: string; outcome?: string | null } | { error: string }
 ): void {
   getDb()
     .prepare(
-      "UPDATE kanban_card_runs SET status = ?, result = ?, error = ?, finished_at = ? WHERE id = ?"
+      "UPDATE kanban_card_runs SET status = ?, result = ?, outcome = ?, error = ?, finished_at = ? WHERE id = ?"
     )
     .run(
       "result" in outcome ? "completed" : "failed",
       "result" in outcome ? outcome.result : null,
+      "result" in outcome ? (outcome.outcome ?? null) : null,
       "error" in outcome ? outcome.error : null,
       Date.now(),
       id
     )
+}
+
+export function setRunOutcome(id: string, outcome: string | null): void {
+  getDb()
+    .prepare("UPDATE kanban_card_runs SET outcome = ? WHERE id = ?")
+    .run(outcome, id)
 }
 
 export function listRuns(cardId: string): KanbanCardRun[] {
@@ -430,4 +533,160 @@ export function applySync(boardId: string, items: KanbanItem[]): void {
       }
     }
   })()
+}
+
+// ── upstream actions (plan 136.3): audit log + idempotency ──────────────────
+
+interface ActionRow {
+  id: string
+  card_id: string
+  column_id: string | null
+  column_name: string
+  action_name: string
+  phase: string
+  outcome: string | null
+  recipe_hash: string
+  call: string
+  status: string
+  approved: number
+  output: string | null
+  error: string | null
+  created_at: number
+  finished_at: number | null
+}
+
+const ACTION_STATUSES = new Set(["pending", "ok", "failed", "skipped"])
+
+function toAction(r: ActionRow): KanbanUpstreamAction {
+  return {
+    id: r.id,
+    cardId: r.card_id,
+    columnId: r.column_id,
+    columnName: r.column_name,
+    actionName: r.action_name,
+    phase: r.phase === "enter" ? "enter" : "exit",
+    outcome: r.outcome,
+    recipeHash: r.recipe_hash,
+    call: (parse(r.call) as KanbanCall | null) ?? {},
+    status: (ACTION_STATUSES.has(r.status)
+      ? r.status
+      : "pending") as KanbanUpstreamAction["status"],
+    approved: r.approved === 1,
+    output: r.output,
+    error: r.error,
+    createdAt: r.created_at,
+    finishedAt: r.finished_at,
+  }
+}
+
+export function getActionByKey(key: string): KanbanUpstreamAction | null {
+  const row = getDb()
+    .prepare("SELECT * FROM kanban_upstream_actions WHERE key = ?")
+    .get(key) as ActionRow | undefined
+  return row ? toAction(row) : null
+}
+
+export function getAction(id: string): KanbanUpstreamAction | null {
+  const row = getDb()
+    .prepare("SELECT * FROM kanban_upstream_actions WHERE id = ?")
+    .get(id) as ActionRow | undefined
+  return row ? toAction(row) : null
+}
+
+// Record (or refresh, on a retry) the attempt at `key` as pending. A changed
+// recipe drops an earlier approval of this attempt.
+export function upsertPendingAction(input: {
+  key: string
+  cardId: string
+  columnId: string
+  columnName: string
+  action: KanbanAction
+  outcome: string | null
+  recipeHash: string
+  call: KanbanCall
+}): KanbanUpstreamAction {
+  const db = getDb()
+  const existing = getActionByKey(input.key)
+  if (existing) {
+    db.prepare(
+      "UPDATE kanban_upstream_actions SET call = ?, recipe_hash = ?, approved = ?, status = 'pending', error = NULL WHERE id = ?"
+    ).run(
+      JSON.stringify(input.call),
+      input.recipeHash,
+      existing.approved && existing.recipeHash === input.recipeHash ? 1 : 0,
+      existing.id
+    )
+    return getAction(existing.id)!
+  }
+  const id = randomUUID()
+  db.prepare(
+    `INSERT INTO kanban_upstream_actions (id, card_id, column_id, column_name, action_name, phase, outcome, key, recipe_hash, call, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`
+  ).run(
+    id,
+    input.cardId,
+    input.columnId,
+    input.columnName,
+    input.action.name,
+    input.action.phase,
+    input.outcome,
+    input.key,
+    input.recipeHash,
+    JSON.stringify(input.call),
+    Date.now()
+  )
+  return getAction(id)!
+}
+
+export function approveActionRow(id: string): void {
+  getDb()
+    .prepare("UPDATE kanban_upstream_actions SET approved = 1 WHERE id = ?")
+    .run(id)
+}
+
+export function finishAction(
+  id: string,
+  result:
+    | { status: "ok"; output: string }
+    | { status: "failed" | "skipped"; error: string }
+): void {
+  getDb()
+    .prepare(
+      "UPDATE kanban_upstream_actions SET status = ?, output = ?, error = ?, finished_at = ? WHERE id = ?"
+    )
+    .run(
+      result.status,
+      "output" in result ? result.output.slice(0, 8_000) : null,
+      "error" in result ? result.error : null,
+      Date.now(),
+      id
+    )
+}
+
+// Pending attempts are dropped when the person moves the card elsewhere.
+export function skipPendingActions(cardId: string, reason: string): void {
+  getDb()
+    .prepare(
+      "UPDATE kanban_upstream_actions SET status = 'skipped', error = ?, finished_at = ? WHERE card_id = ? AND status = 'pending'"
+    )
+    .run(reason, Date.now(), cardId)
+}
+
+export function listActions(cardId: string): KanbanUpstreamAction[] {
+  return (
+    getDb()
+      .prepare(
+        "SELECT * FROM kanban_upstream_actions WHERE card_id = ? ORDER BY created_at, rowid"
+      )
+      .all(cardId) as ActionRow[]
+  ).map(toAction)
+}
+
+export function pendingAction(cardId: string): KanbanUpstreamAction | null {
+  const row = getDb()
+    .prepare(
+      "SELECT * FROM kanban_upstream_actions WHERE card_id = ? AND status = 'pending' ORDER BY created_at DESC, rowid DESC LIMIT 1"
+    )
+    .get(cardId) as ActionRow | undefined
+  return row ? toAction(row) : null
 }

@@ -2,7 +2,13 @@ import { ipcMain } from "electron"
 import * as kanban from "../db/repositories/kanban"
 import type { KanbanService } from "../kanban/service"
 import type { KanbanCardRuns } from "../kanban/card-runs"
-import { asFilter, type KanbanColumnInput } from "../../shared/kanban"
+import {
+  asFilter,
+  cardNeedsAttention,
+  WRITE_APPROVALS,
+  type KanbanColumnInput,
+  type KanbanWriteApproval,
+} from "../../shared/kanban"
 
 // Kanban board IPC (plans 136.1/136.2). Boards are authored by the kanban_write
 // agent tool or edited in the board settings sheet; cards move through columns.
@@ -10,7 +16,17 @@ export function registerKanbanHandlers(
   service: KanbanService,
   cards: KanbanCardRuns
 ): void {
-  ipcMain.handle("kanban:list", () => kanban.listBoards())
+  ipcMain.handle("kanban:list", () =>
+    kanban.listBoards().map((board) => ({
+      ...board,
+      needsAttention: kanban.listCards(board.id).some((card) =>
+        cardNeedsAttention({
+          ...card,
+          pendingApproval: cards.pendingApproval(card.id),
+        })
+      ),
+    }))
+  )
   ipcMain.handle("kanban:graph", (_e, boardId: string) => {
     const graph = service.graph(boardId)
     if (graph)
@@ -46,6 +62,8 @@ export function registerKanbanHandlers(
         filter: unknown
         syncIntervalMs: number
         columns: KanbanColumnInput[]
+        writeApproval: KanbanWriteApproval
+        actionsPaused: boolean
       }
     ) => {
       const board = kanban.getBoard(boardId)
@@ -53,6 +71,8 @@ export function registerKanbanHandlers(
       if (!patch.name?.trim()) return { ok: false, reason: "name is required" }
       if (patch.columns.some((c) => !c.name?.trim()))
         return { ok: false, reason: "every column needs a name" }
+      if (!WRITE_APPROVALS.includes(patch.writeApproval))
+        return { ok: false, reason: "unknown write-approval level" }
       try {
         kanban.saveBoard({
           id: boardId,
@@ -62,6 +82,10 @@ export function registerKanbanHandlers(
           filter: asFilter(patch.filter),
           syncIntervalMs: patch.syncIntervalMs,
           columns: patch.columns,
+        })
+        kanban.setActionSettings(boardId, {
+          writeApproval: patch.writeApproval,
+          actionsPaused: !!patch.actionsPaused,
         })
       } catch (err) {
         if (err instanceof kanban.KanbanColumnInUseError)
@@ -76,8 +100,19 @@ export function registerKanbanHandlers(
     (_e, cardId: string, columnId: string | null) =>
       cards.enter(cardId, columnId)
   )
-  ipcMain.handle("kanban:approveCard", (_e, cardId: string) =>
-    cards.approve(cardId)
+  ipcMain.handle("kanban:approveCard", (_e, cardId: string, outcome?: string) =>
+    cards.approve(cardId, outcome)
+  )
+  ipcMain.handle(
+    "kanban:approveAction",
+    (_e, cardId: string, actionId: string) =>
+      cards.approveAction(cardId, actionId)
+  )
+  ipcMain.handle("kanban:skipAction", (_e, cardId: string, actionId: string) =>
+    cards.skipAction(cardId, actionId)
+  )
+  ipcMain.handle("kanban:actions", (_e, cardId: string) =>
+    kanban.listActions(cardId)
   )
   ipcMain.handle("kanban:sendBack", (_e, cardId: string, feedback?: string) =>
     cards.sendBack(cardId, feedback)

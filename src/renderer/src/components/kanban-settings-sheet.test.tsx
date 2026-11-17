@@ -43,6 +43,9 @@ const graph: KanbanBoardGraph = {
       assignee: { mode: "anyone" },
     },
     approvedHash: null,
+    writeApproval: "once_per_action",
+    approvedActions: [],
+    actionsPaused: false,
     syncIntervalMs: 300_000,
     lastSyncAt: null,
     lastSyncError: null,
@@ -58,6 +61,8 @@ const graph: KanbanBoardGraph = {
       agentName: null,
       instructions: "Plan the issue",
       gate: "human",
+      outcomes: [],
+      actions: [],
     },
     {
       id: "doing",
@@ -67,6 +72,8 @@ const graph: KanbanBoardGraph = {
       agentName: "custom-agent",
       instructions: "Implement the plan",
       gate: "agent",
+      outcomes: [],
+      actions: [],
     },
   ],
   cards: [],
@@ -98,6 +105,30 @@ afterEach(() => {
   container.remove()
   vi.unstubAllGlobals()
 })
+
+it.each(["/Users/test/Projects/north-star", "C:\\Projects\\north-star", null])(
+  "shows the board workspace beside its name: %s",
+  async (workspace) => {
+    await act(async () =>
+      root.render(
+        <KanbanSettingsSheet
+          graph={{ ...graph, board: { ...graph.board, workspace } }}
+          onClose={vi.fn()}
+          onSaved={vi.fn()}
+        />
+      )
+    )
+    const name = [...document.querySelectorAll("span")].find(
+      (span) => span.textContent === graph.board.name
+    )!
+    const label = name.nextElementSibling!
+    expect(label.textContent).toBe(
+      workspace ? `Workspace: ${workspace}` : "No workspace"
+    )
+    expect(label.getAttribute("title")).toBe(workspace)
+    expect(saveSettings).not.toHaveBeenCalled()
+  }
+)
 
 it("keeps column identities and approval choices when navigating and reordering", async () => {
   await act(async () =>
@@ -163,7 +194,9 @@ it("selects added columns and keeps a valid editor after removal", async () => {
   expect(saveSettings).toHaveBeenCalledWith(
     "board",
     expect.objectContaining({
-      columns: graph.columns.map(({ boardId, position, ...col }) => col),
+      columns: graph.columns.map(
+        ({ boardId, position, actions, ...col }) => col
+      ),
     })
   )
 })
@@ -240,7 +273,7 @@ it("reorders an unselected column without changing the editor or saved identitie
     expect.objectContaining({
       columns: graph.columns
         .toReversed()
-        .map(({ boardId, position, ...col }) => col),
+        .map(({ boardId, position, actions, ...col }) => col),
     }),
   ])
 })
@@ -287,4 +320,67 @@ it("supports dragging unsaved columns and ignores cancelled or unchanged drops",
     { columns: Record<string, unknown>[] },
   ]
   expect(saved[1].columns.every((column) => !("sortId" in column))).toBe(true)
+})
+
+it("saves goto outcomes by column id and the tracker-write settings, keeping stored actions", async () => {
+  const withActions = {
+    ...graph,
+    columns: graph.columns.map((c) =>
+      c.id === "doing"
+        ? {
+            ...c,
+            actions: [
+              {
+                name: "label",
+                phase: "enter",
+                command: "gh issue edit {{id}}",
+              },
+            ],
+          }
+        : c
+    ),
+  } as KanbanBoardGraph
+  await act(async () =>
+    root.render(
+      <KanbanSettingsSheet
+        graph={withActions}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+      />
+    )
+  )
+  await act(() => button("In progress").click())
+  expect(document.body.textContent).toContain("gh issue edit {{id}}")
+  await click("Add outcome")
+  const input = document.querySelector("#kb-outcome-0") as HTMLInputElement
+  const select = document.querySelector(
+    "#kb-outcome-next-0"
+  ) as HTMLSelectElement
+  await act(() => {
+    Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value"
+    )!.set!.call(input, "changes_requested")
+    input.dispatchEvent(new Event("input", { bubbles: true }))
+    select.value = "goto"
+    select.dispatchEvent(new Event("change", { bubbles: true }))
+  })
+  await click("Save changes")
+  const saved = saveSettings.mock.calls[0] as unknown as [
+    string,
+    { columns: Record<string, unknown>[]; writeApproval: string },
+  ]
+  expect(saved[1].writeApproval).toBe("once_per_action")
+  expect(saved[1].columns[1]).toMatchObject({
+    id: "doing",
+    outcomes: [
+      {
+        name: "changes_requested",
+        next: "goto",
+        target: "todo",
+        maxReturns: 2,
+      },
+    ],
+  })
+  expect("actions" in saved[1].columns[1]).toBe(false)
 })

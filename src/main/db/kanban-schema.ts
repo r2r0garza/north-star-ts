@@ -74,3 +74,52 @@ CREATE TABLE IF NOT EXISTS kanban_card_runs (
 CREATE INDEX IF NOT EXISTS idx_kanban_card_runs_card ON kanban_card_runs(card_id, started_at);
 `)
 }
+
+// Plan 136.3: column outcomes and upstream actions. Columns carry outcomes and
+// action recipes (JSON); boards their write-approval level; cards the reported
+// outcome, per-column visit/return counts, and a move parked on an action.
+// kanban_upstream_actions is the audit log; `key` makes each action idempotent.
+export function ensureKanbanActions(db: Database.Database): void {
+  const add = (table: string, column: string, definition: string) => {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+      name: string
+    }>
+    if (!cols.some((c) => c.name === column))
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`)
+  }
+  add("kanban_columns", "outcomes", "TEXT NOT NULL DEFAULT '[]'")
+  add("kanban_columns", "actions", "TEXT NOT NULL DEFAULT '[]'")
+  add(
+    "kanban_boards",
+    "write_approval",
+    "TEXT NOT NULL DEFAULT 'once_per_action'"
+  )
+  add("kanban_boards", "approved_actions", "TEXT NOT NULL DEFAULT '[]'")
+  add("kanban_boards", "actions_paused", "INTEGER NOT NULL DEFAULT 0")
+  add("kanban_cards", "outcome", "TEXT")
+  add("kanban_cards", "visits", "TEXT NOT NULL DEFAULT '{}'")
+  add("kanban_cards", "returns", "TEXT NOT NULL DEFAULT '{}'")
+  add("kanban_cards", "continuation", "TEXT")
+  add("kanban_card_runs", "outcome", "TEXT")
+  db.exec(`
+CREATE TABLE IF NOT EXISTS kanban_upstream_actions (
+  id          TEXT PRIMARY KEY,
+  card_id     TEXT NOT NULL REFERENCES kanban_cards(id) ON DELETE CASCADE,
+  column_id   TEXT REFERENCES kanban_columns(id) ON DELETE SET NULL,
+  column_name TEXT NOT NULL,
+  action_name TEXT NOT NULL,
+  phase       TEXT NOT NULL,
+  outcome     TEXT,
+  key         TEXT NOT NULL UNIQUE,
+  recipe_hash TEXT NOT NULL,
+  call        TEXT NOT NULL,
+  status      TEXT NOT NULL,
+  approved    INTEGER NOT NULL DEFAULT 0,
+  output      TEXT,
+  error       TEXT,
+  created_at  INTEGER NOT NULL,
+  finished_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_kanban_upstream_actions_card ON kanban_upstream_actions(card_id, created_at);
+`)
+}

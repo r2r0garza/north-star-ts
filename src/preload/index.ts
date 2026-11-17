@@ -96,10 +96,12 @@ import type {
 import type { IndexStatus } from "../main/ipc/index-handlers"
 import type { ApproveResult } from "../main/dashboards/service"
 import type {
-  KanbanBoard,
+  KanbanBoardSummary,
   KanbanBoardGraph,
   KanbanCardRun,
   KanbanColumnInput,
+  KanbanUpstreamAction,
+  KanbanWriteApproval,
 } from "../shared/kanban"
 
 type KanbanResult = { ok: true } | { ok: false; reason: string }
@@ -1526,7 +1528,8 @@ const api = {
   // Kanban boards fed by external trackers (plan 136.1). Boards are authored by
   // the kanban_write agent tool; sync replays the approved intake recipe.
   kanban: {
-    list: () => ipcRenderer.invoke("kanban:list") as Promise<KanbanBoard[]>,
+    list: () =>
+      ipcRenderer.invoke("kanban:list") as Promise<KanbanBoardSummary[]>,
     graph: (boardId: string) =>
       ipcRenderer.invoke(
         "kanban:graph",
@@ -1541,6 +1544,8 @@ const api = {
         filter: unknown
         syncIntervalMs: number
         columns: KanbanColumnInput[]
+        writeApproval: KanbanWriteApproval
+        actionsPaused: boolean
       }
     ) =>
       ipcRenderer.invoke(
@@ -1555,8 +1560,30 @@ const api = {
         cardId,
         columnId
       ) as Promise<KanbanResult>,
-    approveCard: (cardId: string) =>
-      ipcRenderer.invoke("kanban:approveCard", cardId) as Promise<KanbanResult>,
+    // `outcome` overrides the one the agent reported (plan 136.3).
+    approveCard: (cardId: string, outcome?: string) =>
+      ipcRenderer.invoke(
+        "kanban:approveCard",
+        cardId,
+        outcome
+      ) as Promise<KanbanResult>,
+    // Answer the tracker write a card is parked on (by id, as shown).
+    approveAction: (cardId: string, actionId: string) =>
+      ipcRenderer.invoke(
+        "kanban:approveAction",
+        cardId,
+        actionId
+      ) as Promise<KanbanResult>,
+    skipAction: (cardId: string, actionId: string) =>
+      ipcRenderer.invoke(
+        "kanban:skipAction",
+        cardId,
+        actionId
+      ) as Promise<KanbanResult>,
+    actions: (cardId: string) =>
+      ipcRenderer.invoke("kanban:actions", cardId) as Promise<
+        KanbanUpstreamAction[]
+      >,
     sendBack: (cardId: string, feedback?: string) =>
       ipcRenderer.invoke(
         "kanban:sendBack",

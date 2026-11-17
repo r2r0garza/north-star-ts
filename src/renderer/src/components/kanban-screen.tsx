@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import {
   ArrowLeft,
+  Bell,
   ChevronDown,
   ExternalLink,
   MoreHorizontal,
@@ -62,11 +63,13 @@ import {
 } from "@/components/ui/sheet"
 import { Textarea } from "@/components/ui/textarea"
 import { Spinner } from "@/components/ui/spinner"
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { KanbanSettingsSheet } from "@/components/kanban-settings-sheet"
 import { cn } from "@/lib/utils"
 import { waitForTask } from "@/components/dashboards-screen"
 import type {
   KanbanBoard,
+  KanbanBoardSummary,
   KanbanBoardGraph,
   KanbanCard,
   KanbanCardRun,
@@ -74,6 +77,7 @@ import type {
   KanbanColumn,
   KanbanIntakeFilter,
   KanbanSource,
+  KanbanUpstreamAction,
 } from "../../../shared/kanban"
 
 // Kanban board view (plans 136.1/136.2). Boards are authored by an agent
@@ -83,8 +87,10 @@ import type {
 type Result = { ok: true } | { ok: false; reason: string }
 type CardAction =
   | { kind: "move"; columnId: string | null }
-  | { kind: "approve" | "reject" | "stop" | "remove" | "history" }
+  | { kind: "approve"; outcome?: string }
+  | { kind: "reject" | "stop" | "remove" | "history" | "resume" }
   | { kind: "allow" | "deny" }
+  | { kind: "approveAction" | "skipAction"; actionId: string }
   | { kind: FeedbackKind }
 
 type FeedbackKind = "sendBack" | "retry" | "rejectWithFeedback"
@@ -222,13 +228,61 @@ function CardMenu({
 // card (not only in the menu).
 function CardAttention({
   card,
+  column,
   onAction,
 }: {
   card: KanbanCard
+  column: KanbanColumn | undefined
   onAction: (action: CardAction) => void
 }) {
   const box = "flex flex-col gap-1.5 rounded-md border p-2 text-xs"
   const row = "flex flex-wrap gap-1.5"
+  const [outcome, setOutcome] = useState(card.outcome ?? "")
+  useEffect(() => setOutcome(card.outcome ?? ""), [card.outcome])
+  const action = card.pendingAction
+  if (action && card.runState !== "running")
+    return (
+      <div className={cn(box, "border-amber-500/40 bg-amber-500/10")}>
+        <span className="font-medium">
+          Tracker write: {action.actionName}
+          <span className="font-normal text-muted-foreground">
+            {" "}
+            ({action.phase === "enter" ? "entering" : "leaving"}{" "}
+            {action.columnName}
+            {action.outcome ? `, ${action.outcome}` : ""})
+          </span>
+        </span>
+        <span className="font-mono break-all">{describeCall(action.call)}</span>
+        {card.runError ? (
+          <span className="text-muted-foreground">{card.runError}</span>
+        ) : null}
+        <div className={row}>
+          {action.approved ? (
+            <Button size="xs" onClick={() => onAction({ kind: "resume" })}>
+              Retry
+            </Button>
+          ) : (
+            <Button
+              size="xs"
+              onClick={() =>
+                onAction({ kind: "approveAction", actionId: action.id })
+              }
+            >
+              Approve and run
+            </Button>
+          )}
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={() =>
+              onAction({ kind: "skipAction", actionId: action.id })
+            }
+          >
+            Skip this write
+          </Button>
+        </div>
+      </div>
+    )
   if (card.pendingApproval)
     return (
       <div className={cn(box, "border-amber-500/40 bg-amber-500/10")}>
@@ -255,9 +309,36 @@ function CardAttention({
   if (card.runState === "waiting")
     return (
       <div className={cn(box, "bg-muted/60")}>
-        <span>Done here. Review the result, then approve or reject.</span>
+        <span>
+          {card.runError ??
+            "Done here. Review the result, then approve or reject."}
+        </span>
+        {column?.outcomes.length ? (
+          <NativeSelect
+            size="sm"
+            className="w-full"
+            aria-label="Outcome"
+            value={outcome}
+            onChange={(e) => setOutcome(e.target.value)}
+          >
+            {!outcome ? (
+              <NativeSelectOption value="">Pick an outcome…</NativeSelectOption>
+            ) : null}
+            {column.outcomes.map((o) => (
+              <NativeSelectOption key={o.name} value={o.name}>
+                {o.name}
+              </NativeSelectOption>
+            ))}
+          </NativeSelect>
+        ) : null}
         <div className={row}>
-          <Button size="xs" onClick={() => onAction({ kind: "approve" })}>
+          <Button
+            size="xs"
+            disabled={!!column?.outcomes.length && !outcome}
+            onClick={() =>
+              onAction({ kind: "approve", outcome: outcome || undefined })
+            }
+          >
             Approve
           </Button>
           <Button
@@ -300,9 +381,11 @@ function CardAttention({
           <Button
             size="xs"
             variant="outline"
-            onClick={() => onAction({ kind: "retry" })}
+            onClick={() =>
+              onAction({ kind: card.continuation ? "resume" : "retry" })
+            }
           >
-            Rerun…
+            {card.continuation ? "Retry" : "Rerun…"}
           </Button>
         </div>
       </div>
@@ -320,9 +403,10 @@ function Card({
   onAction: (action: CardAction) => void
 }) {
   const { item } = card
-  const badge = card.pendingApproval
-    ? ({ label: "needs approval", variant: "default" } as const)
-    : RUN_BADGE[card.runState]
+  const badge =
+    card.pendingApproval || (card.pendingAction && !card.pendingAction.approved)
+      ? ({ label: "needs approval", variant: "default" } as const)
+      : RUN_BADGE[card.runState]
   return (
     <div
       className={cn(
@@ -356,11 +440,18 @@ function Card({
       >
         {item.title}
       </button>
-      <CardAttention card={card} onAction={onAction} />
+      <CardAttention
+        card={card}
+        column={columns.find((c) => c.id === card.columnId)}
+        onAction={onAction}
+      />
       <div className="flex flex-wrap gap-1">
         {badge ? <Badge variant={badge.variant}>{badge.label}</Badge> : null}
         {item.type ? <Badge variant="outline">{item.type}</Badge> : null}
         {item.state ? <Badge variant="outline">{item.state}</Badge> : null}
+        {card.outcome ? (
+          <Badge variant="outline">outcome: {card.outcome}</Badge>
+        ) : null}
         {item.tags.map((t) => (
           <Badge key={t} variant="secondary">
             {t}
@@ -420,9 +511,13 @@ function RunHistory({
   onOpenConversation: (id: string) => void
 }) {
   const [runs, setRuns] = useState<KanbanCardRun[]>([])
+  const [writes, setWrites] = useState<KanbanUpstreamAction[]>([])
   useEffect(() => {
     if (!card) return
     void window.cowork.kanban.runs(card.id).then((r) => setRuns(r.reverse()))
+    void window.cowork.kanban
+      .actions(card.id)
+      .then((a) => setWrites(a.reverse()))
   }, [card])
   return (
     <Sheet open={!!card} onOpenChange={(open) => !open && onClose()}>
@@ -446,7 +541,15 @@ function RunHistory({
                 className="flex flex-col gap-1 rounded-md border p-2.5"
               >
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-medium">{r.columnName}</span>
+                  <span className="text-xs font-medium">
+                    {r.columnName}
+                    {r.outcome ? (
+                      <span className="font-normal text-muted-foreground">
+                        {" "}
+                        · {r.outcome}
+                      </span>
+                    ) : null}
+                  </span>
                   <Badge
                     variant={
                       r.status === "failed"
@@ -481,6 +584,53 @@ function RunHistory({
                   >
                     Open transcript
                   </Button>
+                ) : null}
+              </div>
+            ))}
+            {writes.length ? (
+              <h3 className="mt-2 text-xs font-medium">Tracker writes</h3>
+            ) : null}
+            {writes.map((w) => (
+              <div
+                key={w.id}
+                className="flex flex-col gap-1 rounded-md border p-2.5 text-xs"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium">
+                    {w.actionName}
+                    <span className="font-normal text-muted-foreground">
+                      {" "}
+                      · {w.columnName}
+                      {w.outcome ? ` · ${w.outcome}` : ""}
+                    </span>
+                  </span>
+                  <Badge
+                    variant={
+                      w.status === "failed"
+                        ? "destructive"
+                        : w.status === "pending"
+                          ? "secondary"
+                          : "outline"
+                    }
+                  >
+                    {w.status}
+                  </Badge>
+                </div>
+                <span className="text-muted-foreground">
+                  {new Date(w.createdAt).toLocaleString()}
+                </span>
+                <span className="font-mono break-all">
+                  {describeCall(w.call)}
+                </span>
+                {w.error || w.output ? (
+                  <p
+                    className={cn(
+                      "line-clamp-6 whitespace-pre-wrap",
+                      w.error && "text-destructive"
+                    )}
+                  >
+                    {w.error ?? w.output}
+                  </p>
                 ) : null}
               </div>
             ))}
@@ -545,7 +695,7 @@ export function KanbanScreen({
   onClose: () => void
   onOpenConversation: (conversationId: string) => void
 }) {
-  const [boards, setBoards] = useState<KanbanBoard[]>([])
+  const [boards, setBoards] = useState<KanbanBoardSummary[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [graph, setGraph] = useState<KanbanBoardGraph | null>(null)
   const [syncing, setSyncing] = useState(false)
@@ -562,7 +712,9 @@ export function KanbanScreen({
   selectedRef.current = selectedId
 
   const refreshList = useCallback(async () => {
-    const list = await window.cowork.kanban.list()
+    const list = (await window.cowork.kanban.list()).sort((a, b) =>
+      a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+    )
     setBoards(list)
     setSelectedId((cur) =>
       cur && list.some((b) => b.id === cur) ? cur : (list[0]?.id ?? null)
@@ -591,6 +743,8 @@ export function KanbanScreen({
 
   useEffect(() => {
     void refreshList()
+    const timer = setInterval(() => void refreshList(), 3000)
+    return () => clearInterval(timer)
   }, [refreshList])
 
   // Show stored cards at once, then sync on open and at the board's interval
@@ -629,7 +783,13 @@ export function KanbanScreen({
   function onCardAction(card: KanbanCard, action: CardAction) {
     const k = window.cowork.kanban
     if (action.kind === "move") void act(k.moveCard(card.id, action.columnId))
-    else if (action.kind === "approve") void act(k.approveCard(card.id))
+    else if (action.kind === "approve")
+      void act(k.approveCard(card.id, action.outcome))
+    else if (action.kind === "approveAction")
+      void act(k.approveAction(card.id, action.actionId))
+    else if (action.kind === "skipAction")
+      void act(k.skipAction(card.id, action.actionId))
+    else if (action.kind === "resume") void act(k.retry(card.id))
     else if (action.kind === "reject") void act(k.moveCard(card.id, null))
     else if (action.kind === "allow" || action.kind === "deny")
       void act(
@@ -714,50 +874,73 @@ export function KanbanScreen({
             <>
               <div className="flex shrink-0 flex-col gap-1 border-b px-4 py-2">
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <Popover open={switcherOpen} onOpenChange={setSwitcherOpen}>
-                    <PopoverTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        className="h-auto max-w-full min-w-0 justify-between px-2 py-1.5 text-left"
-                        aria-label={`Switch board: ${board.name}`}
+                  <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
+                    <Popover open={switcherOpen} onOpenChange={setSwitcherOpen}>
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          className="h-auto max-w-full min-w-0 justify-between px-2 py-1.5 text-left"
+                          aria-label={`Switch board: ${board.name}`}
+                        >
+                          {boards.find((b) => b.id === board.id)
+                            ?.needsAttention ? (
+                            <Bell
+                              className="size-3.5 shrink-0 text-amber-500"
+                              aria-label="Needs your attention"
+                            />
+                          ) : null}
+                          <span className="truncate font-medium">
+                            {board.name}
+                          </span>
+                          <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent
+                        align="start"
+                        className="w-80 max-w-[calc(100vw-2rem)] p-0"
                       >
-                        <span className="truncate font-medium">
-                          {board.name}
-                        </span>
-                        <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
-                      </Button>
-                    </PopoverTrigger>
-                    <PopoverContent
-                      align="start"
-                      className="w-80 max-w-[calc(100vw-2rem)] p-0"
+                        <Command>
+                          <CommandInput
+                            placeholder="Search boards…"
+                            aria-label="Search boards"
+                          />
+                          <CommandList>
+                            <CommandEmpty>No boards found.</CommandEmpty>
+                            {boards.map((b) => (
+                              <CommandItem
+                                key={b.id}
+                                value={b.id}
+                                keywords={[b.name]}
+                                data-checked={b.id === selectedId}
+                                onSelect={() => {
+                                  setSelectedId(b.id)
+                                  setSwitcherOpen(false)
+                                }}
+                              >
+                                {b.needsAttention ? (
+                                  <Bell
+                                    className="size-3.5 shrink-0 text-amber-500"
+                                    aria-label="Needs your attention"
+                                  />
+                                ) : null}
+                                <span className="min-w-0 break-words">
+                                  {b.name}
+                                </span>
+                              </CommandItem>
+                            ))}
+                          </CommandList>
+                        </Command>
+                      </PopoverContent>
+                    </Popover>
+                    <span
+                      className="min-w-0 truncate text-xs text-muted-foreground"
+                      title={board.workspace ?? undefined}
                     >
-                      <Command>
-                        <CommandInput
-                          placeholder="Search boards…"
-                          aria-label="Search boards"
-                        />
-                        <CommandList>
-                          <CommandEmpty>No boards found.</CommandEmpty>
-                          {boards.map((b) => (
-                            <CommandItem
-                              key={b.id}
-                              value={b.id}
-                              keywords={[b.name]}
-                              data-checked={b.id === selectedId}
-                              onSelect={() => {
-                                setSelectedId(b.id)
-                                setSwitcherOpen(false)
-                              }}
-                            >
-                              <span className="min-w-0 break-words">
-                                {b.name}
-                              </span>
-                            </CommandItem>
-                          ))}
-                        </CommandList>
-                      </Command>
-                    </PopoverContent>
-                  </Popover>
+                      {board.workspace
+                        ? `Workspace: ${board.workspace}`
+                        : "No workspace"}
+                    </span>
+                  </div>
                   <div className="flex shrink-0 items-center gap-2">
                     <Button
                       variant="outline"

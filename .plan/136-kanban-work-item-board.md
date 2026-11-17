@@ -1,7 +1,8 @@
 # PR136: Kanban board fed by external work trackers
 
 > Status: 136.1 built 2026-11-12 (`b0ba775`), verified against real GitHub Issues via `gh`. 136.2 built
-> 2026-11-12, unit-tested, not yet run in the app. 136.3–136.4 not started. Open decisions settled 2026-11-12 (see **Decisions**).
+> 2026-11-12, unit-tested, not yet run in the app. 136.3 built 2026-11-16, unit-tested, not yet run in the
+> app or against a live tracker. 136.4 not started. Open decisions settled 2026-11-12 (see **Decisions**).
 
 ## Objective
 
@@ -237,10 +238,42 @@ outcome), cross-workspace boards, per-card agent override.
   settings sheet, including editing the intake filter in the UI (136.1 shows it read-only; the agent
   edits it via `kanban_write`), and keying columns by id (136.1 replaces all columns when names change,
   sending their cards back to the Inbox).
-- `136.3` Upstream actions: on-enter/on-exit recipes, preview, approval, idempotency, audit log. Column
+- `136.3` **Built.** Upstream actions: on-enter/on-exit recipes, preview, approval, idempotency, audit log. Column
   outcomes with `advance | wait | end | goto <column>` (with `maxReturns`) and on-exit actions filtered by `when` (see **Column outcomes and
   outcome-based exit actions**).
 - `136.4` WIP limits, budget caps, upstream drift handling.
+
+## 136.3 as built
+
+- **Code:** `src/main/kanban/card-runs.ts` (outcomes, `goto`, the action pipeline), `src/main/db/kanban-schema.ts`
+  (`ensureKanbanActions`, v82), `kanban_upstream_actions` in `src/main/db/repositories/kanban.ts`,
+  `KanbanService.stillMatches`/`runAction`, outcome/action helpers in `src/shared/kanban.ts`.
+- **Outcomes** live on the column (`advance | wait | end | goto`, `target` = column id, `maxReturns`
+  default 2). The outcome list goes into the handoff instruction (so repair and continuation turns
+  see it), and the handoff carries `outcome`. A missing or unknown one gets the existing repair turn,
+  then the card waits with "pick an outcome". A human gate waits whatever the outcome. Approve takes an
+  optional outcome override, and approving a `wait` outcome advances. A person approving a `goto` isn't
+  limited by `maxReturns`. Any move by hand (move, send back, rerun, reject) resets the return counts.
+- **goto findings** reach the target column as an untrusted-data envelope ("column X sent this back with
+  outcome Y"), not as user feedback, because they're another agent's output and may quote the ticket.
+- **Actions** are column recipes `{ name, phase: enter|exit, when?, command | tool+args }` with
+  `{{id}} {{url}} {{branch}} {{result}}` bound per card (shell-quoted in commands). They are authored by
+  the agent (`kanban_write`) and shown read-only in the settings sheet. On-enter actions run before the
+  column's agent. Exit actions run on advance/end/goto/approve, filtered by `when`. Reject, rerun, send
+  back, and manual moves run no exit actions (they do run the target's on-enter actions on a new visit).
+- **Idempotency:** key = card + column + phase + action name + outcome + the card's visit number on that
+  column. A rerun of the same visit skips what already ran; a goto back is a new visit, so it runs again.
+- **Approval:** board settings choose the level and the kill switch (Settings → General → Tracker writes).
+  `kanban_write` can't set them. A write needing approval parks the move on the card (state saved as the
+  card's `continuation`) with a preview of the bound call: Approve and run, or Skip this write. Approval is
+  answered by action id, so a write that changed between display and click isn't approved blind. While
+  paused, every write waits (an explicit per-write approval still runs it).
+- **Before writing,** the intake recipe is replayed once per batch and the item must still match the
+  filter. If not (or the re-check fails), the card is `blocked` and nothing is written. A failed write
+  marks the card `failed`, and Retry resumes the parked move.
+- **Known limits:** actions and the re-check run inline in the IPC call or the card-run task, with up to
+  2 minutes each and no Stop for an in-flight write. The re-check replays the whole intake query rather
+  than one item. Actions are added or edited only through the agent. There's no live tracker run yet.
 
 ## Verification (when built)
 

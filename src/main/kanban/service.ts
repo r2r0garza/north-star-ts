@@ -16,9 +16,13 @@ import {
   parseJsonOutput,
   pickAll,
   resolveIntakeCall,
+  type KanbanAction,
   type KanbanBoard,
   type KanbanBoardGraph,
   type KanbanCall,
+  type KanbanCard,
+  type KanbanColumn,
+  type KanbanItem,
 } from "../../shared/kanban"
 
 export const KANBAN_SYNC_KIND = "kanban_sync"
@@ -57,6 +61,16 @@ export function approvalHash(
     .update(JSON.stringify({ source: board.source, run: resolved.call }))
     .digest("hex")
 }
+
+const sha = (value: unknown) =>
+  createHash("sha256").update(JSON.stringify(value)).digest("hex")
+
+// An action recipe's identity for approval: a changed recipe is a new action.
+export const actionHash = (action: KanbanAction) => sha(action)
+
+// once_per_board: one approval covers every action on the board as it is now.
+export const boardActionsHash = (columns: KanbanColumn[]) =>
+  sha(columns.map((c) => [c.id, c.actions]))
 
 // Why this call can't run at all, or null. Checked at authoring and before replay.
 export function callProblem(
@@ -146,6 +160,16 @@ export class KanbanService {
   }
 
   private async sync(board: KanbanBoard, signal: AbortSignal): Promise<number> {
+    const items = await this.fetchMatching(board, signal)
+    kanban.applySync(board.id, items)
+    return items.length
+  }
+
+  // The board's items upstream that still pass its filter, or throws.
+  private async fetchMatching(
+    board: KanbanBoard,
+    signal: AbortSignal
+  ): Promise<KanbanItem[]> {
     const source = board.source
     const resolved = intakeCall(board)
     if (!source || !("call" in resolved))
@@ -181,11 +205,23 @@ export class KanbanService {
     const output = parseJsonOutput(
       await this.runCall(resolved.call, board, signal)
     )
-    const items = normalizeItems(output, source).filter((item) =>
+    return normalizeItems(output, source).filter((item) =>
       matchesFilter(item, board.filter, me)
     )
-    kanban.applySync(board.id, items)
-    return items.length
+  }
+
+  // Before an upstream action: re-fetch and re-check the item (still tagged,
+  // still assigned to the filter's person). Throws when that can't be checked.
+  async stillMatches(board: KanbanBoard, card: KanbanCard): Promise<boolean> {
+    const items = await this.fetchMatching(board, AbortSignal.timeout(120_000))
+    return items.some((i) => i.id === card.externalId)
+  }
+
+  // Run one bound upstream action call; returns its output or throws.
+  runAction(call: KanbanCall, board: KanbanBoard): Promise<string> {
+    const problem = callProblem(call, board.workspace)
+    if (problem) return Promise.reject(new Error(problem))
+    return this.runCall(call, board, AbortSignal.timeout(120_000))
   }
 
   ensureSync(boardId: string): Task | null {
@@ -214,7 +250,10 @@ export class KanbanService {
     return {
       board,
       columns: kanban.listColumns(boardId),
-      cards: kanban.listCards(boardId),
+      cards: kanban.listCards(boardId).map((card) => ({
+        ...card,
+        pendingAction: card.continuation ? kanban.pendingAction(card.id) : null,
+      })),
       sourceHash: hash,
       intakeCall: "call" in resolved ? resolved.call : null,
       intakeError: "error" in resolved ? resolved.error : null,

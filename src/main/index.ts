@@ -1529,7 +1529,8 @@ app.whenReady().then(async () => {
   // enters, in the card's own worktree. Work lane, like workflow runs.
   const kanbanCardRuns = new KanbanCardRuns(
     taskRunner,
-    join(app.getPath("userData"), "kanban-worktrees")
+    join(app.getPath("userData"), "kanban-worktrees"),
+    kanbanService
   )
   kanbanCardRuns.recoverInterrupted()
   taskRunner.registerKind(KANBAN_CARD_RUN_KIND, {

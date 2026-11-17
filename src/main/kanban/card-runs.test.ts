@@ -22,7 +22,12 @@ import { KanbanCardRuns, cardPrompt } from "./card-runs"
 import * as kanban from "../db/repositories/kanban"
 import type { TaskRunner } from "../tasks/runner"
 import type { runAgentLoop } from "../agent"
-import type { KanbanItem } from "../../shared/kanban"
+import type {
+  KanbanCall,
+  KanbanColumnInput,
+  KanbanItem,
+  KanbanWriteApproval,
+} from "../../shared/kanban"
 
 const item = (id: string, body = "Do the thing"): KanbanItem => ({
   id,
@@ -58,6 +63,19 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
   let queue: Array<typeof status>
   let askApproval: boolean
   let answers: string[]
+  // The outcome every handoff reports (columns without outcomes ignore it).
+  let outcome: string | undefined
+  let writes: KanbanCall[]
+  let matches: boolean
+  let failWrite: boolean
+  const upstream = {
+    stillMatches: async () => matches,
+    runAction: async (call: KanbanCall) => {
+      if (failWrite) throw new Error("tracker said no")
+      writes.push(call)
+      return "ok"
+    },
+  }
   const runner = {
     enqueueKind: (x: { input: Record<string, unknown> }) => {
       const task = { id: `t${enqueued.length}`, input: { ...x.input } }
@@ -104,6 +122,7 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
         verification: [],
         unresolved: status === "completed" ? [] : ["could not"],
         nextAction: status === "completed" ? null : "retry",
+        ...(outcome ? { outcome } : {}),
       }),
     }
   }) as unknown as typeof runAgentLoop
@@ -129,15 +148,34 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
     queue = []
     askApproval = false
     answers = []
+    outcome = undefined
+    writes = []
+    matches = true
+    failWrite = false
     workspace = gitRepo()
     cards = new KanbanCardRuns(
       runner,
       mkdtempSync(path.join(tmpdir(), "kanban-wt-")),
+      upstream,
       runTurn
     )
   })
 
   function board(gates: Array<"agent" | "human"> = ["agent", "agent"]) {
+    return customBoard([
+      ...gates.map((gate, i) => ({
+        name: `C${i}`,
+        instructions: `step ${i}`,
+        gate,
+      })),
+      { name: "Done" },
+    ])
+  }
+
+  function customBoard(
+    columns: KanbanColumnInput[],
+    writeApproval: KanbanWriteApproval = "once_per_action"
+  ) {
     const b = kanban.saveBoard({
       name: "B",
       workspace,
@@ -148,15 +186,9 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
         excludeTags: [],
         assignee: { mode: "anyone" },
       },
-      columns: [
-        ...gates.map((gate, i) => ({
-          name: `C${i}`,
-          instructions: `step ${i}`,
-          gate,
-        })),
-        { name: "Done" },
-      ],
+      columns,
     })
+    kanban.setActionSettings(b.id, { writeApproval, actionsPaused: false })
     kanban.applySync(b.id, [item("7")])
     return {
       board: b,
@@ -167,7 +199,7 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
 
   it("runs each column in one worktree, advances on agent gates, and stops at an instruction-less column", async () => {
     const { board: b, card, cols } = board()
-    expect(cards.enter(card.id, cols[0].id)).toEqual({ ok: true })
+    expect(await cards.enter(card.id, cols[0].id)).toEqual({ ok: true })
     expect(kanban.getCard(card.id)!.runState).toBe("running")
     await exec(last())
     const afterFirst = kanban.getCard(card.id)!
@@ -189,18 +221,18 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
 
   it("waits at a human gate until approved", async () => {
     const { card, cols } = board(["human", "agent"])
-    cards.enter(card.id, cols[0].id)
+    await cards.enter(card.id, cols[0].id)
     await exec(last())
     expect(kanban.getCard(card.id)!.runState).toBe("waiting")
     expect(enqueued).toHaveLength(1)
-    expect(cards.approve(card.id)).toEqual({ ok: true })
+    expect(await cards.approve(card.id)).toEqual({ ok: true })
     expect(kanban.getCard(card.id)!.columnId).toBe(cols[1].id)
     expect(enqueued).toHaveLength(2)
   })
 
   it("marks a failed run and reruns with feedback; send back returns to the Inbox", async () => {
     const { card, cols } = board()
-    cards.enter(card.id, cols[0].id)
+    await cards.enter(card.id, cols[0].id)
     status = "failed"
     await exec(last())
     expect(kanban.getCard(card.id)!).toMatchObject({
@@ -208,18 +240,18 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
       runError: "could not",
     })
     status = "completed"
-    expect(cards.retry(card.id, "try harder")).toEqual({ ok: true })
+    expect(await cards.retry(card.id, "try harder")).toEqual({ ok: true })
     await exec(last())
     expect(prompts.at(-1)).toMatch(/^User feedback[^\n]*\ntry harder/)
     expect(kanban.getCard(card.id)!.columnId).toBe(cols[1].id) // advanced
     // C1 is running now; once it fails, send it back to C0.
     status = "failed"
     await exec(last())
-    expect(cards.sendBack(card.id)).toEqual({ ok: true })
+    expect(await cards.sendBack(card.id)).toEqual({ ok: true })
     expect(kanban.getCard(card.id)!.columnId).toBe(cols[0].id)
     status = "failed"
     await exec(last())
-    expect(cards.sendBack(card.id)).toEqual({ ok: true })
+    expect(await cards.sendBack(card.id)).toEqual({ ok: true })
     expect(kanban.getCard(card.id)!).toMatchObject({
       columnId: null,
       runState: "idle",
@@ -228,7 +260,7 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
 
   it("parks on a tool approval instead of failing, and continues once answered", async () => {
     const { card, cols } = board()
-    cards.enter(card.id, cols[0].id)
+    await cards.enter(card.id, cols[0].id)
     askApproval = true
     const running = exec(last())
     await vi.waitFor(() =>
@@ -244,7 +276,7 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
 
   it("continues an unfinished run automatically, up to 3 more turns", async () => {
     const { card, cols } = board()
-    cards.enter(card.id, cols[0].id)
+    await cards.enter(card.id, cols[0].id)
     queue = ["unfinished", "unfinished", "completed"]
     await exec(last())
     expect(prompts).toHaveLength(3)
@@ -261,23 +293,316 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
 
   it("shows a blocked handoff as needing the user, not failed", async () => {
     const { card, cols } = board()
-    cards.enter(card.id, cols[0].id)
+    await cards.enter(card.id, cols[0].id)
     status = "blocked"
     await exec(last())
     expect(kanban.getCard(card.id)!).toMatchObject({
       runState: "blocked",
       runError: "could not",
     })
-    expect(cards.retry(card.id, "token is set now")).toEqual({ ok: true })
+    expect(await cards.retry(card.id, "token is set now")).toEqual({ ok: true })
   })
 
-  it("refuses to move a running card or drop a column that holds cards", () => {
+  it("refuses to move a running card or drop a column that holds cards", async () => {
     const { board: b, card, cols } = board()
-    cards.enter(card.id, cols[0].id)
-    expect(cards.enter(card.id, cols[1].id)).toMatchObject({ ok: false })
+    await cards.enter(card.id, cols[0].id)
+    expect(await cards.enter(card.id, cols[1].id)).toMatchObject({ ok: false })
     expect(() =>
       kanban.saveColumns(b.id, [{ id: cols[1].id, name: "C1" }])
     ).toThrow(/still holds/)
+  })
+
+  // ── 136.3: outcomes, goto, and tracker writes ───────────────────────────
+
+  const qaBoard = (extra: Partial<KanbanColumnInput> = {}, maxReturns = 1) =>
+    customBoard([
+      { name: "Dev", instructions: "implement" },
+      {
+        name: "QA",
+        instructions: "test it",
+        outcomes: [
+          { name: "passed", next: "advance" },
+          { name: "failed", next: "goto", target: "Dev", maxReturns },
+          { name: "incomplete", next: "wait" },
+        ],
+        ...extra,
+      },
+      { name: "Done" },
+    ])
+
+  it("routes by outcome: failed goes back to Dev with findings as data, up to maxReturns", async () => {
+    const { card, cols } = qaBoard()
+    const [dev, qa, done] = cols
+    await cards.enter(card.id, dev.id)
+    await exec(last()) // Dev → QA
+    outcome = "failed"
+    await exec(last()) // QA failed → Dev
+    expect(kanban.getCard(card.id)).toMatchObject({
+      columnId: dev.id,
+      runState: "running",
+      returns: { [qa.id]: 1 },
+    })
+    expect(last().input.findings).toMatchObject({
+      column: "QA",
+      outcome: "failed",
+    })
+    await exec(last()) // Dev rerun
+    const devPrompt = prompts.at(-1)!
+    expect(devPrompt).toContain(
+      'reviewed this card and sent it back with the outcome "failed"'
+    )
+    expect(devPrompt).toMatch(/DATA: did completed/)
+    expect(kanban.getCard(card.id)!.columnId).toBe(qa.id)
+
+    await exec(last()) // QA fails again: limit (1) reached → waits
+    expect(kanban.getCard(card.id)).toMatchObject({
+      columnId: qa.id,
+      runState: "waiting",
+      outcome: "failed",
+    })
+    expect(kanban.getCard(card.id)!.runError).toMatch(/Return limit reached/)
+    // A person approving the goto isn't limited.
+    expect(await cards.approve(card.id)).toEqual({ ok: true })
+    expect(kanban.getCard(card.id)).toMatchObject({
+      columnId: dev.id,
+      returns: { [qa.id]: 2 },
+    })
+    // A move by hand resets the count.
+    await exec(last())
+    outcome = "passed"
+    await exec(last()) // QA passed → Done
+    expect(kanban.getCard(card.id)!.columnId).toBe(done.id)
+    await cards.enter(card.id, qa.id)
+    expect(kanban.getCard(card.id)!.returns).toEqual({})
+  })
+
+  it("puts the outcome list in the handoff instruction, repairs a missing outcome once, then waits for a pick", async () => {
+    const { card, cols } = qaBoard()
+    await cards.enter(card.id, cols[1].id)
+    outcome = undefined
+    await exec(last())
+    expect(prompts).toHaveLength(2) // the run + one repair turn
+    expect(prompts[1]).toMatch(/"outcome" must be one of/)
+    expect(kanban.getCard(card.id)).toMatchObject({
+      runState: "waiting",
+      outcome: null,
+    })
+    expect(await cards.approve(card.id)).toMatchObject({ ok: false })
+    expect(await cards.approve(card.id, "passed")).toEqual({ ok: true })
+    expect(kanban.getCard(card.id)!.columnId).toBe(cols[2].id)
+    expect(kanban.listRuns(card.id)[0].outcome).toBe("passed")
+  })
+
+  it("waits on a wait outcome and on a human gate, whatever the outcome", async () => {
+    const { card, cols } = qaBoard({ gate: "human" })
+    await cards.enter(card.id, cols[1].id)
+    outcome = "failed"
+    await exec(last())
+    expect(kanban.getCard(card.id)).toMatchObject({
+      columnId: cols[1].id,
+      runState: "waiting",
+      outcome: "failed",
+    })
+    const fresh = qaBoard()
+    await cards.enter(fresh.card.id, fresh.cols[1].id)
+    outcome = "incomplete"
+    await exec(last())
+    expect(kanban.getCard(fresh.card.id)!.runState).toBe("waiting")
+  })
+
+  it("runs only the exit actions for the outcome, asks once per action, and keys them per visit", async () => {
+    const { card, cols } = qaBoard({
+      gate: "human",
+      actions: [
+        {
+          name: "mark passed",
+          phase: "exit",
+          when: ["passed"],
+          command: "gh issue edit {{id}} --add-label qa-ok",
+        },
+        {
+          name: "report",
+          phase: "exit",
+          when: ["failed"],
+          command: "gh issue comment {{id}} --body {{result}}",
+        },
+      ],
+    })
+    const [, qa, done] = cols
+    await cards.enter(card.id, qa.id)
+    outcome = "failed"
+    await exec(last())
+    // The person turns "failed" into "passed": only the passed action runs.
+    expect(await cards.approve(card.id, "passed")).toEqual({ ok: true })
+    const parked = kanban.getCard(card.id)!
+    expect(parked).toMatchObject({ runState: "waiting", columnId: qa.id })
+    const pending = kanban.pendingAction(card.id)!
+    expect(pending).toMatchObject({
+      actionName: "mark passed",
+      outcome: "passed",
+    })
+    expect(pending.call.command).toBe("gh issue edit '7' --add-label qa-ok")
+    expect(writes).toEqual([])
+    expect(await cards.approveAction(card.id, "stale")).toMatchObject({
+      ok: false,
+    })
+    expect(await cards.approveAction(card.id, pending.id)).toEqual({ ok: true })
+    expect(writes.map((w) => w.command)).toEqual([
+      "gh issue edit '7' --add-label qa-ok",
+    ])
+    expect(kanban.getCard(card.id)).toMatchObject({
+      columnId: done.id,
+      continuation: null,
+    })
+
+    // A second visit runs it again, and once approved it no longer asks.
+    await cards.enter(card.id, qa.id)
+    outcome = "passed"
+    await exec(last())
+    expect(await cards.approve(card.id)).toEqual({ ok: true })
+    expect(writes).toHaveLength(2)
+    expect(kanban.getCard(card.id)!.columnId).toBe(done.id)
+    expect(kanban.listActions(card.id).map((a) => a.status)).toEqual([
+      "ok",
+      "ok",
+    ])
+  })
+
+  it("binds the column's result into an exit action, shell-quoted", async () => {
+    const { card, cols } = qaBoard(
+      {
+        actions: [
+          {
+            name: "report",
+            phase: "exit",
+            when: ["failed"],
+            command: "gh issue comment {{id}} --body {{result}}",
+          },
+        ],
+      },
+      5
+    )
+    const b = kanban.getBoard(card.boardId)!
+    kanban.setActionSettings(b.id, {
+      writeApproval: "auto",
+      actionsPaused: false,
+    })
+    await cards.enter(card.id, cols[1].id)
+    outcome = "failed"
+    await exec(last())
+    expect(writes[0].command).toBe(
+      "gh issue comment '7' --body 'did completed'"
+    )
+    expect(kanban.getCard(card.id)!.columnId).toBe(cols[0].id) // then the goto
+  })
+
+  it("asks every time under `always`, waits while paused, and Skip continues the move", async () => {
+    const {
+      board: b,
+      card,
+      cols,
+    } = customBoard(
+      [
+        {
+          name: "Doing",
+          instructions: "work",
+          actions: [
+            {
+              name: "start",
+              phase: "enter",
+              command: "gh issue edit {{id}} --add-assignee @me",
+            },
+          ],
+        },
+      ],
+      "always"
+    )
+    await cards.enter(card.id, cols[0].id)
+    expect(enqueued).toHaveLength(0) // the agent waits for the write
+    const first = kanban.pendingAction(card.id)!
+    expect(await cards.approveAction(card.id, first.id)).toEqual({ ok: true })
+    expect(writes).toHaveLength(1)
+    expect(enqueued).toHaveLength(1)
+
+    kanban.setActionSettings(b.id, {
+      writeApproval: "auto",
+      actionsPaused: true,
+    })
+    await cards.stop(card.id)
+    await cards.enter(card.id, null)
+    await cards.enter(card.id, cols[0].id) // a new visit
+    expect(kanban.getCard(card.id)!.runError).toMatch(/paused/)
+    const second = kanban.pendingAction(card.id)!
+    expect(await cards.skipAction(card.id, second.id)).toEqual({ ok: true })
+    expect(writes).toHaveLength(1)
+    expect(kanban.getCard(card.id)!.runState).toBe("running")
+    expect(kanban.getAction(second.id)!.status).toBe("skipped")
+  })
+
+  it("re-checks the item upstream before writing, and resumes a failed write on retry", async () => {
+    const { card, cols } = customBoard(
+      [
+        {
+          name: "Doing",
+          actions: [
+            { name: "start", phase: "enter", command: "gh issue edit {{id}}" },
+          ],
+        },
+      ],
+      "auto"
+    )
+    matches = false
+    await cards.enter(card.id, cols[0].id)
+    expect(kanban.getCard(card.id)).toMatchObject({ runState: "blocked" })
+    expect(kanban.getCard(card.id)!.runError).toMatch(/no longer matches/)
+    expect(writes).toEqual([])
+
+    matches = true
+    failWrite = true
+    expect(await cards.retry(card.id)).toEqual({ ok: true })
+    expect(kanban.getCard(card.id)).toMatchObject({ runState: "failed" })
+    expect(kanban.getCard(card.id)!.runError).toMatch(/tracker said no/)
+
+    failWrite = false
+    expect(await cards.retry(card.id)).toEqual({ ok: true })
+    expect(writes).toHaveLength(1)
+    expect(kanban.getCard(card.id)).toMatchObject({
+      runState: "idle",
+      continuation: null,
+    })
+    // A rerun of the same visit doesn't write again.
+    expect(await cards.retry(card.id)).toEqual({ ok: true })
+    expect(writes).toHaveLength(1)
+  })
+
+  it("rejects a goto to a missing column and a `when` that isn't an outcome", () => {
+    const { board: b, cols } = qaBoard()
+    expect(() =>
+      kanban.saveColumns(b.id, [
+        ...cols.map((c) => ({ id: c.id, name: c.name })),
+        {
+          name: "X",
+          outcomes: [{ name: "bad", next: "goto", target: "Nowhere" }],
+        },
+      ])
+    ).toThrow(/not a column/)
+    expect(() =>
+      kanban.saveColumns(b.id, [
+        ...cols.map((c) => ({ id: c.id, name: c.name })),
+        {
+          name: "X",
+          actions: [
+            { name: "a", phase: "exit", when: ["nope"], command: "true" },
+          ],
+        },
+      ])
+    ).toThrow(/not an outcome/)
+    // Omitting outcomes/actions keeps the stored ones.
+    kanban.saveColumns(
+      b.id,
+      cols.map((c) => ({ id: c.id, name: c.name }))
+    )
+    expect(kanban.listColumns(b.id)[1].outcomes).toHaveLength(3)
   })
 
   it("keeps the tracker item as prefixed untrusted data", () => {

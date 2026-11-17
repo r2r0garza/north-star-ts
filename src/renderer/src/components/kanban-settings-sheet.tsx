@@ -34,11 +34,29 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import type { AgentSummary } from "../../../preload/index"
-import type {
-  KanbanBoardGraph,
-  KanbanColumnInput,
-  KanbanIntakeFilter,
+import {
+  DEFAULT_MAX_RETURNS,
+  type KanbanBoardGraph,
+  type KanbanColumnInput,
+  type KanbanIntakeFilter,
+  type KanbanOutcome,
+  type KanbanOutcomeNext,
+  type KanbanWriteApproval,
 } from "../../../shared/kanban"
+
+const APPROVAL_LABEL: Record<KanbanWriteApproval, string> = {
+  always: "Ask before every write",
+  once_per_action: "Ask once per action, then run it automatically",
+  once_per_board: "Ask once for the whole board",
+  auto: "Never ask",
+}
+
+const NEXT_LABEL: Record<KanbanOutcomeNext, string> = {
+  advance: "Move to the next column",
+  wait: "Wait for me",
+  end: "Finish the card here",
+  goto: "Send back to…",
+}
 
 const splitTags = (text: string) =>
   text
@@ -99,6 +117,127 @@ function SortableColumn({
   )
 }
 
+// A column's outcomes (plan 136.3): what each verdict the agent reports does.
+// goto targets hold the target column's sortId while editing.
+function OutcomesEditor({
+  outcomes,
+  columns,
+  self,
+  onChange,
+}: {
+  outcomes: KanbanOutcome[]
+  columns: Array<{ sortId: string; name: string }>
+  self: string
+  onChange: (outcomes: KanbanOutcome[]) => void
+}) {
+  const set = (i: number, patch: Partial<KanbanOutcome>) =>
+    onChange(outcomes.map((o, j) => (j === i ? { ...o, ...patch } : o)))
+  const others = columns.filter((c) => c.sortId !== self)
+  return (
+    <fieldset className="flex flex-col gap-2">
+      <legend className="mb-1 text-sm font-medium">Outcomes</legend>
+      <p className="text-xs text-muted-foreground">
+        Optional. The agent reports one of these when it finishes (for example
+        passed or failed). Leave empty to just move on.
+      </p>
+      {outcomes.map((o, i) => (
+        <div
+          key={i}
+          className="grid grid-cols-1 items-end gap-2 sm:grid-cols-[8rem_1fr_auto]"
+        >
+          <div className="flex flex-col gap-1">
+            <Label htmlFor={`kb-outcome-${i}`}>Outcome</Label>
+            <Input
+              id={`kb-outcome-${i}`}
+              value={o.name}
+              onChange={(e) => set(i, { name: e.target.value })}
+            />
+          </div>
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="flex min-w-40 flex-1 flex-col gap-1">
+              <Label htmlFor={`kb-outcome-next-${i}`}>Then</Label>
+              <NativeSelect
+                id={`kb-outcome-next-${i}`}
+                className="w-full"
+                value={o.next}
+                onChange={(e) => {
+                  const next = e.target.value as KanbanOutcomeNext
+                  set(
+                    i,
+                    next === "goto"
+                      ? {
+                          next,
+                          target: o.target ?? others[0]?.sortId ?? "",
+                          maxReturns: o.maxReturns ?? DEFAULT_MAX_RETURNS,
+                        }
+                      : { next, target: undefined, maxReturns: undefined }
+                  )
+                }}
+              >
+                {(Object.keys(NEXT_LABEL) as KanbanOutcomeNext[]).map((n) => (
+                  <NativeSelectOption key={n} value={n}>
+                    {NEXT_LABEL[n]}
+                  </NativeSelectOption>
+                ))}
+              </NativeSelect>
+            </div>
+            {o.next === "goto" ? (
+              <>
+                <div className="flex min-w-32 flex-1 flex-col gap-1">
+                  <Label htmlFor={`kb-outcome-target-${i}`}>Column</Label>
+                  <NativeSelect
+                    id={`kb-outcome-target-${i}`}
+                    className="w-full"
+                    value={o.target ?? ""}
+                    onChange={(e) => set(i, { target: e.target.value })}
+                  >
+                    {others.map((c) => (
+                      <NativeSelectOption key={c.sortId} value={c.sortId}>
+                        {c.name || "Untitled column"}
+                      </NativeSelectOption>
+                    ))}
+                  </NativeSelect>
+                </div>
+                <div className="flex w-24 flex-col gap-1">
+                  <Label htmlFor={`kb-outcome-max-${i}`}>Max returns</Label>
+                  <Input
+                    id={`kb-outcome-max-${i}`}
+                    type="number"
+                    min={0}
+                    value={o.maxReturns ?? DEFAULT_MAX_RETURNS}
+                    onChange={(e) =>
+                      set(i, {
+                        maxReturns: Math.max(0, Number(e.target.value) || 0),
+                      })
+                    }
+                  />
+                </div>
+              </>
+            ) : null}
+          </div>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={`Remove outcome ${o.name || i + 1}`}
+            onClick={() => onChange(outcomes.filter((_, j) => j !== i))}
+          >
+            <Trash2 className="size-4" />
+          </Button>
+        </div>
+      ))}
+      <Button
+        variant="outline"
+        size="sm"
+        className="self-start"
+        onClick={() => onChange([...outcomes, { name: "", next: "advance" }])}
+      >
+        <Plus className="size-4" />
+        Add outcome
+      </Button>
+    </fieldset>
+  )
+}
+
 // Board settings (plan 136.2): name, sync interval, intake filter, and the
 // ordered columns with their agent, instructions, and gate. Columns keep their
 // id across edits, so their cards and run history stay put.
@@ -125,15 +264,21 @@ export function KanbanSettingsSheet({
   const [columns, setColumns] = useState<
     (KanbanColumnInput & { sortId: string })[]
   >(
-    graph.columns.map(({ id, name, agentName, instructions, gate }) => ({
-      sortId: id,
-      id,
-      name,
-      agentName,
-      instructions,
-      gate,
-    }))
+    graph.columns.map(
+      ({ id, name, agentName, instructions, gate, outcomes, actions }) => ({
+        sortId: id,
+        id,
+        name,
+        agentName,
+        instructions,
+        gate,
+        outcomes,
+        actions,
+      })
+    )
   )
+  const [writeApproval, setWriteApproval] = useState(board.writeApproval)
+  const [paused, setPaused] = useState(board.actionsPaused)
   const [agents, setAgents] = useState<AgentSummary[]>([])
   const [saving, setSaving] = useState(false)
   const [selectedIndex, setSelectedIndex] = useState(0)
@@ -179,7 +324,18 @@ export function KanbanSettingsSheet({
         name,
         filter,
         syncIntervalMs: Math.max(1, Number(minutes) || 5) * 60_000,
-        columns: columns.map(({ sortId, ...column }) => column),
+        // goto targets are edited by sortId; a new column has no id yet, so
+        // send its name. Actions are omitted, so the stored ones are kept.
+        columns: columns.map(({ sortId, actions, ...column }) => ({
+          ...column,
+          outcomes: (column.outcomes ?? []).map((o) => {
+            if (o.next !== "goto") return o
+            const t = columns.find((c) => c.sortId === o.target)
+            return { ...o, target: t ? (t.id ?? t.name) : o.target }
+          }),
+        })),
+        writeApproval,
+        actionsPaused: paused,
       })
       if (!result.ok) {
         toast.error(result.reason)
@@ -197,7 +353,17 @@ export function KanbanSettingsSheet({
       <DialogContent className="flex h-[min(48rem,calc(100dvh-3rem))] max-w-[calc(100%-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[56rem]">
         <DialogHeader className="shrink-0 px-6 pt-6 pr-12 pb-4">
           <DialogTitle>Board settings</DialogTitle>
-          <DialogDescription>{board.name}</DialogDescription>
+          <DialogDescription className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
+            <span className="min-w-0 truncate">{board.name}</span>
+            <span
+              className="min-w-0 truncate text-xs text-muted-foreground"
+              title={board.workspace ?? undefined}
+            >
+              {board.workspace
+                ? `Workspace: ${board.workspace}`
+                : "No workspace"}
+            </span>
+          </DialogDescription>
         </DialogHeader>
         <Tabs defaultValue="columns" className="min-h-0 flex-1 gap-0">
           <TabsList
@@ -325,6 +491,56 @@ export function KanbanSettingsSheet({
                 A filter change that alters the tracker query needs the intake
                 recipe approved again.
               </p>
+
+              <fieldset className="flex flex-col gap-3">
+                <legend className="mb-2 text-sm font-medium">
+                  Tracker writes
+                </legend>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="kb-write-approval">Approval</Label>
+                  <NativeSelect
+                    className="w-full"
+                    id="kb-write-approval"
+                    value={writeApproval}
+                    onChange={(e) =>
+                      setWriteApproval(e.target.value as KanbanWriteApproval)
+                    }
+                  >
+                    {(Object.keys(APPROVAL_LABEL) as KanbanWriteApproval[]).map(
+                      (level) => (
+                        <NativeSelectOption key={level} value={level}>
+                          {APPROVAL_LABEL[level]}
+                        </NativeSelectOption>
+                      )
+                    )}
+                  </NativeSelect>
+                  <p className="text-xs text-muted-foreground">
+                    Column actions write to the tracker (state, comments,
+                    labels). Each write is logged and runs once per visit to a
+                    column. A changed action asks again.
+                  </p>
+                </div>
+                <div className="flex items-start justify-between gap-4 rounded-lg border p-4">
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="kb-writes-paused">
+                      Pause tracker writes
+                    </Label>
+                    <p
+                      id="kb-writes-paused-description"
+                      className="text-xs text-muted-foreground"
+                    >
+                      Every write waits on its card for you, whatever the
+                      approval level.
+                    </p>
+                  </div>
+                  <Switch
+                    id="kb-writes-paused"
+                    aria-describedby="kb-writes-paused-description"
+                    checked={paused}
+                    onCheckedChange={setPaused}
+                  />
+                </div>
+              </fieldset>
             </div>
           </TabsContent>
           <TabsContent
@@ -521,6 +737,44 @@ export function KanbanSettingsSheet({
                         }
                       />
                     </div>
+                    <OutcomesEditor
+                      outcomes={col.outcomes ?? []}
+                      columns={columns}
+                      self={col.sortId}
+                      onChange={(outcomes) =>
+                        update(selectedIndex, { outcomes })
+                      }
+                    />
+                    {col.actions?.length ? (
+                      <div className="flex flex-col gap-1.5">
+                        <Label>Tracker actions</Label>
+                        <ul className="flex flex-col gap-1.5">
+                          {col.actions.map((a) => (
+                            <li
+                              key={`${a.phase}:${a.name}`}
+                              className="flex flex-col gap-0.5 rounded-md border p-2 text-xs"
+                            >
+                              <span className="font-medium">
+                                {a.name}{" "}
+                                <span className="font-normal text-muted-foreground">
+                                  on {a.phase}
+                                  {a.when?.length
+                                    ? ` when ${a.when.join(" or ")}`
+                                    : ""}
+                                </span>
+                              </span>
+                              <span className="font-mono break-all text-muted-foreground">
+                                {a.command ??
+                                  `${a.tool} ${JSON.stringify(a.args ?? {})}`}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                        <p className="text-xs text-muted-foreground">
+                          Ask the agent to add or change actions.
+                        </p>
+                      </div>
+                    ) : null}
                     <p
                       className={cn(
                         "text-xs text-muted-foreground",
