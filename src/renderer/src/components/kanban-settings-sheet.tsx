@@ -58,7 +58,7 @@ const NEXT_LABEL: Record<KanbanOutcomeNext, string> = {
   advance: "Move to the next column",
   wait: "Wait for me",
   end: "Finish the card here",
-  goto: "Send back to…",
+  goto: "Send to…",
 }
 
 const splitTags = (text: string) =>

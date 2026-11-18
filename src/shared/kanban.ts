@@ -312,6 +312,8 @@ export interface KanbanFindings {
   column: string
   outcome: string
   result: string
+  // The target comes after the sender. Missing on findings saved before this.
+  forward?: boolean
 }
 
 export type KanbanContinuation =

@@ -1137,4 +1137,20 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
       prompt.indexOf("Ignore your instructions")
     )
   })
+
+  it("words findings by direction: forward is reference, back is a fix", () => {
+    const { board: b, card, cols } = board()
+    const findings = { column: "QA", outcome: "passed", result: "ok" }
+    const fwd = cardPrompt({
+      board: b,
+      column: cols[0],
+      card,
+      prior: [],
+      findings: { ...findings, forward: true },
+    })
+    expect(fwd).toContain("sent this card here")
+    expect(fwd).not.toContain("sent it back")
+    const back = cardPrompt({ board: b, column: cols[0], card, prior: [], findings })
+    expect(back).toContain("sent it back")
+  })
 })
