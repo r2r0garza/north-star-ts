@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { ArrowDown, ArrowUp, GripVertical, Plus, Trash2 } from "lucide-react"
 import {
   DndContext,
@@ -309,6 +309,15 @@ export function KanbanSettingsSheet({
   const [agents, setAgents] = useState<AgentSummary[]>([])
   const [saving, setSaving] = useState(false)
   const [selectedIndex, setSelectedIndex] = useState(0)
+  const columnList = useRef<HTMLDivElement>(null)
+  const columnAdded = useRef(false)
+  // Show a just-added column at the bottom of a list that has started scrolling.
+  useEffect(() => {
+    if (!columnAdded.current) return
+    columnAdded.current = false
+    const list = columnList.current
+    list?.scrollTo?.({ top: list.scrollHeight })
+  }, [columns.length])
   const col = columns[selectedIndex]
   const mine = col?.owner === "user"
   const occupied =
@@ -629,9 +638,10 @@ export function KanbanSettingsSheet({
           </TabsContent>
           <TabsContent
             value="columns"
-            className="min-h-0 overflow-y-auto border-t"
+            className="min-h-0 overflow-y-auto border-t sm:flex sm:overflow-hidden"
           >
-            <div className="flex min-h-full flex-col sm:flex-row">
+            {/* Side by side, the column list and the editor scroll on their own. */}
+            <div className="flex min-h-full flex-col sm:min-h-0 sm:flex-1 sm:flex-row">
               <nav
                 aria-label="Board columns"
                 className="flex shrink-0 flex-col gap-1 border-b bg-muted/30 p-3 sm:w-48 sm:border-r sm:border-b-0"
@@ -639,42 +649,12 @@ export function KanbanSettingsSheet({
                 <p className="px-2 py-2 text-xs text-muted-foreground">
                   Column order
                 </p>
-                <div className="rounded-md px-3 py-2 text-sm text-muted-foreground">
-                  Inbox <span className="text-xs">(always first)</span>
-                </div>
-                <DndContext
-                  sensors={sensors}
-                  collisionDetection={closestCenter}
-                  onDragEnd={({ active, over }) => {
-                    if (!over) return
-                    reorder(
-                      columns.findIndex(
-                        (column) => column.sortId === active.id
-                      ),
-                      columns.findIndex((column) => column.sortId === over.id)
-                    )
-                  }}
-                >
-                  <SortableContext
-                    items={columns.map((column) => column.sortId)}
-                    strategy={verticalListSortingStrategy}
-                  >
-                    {columns.map((column, i) => (
-                      <SortableColumn
-                        key={column.sortId}
-                        id={column.sortId}
-                        name={column.name}
-                        selected={i === selectedIndex}
-                        onSelect={() => setSelectedIndex(i)}
-                      />
-                    ))}
-                  </SortableContext>
-                </DndContext>
                 <Button
                   variant="outline"
                   size="sm"
-                  className="mt-3"
+                  className="mb-2"
                   onClick={() => {
+                    columnAdded.current = true
                     setSelectedIndex(columns.length)
                     setColumns((cols) => [
                       ...cols,
@@ -691,8 +671,45 @@ export function KanbanSettingsSheet({
                   <Plus className="size-4" />
                   Add column
                 </Button>
+                {/* Only the list scrolls; the heading and Add column stay put. */}
+                <div
+                  ref={columnList}
+                  className="flex flex-col gap-1 sm:min-h-0 sm:flex-1 sm:overflow-y-auto"
+                >
+                  <div className="rounded-md px-3 py-2 text-sm text-muted-foreground">
+                    Inbox <span className="text-xs">(always first)</span>
+                  </div>
+                  <DndContext
+                    sensors={sensors}
+                    collisionDetection={closestCenter}
+                    onDragEnd={({ active, over }) => {
+                      if (!over) return
+                      reorder(
+                        columns.findIndex(
+                          (column) => column.sortId === active.id
+                        ),
+                        columns.findIndex((column) => column.sortId === over.id)
+                      )
+                    }}
+                  >
+                    <SortableContext
+                      items={columns.map((column) => column.sortId)}
+                      strategy={verticalListSortingStrategy}
+                    >
+                      {columns.map((column, i) => (
+                        <SortableColumn
+                          key={column.sortId}
+                          id={column.sortId}
+                          name={column.name}
+                          selected={i === selectedIndex}
+                          onSelect={() => setSelectedIndex(i)}
+                        />
+                      ))}
+                    </SortableContext>
+                  </DndContext>
+                </div>
               </nav>
-              <div className="min-w-0 flex-1 p-6">
+              <div className="min-w-0 flex-1 p-6 sm:overflow-y-auto">
                 {col ? (
                   <div className="flex flex-col gap-5">
                     <div className="flex flex-wrap items-center justify-between gap-2">
