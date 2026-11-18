@@ -1538,6 +1538,17 @@ app.whenReady().then(async () => {
   )
   kanbanCardRuns.recoverInterrupted()
   kanbanService.afterSync = (boardId) => kanbanCardRuns.autoPromote(boardId)
+  // Background board intake, checked each minute (each board keeps its own
+  // interval). Off in settings = the Boards view syncs the open board instead.
+  const syncBoards = () => {
+    try {
+      if (settingsService.getConversations().syncBoardsInBackground)
+        kanbanService.syncDue()
+    } catch (err) {
+      console.error("[kanban] background sync failed", err)
+    }
+  }
+  setInterval(syncBoards, 60_000)
   taskRunner.registerKind(KANBAN_CARD_RUN_KIND, {
     autoResume: false,
     lane: "work",

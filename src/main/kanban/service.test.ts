@@ -151,6 +151,53 @@ describe.skipIf(!sqliteLoads)("KanbanService sync", () => {
   })
 })
 
+describe.skipIf(!sqliteLoads)("KanbanService.syncDue", () => {
+  beforeEach(() => {
+    db = new Database(":memory:")
+    runMigrations(db)
+  })
+
+  it("syncs only approved boards whose interval has passed", () => {
+    const service = new KanbanService({} as TaskRunner, async () => "[]")
+    const started: string[] = []
+    service.ensureSync = (id) => {
+      started.push(id)
+      return null
+    }
+    const make = (name: string) =>
+      kanban.saveBoard({
+        name,
+        workspace: null,
+        source,
+        filter: {
+          tags: [],
+          match: "any",
+          excludeTags: [],
+          types: [],
+          states: [],
+          assignee: { mode: "me" },
+        },
+        syncIntervalMs: 300_000,
+        columns: [],
+      })
+    const never = make("never synced")
+    const recent = make("recent")
+    const stale = make("stale")
+    make("unapproved")
+    for (const b of [never, recent, stale])
+      kanban.setApprovedHash(b.id, approvalHash(b)!)
+    kanban.setSyncResult(recent.id, null)
+    kanban.setSyncResult(stale.id, "boom")
+    const now = kanban.getBoard(stale.id)!.lastSyncAt! + 300_000
+    db.prepare("UPDATE kanban_boards SET last_sync_at = ? WHERE id = ?").run(
+      now - 1_000,
+      recent.id
+    )
+    service.syncDue(now)
+    expect(started.sort()).toEqual([never.id, stale.id].sort())
+  })
+})
+
 describe("KanbanService.runCommand", () => {
   it("refuses a hard-blocked command without running it", async () => {
     const service = new KanbanService({} as TaskRunner)

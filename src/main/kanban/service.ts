@@ -288,6 +288,21 @@ export class KanbanService {
     }
   }
 
+  // Background intake: start a sync for each approved board whose interval has
+  // passed since its last sync (success or failure, so a failing board waits too).
+  syncDue(now = Date.now()): void {
+    for (const board of kanban.listBoards()) {
+      const hash = approvalHash(board)
+      if (!hash || board.approvedHash !== hash) continue
+      if (
+        board.lastSyncAt !== null &&
+        now - board.lastSyncAt < board.syncIntervalMs
+      )
+        continue
+      this.ensureSync(board.id)
+    }
+  }
+
   ensureSync(boardId: string): Task | null {
     if (!kanban.getBoard(boardId)) return null
     const live = listTasks().some((t) => {

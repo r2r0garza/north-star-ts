@@ -847,8 +847,17 @@ export function KanbanScreen({
     return () => clearInterval(timer)
   }, [refreshList])
 
-  // Show stored cards at once, then sync on open and at the board's interval
-  // while the screen is open (Decision 5: no background intake).
+  // Show stored cards at once. With background sync on (Settings → Behavior),
+  // main syncs every approved board and this screen just reloads; off, it
+  // syncs the open board on open and at its interval.
+  const [backgroundSync, setBackgroundSync] = useState<boolean | null>(null)
+  useEffect(() => {
+    // A failed read falls back to syncing from this screen.
+    void Promise.resolve()
+      .then(() => window.cowork.settings.getConversations())
+      .then((s) => setBackgroundSync(s.syncBoardsInBackground !== false))
+      .catch(() => setBackgroundSync(false))
+  }, [])
   const intervalMs =
     graph?.board.id === selectedId ? graph?.board.syncIntervalMs : undefined
   const approved = graph?.approved ?? false
@@ -860,11 +869,17 @@ export function KanbanScreen({
     void loadGraph(selectedId)
   }, [selectedId, loadGraph])
   useEffect(() => {
-    if (!selectedId || !approved || !intervalMs) return
+    if (!selectedId || !approved || !intervalMs || backgroundSync !== false)
+      return
     void sync(selectedId, true)
     const timer = setInterval(() => void sync(selectedId, true), intervalMs)
     return () => clearInterval(timer)
-  }, [selectedId, approved, intervalMs, sync])
+  }, [selectedId, approved, intervalMs, backgroundSync, sync])
+  useEffect(() => {
+    if (!selectedId || !backgroundSync) return
+    const timer = setInterval(() => void loadGraph(selectedId), 15_000)
+    return () => clearInterval(timer)
+  }, [selectedId, backgroundSync, loadGraph])
 
   // Runs advance cards in the background: poll while any card is running.
   const anyRunning = graph?.cards.some((c) => c.runState === "running") ?? false

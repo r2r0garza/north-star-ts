@@ -221,6 +221,11 @@ a board settings sheet for columns, agents, and actions. All main access goes th
    under `once_per_action`; under `once_per_board`, adding or changing any action re-asks.
 5. **Sync.** Manual Sync button plus polling at the board's interval while the board screen is open.
    Card runs continue in the background; only intake waits for the screen. Revisit when `cron` lands.
+   *Revised 2026-11-18:* Settings → Agent behavior → Behavior → "Sync boards in the background" (default
+   on). On, main checks each minute and syncs every approved board whose interval has passed
+   (`KanbanService.syncDue`), so auto-promote works while the user is elsewhere; the Boards screen just
+   reloads the open board every 15 s. Off restores the screen-driven sync above. The manual Sync button
+   works either way.
 6. **Board scope.** Many boards per workspace, user's choice: one board holding bugs and features, or a
    Bugs board and a Features board with different filters and columns. `kanban_boards` has no unique
    constraint on workspace; the UI adds a board picker. An item that matches two boards' filters appears
