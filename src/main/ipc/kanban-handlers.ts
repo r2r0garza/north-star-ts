@@ -1,4 +1,7 @@
-import { ipcMain } from "electron"
+import { BrowserWindow, dialog, ipcMain } from "electron"
+import { readFile, writeFile } from "node:fs/promises"
+import { exportBoard, importBoard } from "../kanban/export"
+import { pickWorkspace } from "../pick-workspace"
 import * as kanban from "../db/repositories/kanban"
 import type { KanbanService } from "../kanban/service"
 import type { KanbanCardRuns } from "../kanban/card-runs"
@@ -45,6 +48,63 @@ export function registerKanbanHandlers(
   ipcMain.handle("kanban:delete", (_e, boardId: string) =>
     cards.removeBoard(boardId)
   )
+  // Share a board as a JSON file: no workspace, cards or approvals.
+  ipcMain.handle("kanban:exportFile", async (_e, boardId: string) => {
+    const board = kanban.getBoard(boardId)
+    if (!board) return { ok: false, reason: "board not found" }
+    const safe = board.name.replace(/[\\/:*?"<>|]/g, "-").trim() || "board"
+    const options = {
+      defaultPath: `${safe}.board.json`,
+      filters: [{ name: "Board", extensions: ["json"] }],
+    }
+    const win = BrowserWindow.getFocusedWindow()
+    const picked = win
+      ? await dialog.showSaveDialog(win, options)
+      : await dialog.showSaveDialog(options)
+    if (picked.canceled || !picked.filePath) return { ok: true, canceled: true }
+    const data = exportBoard(board, kanban.listColumns(boardId))
+    await writeFile(
+      picked.filePath,
+      `${JSON.stringify(data, null, 2)}\n`,
+      "utf8"
+    )
+    return { ok: true }
+  })
+  // Pick a board file, then the workspace it runs in. The new board's intake
+  // recipe waits for approval like any other.
+  ipcMain.handle("kanban:importFile", async () => {
+    const options = {
+      title: "Import a board",
+      properties: ["openFile" as const],
+      filters: [{ name: "Board", extensions: ["json"] }],
+    }
+    const win = BrowserWindow.getFocusedWindow()
+    const file = win
+      ? await dialog.showOpenDialog(win, options)
+      : await dialog.showOpenDialog(options)
+    if (file.canceled || !file.filePaths[0]) return { ok: true, canceled: true }
+    let data: unknown
+    try {
+      data = JSON.parse(await readFile(file.filePaths[0], "utf8"))
+    } catch {
+      return { ok: false, reason: "That file isn't valid JSON." }
+    }
+    const folder = await pickWorkspace({
+      message: "Choose the workspace folder this board's cards run in",
+      buttonLabel: "Use this folder",
+    })
+    if (folder.canceled || !folder.path)
+      return {
+        ok: false,
+        reason: "No workspace folder chosen, so the board wasn't imported.",
+      }
+    try {
+      const board = importBoard(data, folder.path)
+      return { ok: true, boardId: board.id, name: board.name }
+    } catch (err) {
+      return { ok: false, reason: (err as Error).message }
+    }
+  })
   // Returns the sync task id, or null when one is already in flight.
   ipcMain.handle(
     "kanban:sync",
@@ -69,6 +129,7 @@ export function registerKanbanHandlers(
         actionsPaused: boolean
         worktrees: boolean
         parallelCommands: boolean
+        notifications: boolean
       }
     ) => {
       const board = kanban.getBoard(boardId)
@@ -96,6 +157,7 @@ export function registerKanbanHandlers(
           worktrees: patch.worktrees !== false,
           parallelCommands: patch.parallelCommands === true,
         })
+        kanban.setNotifications(boardId, patch.notifications !== false)
       } catch (err) {
         if (err instanceof kanban.KanbanColumnInUseError)
           return { ok: false, reason: err.message }

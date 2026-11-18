@@ -14,6 +14,7 @@ import {
   ArrowLeft,
   Bell,
   ChevronDown,
+  Download,
   ExternalLink,
   GripVertical,
   MoreHorizontal,
@@ -21,6 +22,7 @@ import {
   Settings2,
   ShieldCheck,
   Trash2,
+  Upload,
   XIcon,
 } from "lucide-react"
 import { toast } from "sonner"
@@ -944,6 +946,26 @@ export function KanbanScreen({
     await refreshList()
   }
 
+  async function exportBoard(id: string) {
+    const result = await window.cowork.kanban.exportFile(id)
+    if (!result.ok) toast.error(result.reason)
+    else if (!result.canceled) toast.success("Board exported")
+  }
+
+  async function importBoard() {
+    const result = await window.cowork.kanban.importFile()
+    if (!result.ok) {
+      toast.error(result.reason)
+      return
+    }
+    if (result.canceled || !result.boardId) return
+    await refreshList()
+    setSelectedId(result.boardId)
+    toast.success(
+      `Imported "${result.name}". Check its filter, then approve the intake recipe.`
+    )
+  }
+
   const board = graph?.board
   const inbox = graph?.cards.filter((c) => c.columnId === null) ?? []
   // Drag and drop: the same move as the card's "Move to" menu (idle cards only).
@@ -981,10 +1003,20 @@ export function KanbanScreen({
           <ArrowLeft className="size-4 text-muted-foreground transition-colors group-hover/back:text-foreground" />
           <h1 className="font-heading text-base font-medium">Boards</h1>
         </button>
-        <Button variant="ghost" size="icon-sm" onClick={onClose}>
-          <XIcon />
-          <span className="sr-only">Close</span>
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void importBoard()}
+          >
+            <Upload className="size-4" />
+            Import board
+          </Button>
+          <Button variant="ghost" size="icon-sm" onClick={onClose}>
+            <XIcon />
+            <span className="sr-only">Close</span>
+          </Button>
+        </div>
       </div>
 
       <div className="flex min-h-0 min-w-0 flex-1">
@@ -1094,6 +1126,12 @@ export function KanbanScreen({
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
                         <DropdownMenuItem
+                          onSelect={() => void exportBoard(board.id)}
+                        >
+                          <Download />
+                          Export board
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
                           variant="destructive"
                           onSelect={() => setPendingDelete(board)}
                         >
@@ -1191,7 +1229,7 @@ export function KanbanScreen({
           ) : (
             <div className="flex flex-1 items-center justify-center p-8 text-center text-sm text-muted-foreground">
               {boards.length === 0
-                ? 'No boards yet. Ask an agent to set one up, e.g. "Make a board from my GitHub issues labeled agent-go."'
+                ? 'No boards yet. Import one, or ask an agent to set one up, e.g. "Make a board from my GitHub issues labeled agent-go."'
                 : "Loading board…"}
             </div>
           )}

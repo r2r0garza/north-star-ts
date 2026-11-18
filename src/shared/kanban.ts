@@ -113,6 +113,9 @@ export interface KanbanBoard {
   // with worktrees off) whether command columns run cards in parallel.
   worktrees: boolean
   parallelCommands: boolean
+  // Desktop notifications for this board's card runs. Off: only columns with
+  // `notify` set raise them. Syncs never notify.
+  notifications: boolean
   syncIntervalMs: number
   lastSyncAt: number | null
   lastSyncError: string | null
@@ -165,6 +168,8 @@ export interface KanbanColumn {
   // card that enters. null timeout = no time limit.
   command: string | null
   commandTimeoutMs: number | null
+  // Notify when a run here finishes; only used while the board's are off.
+  notify: boolean
 }
 
 // A user-column command's time limit: off (null) or 5–90 minutes.
@@ -196,6 +201,7 @@ export interface KanbanColumnInput {
   // User path only; the agent path never sends these (stored values are kept).
   command?: string | null
   commandTimeoutMs?: number | null
+  notify?: boolean // omitted keeps the stored value
 }
 
 // One upstream action attempt: the audit log and the idempotency record.
@@ -243,6 +249,10 @@ export type KanbanLayout = "repo" | "repos" | "none"
 // Command columns run up to this many cards at once across a board with
 // parallel commands on.
 export const MAX_PARALLEL_COMMANDS = 4
+
+// Agent columns run up to this many cards at once across a board; the rest
+// wait (shown as Queued), leaving the app's other model slots free.
+export const MAX_PARALLEL_AGENTS = 4
 
 export interface KanbanCardRun {
   id: string
@@ -898,6 +908,7 @@ export function mergeAgentColumns(
       actions: u.actions,
       command: u.command,
       commandTimeoutMs: u.commandTimeoutMs,
+      notify: u.notify,
     })
   }
   return merged

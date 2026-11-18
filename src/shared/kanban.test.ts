@@ -391,6 +391,7 @@ describe("mergeAgentColumns", () => {
     actions: [],
     command: owner === "user" ? "npm run deploy" : null,
     commandTimeoutMs: null,
+    notify: false,
   })
   const existing = [
     column("Plan", "agent"),

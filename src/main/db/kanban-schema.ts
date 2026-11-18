@@ -166,3 +166,17 @@ export function ensureKanbanWorktreeChoices(db: Database.Database): void {
   add("kanban_cards", "own_worktree", "INTEGER")
   add("kanban_cards", "repos", "TEXT NOT NULL DEFAULT '[]'")
 }
+
+// Board notifications (default on) and, used only while the board's are off,
+// per-column notifications (default off).
+export function ensureKanbanNotifications(db: Database.Database): void {
+  const add = (table: string, column: string, definition: string) => {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+      name: string
+    }>
+    if (!cols.some((c) => c.name === column))
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`)
+  }
+  add("kanban_boards", "notifications", "INTEGER NOT NULL DEFAULT 1")
+  add("kanban_columns", "notify", "INTEGER NOT NULL DEFAULT 0")
+}

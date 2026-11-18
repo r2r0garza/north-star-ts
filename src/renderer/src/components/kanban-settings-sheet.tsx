@@ -285,6 +285,7 @@ export function KanbanSettingsSheet({
         actions,
         command,
         commandTimeoutMs,
+        notify,
       }) => ({
         sortId: id,
         id,
@@ -297,6 +298,7 @@ export function KanbanSettingsSheet({
         actions,
         command,
         commandTimeoutMs,
+        notify,
       })
     )
   )
@@ -304,6 +306,7 @@ export function KanbanSettingsSheet({
   const [paused, setPaused] = useState(board.actionsPaused)
   const [worktrees, setWorktrees] = useState(board.worktrees)
   const [parallel, setParallel] = useState(board.parallelCommands)
+  const [notifications, setNotifications] = useState(board.notifications)
   // Worktrees need repos; without them, cards always share the workspace.
   const canWorktree = graph.layout !== "none"
   const [agents, setAgents] = useState<AgentSummary[]>([])
@@ -375,6 +378,7 @@ export function KanbanSettingsSheet({
         actionsPaused: paused,
         worktrees,
         parallelCommands: parallel,
+        notifications,
       })
       if (!result.ok) {
         toast.error(result.reason)
@@ -633,6 +637,32 @@ export function KanbanSettingsSheet({
                     />
                   </div>
                 ) : null}
+              </fieldset>
+
+              <fieldset className="flex flex-col gap-3">
+                <legend className="mb-2 text-sm font-medium">
+                  Notifications
+                </legend>
+                <div className="flex items-start justify-between gap-4 rounded-lg border p-4">
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="kb-notifications">
+                      Notify when cards finish a column
+                    </Label>
+                    <p
+                      id="kb-notifications-description"
+                      className="text-xs text-muted-foreground"
+                    >
+                      A desktop notification for every card run on this board.
+                      Off: only columns you turn on notify. Syncs never notify.
+                    </p>
+                  </div>
+                  <Switch
+                    id="kb-notifications"
+                    aria-describedby="kb-notifications-description"
+                    checked={notifications}
+                    onCheckedChange={setNotifications}
+                  />
+                </div>
               </fieldset>
             </div>
           </TabsContent>
@@ -928,6 +958,30 @@ export function KanbanSettingsSheet({
                             update(selectedIndex, {
                               gate: checked ? "human" : "agent",
                             })
+                          }
+                        />
+                      </div>
+                    )}
+                    {notifications ? null : (
+                      <div className="flex items-start justify-between gap-4 rounded-lg border p-4">
+                        <div className="flex flex-col gap-1.5">
+                          <Label htmlFor="kb-column-notify">
+                            Notify when a card finishes here
+                          </Label>
+                          <p
+                            id="kb-column-notify-description"
+                            className="text-xs text-muted-foreground"
+                          >
+                            Board notifications are off, so only columns with
+                            this on notify.
+                          </p>
+                        </div>
+                        <Switch
+                          id="kb-column-notify"
+                          aria-describedby="kb-column-notify-description"
+                          checked={!!col.notify}
+                          onCheckedChange={(notify) =>
+                            update(selectedIndex, { notify })
                           }
                         />
                       </div>

@@ -298,7 +298,8 @@ export class KanbanService {
     return this.runner.enqueueKind({
       kind: KANBAN_SYNC_KIND,
       title: "Syncing board",
-      input: { boardId },
+      // Routine and repaints the board itself: never a desktop notification.
+      input: { boardId, quiet: true },
     })
   }
 

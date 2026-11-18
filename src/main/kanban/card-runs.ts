@@ -27,6 +27,7 @@ import {
   fillInstructions,
   commandTimeoutProblem,
   DEFAULT_MAX_RETURNS,
+  MAX_PARALLEL_AGENTS,
   MAX_PARALLEL_COMMANDS,
   type KanbanAction,
   type KanbanBoard,
@@ -87,6 +88,11 @@ const cardBranch = (board: KanbanBoard, card: KanbanCard) =>
 
 // Command columns run cards in parallel only on a board without worktrees
 // (136.6): the user's commands then isolate their own work.
+// The renderer skips the "task finished" notification for a quiet task.
+function quietColumn(board: KanbanBoard, column?: KanbanColumn): boolean {
+  return !board.notifications && !column?.notify
+}
+
 function parallelCommands(board: KanbanBoard): boolean {
   return (
     board.parallelCommands &&
@@ -237,6 +243,13 @@ export class KanbanCardRuns {
     return { ok: true }
   }
 
+  // Feedback and findings for agent runs waiting for a slot. shortcut: in
+  // memory only; recoverInterrupted fails unfinished runs on restart anyway.
+  private readonly agentInputs = new Map<
+    string,
+    { feedback: string | null; findings: KanbanFindings | null }
+  >()
+
   constructor(
     private readonly runner: TaskRunner,
     private readonly worktreeRoot: string,
@@ -269,7 +282,7 @@ export class KanbanCardRuns {
     // Leaving a column drops its queued command or stops the running one.
     if (
       card.runState === "running" &&
-      !this.dropCommand(card.id, "the card was moved")
+      !this.dropRun(card.id, "the card was moved")
     )
       return refuse("the card is running; stop it first")
     kanban.skipPendingActions(card.id, "the card was moved")
@@ -549,20 +562,13 @@ export class KanbanCardRuns {
         columnId: column.id,
         columnName: column.name,
       })
-      const task = this.runner.enqueueKind({
-        kind: KANBAN_CARD_RUN_KIND,
-        title: `${column.name}: #${card.item.id}`,
-        input: {
-          cardId: card.id,
-          columnId: column.id,
-          runId: run.id,
-          feedback: cont.feedback ?? null,
-          findings: cont.findings ?? null,
-        },
+      this.agentInputs.set(run.id, {
+        feedback: cont.feedback ?? null,
+        findings: cont.findings ?? null,
       })
-      kanban.setRunTask(run.id, task.id)
       kanban.updateCard(card.id, { runState: "running" })
     })()
+    this.startNextAgents(board.id)
     return OK
   }
 
@@ -674,17 +680,52 @@ export class KanbanCardRuns {
     }
   }
 
-  // The card's unfinished command run, if it has one.
-  private commandRun(cardId: string) {
+  // The card's run that can be dropped without stopping an agent mid-turn:
+  // its command (queued or running) or its agent run still waiting for a slot.
+  private droppableRun(cardId: string) {
     return kanban
       .listRuns(cardId)
-      .findLast((r) => r.kind === "command" && r.status === "running")
+      .findLast(
+        (r) => r.status === "running" && (r.kind === "command" || !r.taskId)
+      )
   }
 
-  // Waiting for its column's command to start (shown as Queued).
+  // Waiting for a slot to start (shown as Queued).
   queued(cardId: string): boolean {
-    const run = this.commandRun(cardId)
+    const run = this.droppableRun(cardId)
     return !!run && !run.taskId
+  }
+
+  // Start waiting agent runs, up to MAX_PARALLEL_AGENTS across the board.
+  private startNextAgents(boardId: string): void {
+    const board = kanban.getBoard(boardId)
+    if (!board) return
+    const runs = kanban.listBoardRuns(boardId, "agent")
+    const free = MAX_PARALLEL_AGENTS - runs.filter((r) => r.taskId).length
+    const columns = kanban.listColumns(boardId)
+    for (const next of runs
+      .filter((r) => !r.taskId)
+      .slice(0, Math.max(0, free))) {
+      const card = kanban.getCard(next.cardId)
+      const pending = this.agentInputs.get(next.id)
+      this.agentInputs.delete(next.id)
+      const task = this.runner.enqueueKind({
+        kind: KANBAN_CARD_RUN_KIND,
+        title: `${next.columnName}: #${card?.item.id ?? next.cardId}`,
+        input: {
+          cardId: next.cardId,
+          columnId: next.columnId,
+          runId: next.id,
+          feedback: pending?.feedback ?? null,
+          findings: pending?.findings ?? null,
+          quiet: quietColumn(
+            board,
+            columns.find((c) => c.id === next.columnId)
+          ),
+        },
+      })
+      kanban.setRunTask(next.id, task.id)
+    }
   }
 
   // Start waiting commands: with parallel commands, up to
@@ -692,7 +733,7 @@ export class KanbanCardRuns {
   private startNextCommands(boardId: string): void {
     const board = kanban.getBoard(boardId)
     if (!board) return
-    const runs = kanban.listBoardCommandRuns(boardId)
+    const runs = kanban.listBoardRuns(boardId, "command")
     const waiting = runs.filter((r) => !r.taskId)
     const toStart = parallelCommands(board)
       ? waiting.slice(
@@ -707,31 +748,46 @@ export class KanbanCardRuns {
             !runs.some((o) => o.taskId && o.columnId === r.columnId) &&
             waiting.findIndex((o) => o.columnId === r.columnId) === i
         )
+    const columns = kanban.listColumns(boardId)
     for (const next of toStart) {
       const card = kanban.getCard(next.cardId)
       const task = this.runner.enqueueKind({
         kind: KANBAN_COMMAND_RUN_KIND,
         title: `${next.columnName}: #${card?.item.id ?? next.cardId}`,
-        input: { cardId: next.cardId, columnId: next.columnId, runId: next.id },
+        input: {
+          cardId: next.cardId,
+          columnId: next.columnId,
+          runId: next.id,
+          quiet: quietColumn(
+            board,
+            columns.find((c) => c.id === next.columnId)
+          ),
+        },
       })
       kanban.setRunTask(next.id, task.id)
     }
   }
 
-  // End a card's queued or running command (its task is cancelled) and let the
-  // column's next card start. False when the card has no command run.
-  private dropCommand(cardId: string, reason: string): boolean {
-    const run = this.commandRun(cardId)
+  // End a card's queued run or running command (its task is cancelled) and
+  // let the next card start. False when the card has no such run.
+  private dropRun(cardId: string, reason: string): boolean {
+    const run = this.droppableRun(cardId)
     if (!run) return false
     kanban.finishRun(run.id, { error: reason })
+    this.agentInputs.delete(run.id)
     if (run.taskId) this.runner.cancel(run.taskId)
     const card = kanban.getCard(cardId)
-    if (card) this.startNextCommands(card.boardId)
+    if (card) this.startNext(card.boardId)
     return true
   }
 
+  private startNext(boardId: string): void {
+    this.startNextCommands(boardId)
+    this.startNextAgents(boardId)
+  }
+
   stop(cardId: string): Result {
-    if (this.dropCommand(cardId, "stopped")) {
+    if (this.dropRun(cardId, "stopped")) {
       kanban.updateCard(cardId, { runState: "failed", runError: "stopped" })
       return OK
     }
@@ -745,6 +801,7 @@ export class KanbanCardRuns {
     // A still-queued task never reaches the executor, so record the stop here.
     kanban.finishRun(run.id, { error: "stopped" })
     kanban.updateCard(card.id, { runState: "failed", runError: "stopped" })
+    this.startNextAgents(card.boardId)
     return { ok: true }
   }
 
@@ -969,7 +1026,18 @@ export class KanbanCardRuns {
     return path.join(directory, sub)
   }
 
-  readonly execute: TaskExecutor = async ({ task, signal, emit }) => {
+  // An agent run; when it ends, the board's next waiting run takes its slot.
+  readonly execute: TaskExecutor = async (ctx) => {
+    try {
+      return await this.runAgent(ctx)
+    } finally {
+      const cardId = (ctx.task.input as { cardId?: string }).cardId
+      const card = cardId ? kanban.getCard(cardId) : null
+      if (card) this.startNextAgents(card.boardId)
+    }
+  }
+
+  private readonly runAgent: TaskExecutor = async ({ task, signal, emit }) => {
     const input = task.input as {
       cardId?: string
       columnId?: string

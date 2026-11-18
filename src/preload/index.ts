@@ -1537,6 +1537,14 @@ const api = {
       ) as Promise<KanbanBoardGraph | null>,
     delete: (boardId: string) =>
       ipcRenderer.invoke("kanban:delete", boardId) as Promise<KanbanResult>,
+    exportFile: (boardId: string) =>
+      ipcRenderer.invoke("kanban:exportFile", boardId) as Promise<
+        KanbanResult & { canceled?: boolean }
+      >,
+    importFile: () =>
+      ipcRenderer.invoke("kanban:importFile") as Promise<
+        KanbanResult & { canceled?: boolean; boardId?: string; name?: string }
+      >,
     saveSettings: (
       boardId: string,
       patch: {
@@ -1548,6 +1556,7 @@ const api = {
         actionsPaused: boolean
         worktrees: boolean
         parallelCommands: boolean
+        notifications: boolean
       }
     ) =>
       ipcRenderer.invoke(

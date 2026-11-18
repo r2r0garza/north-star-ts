@@ -20,6 +20,7 @@ vi.mock("../agent", () => ({
 
 import {
   KanbanCardRuns,
+  KANBAN_CARD_RUN_KIND,
   KANBAN_COMMAND_RUN_KIND,
   cardPrompt,
 } from "./card-runs"
@@ -27,6 +28,7 @@ import type { CommandRunResult } from "./service"
 import * as kanban from "../db/repositories/kanban"
 import type { TaskRunner } from "../tasks/runner"
 import type { runAgentLoop } from "../agent"
+import { MAX_PARALLEL_AGENTS } from "../../shared/kanban"
 import type {
   KanbanCall,
   KanbanColumnInput,
@@ -274,6 +276,54 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
       "completed",
       "completed",
     ])
+  })
+
+  it("marks runs quiet when board notifications are off, unless the column notifies", async () => {
+    const { board: b, card, cols } = board(["agent", "agent", "agent"])
+    expect(kanban.getBoard(b.id)!.notifications).toBe(true)
+    expect(cols.every((c) => !c.notify)).toBe(true)
+
+    kanban.setNotifications(b.id, false)
+    kanban.saveColumns(
+      b.id,
+      cols.map((c, i) => ({ ...c, notify: i === 1 }))
+    )
+    await cards.enter(card.id, cols[0].id)
+    expect(last().input.quiet).toBe(true)
+    await exec(last()) // advances into C1, which notifies
+    expect(last().input.quiet).toBe(false)
+
+    kanban.setNotifications(b.id, true)
+    await exec(last()) // into C2: no notify, but the board's are on
+    expect(last().input.quiet).toBe(false)
+  })
+
+  it("runs at most MAX_PARALLEL_AGENTS agent cards at once; the rest queue", async () => {
+    const { board: b, cols } = board()
+    kanban.applySync(
+      b.id,
+      ["1", "2", "3", "4", "5", "7"].map((id) => item(id))
+    )
+    const all = kanban.listCards(b.id)
+    expect(all.length).toBe(MAX_PARALLEL_AGENTS + 2)
+    for (const c of all) await cards.enter(c.id, cols[0].id)
+    const agentTasks = () =>
+      enqueued.filter((t) => t.kind === KANBAN_CARD_RUN_KIND)
+    expect(agentTasks().length).toBe(MAX_PARALLEL_AGENTS)
+    const waiting = all.filter((c) => cards.queued(c.id))
+    expect(waiting.length).toBe(2)
+
+    // A queued card can be stopped without ever starting.
+    expect(cards.stop(waiting[1].id)).toEqual({ ok: true })
+    expect(agentTasks().length).toBe(MAX_PARALLEL_AGENTS)
+
+    // Finishing one frees its slot for the next waiting card, with its input.
+    await exec(agentTasks()[0])
+    const started = enqueued
+      .filter((t) => t.kind === KANBAN_CARD_RUN_KIND)
+      .find((t) => t.input.cardId === waiting[0].id)
+    expect(started).toBeDefined()
+    expect(cards.queued(waiting[0].id)).toBe(false)
   })
 
   it("waits at a human gate until approved", async () => {
@@ -1150,7 +1200,13 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
     })
     expect(fwd).toContain("sent this card here")
     expect(fwd).not.toContain("sent it back")
-    const back = cardPrompt({ board: b, column: cols[0], card, prior: [], findings })
+    const back = cardPrompt({
+      board: b,
+      column: cols[0],
+      card,
+      prior: [],
+      findings,
+    })
     expect(back).toContain("sent it back")
   })
 })

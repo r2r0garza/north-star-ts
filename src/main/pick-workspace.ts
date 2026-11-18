@@ -8,17 +8,19 @@ export interface PickResult {
 // Opens the real native OS folder picker via Electron's dialog API.
 // Cross-platform (macOS/Windows/Linux) with correct window ownership —
 // no osascript, no focus quirks.
-export async function pickWorkspace(): Promise<PickResult> {
+export async function pickWorkspace(
+  // macOS ignores `title`; `message` is the only prompt it shows.
+  prompt: { message?: string; buttonLabel?: string } = {}
+): Promise<PickResult> {
   const win = BrowserWindow.getFocusedWindow() ?? undefined
+  const options: OpenDialogOptions = {
+    title: "Select a workspace folder",
+    properties: ["openDirectory", "createDirectory"],
+    ...prompt,
+  }
   const result = win
-    ? await dialog.showOpenDialog(win, {
-        title: "Select a workspace folder",
-        properties: ["openDirectory", "createDirectory"],
-      })
-    : await dialog.showOpenDialog({
-        title: "Select a workspace folder",
-        properties: ["openDirectory", "createDirectory"],
-      })
+    ? await dialog.showOpenDialog(win, options)
+    : await dialog.showOpenDialog(options)
 
   if (result.canceled || result.filePaths.length === 0) {
     return { canceled: true }
@@ -36,7 +38,8 @@ export async function pickWorkflowImport(): Promise<PickFilesResult> {
   const result = win
     ? await dialog.showOpenDialog(win, options)
     : await dialog.showOpenDialog(options)
-  if (result.canceled || result.filePaths.length === 0) return { canceled: true }
+  if (result.canceled || result.filePaths.length === 0)
+    return { canceled: true }
   return { paths: [result.filePaths[0]] }
 }
 

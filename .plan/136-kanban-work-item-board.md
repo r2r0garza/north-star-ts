@@ -2,7 +2,10 @@
 
 > Status: 136.1 built 2026-11-12 (`b0ba775`), verified against real GitHub Issues via `gh`. 136.2 built
 > 2026-11-12, unit-tested, not yet run in the app. 136.3 built 2026-11-16, unit-tested, not yet run in the
-> app or against a live tracker. 136.4 not started. 136.5 built 2026-11-16, unit-tested, not yet run in the app. 136.6 built 2026-11-17, unit-tested, not yet run in the app. 136.7 built 2026-11-17, unit-tested. Open decisions settled 2026-11-12 (see **Decisions**).
+> app or against a live tracker. 136.4 not started, except a per-board cap on agent runs (uncommitted, see
+> **136.8**). 136.5 built 2026-11-16, unit-tested, not yet run in the app. 136.6 built 2026-11-17, unit-tested, not yet run in the app. 136.7 built 2026-11-17, unit-tested. 136.8 built, unit-tested, not
+> committed yet. Open decisions settled 2026-11-12 (see **Decisions**). Checked against the code
+> 2026-11-18 (see **Audit 2026-11-18** for unbuilt v1 scope and missing tests).
 
 ## Objective
 
@@ -248,6 +251,8 @@ outcome), cross-workspace boards, per-card agent override.
   command runs, and cards that open worktrees only for the repos they need (see **136.6**).
 - `136.7` Column placeholders: `{{id}}`, `{{url}}`, `{{branch}}` (and `{{title}}` in commands only) in a
   column's command and agent instructions (see **136.7**).
+- `136.8` Board files, notifications, and an agent-run cap: export/import a board as JSON, desktop
+  notifications per board and per column, and at most 4 agent runs at once per board (see **136.8**).
 
 ## 136.5 User-column commands (built 2026-11-16; decisions settled the same day)
 
@@ -444,8 +449,9 @@ The user wrote it, so it skips the approval prompt and can run with no timeout. 
   worktrees and keeps branches. Non-git workspaces run one card at a time (in-memory lock).
 - **Restart:** runs don't auto-resume; at startup a card left `running` is marked `failed` ("interrupted").
 - **Known limits:** continuation turns don't summarize the transcript between turns the way workflow
-  steps do (in-turn compaction still applies); moves are by menu, not drag-and-drop; no per-column model choice; any
-  number of cards can run at once until 136.4's WIP limits (the work lane caps it at 6).
+  steps do (in-turn compaction still applies); no per-column model choice. (Since built: drag-and-drop
+  moves by a handle, `324ef2d`; at most 4 agent runs at once per board, 136.8. Per-column WIP limits
+  are still 136.4.)
 
 **136.5 as built**
 
@@ -622,3 +628,39 @@ card: `./repo-3/script.sh --ticket-id {{id}}`, "write the plan to plan-{{id}}.md
   on a user column's card. The `KANBAN_*` environment variables still work in commands.
 - **Code:** `placeholderProblem`, `fillCommand`, `fillInstructions`, `cardVars` in `src/shared/kanban.ts`.
 
+
+## 136.8 Board files, notifications, and an agent-run cap (built, not committed yet)
+
+- **Board files:** export a board as `<name>.board.json` (format `north-star/kanban-board`, version 1):
+  its recipe, filter, sync interval, settings and columns. Never its workspace, cards, run history or
+  approvals. Import picks the file, then the workspace; the intake recipe and tracker writes need approval
+  again on the new machine. Code: `src/main/kanban/export.ts`, `kanban:exportFile` / `kanban:importFile`.
+- **Notifications:** a board setting (default on) for a desktop notification when a card finishes a
+  column. With it off, only columns with their own "Notify" on raise one. Syncs never notify. Runs pass
+  `quiet` to the task, which the renderer's notifier already skips. Migration `ensureKanbanNotifications`.
+- **Agent-run cap:** at most `MAX_PARALLEL_AGENTS` (4) agent runs at once per board; the rest wait as
+  *Queued* and start as slots free (`startNextAgents` in `card-runs.ts`). A queued run's feedback and
+  findings are kept in memory only; a restart fails unfinished runs anyway. This is a board-wide cap,
+  not 136.4's per-column WIP limit.
+
+## Audit 2026-11-18
+
+The code was read against this plan. 136.1–136.3 and 136.5–136.7 match their "as built" notes.
+
+**v1 scope in this plan that isn't built** (decide: build, or move to Out of scope):
+
+- **Auto-promote** from the Inbox (**Intake column**: "a board setting, off by default"). Not in the code.
+- **Optional intake filters** (**Intake filter**): work item types, states, area/iteration path, Jira
+  project, GitHub repo. The filter has only tags, match mode, excluded tags, assignee, and the raw query.
+- **Per-column WIP limits** (**Board configuration**). Left for 136.4; only the per-board agent cap exists.
+
+**Tests from Verification that are missing or weaker:**
+
+- **Injection:** only the prompt shape is tested (the item is a prefixed untrusted envelope). Nothing
+  checks agent behavior with an item body that carries instructions.
+- **`once_per_board`** approval level: no test (`always`, `once_per_action`, `auto` and pause are tested).
+- **WIP enforcement:** none, since 136.4 isn't built.
+- The board-view "Own worktree" toggle (already noted in 136.6).
+
+**Not run:** no slice after 136.1 has been run in the app or against a live tracker; the **Manual**
+checks in Verification are all still open.

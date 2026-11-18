@@ -48,6 +48,7 @@ const graph: KanbanBoardGraph = {
     actionsPaused: false,
     worktrees: true,
     parallelCommands: false,
+    notifications: true,
     syncIntervalMs: 300_000,
     lastSyncAt: null,
     lastSyncError: null,
@@ -68,6 +69,7 @@ const graph: KanbanBoardGraph = {
       actions: [],
       command: null,
       commandTimeoutMs: null,
+      notify: false,
     },
     {
       id: "doing",
@@ -82,6 +84,7 @@ const graph: KanbanBoardGraph = {
       actions: [],
       command: null,
       commandTimeoutMs: null,
+      notify: false,
     },
   ],
   cards: [],
@@ -483,4 +486,37 @@ it("hides the worktrees switch when the workspace has no repos", async () => {
   await openGeneral()
   expect(document.querySelector("#kb-worktrees")).toBeNull()
   expect(document.querySelector("#kb-parallel")).not.toBeNull()
+})
+
+it("shows the column notify switch only with board notifications off, and saves both", async () => {
+  await act(async () =>
+    root.render(
+      <KanbanSettingsSheet graph={graph} onClose={vi.fn()} onSaved={vi.fn()} />
+    )
+  )
+  const tab = (name: string) =>
+    act(() => {
+      button(name).dispatchEvent(
+        new MouseEvent("mousedown", { bubbles: true, button: 0 })
+      )
+    })
+  await tab("Columns")
+  expect(document.querySelector("#kb-column-notify")).toBeNull()
+  await tab("General & filters")
+  await act(async () =>
+    (document.querySelector("#kb-notifications") as HTMLButtonElement).click()
+  )
+  await tab("Columns")
+  const notify = document.querySelector(
+    "#kb-column-notify"
+  ) as HTMLButtonElement
+  expect(notify.getAttribute("aria-checked")).toBe("false")
+  await act(async () => notify.click())
+  await click("Save changes")
+  const saved = saveSettings.mock.calls[0] as unknown as [
+    string,
+    { notifications: boolean; columns: { notify?: boolean }[] },
+  ]
+  expect(saved[1].notifications).toBe(false)
+  expect(saved[1].columns[0].notify).toBe(true)
 })
