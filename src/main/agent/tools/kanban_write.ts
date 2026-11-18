@@ -63,7 +63,9 @@ export const kanbanWriteTool: Tool = {
         "structured fields are still re-checked locally, so keep them consistent with it.\n" +
         "columns: ordered columns (items land in an Inbox before the first). Each is a name, or " +
         "{ name, instructions?, agent?, gate? }. instructions: what an agent does to a card in this " +
-        "column (empty = no agent run; the card just sits there, e.g. a final Done column). agent: " +
+        "column; {{id}}, {{url}} and {{branch}} in them are replaced with the card's values (e.g. " +
+        "'write the plan to plan-{{id}}.md'), and no other {{...}} is allowed. Empty instructions = " +
+        "no agent run; the card just sits there, e.g. a final Done column. agent: " +
         "a named agent (omit for the built-in North Star agent). gate: 'agent' (default; the card " +
         "moves on when the agent reports done) or 'human' (the card waits for the user to approve). " +
         "outcomes (optional): the column's possible verdicts on the item, e.g. QA " +

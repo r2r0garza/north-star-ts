@@ -692,6 +692,61 @@ export function bindActionCall(
   }
 }
 
+// ── column placeholders (136.7) ─────────────────────────────────────────────
+// A column's command and agent instructions can name the card's values as
+// {{name}}. Instructions are the user's orders to the agent, so only values
+// from the board or with a fixed shape go in; tracker text (the title) is
+// allowed only in commands, where it is shell-quoted as one argument.
+export const COMMAND_PLACEHOLDERS = ["id", "url", "branch", "title"] as const
+export const INSTRUCTION_PLACEHOLDERS = ["id", "url", "branch"] as const
+export type KanbanCardVars = Record<
+  (typeof COMMAND_PLACEHOLDERS)[number],
+  string
+>
+
+const PLACEHOLDER = /\{\{\s*([A-Za-z_]+)\s*\}\}/g
+
+// Why `text` can't be saved, or null: it names a placeholder that isn't allowed.
+export function placeholderProblem(
+  text: string | null | undefined,
+  allowed: readonly string[],
+  field: string
+): string | null {
+  for (const [, name] of (text ?? "").matchAll(PLACEHOLDER))
+    if (!allowed.includes(name))
+      return `${field} uses {{${name}}}, which isn't available there. Use ${allowed.map((a) => `{{${a}}}`).join(", ")}.`
+  return null
+}
+
+// One pass, so a filled-in value is never expanded again.
+function fill(
+  text: string,
+  vars: KanbanCardVars,
+  allowed: readonly string[],
+  render: (value: string) => string
+): string {
+  return text.replace(PLACEHOLDER, (match, name: string) =>
+    allowed.includes(name) ? render(vars[name as keyof KanbanCardVars]) : match
+  )
+}
+
+export const fillCommand = (command: string, vars: KanbanCardVars) =>
+  fill(command, vars, COMMAND_PLACEHOLDERS, shellQuote)
+
+export const fillInstructions = (text: string, vars: KanbanCardVars) =>
+  fill(text, vars, INSTRUCTION_PLACEHOLDERS, (v) => v)
+
+export function cardVars(
+  card: Pick<KanbanCard, "item" | "branch">
+): KanbanCardVars {
+  return {
+    id: card.item.id,
+    url: card.item.url ?? "",
+    branch: card.branch ?? "",
+    title: card.item.title,
+  }
+}
+
 const NEXTS = new Set(["advance", "wait", "end", "goto"])
 
 // Coerce stored/model-supplied outcomes; drops nameless or duplicate ones.
@@ -755,9 +810,22 @@ export function asActions(raw: unknown): KanbanAction[] {
 // Why a column's outcomes/actions can't be saved, or null. `columns` is every
 // column's id and name after the save (goto targets are already resolved).
 export function columnProblem(
-  column: { name: string; outcomes: KanbanOutcome[]; actions: KanbanAction[] },
+  column: {
+    name: string
+    outcomes: KanbanOutcome[]
+    actions: KanbanAction[]
+    instructions?: string | null
+    command?: string | null
+  },
   columns: Array<{ id: string; name: string }>
 ): string | null {
+  const placeholders =
+    placeholderProblem(
+      column.instructions,
+      INSTRUCTION_PLACEHOLDERS,
+      "the instructions"
+    ) ?? placeholderProblem(column.command, COMMAND_PLACEHOLDERS, "the command")
+  if (placeholders) return placeholders
   for (const o of column.outcomes)
     if (o.next === "goto" && !columns.some((c) => c.id === o.target))
       return `outcome "${o.name}" goes to "${o.target}", which is not a column on this board`

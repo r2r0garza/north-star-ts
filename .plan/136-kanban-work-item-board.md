@@ -2,7 +2,7 @@
 
 > Status: 136.1 built 2026-11-12 (`b0ba775`), verified against real GitHub Issues via `gh`. 136.2 built
 > 2026-11-12, unit-tested, not yet run in the app. 136.3 built 2026-11-16, unit-tested, not yet run in the
-> app or against a live tracker. 136.4 not started. 136.5 built 2026-11-16, unit-tested, not yet run in the app. 136.6 built 2026-11-17, unit-tested, not yet run in the app. Open decisions settled 2026-11-12 (see **Decisions**).
+> app or against a live tracker. 136.4 not started. 136.5 built 2026-11-16, unit-tested, not yet run in the app. 136.6 built 2026-11-17, unit-tested, not yet run in the app. 136.7 built 2026-11-17, unit-tested. Open decisions settled 2026-11-12 (see **Decisions**).
 
 ## Objective
 
@@ -246,6 +246,8 @@ outcome), cross-workspace boards, per-card agent override.
   (see **136.5 User-column commands**).
 - `136.6` Worktree choices and folders of repos: worktrees on or off per board and per card, parallel
   command runs, and cards that open worktrees only for the repos they need (see **136.6**).
+- `136.7` Column placeholders: `{{id}}`, `{{url}}`, `{{branch}}` (and `{{title}}` in commands only) in a
+  column's command and agent instructions (see **136.7**).
 
 ## 136.5 User-column commands (built 2026-11-16; decisions settled the same day)
 
@@ -601,4 +603,22 @@ which.
   place have no read-only root: their workspace is the checkout.
 - **Not covered by tests:** the card-menu toggle in the board view (the IPC and service behind it are
   tested).
+
+## 136.7 Column placeholders (built 2026-11-17)
+
+A column's command and its agent instructions can use the card's values, so one column works for every
+card: `./repo-3/script.sh --ticket-id {{id}}`, "write the plan to plan-{{id}}.md".
+
+- **Same syntax as tracker actions.** Commands get `{{id}}`, `{{url}}`, `{{branch}}`, `{{title}}`,
+  shell-quoted as one argument each. Instructions get `{{id}}`, `{{url}}`, `{{branch}}` as plain text.
+- **No `{{title}}` in instructions:** instructions are the user's orders to the agent, and tracker text
+  is written by other people; the board keeps it apart as untrusted data. A command quotes it, so it
+  stays text.
+- **Checked on save:** any other `{{name}}` in a field is refused with the list of allowed ones (both the
+  settings sheet and `kanban_write`).
+- **One pass:** a filled-in value is never expanded again, so a title containing `{{url}}` stays as is.
+  (Tracker actions still fill name by name; their values are shell-quoted, so that's not unsafe there.)
+- **Where it's filled:** `cardPrompt` (instructions), `runCommandFor` (command), and the "Your turn" text
+  on a user column's card. The `KANBAN_*` environment variables still work in commands.
+- **Code:** `placeholderProblem`, `fillCommand`, `fillInstructions`, `cardVars` in `src/shared/kanban.ts`.
 

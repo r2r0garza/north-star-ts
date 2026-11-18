@@ -899,6 +899,31 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
       expect(existsSync(path.join(commands[0].cwd, "x.txt"))).toBe(true)
     })
 
+    it("fills the card's values into the command and the agent's instructions (136.7)", async () => {
+      const { card, cols } = customBoard([
+        { name: "Plan", instructions: "Write the plan to plan-{{id}}.md" },
+        {
+          name: "Check",
+          owner: "user",
+          command: "./repo-3/script.sh --ticket-id {{id}} --title {{title}}",
+        },
+      ])
+      await cards.enter(card.id, cols[0].id)
+      await exec(last())
+      expect(prompts[0]).toContain(
+        "Column instructions: Write the plan to plan-7.md"
+      )
+      await execCommand(last())
+      expect(commands.at(-1)!.command).toBe(
+        "./repo-3/script.sh --ticket-id '7' --title 'Issue 7'"
+      )
+      expect(() =>
+        kanban.saveColumns(card.boardId, [
+          { name: "Plan", instructions: "Plan {{title}}" },
+        ])
+      ).toThrow(/\{\{title\}\}, which isn't available there/)
+    })
+
     it("fails the card on a non-zero exit when the column has no outcomes, showing the last lines", async () => {
       const { card, cols } = commandBoard()
       commandResults = [

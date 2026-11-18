@@ -303,7 +303,13 @@ export function saveColumns(boardId: string, input: KanbanColumnInput[]): void {
           : o
       )
       const problem = columnProblem(
-        { name: c.name, outcomes: c.outcomes, actions: c.actions },
+        {
+          name: c.name,
+          outcomes: c.outcomes,
+          actions: c.actions,
+          instructions: c.instructions,
+          command: c.command,
+        },
         rows
       )
       if (problem)

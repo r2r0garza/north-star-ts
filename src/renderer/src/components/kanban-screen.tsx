@@ -92,6 +92,7 @@ import type {
   KanbanSource,
   KanbanUpstreamAction,
 } from "../../../shared/kanban"
+import { cardVars, fillInstructions } from "../../../shared/kanban"
 
 // Kanban board view (plans 136.1/136.2). Boards are authored by an agent
 // (kanban_write) or the settings sheet; this view approves the intake recipe,
@@ -346,7 +347,7 @@ function CardAttention({
             <span className="font-medium">Your turn</span>
             {column.instructions ? (
               <span className="line-clamp-6 whitespace-pre-wrap">
-                {column.instructions}
+                {fillInstructions(column.instructions, cardVars(card))}
               </span>
             ) : null}
           </>

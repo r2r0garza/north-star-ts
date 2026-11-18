@@ -3,8 +3,13 @@ import {
   asFilter,
   cardNeedsAttention,
   compileIntakeQuery,
+  fillCommand,
+  fillInstructions,
   matchesFilter,
   mergeAgentColumns,
+  placeholderProblem,
+  COMMAND_PLACEHOLDERS,
+  INSTRUCTION_PLACEHOLDERS,
   normalizeItems,
   resolveIntakeCall,
   type KanbanColumn,
@@ -437,5 +442,57 @@ describe("mergeAgentColumns", () => {
     expect(() => mergeAgentColumns(existing, [{ name: "Deploy" }])).toThrow(
       /user's own columns/
     )
+  })
+})
+
+describe("column placeholders", () => {
+  const vars = {
+    id: "12346",
+    url: "https://dev.azure.com/o/p/_workitems/edit/12346",
+    branch: "ns/kanban/b/12346",
+    title: "Fix it'; rm -rf / # {{url}}",
+  }
+
+  it("fills a command's placeholders shell-quoted, in one pass", () => {
+    expect(
+      fillCommand(
+        "./repo-3/script.sh --ticket-id {{id}} --title {{ title }}",
+        vars
+      )
+    ).toBe(
+      `./repo-3/script.sh --ticket-id '12346' --title 'Fix it'\\''; rm -rf / # {{url}}'`
+    )
+  })
+
+  it("fills instructions as plain text, never with tracker text", () => {
+    expect(fillInstructions("Write plan-{{id}}.md on {{branch}}", vars)).toBe(
+      "Write plan-12346.md on ns/kanban/b/12346"
+    )
+    expect(fillInstructions("{{title}}", vars)).toBe("{{title}}")
+  })
+
+  it("refuses placeholders a field doesn't allow", () => {
+    expect(
+      placeholderProblem(
+        "plan-{{id}}.md",
+        INSTRUCTION_PLACEHOLDERS,
+        "the instructions"
+      )
+    ).toBeNull()
+    expect(
+      placeholderProblem(
+        "{{title}}",
+        INSTRUCTION_PLACEHOLDERS,
+        "the instructions"
+      )
+    ).toBe(
+      "the instructions uses {{title}}, which isn't available there. Use {{id}}, {{url}}, {{branch}}."
+    )
+    expect(
+      placeholderProblem("x {{ticket}}", COMMAND_PLACEHOLDERS, "the command")
+    ).toContain("{{ticket}}")
+    expect(
+      placeholderProblem("{ado_item_id}", COMMAND_PLACEHOLDERS, "x")
+    ).toBeNull()
   })
 })

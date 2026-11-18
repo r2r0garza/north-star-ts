@@ -39,6 +39,8 @@ import {
   type KanbanBoardGraph,
   type KanbanColumnInput,
   MAX_PARALLEL_COMMANDS,
+  COMMAND_PLACEHOLDERS,
+  INSTRUCTION_PLACEHOLDERS,
   type KanbanIntakeFilter,
   type KanbanOutcome,
   type KanbanOutcomeNext,
@@ -64,6 +66,9 @@ const splitTags = (text: string) =>
     .split(",")
     .map((t) => t.trim())
     .filter(Boolean)
+
+const placeholderList = (names: readonly string[]) =>
+  names.map((n) => `{{${n}}}`).join(", ")
 
 // Time-limit choices for a user column's command (5–90 minutes, or off).
 const COMMAND_TIMEOUT_MINUTES = [5, 10, 15, 20, 30, 45, 60, 75, 90]
@@ -816,7 +821,10 @@ export function KanbanSettingsSheet({
                           ? col.command?.trim()
                             ? "No agent runs here. Each card that enters runs your command below."
                             : "No agent runs here. The card waits until you mark it done."
-                          : "Entering this column runs its agent. Leave instructions empty for no agent run."}
+                          : "Entering this column runs its agent. Leave instructions empty for no agent run."}{" "}
+                        Use the card&apos;s values with{" "}
+                        {placeholderList(INSTRUCTION_PLACEHOLDERS)}, e.g. plan-
+                        {"{{id}}"}.md.
                       </p>
                     </div>
                     {mine ? (
@@ -836,12 +844,17 @@ export function KanbanSettingsSheet({
                             }
                           />
                           <p className="text-xs text-muted-foreground">
-                            Runs in the card&apos;s working folder, one card at
-                            a time. Exit code 0 counts as passed; anything else
-                            as failed (use outcomes named &quot;passed&quot; and
-                            &quot;failed&quot; to route them). The card&apos;s
-                            details are in KANBAN_ITEM_ID, KANBAN_ITEM_TITLE,
-                            KANBAN_ITEM_URL, KANBAN_BRANCH and KANBAN_CARD_ID.
+                            Runs in the card&apos;s working folder. Exit code 0
+                            counts as passed; anything else as failed (use
+                            outcomes named &quot;passed&quot; and
+                            &quot;failed&quot; to route them). Use the
+                            card&apos;s values with{" "}
+                            {placeholderList(COMMAND_PLACEHOLDERS)}, e.g.{" "}
+                            <code>./script.sh --ticket-id {"{{id}}"}</code>.
+                            They go in quoted, so don&apos;t add quotes. They
+                            are also in KANBAN_ITEM_ID, KANBAN_ITEM_TITLE,
+                            KANBAN_ITEM_URL, KANBAN_BRANCH, KANBAN_CARD_ID and
+                            KANBAN_WORKSPACE.
                           </p>
                         </div>
                         <div className="flex min-w-0 flex-col gap-1.5">
