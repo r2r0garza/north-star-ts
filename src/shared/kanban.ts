@@ -31,6 +31,9 @@ export interface KanbanSource extends KanbanCall {
     tags?: KanbanPath
     assignee?: KanbanPath
     updatedAt?: KanbanPath
+    // Tracker custom fields, keyed by the tracker's field reference (ADO
+    // "Custom.QAAssigned", Jira "QA Assigned" or "cf[10042]") → path to the value.
+    custom?: Record<string, KanbanPath>
   }
   // Split string tags (ADO stores "a; b" in one field).
   tagSeparator?: string
@@ -57,9 +60,17 @@ export interface KanbanIntakeFilter {
   // item's mapped `type`/`state`, so an item without one fails the check.
   types: string[]
   states: string[]
+  // Custom field rules (fields mapped in source.fields.custom); each must match.
+  fields?: KanbanFieldRule[]
   // Escape hatch: a raw GitHub search / JQL / WIQL used instead of the compiled
   // query. The structured fields above are still re-checked locally.
   query?: string
+}
+
+// A custom field must hold one of `values` (case-insensitive).
+export interface KanbanFieldRule {
+  field: string
+  values: string[]
 }
 
 // The normalized item every source maps into.
@@ -73,6 +84,8 @@ export interface KanbanItem {
   tags: string[]
   assignees: string[]
   updatedAt: string | null
+  // Mapped custom field values, keyed like source.fields.custom.
+  custom?: Record<string, string[]>
 }
 
 // How upstream (tracker) writes are approved (plan 136 Decision 4).
@@ -134,10 +147,11 @@ export interface KanbanBoard {
 export interface KanbanPromoteGate {
   states: string[]
   tags: string[]
+  fields?: KanbanFieldRule[]
 }
 
 export const promoteOn = (g: KanbanPromoteGate) =>
-  g.states.length > 0 || g.tags.length > 0
+  g.states.length > 0 || g.tags.length > 0 || !!g.fields?.length
 
 export function matchesPromoteGate(
   item: KanbanItem,
@@ -149,7 +163,34 @@ export function matchesPromoteGate(
   if (gate.states.length && !has(gate.states, item.state)) return false
   if (gate.tags.length && !gate.tags.some((t) => has(item.tags, t)))
     return false
-  return true
+  return matchesFields(item, gate.fields)
+}
+
+// Every rule's field holds one of its values; an unmapped field fails.
+export function matchesFields(
+  item: KanbanItem,
+  rules: KanbanFieldRule[] | undefined
+): boolean {
+  return (rules ?? []).every((r) =>
+    (item.custom?.[r.field] ?? []).some((v) =>
+      r.values.some((x) => lower(x) === lower(v))
+    )
+  )
+}
+
+// Rules with a field and at least one value; omitted when there are none.
+export function asFieldRules(raw: unknown): KanbanFieldRule[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const rules = raw
+    .map((r) =>
+      r && typeof r === "object" ? (r as Record<string, unknown>) : {}
+    )
+    .map((r) => ({
+      field: typeof r.field === "string" ? r.field.trim() : "",
+      values: stringList(r.values),
+    }))
+    .filter((r) => r.field && r.values.length)
+  return rules.length ? rules : undefined
 }
 
 export function asPromoteGate(raw: unknown): KanbanPromoteGate {
@@ -157,7 +198,12 @@ export function asPromoteGate(raw: unknown): KanbanPromoteGate {
     string,
     unknown
   >
-  return { states: stringList(r.states), tags: stringList(r.tags) }
+  const fields = asFieldRules(r.fields)
+  return {
+    states: stringList(r.states),
+    tags: stringList(r.tags),
+    ...(fields ? { fields } : {}),
+  }
 }
 
 // `agent`: the card advances when the agent reports done. `human`: it waits
@@ -547,6 +593,16 @@ export function normalizeItems(
       tags: strings(row, f.tags, source.tagSeparator),
       assignees: strings(row, f.assignee),
       updatedAt: scalar(row, f.updatedAt),
+      ...(f.custom
+        ? {
+            custom: Object.fromEntries(
+              Object.entries(f.custom).map(([k, path]) => [
+                k,
+                strings(row, path),
+              ])
+            ),
+          }
+        : {}),
     })
     if (items.length >= MAX_ITEMS) break
   }
@@ -577,6 +633,7 @@ export function matchesFilter(
     !list.length || (!!v && list.some((x) => lower(x) === lower(v)))
   if (!oneOf(filter.types, item.type) || !oneOf(filter.states, item.state))
     return false
+  if (!matchesFields(item, filter.fields)) return false
   const assignees = item.assignees.map(lower)
   switch (filter.assignee.mode) {
     case "anyone":
@@ -603,8 +660,10 @@ export function asFilter(raw: unknown): KanbanIntakeFilter {
         ? { mode: "user", user: a.user.trim() }
         : { mode: "me" }
   const query = typeof r.query === "string" ? r.query.trim() : ""
+  const fields = asFieldRules(r.fields)
   return {
     ...(query ? { query } : {}),
+    ...(fields ? { fields } : {}),
     tags: list(r.tags),
     match: r.match === "all" ? "all" : "any",
     excludeTags: list(r.excludeTags),
@@ -644,6 +703,10 @@ function githubQuery(f: KanbanIntakeFilter): string {
     parts.push(`assignee:${f.assignee.user.replace(/\s/g, "")}`)
   // Issue types; states are only open/closed (is:open), so they're checked locally.
   if (f.types.length) parts.push(`type:${f.types.map(ghLabel).join(",")}`)
+  if (f.fields?.length)
+    throw new Error(
+      "GitHub issues have no custom fields; use a raw query or remove the custom field rules"
+    )
   return parts.join(" ")
 }
 
@@ -665,12 +728,25 @@ function jiraQuery(f: KanbanIntakeFilter): string {
     parts.push(`assignee = ${jqlString(f.assignee.user)}`)
   if (f.types.length)
     parts.push(`issuetype in (${f.types.map(jqlString).join(", ")})`)
+  for (const r of f.fields ?? [])
+    parts.push(
+      `${/^cf\[\d+\]$/.test(r.field) ? r.field : jqlString(r.field)} in (${r.values.map(jqlString).join(", ")})`
+    )
   parts.push(
     f.states.length
       ? `status in (${f.states.map(jqlString).join(", ")})`
       : "statusCategory != Done"
   )
   return parts.join(" AND ")
+}
+
+// ADO field reference names: letters, digits, `_` and `.` (e.g. Custom.QAAssigned).
+function wiqlField(ref: string): string {
+  if (!/^[A-Za-z][\w.]*$/.test(ref))
+    throw new Error(
+      `"${ref}" isn't an ADO field reference name (like Custom.QAAssigned)`
+    )
+  return `[${ref}]`
 }
 
 function adoQuery(f: KanbanIntakeFilter): string {
@@ -695,9 +771,18 @@ function adoQuery(f: KanbanIntakeFilter): string {
       ? `[System.State] IN (${f.states.map(wiqlString).join(", ")})`
       : "[System.State] NOT IN ('Closed', 'Done', 'Removed')"
   )
+  const custom = (f.fields ?? []).map((r) => wiqlField(r.field))
+  parts.push(
+    ...(f.fields ?? []).map(
+      (r, i) => `${custom[i]} IN (${r.values.map(wiqlString).join(", ")})`
+    )
+  )
+  // Custom fields are selected too, so the local re-check can read them.
   return (
     "SELECT [System.Id], [System.Title], [System.WorkItemType], [System.State], " +
-    "[System.Tags], [System.AssignedTo], [System.ChangedDate] FROM WorkItems WHERE " +
+    "[System.Tags], [System.AssignedTo], [System.ChangedDate]" +
+    custom.map((c) => `, ${c}`).join("") +
+    " FROM WorkItems WHERE " +
     parts.join(" AND ")
   )
 }

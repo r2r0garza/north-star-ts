@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from "react"
-import { ArrowDown, ArrowUp, GripVertical, Plus, Trash2 } from "lucide-react"
+import {
+  ArrowDown,
+  ArrowUp,
+  Copy,
+  GripVertical,
+  Plus,
+  Trash2,
+} from "lucide-react"
 import {
   DndContext,
   KeyboardSensor,
@@ -42,6 +49,7 @@ import {
   MAX_WIP_LIMIT,
   COMMAND_PLACEHOLDERS,
   INSTRUCTION_PLACEHOLDERS,
+  type KanbanFieldRule,
   type KanbanIntakeFilter,
   type KanbanOutcome,
   type KanbanOutcomeNext,
@@ -60,6 +68,50 @@ const NEXT_LABEL: Record<KanbanOutcomeNext, string> = {
   wait: "Wait for me",
   end: "Finish the card here",
   goto: "Send to…",
+}
+
+// Custom field rules ⇄ one comma-separated input per field.
+const ruleText = (rules?: KanbanFieldRule[]) =>
+  Object.fromEntries((rules ?? []).map((r) => [r.field, r.values.join(", ")]))
+const toRules = (text: Record<string, string>) =>
+  Object.entries(text)
+    .map(([field, v]) => ({ field, values: splitTags(v) }))
+    .filter((r) => r.values.length)
+
+function FieldRuleInputs({
+  idPrefix,
+  fields,
+  mapped,
+  text,
+  onChange,
+}: {
+  idPrefix: string
+  fields: string[]
+  mapped: Set<string>
+  text: Record<string, string>
+  onChange: (next: Record<string, string>) => void
+}) {
+  return (
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      {fields.map((field, i) => (
+        <div key={field} className="flex flex-col gap-1.5">
+          <Label htmlFor={`${idPrefix}-${i}`}>{field} (comma-separated)</Label>
+          <Input
+            id={`${idPrefix}-${i}`}
+            placeholder="Any"
+            value={text[field] ?? ""}
+            onChange={(e) => onChange({ ...text, [field]: e.target.value })}
+          />
+          {!mapped.has(field) && text[field]?.trim() ? (
+            <p className="text-xs text-destructive">
+              The intake recipe no longer maps this field, so no item would
+              match. Clear it or ask the agent to map it.
+            </p>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  )
 }
 
 const splitTags = (text: string) =>
@@ -273,6 +325,21 @@ export function KanbanSettingsSheet({
   const [query, setQuery] = useState(board.filter.query ?? "")
   const [types, setTypes] = useState(board.filter.types.join(", "))
   const [states, setStates] = useState(board.filter.states.join(", "))
+  const mappedFields = new Set(Object.keys(board.source?.fields.custom ?? {}))
+  // Mapped fields plus any a rule still names, so a stale rule can be cleared.
+  const customFields = [
+    ...new Set([
+      ...mappedFields,
+      ...(board.filter.fields ?? []).map((r) => r.field),
+      ...(board.autoPromote.fields ?? []).map((r) => r.field),
+    ]),
+  ]
+  const [fieldText, setFieldText] = useState(() =>
+    ruleText(board.filter.fields)
+  )
+  const [promoteFieldText, setPromoteFieldText] = useState(() =>
+    ruleText(board.autoPromote.fields)
+  )
   const [promoteStates, setPromoteStates] = useState(
     board.autoPromote.states.join(", ")
   )
@@ -359,6 +426,7 @@ export function KanbanSettingsSheet({
   const move = (i: number, by: number) => reorder(i, i + by)
 
   async function save() {
+    const fieldRules = toRules(fieldText)
     const filter: KanbanIntakeFilter = {
       tags: splitTags(tags),
       match,
@@ -370,6 +438,7 @@ export function KanbanSettingsSheet({
           ? { mode: "user", user: user.trim() }
           : { mode: assignee },
       ...(query.trim() ? { query: query.trim() } : {}),
+      ...(fieldRules.length ? { fields: fieldRules } : {}),
     }
     setSaving(true)
     try {
@@ -395,6 +464,7 @@ export function KanbanSettingsSheet({
         autoPromote: {
           states: splitTags(promoteStates),
           tags: splitTags(promoteTags),
+          fields: toRules(promoteFieldText),
         },
       })
       if (!result.ok) {
@@ -439,6 +509,34 @@ export function KanbanSettingsSheet({
             className="min-h-0 overflow-y-auto border-t"
           >
             <div className="mx-auto flex max-w-2xl flex-col gap-5 p-6">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="kb-board-id">
+                  Board ID (give it to the agent to edit this board)
+                </Label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    id="kb-board-id"
+                    readOnly
+                    value={board.id}
+                    className="font-mono text-xs"
+                    onFocus={(e) => e.currentTarget.select()}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    aria-label="Copy board ID"
+                    onClick={() =>
+                      navigator.clipboard.writeText(board.id).then(
+                        () => toast.success("Board ID copied"),
+                        () => toast.error("Could not copy the board ID")
+                      )
+                    }
+                  >
+                    <Copy />
+                  </Button>
+                </div>
+              </div>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_10rem]">
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor="kb-name">Name</Label>
@@ -560,6 +658,20 @@ export function KanbanSettingsSheet({
                     </div>
                   ) : null}
                 </div>
+                {customFields.length ? (
+                  <FieldRuleInputs
+                    idPrefix="kb-field"
+                    fields={customFields}
+                    mapped={mappedFields}
+                    text={fieldText}
+                    onChange={setFieldText}
+                  />
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    To filter on a custom field (like QA Assigned), ask the
+                    agent to map it in the intake recipe.
+                  </p>
+                )}
                 {assignee === "me" && !board.source?.whoami ? (
                   <p className="text-xs text-destructive">
                     This board has no whoami recipe, so &quot;me&quot;
@@ -594,8 +706,8 @@ export function KanbanSettingsSheet({
                   After each sync, Inbox cards that match move to the first
                   column and start working. Fill in states, tags, or both (a
                   card must match each one you fill in). Leave both empty to
-                  pick cards yourself. A card you put back in the Inbox stays
-                  there.
+                  pick cards yourself. Custom fields below count too. A card you
+                  put back in the Inbox stays there.
                 </p>
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <div className="flex flex-col gap-1.5">
@@ -621,6 +733,15 @@ export function KanbanSettingsSheet({
                     />
                   </div>
                 </div>
+                {customFields.length ? (
+                  <FieldRuleInputs
+                    idPrefix="kb-promote-field"
+                    fields={customFields}
+                    mapped={mappedFields}
+                    text={promoteFieldText}
+                    onChange={setPromoteFieldText}
+                  />
+                ) : null}
               </fieldset>
 
               <fieldset className="flex flex-col gap-3">

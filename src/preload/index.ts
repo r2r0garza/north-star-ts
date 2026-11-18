@@ -1557,7 +1557,11 @@ const api = {
         worktrees: boolean
         parallelCommands: boolean
         notifications: boolean
-        autoPromote: { states: string[]; tags: string[] }
+        autoPromote: {
+          states: string[]
+          tags: string[]
+          fields?: { field: string; values: string[] }[]
+        }
       }
     ) =>
       ipcRenderer.invoke(

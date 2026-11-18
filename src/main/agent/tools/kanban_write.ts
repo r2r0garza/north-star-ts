@@ -45,7 +45,10 @@ export const kanbanWriteTool: Tool = {
         "check it before telling the user. Every item is also re-checked locally against `filter`.\n" +
         "- itemsPath: path to the item array in the output (omit if the output is the array).\n" +
         "- fields: paths inside one item for id, title (required), url, body, type, state, " +
-        "tags, assignee, updatedAt. A path is a dotted string, or an array of keys when a key " +
+        "tags, assignee, updatedAt, and custom: { <field reference>: path } for tracker custom " +
+        'fields (ADO key "Custom.QAAssigned", path ["fields","Custom.QAAssigned","displayName"] for a person; ' +
+        'Jira key "QA Assigned" or "cf[10042]"). The fetch must return those fields (ADO: compiled WIQL selects them). ' +
+        "A path is a dotted string, or an array of keys when a key " +
         'contains dots (ADO: ["fields","System.Tags"]). "*" maps over an array ' +
         '(GitHub: tags "labels.*.name", assignee "assignees.*.login").\n' +
         '- tagSeparator: split a single tags string (ADO uses ";").\n' +
@@ -55,7 +58,9 @@ export const kanbanWriteTool: Tool = {
         'ADO: { command: "az ad signed-in-user show -o json", path: "userPrincipalName" }. ' +
         "Jira MCP: the server's current-user tool, path to accountId.\n\n" +
         "filter: { tags: [...], match: 'any'|'all', excludeTags: [...], assignee: " +
-        "{ mode: 'me' } | { mode: 'anyone' } | { mode: 'user', user }, types?: [...], states?: [...], query? }. " +
+        "{ mode: 'me' } | { mode: 'anyone' } | { mode: 'user', user }, types?: [...], states?: [...], " +
+        "fields?: [{ field, values: [...] }], query? }. fields: custom field rules (ADO and Jira only); field is a key " +
+        "of source.fields.custom and must hold one of values. " +
         "types/states (empty = any) need source.fields.type / fields.state mapped, or nothing matches. Use assignee me (with whoami) unless the user " +
         "explicitly asks for items regardless of assignee: 'anyone' pulls teammates' and " +
         "unassigned items onto this machine. " +
@@ -185,6 +190,28 @@ export const kanbanWriteTool: Tool = {
           "bad_args",
           `filter.${key} needs source.fields.${field} mapped, or no item matches.`
         )
+    const custom = source.fields.custom
+    if (
+      custom !== undefined &&
+      (!custom ||
+        typeof custom !== "object" ||
+        Array.isArray(custom) ||
+        Object.values(custom).some(
+          (p) =>
+            typeof p !== "string" &&
+            !(Array.isArray(p) && p.every((k) => typeof k === "string"))
+        ))
+    )
+      return toolError(
+        "bad_args",
+        "`source.fields.custom` must map field references to paths (a string or an array of keys)."
+      )
+    const unmapped = (filter.fields ?? []).find((r) => !custom?.[r.field])
+    if (unmapped)
+      return toolError(
+        "bad_args",
+        `filter.fields uses "${unmapped.field}": map it in source.fields.custom, or no item matches.`
+      )
     if (filter.assignee.mode === "me") {
       if (!source.whoami)
         return toolError(

@@ -576,3 +576,88 @@ describe("wipLimitProblem", () => {
       expect(wipLimitProblem(bad)).toMatch(/1–4/)
   })
 })
+
+describe("custom field rules", () => {
+  const f = asFilter({
+    assignee: { mode: "anyone" },
+    fields: [
+      { field: "Custom.QAAssigned", values: ["Ana Ruiz", "Bo"] },
+      { field: "", values: ["dropped"] },
+      { field: "Empty", values: [] },
+    ],
+  })
+
+  it("keeps only rules with a field and values", () => {
+    expect(f.fields).toEqual([
+      { field: "Custom.QAAssigned", values: ["Ana Ruiz", "Bo"] },
+    ])
+    expect(asFilter({}).fields).toBeUndefined()
+  })
+
+  it("ADO: selects and filters the field; refuses a non-reference name", () => {
+    const q = compileIntakeQuery(f, "ado")
+    expect(q).toContain(", [Custom.QAAssigned] FROM WorkItems")
+    expect(q).toContain("[Custom.QAAssigned] IN ('Ana Ruiz', 'Bo')")
+    expect(() =>
+      compileIntakeQuery(
+        asFilter({ fields: [{ field: "X] = 1 OR [Y", values: ["a"] }] }),
+        "ado"
+      )
+    ).toThrow(/field reference/)
+  })
+
+  it("Jira: quotes names, keeps cf[n] bare; GitHub refuses", () => {
+    expect(
+      compileIntakeQuery(
+        asFilter({
+          assignee: { mode: "anyone" },
+          fields: [
+            { field: 'QA "Assigned"', values: ["Ana"] },
+            { field: "cf[10042]", values: ["x"] },
+          ],
+        }),
+        "jira"
+      )
+    ).toBe(
+      '"QA \\"Assigned\\"" in ("Ana") AND cf[10042] in ("x") AND statusCategory != Done'
+    )
+    expect(() => compileIntakeQuery(f, "github")).toThrow(/custom fields/)
+  })
+
+  it("maps custom values and re-checks them locally", () => {
+    const [i] = normalizeItems(
+      [
+        {
+          id: 3,
+          fields: {
+            "System.Title": "T",
+            "Custom.QAAssigned": { displayName: "ana ruiz" },
+          },
+        },
+      ],
+      {
+        command: "x",
+        fields: {
+          id: "id",
+          title: ["fields", "System.Title"],
+          custom: {
+            "Custom.QAAssigned": ["fields", "Custom.QAAssigned", "displayName"],
+          },
+        },
+      }
+    )
+    expect(i.custom).toEqual({ "Custom.QAAssigned": ["ana ruiz"] })
+    expect(matchesFilter(i, f, null)).toBe(true)
+    expect(matchesFilter(item({}), f, null)).toBe(false)
+    expect(
+      matchesPromoteGate(i, { states: [], tags: [], fields: f.fields })
+    ).toBe(true)
+    expect(
+      matchesPromoteGate(i, {
+        states: [],
+        tags: [],
+        fields: [{ field: "Custom.QAAssigned", values: ["Bo"] }],
+      })
+    ).toBe(false)
+  })
+})

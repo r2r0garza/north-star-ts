@@ -670,6 +670,14 @@ gaps it found were settled and built the same day:
   past the limit enters the column and shows *Queued* until one finishes or leaves (`underWip` in
   `card-runs.ts`, applied to agent and command runs). It stacks with the board's cap of 4 agent runs and,
   with parallel commands off, one command per column.
+- **Custom field rules** (ADO and Jira). The recipe maps `source.fields.custom: { <field ref>: path }`
+  (ADO `Custom.QAAssigned`, Jira `QA Assigned` or `cf[10042]`); `filter.fields` and `autoPromote.fields`
+  hold `{ field, values }` rules, each needing one of its values (case-insensitive). The ADO WIQL selects and
+  filters the field (the ref must be a reference name, so it can't break the query); Jira quotes names and
+  keeps `cf[n]` bare; GitHub refuses them (issues have no custom fields). Items carry `custom` values and are
+  re-checked locally like the other fields, an unmapped field failing. The settings sheet shows one input
+  per mapped field in the filter and the auto-promote gate; `kanban_write` refuses a rule on an unmapped
+  field. No "me" value for custom fields. Stored in the existing filter and gate JSON, so no migration.
 - **Storage:** `ensureKanbanFlow` (v87): `kanban_boards.auto_promote`, `kanban_cards.promote_held`,
   `kanban_columns.wip_limit`. Board export/import carries `autoPromote` and `wipLimit`.
 - **Tests added:** filter compile and re-check for types/states; the promote gate; WIP queueing; auto-promote
