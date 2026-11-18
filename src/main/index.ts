@@ -1537,6 +1537,7 @@ app.whenReady().then(async () => {
     kanbanService
   )
   kanbanCardRuns.recoverInterrupted()
+  kanbanService.afterSync = (boardId) => kanbanCardRuns.autoPromote(boardId)
   taskRunner.registerKind(KANBAN_CARD_RUN_KIND, {
     autoResume: false,
     lane: "work",

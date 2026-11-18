@@ -67,6 +67,7 @@ import {
   ensureKanbanRuns,
   ensureKanbanWorktreeChoices,
   ensureKanbanNotifications,
+  ensureKanbanFlow,
 } from "./kanban-schema"
 import {
   ORCHESTRATION_TABLES,
@@ -251,6 +252,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureKanbanColumnCommands,
   ensureKanbanWorktreeChoices,
   ensureKanbanNotifications,
+  ensureKanbanFlow,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {

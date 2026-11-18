@@ -55,7 +55,8 @@ export const kanbanWriteTool: Tool = {
         'ADO: { command: "az ad signed-in-user show -o json", path: "userPrincipalName" }. ' +
         "Jira MCP: the server's current-user tool, path to accountId.\n\n" +
         "filter: { tags: [...], match: 'any'|'all', excludeTags: [...], assignee: " +
-        "{ mode: 'me' } | { mode: 'anyone' } | { mode: 'user', user }, query? }. Use assignee me (with whoami) unless the user " +
+        "{ mode: 'me' } | { mode: 'anyone' } | { mode: 'user', user }, types?: [...], states?: [...], query? }. " +
+        "types/states (empty = any) need source.fields.type / fields.state mapped, or nothing matches. Use assignee me (with whoami) unless the user " +
         "explicitly asks for items regardless of assignee: 'anyone' pulls teammates' and " +
         "unassigned items onto this machine. " +
         "`query` is an escape hatch: a raw GitHub search / JQL / WIQL used instead of the compiled " +
@@ -174,6 +175,16 @@ export const kanbanWriteTool: Tool = {
     }
     const problem = callProblem(resolvedCall, workspace)
     if (problem) return toolError("bad_args", `source: ${problem}`)
+    // The local re-check needs the field, or every item fails it.
+    for (const [key, field] of [
+      ["types", "type"],
+      ["states", "state"],
+    ] as const)
+      if (filter[key].length && !source.fields[field])
+        return toolError(
+          "bad_args",
+          `filter.${key} needs source.fields.${field} mapped, or no item matches.`
+        )
     if (filter.assignee.mode === "me") {
       if (!source.whoami)
         return toolError(

@@ -3,6 +3,7 @@ import {
   asActions,
   asFilter,
   asOutcomes,
+  asPromoteGate,
   resolveIntakeCall,
   WRITE_APPROVALS,
   type KanbanBoard,
@@ -32,6 +33,7 @@ export function exportBoard(board: KanbanBoard, columns: KanbanColumn[]) {
     worktrees: board.worktrees,
     parallelCommands: board.parallelCommands,
     notifications: board.notifications,
+    autoPromote: board.autoPromote,
     // goto targets are ids on this machine; names survive the trip.
     columns: columns.map((c) => ({
       name: c.name,
@@ -46,6 +48,7 @@ export function exportBoard(board: KanbanBoard, columns: KanbanColumn[]) {
       command: c.command,
       commandTimeoutMs: c.commandTimeoutMs,
       notify: c.notify,
+      wipLimit: c.wipLimit,
     })),
   }
 }
@@ -128,6 +131,7 @@ export function importBoard(raw: unknown, workspace: string): KanbanBoard {
       commandTimeoutMs:
         typeof r.commandTimeoutMs === "number" ? r.commandTimeoutMs : null,
       notify: r.notify === true,
+      wipLimit: typeof r.wipLimit === "number" ? r.wipLimit : null,
     }
   })
   if (columns.some((c) => !c.name))
@@ -168,5 +172,6 @@ export function importBoard(raw: unknown, workspace: string): KanbanBoard {
     parallelCommands: o.parallelCommands === true,
   })
   kanban.setNotifications(board.id, o.notifications !== false)
+  kanban.setAutoPromote(board.id, asPromoteGate(o.autoPromote))
   return kanban.getBoard(board.id)!
 }

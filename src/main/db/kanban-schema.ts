@@ -180,3 +180,18 @@ export function ensureKanbanNotifications(db: Database.Database): void {
   add("kanban_boards", "notifications", "INTEGER NOT NULL DEFAULT 1")
   add("kanban_columns", "notify", "INTEGER NOT NULL DEFAULT 0")
 }
+
+// Auto-promote gate per board (JSON { states, tags }; empty = off), whether a
+// person held a card in the Inbox, and a per-column WIP limit (null = none).
+export function ensureKanbanFlow(db: Database.Database): void {
+  const add = (table: string, column: string, definition: string) => {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+      name: string
+    }>
+    if (!cols.some((c) => c.name === column))
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`)
+  }
+  add("kanban_boards", "auto_promote", "TEXT NOT NULL DEFAULT '{}'")
+  add("kanban_cards", "promote_held", "INTEGER NOT NULL DEFAULT 0")
+  add("kanban_columns", "wip_limit", "INTEGER")
+}

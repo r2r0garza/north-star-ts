@@ -62,6 +62,8 @@ describe.skipIf(!sqliteLoads)("KanbanService sync", () => {
         tags: ["agent-go"],
         match: "any",
         excludeTags: [],
+        types: [],
+        states: [],
         assignee: { mode: "me" },
       },
       columns: [{ name: "Plan" }, { name: "Build" }],
@@ -99,6 +101,8 @@ describe.skipIf(!sqliteLoads)("KanbanService sync", () => {
       tags: ["agent-go"],
       match: "any" as const,
       excludeTags: [],
+      types: [],
+      states: [],
       assignee: { mode: "me" as const },
     }
     const b = kanban.saveBoard({

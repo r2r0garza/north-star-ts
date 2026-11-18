@@ -6,12 +6,14 @@ import {
   fillCommand,
   fillInstructions,
   matchesFilter,
+  matchesPromoteGate,
   mergeAgentColumns,
   placeholderProblem,
   COMMAND_PLACEHOLDERS,
   INSTRUCTION_PLACEHOLDERS,
   normalizeItems,
   resolveIntakeCall,
+  wipLimitProblem,
   type KanbanColumn,
   type KanbanItem,
   type KanbanSource,
@@ -280,7 +282,29 @@ describe("matchesFilter", () => {
       match: "any",
       excludeTags: [],
       assignee: { mode: "me" },
+      types: [],
+      states: [],
     })
+  })
+
+  it("checks types and states case-insensitively, failing an item without one", () => {
+    const g = asFilter({
+      assignee: { mode: "anyone" },
+      types: ["Bug"],
+      states: ["Ready"],
+    })
+    expect(matchesFilter(item({ type: "bug", state: "ready" }), g, null)).toBe(
+      true
+    )
+    expect(
+      matchesFilter(item({ type: "Feature", state: "Ready" }), g, null)
+    ).toBe(false)
+    expect(matchesFilter(item({ type: "Bug", state: "New" }), g, null)).toBe(
+      false
+    )
+    expect(matchesFilter(item({ type: null, state: "Ready" }), g, null)).toBe(
+      false
+    )
   })
 })
 
@@ -392,6 +416,7 @@ describe("mergeAgentColumns", () => {
     command: owner === "user" ? "npm run deploy" : null,
     commandTimeoutMs: null,
     notify: false,
+    wipLimit: null,
   })
   const existing = [
     column("Plan", "agent"),
@@ -495,5 +520,59 @@ describe("column placeholders", () => {
     expect(
       placeholderProblem("{ado_item_id}", COMMAND_PLACEHOLDERS, "x")
     ).toBeNull()
+  })
+})
+
+describe("intake types and states", () => {
+  const f = asFilter({
+    assignee: { mode: "anyone" },
+    types: ["Bug"],
+    states: ["Ready", "Active"],
+  })
+
+  it("GitHub: issue types in the query; states only re-checked locally", () => {
+    expect(compileIntakeQuery(f, "github")).toBe('is:issue is:open type:"Bug"')
+  })
+
+  it("Jira: issuetype and status in, replacing the default Done exclusion", () => {
+    expect(compileIntakeQuery(f, "jira")).toBe(
+      'issuetype in ("Bug") AND status in ("Ready", "Active")'
+    )
+  })
+
+  it("ADO: work item type and state IN, replacing the default state exclusion", () => {
+    const q = compileIntakeQuery(f, "ado")
+    expect(q).toContain("[System.WorkItemType] IN ('Bug')")
+    expect(q).toContain("[System.State] IN ('Ready', 'Active')")
+    expect(q).not.toContain("NOT IN")
+  })
+})
+
+describe("matchesPromoteGate", () => {
+  it("is off when empty, and needs each filled-in list to match", () => {
+    const ready = item({ state: "Ready", tags: ["agent-go"] })
+    expect(matchesPromoteGate(ready, { states: [], tags: [] })).toBe(false)
+    expect(matchesPromoteGate(ready, { states: ["ready"], tags: [] })).toBe(
+      true
+    )
+    expect(
+      matchesPromoteGate(ready, { states: [], tags: ["go", "Agent-Go"] })
+    ).toBe(true)
+    expect(matchesPromoteGate(ready, { states: ["Ready"], tags: ["go"] })).toBe(
+      false
+    )
+    expect(
+      matchesPromoteGate(item({ state: null }), { states: ["Ready"], tags: [] })
+    ).toBe(false)
+  })
+})
+
+describe("wipLimitProblem", () => {
+  it("accepts empty or 1–4 and refuses anything else", () => {
+    expect(wipLimitProblem(null)).toBeNull()
+    expect(wipLimitProblem(1)).toBeNull()
+    expect(wipLimitProblem(4)).toBeNull()
+    for (const bad of [0, 5, 2.5, "3"])
+      expect(wipLimitProblem(bad)).toMatch(/1–4/)
   })
 })

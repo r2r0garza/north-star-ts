@@ -37,6 +37,8 @@ describe.skipIf(!sqliteLoads)("board export/import", () => {
         tags: ["agent-go"],
         match: "any",
         excludeTags: [],
+        types: [],
+        states: [],
         assignee: { mode: "user", user: "alice" },
       },
       syncIntervalMs: 10 * 60_000,

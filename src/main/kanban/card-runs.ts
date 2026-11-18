@@ -29,10 +29,12 @@ import {
   DEFAULT_MAX_RETURNS,
   MAX_PARALLEL_AGENTS,
   MAX_PARALLEL_COMMANDS,
+  matchesPromoteGate,
   type KanbanAction,
   type KanbanBoard,
   type KanbanCall,
   type KanbanCard,
+  type KanbanCardRun,
   type KanbanColumn,
   type KanbanContinuation,
   type KanbanFindings,
@@ -91,6 +93,33 @@ const cardBranch = (board: KanbanBoard, card: KanbanCard) =>
 // The renderer skips the "task finished" notification for a quiet task.
 function quietColumn(board: KanbanBoard, column?: KanbanColumn): boolean {
   return !board.notifications && !column?.notify
+}
+
+// Waiting runs that may start: per column, only up to its WIP limit counting
+// every run already working there (agent or command).
+function underWip(
+  waiting: KanbanCardRun[],
+  columns: KanbanColumn[],
+  working: Map<string, number>
+): KanbanCardRun[] {
+  const out: KanbanCardRun[] = []
+  for (const run of waiting) {
+    const limit = columns.find((c) => c.id === run.columnId)?.wipLimit ?? null
+    const used = working.get(run.columnId ?? "") ?? 0
+    if (limit !== null && used >= limit) continue
+    working.set(run.columnId ?? "", used + 1)
+    out.push(run)
+  }
+  return out
+}
+
+function workingPerColumn(boardId: string): Map<string, number> {
+  const working = new Map<string, number>()
+  for (const kind of ["agent", "command"] as const)
+    for (const r of kanban.listBoardRuns(boardId, kind))
+      if (r.taskId)
+        working.set(r.columnId ?? "", (working.get(r.columnId ?? "") ?? 0) + 1)
+  return working
 }
 
 function parallelCommands(board: KanbanBoard): boolean {
@@ -286,8 +315,30 @@ export class KanbanCardRuns {
     )
       return refuse("the card is running; stop it first")
     kanban.skipPendingActions(card.id, "the card was moved")
-    kanban.updateCard(card.id, { returns: {}, continuation: null })
+    kanban.updateCard(card.id, {
+      returns: {},
+      continuation: null,
+      // A person putting it in the Inbox overrides auto-promote for good.
+      ...(columnId === null ? { promoteHeld: true } : {}),
+    })
     return this.proceed(card.id, { kind: "enter", columnId, feedback })
+  }
+
+  // After a sync: Inbox cards that match the board's promote gate move to the
+  // first column, as if a person moved them, unless a person held them there.
+  async autoPromote(boardId: string): Promise<void> {
+    const board = kanban.getBoard(boardId)
+    const first = kanban.listColumns(boardId)[0]
+    if (!board || !first) return
+    for (const card of kanban.listCards(boardId))
+      if (
+        card.columnId === null &&
+        card.status === "active" &&
+        card.runState !== "running" &&
+        !card.promoteHeld &&
+        matchesPromoteGate(card.item, board.autoPromote)
+      )
+        await this.enter(card.id, first.id)
   }
 
   // Waiting card → where its outcome says (the next column without outcomes).
@@ -703,9 +754,11 @@ export class KanbanCardRuns {
     const runs = kanban.listBoardRuns(boardId, "agent")
     const free = MAX_PARALLEL_AGENTS - runs.filter((r) => r.taskId).length
     const columns = kanban.listColumns(boardId)
-    for (const next of runs
-      .filter((r) => !r.taskId)
-      .slice(0, Math.max(0, free))) {
+    for (const next of underWip(
+      runs.filter((r) => !r.taskId),
+      columns,
+      workingPerColumn(boardId)
+    ).slice(0, Math.max(0, free))) {
       const card = kanban.getCard(next.cardId)
       const pending = this.agentInputs.get(next.id)
       this.agentInputs.delete(next.id)
@@ -734,7 +787,12 @@ export class KanbanCardRuns {
     const board = kanban.getBoard(boardId)
     if (!board) return
     const runs = kanban.listBoardRuns(boardId, "command")
-    const waiting = runs.filter((r) => !r.taskId)
+    const columns = kanban.listColumns(boardId)
+    const waiting = underWip(
+      runs.filter((r) => !r.taskId),
+      columns,
+      workingPerColumn(boardId)
+    )
     const toStart = parallelCommands(board)
       ? waiting.slice(
           0,
@@ -748,7 +806,6 @@ export class KanbanCardRuns {
             !runs.some((o) => o.taskId && o.columnId === r.columnId) &&
             waiting.findIndex((o) => o.columnId === r.columnId) === i
         )
-    const columns = kanban.listColumns(boardId)
     for (const next of toStart) {
       const card = kanban.getCard(next.cardId)
       const task = this.runner.enqueueKind({

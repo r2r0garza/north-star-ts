@@ -39,6 +39,7 @@ import {
   type KanbanBoardGraph,
   type KanbanColumnInput,
   MAX_PARALLEL_COMMANDS,
+  MAX_WIP_LIMIT,
   COMMAND_PLACEHOLDERS,
   INSTRUCTION_PLACEHOLDERS,
   type KanbanIntakeFilter,
@@ -270,6 +271,14 @@ export function KanbanSettingsSheet({
     board.filter.assignee.mode === "user" ? board.filter.assignee.user : ""
   )
   const [query, setQuery] = useState(board.filter.query ?? "")
+  const [types, setTypes] = useState(board.filter.types.join(", "))
+  const [states, setStates] = useState(board.filter.states.join(", "))
+  const [promoteStates, setPromoteStates] = useState(
+    board.autoPromote.states.join(", ")
+  )
+  const [promoteTags, setPromoteTags] = useState(
+    board.autoPromote.tags.join(", ")
+  )
   const [columns, setColumns] = useState<
     (KanbanColumnInput & { sortId: string })[]
   >(
@@ -286,6 +295,7 @@ export function KanbanSettingsSheet({
         command,
         commandTimeoutMs,
         notify,
+        wipLimit,
       }) => ({
         sortId: id,
         id,
@@ -299,6 +309,7 @@ export function KanbanSettingsSheet({
         command,
         commandTimeoutMs,
         notify,
+        wipLimit,
       })
     )
   )
@@ -352,6 +363,8 @@ export function KanbanSettingsSheet({
       tags: splitTags(tags),
       match,
       excludeTags: splitTags(exclude),
+      types: splitTags(types),
+      states: splitTags(states),
       assignee:
         assignee === "user"
           ? { mode: "user", user: user.trim() }
@@ -379,6 +392,10 @@ export function KanbanSettingsSheet({
         worktrees,
         parallelCommands: parallel,
         notifications,
+        autoPromote: {
+          states: splitTags(promoteStates),
+          tags: splitTags(promoteTags),
+        },
       })
       if (!result.ok) {
         toast.error(result.reason)
@@ -479,6 +496,37 @@ export function KanbanSettingsSheet({
                     onChange={(e) => setExclude(e.target.value)}
                   />
                 </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="kb-types">Types (comma-separated)</Label>
+                    <Input
+                      id="kb-types"
+                      placeholder="Any"
+                      value={types}
+                      onChange={(e) => setTypes(e.target.value)}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="kb-states">States (comma-separated)</Label>
+                    <Input
+                      id="kb-states"
+                      placeholder="Any open state"
+                      value={states}
+                      onChange={(e) => setStates(e.target.value)}
+                    />
+                  </div>
+                </div>
+                {(types.trim() && !board.source?.fields.type) ||
+                (states.trim() && !board.source?.fields.state) ? (
+                  <p className="text-xs text-destructive">
+                    The intake recipe doesn&apos;t map items&apos;{" "}
+                    {types.trim() && !board.source?.fields.type
+                      ? "type"
+                      : "state"}
+                    , so no item would pass this filter. Ask the agent to map
+                    it.
+                  </p>
+                ) : null}
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-[10rem_1fr]">
                   <div className="flex flex-col gap-1.5">
                     <Label htmlFor="kb-assignee">Assigned to</Label>
@@ -534,6 +582,46 @@ export function KanbanSettingsSheet({
                 A filter change that alters the tracker query needs the intake
                 recipe approved again.
               </p>
+
+              <fieldset className="flex flex-col gap-3">
+                <legend className="mb-2 text-sm font-medium">
+                  Auto-promote
+                </legend>
+                <p
+                  id="kb-promote-description"
+                  className="text-xs text-muted-foreground"
+                >
+                  After each sync, Inbox cards that match move to the first
+                  column and start working. Fill in states, tags, or both (a
+                  card must match each one you fill in). Leave both empty to
+                  pick cards yourself. A card you put back in the Inbox stays
+                  there.
+                </p>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="kb-promote-states">
+                      When the state is (comma-separated)
+                    </Label>
+                    <Input
+                      id="kb-promote-states"
+                      aria-describedby="kb-promote-description"
+                      value={promoteStates}
+                      onChange={(e) => setPromoteStates(e.target.value)}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="kb-promote-tags">
+                      And it has a tag (comma-separated)
+                    </Label>
+                    <Input
+                      id="kb-promote-tags"
+                      aria-describedby="kb-promote-description"
+                      value={promoteTags}
+                      onChange={(e) => setPromoteTags(e.target.value)}
+                    />
+                  </div>
+                </div>
+              </fieldset>
 
               <fieldset className="flex flex-col gap-3">
                 <legend className="mb-2 text-sm font-medium">
@@ -986,6 +1074,37 @@ export function KanbanSettingsSheet({
                         />
                       </div>
                     )}
+                    <div className="flex flex-col gap-1.5">
+                      <Label htmlFor="kb-column-wip">
+                        WIP limit (cards working here at once)
+                      </Label>
+                      <div className="flex items-center gap-2">
+                        <Input
+                          id="kb-column-wip"
+                          type="number"
+                          min={1}
+                          max={MAX_WIP_LIMIT}
+                          placeholder="No limit"
+                          className="w-32"
+                          aria-describedby="kb-column-wip-note"
+                          value={col.wipLimit ?? ""}
+                          onChange={(e) =>
+                            update(selectedIndex, {
+                              wipLimit: e.target.value
+                                ? Number(e.target.value)
+                                : null,
+                            })
+                          }
+                        />
+                        <span
+                          id="kb-column-wip-note"
+                          className="text-xs text-muted-foreground"
+                        >
+                          1–{MAX_WIP_LIMIT}. A board runs at most{" "}
+                          {MAX_WIP_LIMIT} agents at once.
+                        </span>
+                      </div>
+                    </div>
                     <OutcomesEditor
                       outcomes={col.outcomes ?? []}
                       columns={columns}

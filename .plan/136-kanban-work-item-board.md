@@ -2,10 +2,10 @@
 
 > Status: 136.1 built 2026-11-12 (`b0ba775`), verified against real GitHub Issues via `gh`. 136.2 built
 > 2026-11-12, unit-tested, not yet run in the app. 136.3 built 2026-11-16, unit-tested, not yet run in the
-> app or against a live tracker. 136.4 not started, except a per-board cap on agent runs (uncommitted, see
-> **136.8**). 136.5 built 2026-11-16, unit-tested, not yet run in the app. 136.6 built 2026-11-17, unit-tested, not yet run in the app. 136.7 built 2026-11-17, unit-tested. 136.8 built, unit-tested, not
-> committed yet. Open decisions settled 2026-11-12 (see **Decisions**). Checked against the code
-> 2026-11-18 (see **Audit 2026-11-18** for unbuilt v1 scope and missing tests).
+> app or against a live tracker. 136.4 partly built 2026-11-18: per-column WIP limits (plus 136.8's
+> per-board agent cap); budget caps and upstream drift handling not started. 136.5 built 2026-11-16, unit-tested, not yet run in the app. 136.6 built 2026-11-17, unit-tested, not yet run in the app. 136.7 built 2026-11-17, unit-tested. 136.8 built 2026-11-18 (`4e756db`), unit-tested.
+> Open decisions settled 2026-11-12 (see **Decisions**). Checked against the code 2026-11-18; its gaps
+> were built the same day (see **Audit 2026-11-18**).
 
 ## Objective
 
@@ -231,7 +231,9 @@ a board settings sheet for columns, agents, and actions. All main access goes th
 
 Two-way field sync beyond the defined actions, webhooks from trackers, moving cards back upstream from
 tracker changes (only North Star → tracker writes via actions; on-board moves back use the `goto`
-outcome), cross-workspace boards, per-card agent override.
+outcome), cross-workspace boards, per-card agent override. Intake filters on area/iteration path, Jira
+project, or GitHub repo (decided 2026-11-18): items don't carry them, so they couldn't be re-checked
+locally; the recipe's command (`gh -R owner/repo`, a Jira project in the JQL) or the raw query covers them.
 
 ## Suggested slicing
 
@@ -244,7 +246,7 @@ outcome), cross-workspace boards, per-card agent override.
 - `136.3` **Built.** Upstream actions: on-enter/on-exit recipes, preview, approval, idempotency, audit log. Column
   outcomes with `advance | wait | end | goto <column>` (with `maxReturns`) and on-exit actions filtered by `when` (see **Column outcomes and
   outcome-based exit actions**).
-- `136.4` WIP limits, budget caps, upstream drift handling.
+- `136.4` WIP limits (**built 2026-11-18**, see **Audit 2026-11-18**), budget caps, upstream drift handling.
 - `136.5` User-column commands: a user column can run a command the user wrote on each card that enters
   (see **136.5 User-column commands**).
 - `136.6` Worktree choices and folders of repos: worktrees on or off per board and per card, parallel
@@ -645,22 +647,42 @@ card: `./repo-3/script.sh --ticket-id {{id}}`, "write the plan to plan-{{id}}.md
 
 ## Audit 2026-11-18
 
-The code was read against this plan. 136.1–136.3 and 136.5–136.7 match their "as built" notes.
+The code was read against this plan. 136.1–136.3 and 136.5–136.7 matched their "as built" notes. The
+gaps it found were settled and built the same day:
 
-**v1 scope in this plan that isn't built** (decide: build, or move to Out of scope):
+- **Intake types and states.** `filter.types` / `filter.states` (empty = any). Compiled: GitHub
+  `type:"…"` (issue types; states stay `is:open` and are only re-checked locally), Jira `issuetype in` /
+  `status in`, ADO `[System.WorkItemType] IN` / `[System.State] IN`. Listing states replaces the default
+  "not done" exclusion (Jira `statusCategory != Done`, ADO's default state names). Re-checked locally,
+  case-insensitively; an item with no mapped type/state fails, so `kanban_write` refuses types/states
+  without `fields.type`/`fields.state` and the settings sheet warns. Area/project/repo moved to **Out of scope**.
+- **Auto-promote, with its own gate** (not the intake filter: the filter decides what you see, the gate
+  what agents spend on). Board setting `autoPromote: { states, tags }`; both empty = off. A card
+  qualifies when its state is in `states` and it has a tag in `tags`, each checked only when filled in.
+  After every successful sync, `KanbanCardRuns.autoPromote` moves each qualifying Inbox card to the first
+  column through the same `enter` a person's move uses (on-enter writes still need approval; the WIP
+  limit and agent cap queue a burst). It fires when a card first qualifies, so an item that turns Ready
+  upstream later is picked up then. A person putting a card in the Inbox (reject, send back to the Inbox,
+  move) sets `promoteHeld` and it never auto-promotes again. Limit: an Inbox card with no worktree that
+  drops out of the filter is deleted, so if it comes back it's a new card and the hold is gone.
+- **Per-column WIP limits** (136.4). `wipLimit` per column, 1–4 (the board agent cap) or empty, set in the settings sheet
+  (the agent's `kanban_write` keeps the stored value). Counts runs already working in the column; a card
+  past the limit enters the column and shows *Queued* until one finishes or leaves (`underWip` in
+  `card-runs.ts`, applied to agent and command runs). It stacks with the board's cap of 4 agent runs and,
+  with parallel commands off, one command per column.
+- **Storage:** `ensureKanbanFlow` (v87): `kanban_boards.auto_promote`, `kanban_cards.promote_held`,
+  `kanban_columns.wip_limit`. Board export/import carries `autoPromote` and `wipLimit`.
+- **Tests added:** filter compile and re-check for types/states; the promote gate; WIP queueing; auto-promote
+  (gate off, matching card promoted, held and non-matching cards stay); `once_per_board` (one approval
+  covers the board, a changed action asks again); the board-view "Own worktree" toggle; and injection
+  boundaries: a hostile title stays one quoted argument in a command (its `{{url}}` unexpanded), never
+  reaches the column instructions, and the agent run gets the same options (tools, roots, mode) as a
+  benign card.
 
-- **Auto-promote** from the Inbox (**Intake column**: "a board setting, off by default"). Not in the code.
-- **Optional intake filters** (**Intake filter**): work item types, states, area/iteration path, Jira
-  project, GitHub repo. The filter has only tags, match mode, excluded tags, assignee, and the raw query.
-- **Per-column WIP limits** (**Board configuration**). Left for 136.4; only the per-board agent cap exists.
+**Still open:**
 
-**Tests from Verification that are missing or weaker:**
-
-- **Injection:** only the prompt shape is tested (the item is a prefixed untrusted envelope). Nothing
-  checks agent behavior with an item body that carries instructions.
-- **`once_per_board`** approval level: no test (`always`, `once_per_action`, `auto` and pause are tested).
-- **WIP enforcement:** none, since 136.4 isn't built.
-- The board-view "Own worktree" toggle (already noted in 136.6).
-
-**Not run:** no slice after 136.1 has been run in the app or against a live tracker; the **Manual**
-checks in Verification are all still open.
+- **Injection with a real model:** whether an agent *obeys* instructions in a ticket can't be unit-tested;
+  it is a manual check.
+- **136.4 budget caps and upstream drift handling** are not started.
+- **Not run:** no slice after 136.1 has been run in the app or against a live tracker; the **Manual**
+  checks in Verification are all still open.

@@ -4,8 +4,10 @@ import {
   asActions,
   asFilter,
   asOutcomes,
+  asPromoteGate,
   columnProblem,
   commandTimeoutProblem,
+  wipLimitProblem,
   WRITE_APPROVALS,
   type KanbanAction,
   type KanbanBoard,
@@ -21,6 +23,7 @@ import {
   type KanbanRunState,
   type KanbanIntakeFilter,
   type KanbanItem,
+  type KanbanPromoteGate,
   type KanbanSource,
 } from "../../../shared/kanban"
 
@@ -51,6 +54,7 @@ interface BoardRow {
   worktrees: number
   parallel_commands: number
   notifications: number
+  auto_promote: string
   sync_interval_ms: number
   last_sync_at: number | null
   last_sync_error: string | null
@@ -76,6 +80,7 @@ function toBoard(r: BoardRow): KanbanBoard {
     worktrees: r.worktrees !== 0,
     parallelCommands: r.parallel_commands === 1,
     notifications: r.notifications !== 0,
+    autoPromote: asPromoteGate(parse(r.auto_promote)),
     syncIntervalMs: r.sync_interval_ms,
     lastSyncAt: r.last_sync_at,
     lastSyncError: r.last_sync_error,
@@ -97,6 +102,7 @@ interface CardRow {
   branch: string | null
   own_worktree: number | null
   repos: string
+  promote_held: number
   outcome: string | null
   visits: string
   returns: string
@@ -133,6 +139,7 @@ function toCard(r: CardRow): KanbanCard {
     branch: r.branch,
     ownWorktree: r.own_worktree === null ? null : r.own_worktree === 1,
     repos: (parse(r.repos) as KanbanCardRepo[] | null) ?? [],
+    promoteHeld: r.promote_held === 1,
     outcome: r.outcome,
     visits: counts(r.visits),
     returns: counts(r.returns),
@@ -255,6 +262,12 @@ export function setNotifications(id: string, on: boolean): void {
     .run(on ? 1 : 0, id)
 }
 
+export function setAutoPromote(id: string, gate: KanbanPromoteGate): void {
+  getDb()
+    .prepare("UPDATE kanban_boards SET auto_promote = ? WHERE id = ?")
+    .run(JSON.stringify(asPromoteGate(gate)), id)
+}
+
 export function addApprovedAction(id: string, hash: string): void {
   const board = getBoard(id)
   if (!board || board.approvedActions.includes(hash)) return
@@ -296,6 +309,8 @@ export function saveColumns(boardId: string, input: KanbanColumnInput[]): void {
             ? c.commandTimeoutMs
             : (match?.commandTimeoutMs ?? null),
         notify: c.notify ?? match?.notify ?? false,
+        wipLimit:
+          c.wipLimit !== undefined ? c.wipLimit : (match?.wipLimit ?? null),
       }
     })
     // goto targets may name a column (the agent tool doesn't know ids).
@@ -326,6 +341,8 @@ export function saveColumns(boardId: string, input: KanbanColumnInput[]): void {
       const timeout = commandTimeoutProblem(c.commandTimeoutMs)
       if (timeout)
         throw new KanbanColumnInUseError(`column "${c.name}": ${timeout}`)
+      const wip = wipLimitProblem(c.wipLimit)
+      if (wip) throw new KanbanColumnInUseError(`column "${c.name}": ${wip}`)
     }
     for (const col of existing) {
       if (kept.has(col.id)) continue
@@ -350,15 +367,16 @@ export function saveColumns(boardId: string, input: KanbanColumnInput[]): void {
         c.command,
         c.commandTimeoutMs,
         c.notify ? 1 : 0,
+        c.wipLimit,
         i,
       ]
       if (c.isNew)
         db.prepare(
-          "INSERT INTO kanban_columns (name, agent_name, instructions, gate, owner, outcomes, actions, command, command_timeout_ms, notify, position, id, board_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+          "INSERT INTO kanban_columns (name, agent_name, instructions, gate, owner, outcomes, actions, command, command_timeout_ms, notify, wip_limit, position, id, board_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         ).run(...values, c.id, boardId)
       else
         db.prepare(
-          "UPDATE kanban_columns SET name = ?, agent_name = ?, instructions = ?, gate = ?, owner = ?, outcomes = ?, actions = ?, command = ?, command_timeout_ms = ?, notify = ?, position = ? WHERE id = ?"
+          "UPDATE kanban_columns SET name = ?, agent_name = ?, instructions = ?, gate = ?, owner = ?, outcomes = ?, actions = ?, command = ?, command_timeout_ms = ?, notify = ?, wip_limit = ?, position = ? WHERE id = ?"
         ).run(...values, c.id)
     })
   })()
@@ -384,6 +402,7 @@ export function listColumns(boardId: string): KanbanColumn[] {
       command: string | null
       command_timeout_ms: number | null
       notify: number
+      wip_limit: number | null
     }>
   ).map((r) => ({
     id: r.id,
@@ -399,6 +418,7 @@ export function listColumns(boardId: string): KanbanColumn[] {
     command: r.owner === "user" ? r.command : null,
     commandTimeoutMs: r.command_timeout_ms,
     notify: r.notify === 1,
+    wipLimit: r.wip_limit,
   }))
 }
 
@@ -419,6 +439,7 @@ export function updateCard(
     branch?: string | null
     ownWorktree?: boolean | null
     repos?: KanbanCardRepo[]
+    promoteHeld?: boolean
     outcome?: string | null
     visits?: Record<string, number>
     returns?: Record<string, number>
@@ -433,6 +454,7 @@ export function updateCard(
     branch: "branch",
     ownWorktree: "own_worktree",
     repos: "repos",
+    promoteHeld: "promote_held",
     outcome: "outcome",
     visits: "visits",
     returns: "returns",

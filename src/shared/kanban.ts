@@ -53,6 +53,10 @@ export interface KanbanIntakeFilter {
   match: "any" | "all"
   excludeTags: string[]
   assignee: KanbanAssignee
+  // Work item types and states; empty = any. Re-checked locally against the
+  // item's mapped `type`/`state`, so an item without one fails the check.
+  types: string[]
+  states: string[]
   // Escape hatch: a raw GitHub search / JQL / WIQL used instead of the compiled
   // query. The structured fields above are still re-checked locally.
   query?: string
@@ -116,11 +120,44 @@ export interface KanbanBoard {
   // Desktop notifications for this board's card runs. Off: only columns with
   // `notify` set raise them. Syncs never notify.
   notifications: boolean
+  // Inbox cards matching this move to the first column after each sync.
+  autoPromote: KanbanPromoteGate
   syncIntervalMs: number
   lastSyncAt: number | null
   lastSyncError: string | null
   createdAt: number
   updatedAt: number
+}
+
+// Which Inbox cards auto-promote: a state in `states` AND a tag in `tags`,
+// each list checked only when filled in. Both empty = auto-promote off.
+export interface KanbanPromoteGate {
+  states: string[]
+  tags: string[]
+}
+
+export const promoteOn = (g: KanbanPromoteGate) =>
+  g.states.length > 0 || g.tags.length > 0
+
+export function matchesPromoteGate(
+  item: KanbanItem,
+  gate: KanbanPromoteGate
+): boolean {
+  if (!promoteOn(gate)) return false
+  const has = (list: string[], v: string | null) =>
+    !!v && list.some((x) => lower(x) === lower(v))
+  if (gate.states.length && !has(gate.states, item.state)) return false
+  if (gate.tags.length && !gate.tags.some((t) => has(item.tags, t)))
+    return false
+  return true
+}
+
+export function asPromoteGate(raw: unknown): KanbanPromoteGate {
+  const r = (raw && typeof raw === "object" ? raw : {}) as Record<
+    string,
+    unknown
+  >
+  return { states: stringList(r.states), tags: stringList(r.tags) }
 }
 
 // `agent`: the card advances when the agent reports done. `human`: it waits
@@ -170,6 +207,22 @@ export interface KanbanColumn {
   commandTimeoutMs: number | null
   // Notify when a run here finishes; only used while the board's are off.
   notify: boolean
+  // Most cards running here at once (agent or command); the rest wait as
+  // Queued. null = no limit beyond the board's.
+  wipLimit: number | null
+}
+
+// Matches the board-wide agent cap (MAX_PARALLEL_AGENTS); more would never run.
+export const MAX_WIP_LIMIT = 4
+
+export function wipLimitProblem(value: unknown): string | null {
+  if (value === null) return null
+  return typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 1 &&
+    value <= MAX_WIP_LIMIT
+    ? null
+    : `the WIP limit must be empty or 1–${MAX_WIP_LIMIT}`
 }
 
 // A user-column command's time limit: off (null) or 5–90 minutes.
@@ -202,6 +255,7 @@ export interface KanbanColumnInput {
   command?: string | null
   commandTimeoutMs?: number | null
   notify?: boolean // omitted keeps the stored value
+  wipLimit?: number | null // omitted keeps the stored value
 }
 
 // One upstream action attempt: the audit log and the idempotency record.
@@ -291,6 +345,9 @@ export interface KanbanCard {
   // 136.6: null = follow the board's `worktrees` setting.
   ownWorktree: boolean | null
   repos: KanbanCardRepo[]
+  // A person put the card in the Inbox (reject, send back, move): it never
+  // auto-promotes again.
+  promoteHeld: boolean
   // The outcome the current column's run reported (the person may change it).
   outcome: string | null
   // Visits per column id (keys idempotency) and automatic gotos per column id.
@@ -359,6 +416,8 @@ export const DEFAULT_FILTER: KanbanIntakeFilter = {
   match: "any",
   excludeTags: [],
   assignee: { mode: "me" },
+  types: [],
+  states: [],
 }
 
 export const MAX_ITEMS = 500
@@ -514,6 +573,10 @@ export function matchesFilter(
     if (!ok) return false
   }
   if (filter.excludeTags.some((t) => tags.has(lower(t)))) return false
+  const oneOf = (list: string[], v: string | null) =>
+    !list.length || (!!v && list.some((x) => lower(x) === lower(v)))
+  if (!oneOf(filter.types, item.type) || !oneOf(filter.states, item.state))
+    return false
   const assignees = item.assignees.map(lower)
   switch (filter.assignee.mode) {
     case "anyone":
@@ -531,10 +594,7 @@ export function asFilter(raw: unknown): KanbanIntakeFilter {
     string,
     unknown
   >
-  const list = (v: unknown) =>
-    Array.isArray(v)
-      ? v.filter((s): s is string => typeof s === "string" && !!s.trim())
-      : []
+  const list = stringList
   const a = (r.assignee ?? {}) as Record<string, unknown>
   const assignee: KanbanAssignee =
     a.mode === "anyone"
@@ -549,7 +609,17 @@ export function asFilter(raw: unknown): KanbanIntakeFilter {
     match: r.match === "all" ? "all" : "any",
     excludeTags: list(r.excludeTags),
     assignee,
+    types: list(r.types),
+    states: list(r.states),
   }
+}
+
+function stringList(v: unknown): string[] {
+  return Array.isArray(v)
+    ? v
+        .filter((s): s is string => typeof s === "string" && !!s.trim())
+        .map((s) => s.trim())
+    : []
 }
 
 // ── filter → tracker query ──────────────────────────────────────────────────
@@ -572,6 +642,8 @@ function githubQuery(f: KanbanIntakeFilter): string {
   if (f.assignee.mode === "me") parts.push("assignee:@me")
   if (f.assignee.mode === "user")
     parts.push(`assignee:${f.assignee.user.replace(/\s/g, "")}`)
+  // Issue types; states are only open/closed (is:open), so they're checked locally.
+  if (f.types.length) parts.push(`type:${f.types.map(ghLabel).join(",")}`)
   return parts.join(" ")
 }
 
@@ -591,7 +663,13 @@ function jiraQuery(f: KanbanIntakeFilter): string {
   if (f.assignee.mode === "me") parts.push("assignee = currentUser()")
   if (f.assignee.mode === "user")
     parts.push(`assignee = ${jqlString(f.assignee.user)}`)
-  parts.push("statusCategory != Done")
+  if (f.types.length)
+    parts.push(`issuetype in (${f.types.map(jqlString).join(", ")})`)
+  parts.push(
+    f.states.length
+      ? `status in (${f.states.map(jqlString).join(", ")})`
+      : "statusCategory != Done"
+  )
   return parts.join(" AND ")
 }
 
@@ -606,8 +684,17 @@ function adoQuery(f: KanbanIntakeFilter): string {
   if (f.assignee.mode === "me") parts.push("[System.AssignedTo] = @Me")
   if (f.assignee.mode === "user")
     parts.push(`[System.AssignedTo] = ${wiqlString(f.assignee.user)}`)
-  // shortcut: default process state names; a custom process needs the raw query.
-  parts.push("[System.State] NOT IN ('Closed', 'Done', 'Removed')")
+  if (f.types.length)
+    parts.push(
+      `[System.WorkItemType] IN (${f.types.map(wiqlString).join(", ")})`
+    )
+  // shortcut: default process state names when no states are given; a custom
+  // process lists its own states.
+  parts.push(
+    f.states.length
+      ? `[System.State] IN (${f.states.map(wiqlString).join(", ")})`
+      : "[System.State] NOT IN ('Closed', 'Done', 'Removed')"
+  )
   return (
     "SELECT [System.Id], [System.Title], [System.WorkItemType], [System.State], " +
     "[System.Tags], [System.AssignedTo], [System.ChangedDate] FROM WorkItems WHERE " +

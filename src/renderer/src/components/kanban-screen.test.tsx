@@ -39,6 +39,8 @@ it("sorts boards alphabetically and refreshes attention for unselected boards", 
       tags: [],
       match: "all",
       excludeTags: [],
+      types: [],
+      states: [],
       assignee: { mode: "anyone" },
     },
     approvedHash: null,
@@ -48,6 +50,7 @@ it("sorts boards alphabetically and refreshes attention for unselected boards", 
     worktrees: true,
     parallelCommands: false,
     notifications: true,
+    autoPromote: { states: [], tags: [] },
     syncIntervalMs: 300000,
     lastSyncAt: null,
     lastSyncError: null,
@@ -115,65 +118,70 @@ it("sorts boards alphabetically and refreshes attention for unselected boards", 
   }
 })
 
-it("moves an idle card to the column it's dropped on, but never a running one", async () => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
-  const board = {
-    id: "b",
-    name: "Board",
-    needsAttention: false,
-    workspace: "/Projects/test",
-    source: null,
-    filter: {
+const board = {
+  id: "b",
+  name: "Board",
+  needsAttention: false,
+  workspace: "/Projects/test",
+  source: null,
+  filter: {
+    tags: [],
+    match: "all",
+    excludeTags: [],
+    types: [],
+    states: [],
+    assignee: { mode: "anyone" },
+  },
+  approvedHash: null,
+  writeApproval: "always",
+  approvedActions: [],
+  actionsPaused: false,
+  worktrees: true,
+  parallelCommands: false,
+  notifications: true,
+  autoPromote: { states: [], tags: [] },
+  syncIntervalMs: 300000,
+  lastSyncAt: null,
+  lastSyncError: null,
+  createdAt: 0,
+  updatedAt: 0,
+} as KanbanBoardSummary
+const dev = { id: "dev", name: "Dev", owner: "agent" } as KanbanColumn
+const card = (id: string, columnId: string | null, runState: string) =>
+  ({
+    id,
+    boardId: "b",
+    externalId: id,
+    item: {
+      id,
+      url: null,
+      title: `Issue ${id}`,
+      body: "",
+      type: null,
+      state: null,
       tags: [],
-      match: "all",
-      excludeTags: [],
-      assignee: { mode: "anyone" },
+      assignees: [],
+      updatedAt: null,
     },
-    approvedHash: null,
-    writeApproval: "always",
-    approvedActions: [],
-    actionsPaused: false,
-    worktrees: true,
-    parallelCommands: false,
-    notifications: true,
-    syncIntervalMs: 300000,
-    lastSyncAt: null,
-    lastSyncError: null,
+    columnId,
+    status: "active",
+    runState,
+    runError: null,
+    worktree: null,
+    branch: null,
+    ownWorktree: null,
+    repos: [],
+    promoteHeld: false,
+    outcome: null,
+    visits: {},
+    returns: {},
+    continuation: null,
     createdAt: 0,
     updatedAt: 0,
-  } as KanbanBoardSummary
-  const dev = { id: "dev", name: "Dev", owner: "agent" } as KanbanColumn
-  const card = (id: string, columnId: string | null, runState: string) =>
-    ({
-      id,
-      boardId: "b",
-      externalId: id,
-      item: {
-        id,
-        url: null,
-        title: `Issue ${id}`,
-        body: "",
-        type: null,
-        state: null,
-        tags: [],
-        assignees: [],
-        updatedAt: null,
-      },
-      columnId,
-      status: "active",
-      runState,
-      runError: null,
-      worktree: null,
-      branch: null,
-      ownWorktree: null,
-      repos: [],
-      outcome: null,
-      visits: {},
-      returns: {},
-      continuation: null,
-      createdAt: 0,
-      updatedAt: 0,
-    }) as KanbanCard
+  }) as KanbanCard
+
+it("moves an idle card to the column it's dropped on, but never a running one", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
   const moveCard = vi.fn(async () => ({ ok: true }))
   Object.assign(window, {
     cowork: {
@@ -223,6 +231,77 @@ it("moves an idle card to the column it's dropped on, but never a running one", 
 
     await drop("1", "dev")
     expect(moveCard).toHaveBeenCalledWith("1", "dev")
+  } finally {
+    act(() => root.unmount())
+    container.remove()
+    vi.unstubAllGlobals()
+  }
+})
+
+it("toggles a card's own worktree from its menu, until the card has run", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
+  const setOwnWorktree = vi.fn(async () => ({ ok: true }))
+  const cards = [
+    card("1", null, "idle"),
+    { ...card("2", null, "idle"), started: true },
+  ]
+  Object.assign(window, {
+    cowork: {
+      kanban: {
+        list: vi.fn(async () => [board]),
+        graph: vi.fn(async () => ({
+          board,
+          columns: [dev],
+          cards,
+          sourceHash: null,
+          approved: true,
+          intakeCall: null,
+          intakeError: null,
+          layout: "repo",
+        })),
+        setOwnWorktree,
+        sync: vi.fn(async () => null),
+      },
+    },
+  })
+  const container = document.createElement("div")
+  document.body.append(container)
+  const root = createRoot(container)
+  const press = (element: Element) =>
+    act(async () => {
+      element.dispatchEvent(
+        new PointerEvent("pointerdown", {
+          bubbles: true,
+          button: 0,
+          ctrlKey: false,
+        })
+      )
+      element.dispatchEvent(
+        new PointerEvent("pointerup", {
+          bubbles: true,
+          button: 0,
+          ctrlKey: false,
+        })
+      )
+      element.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    })
+  const item = () =>
+    [...document.querySelectorAll('[role="menuitemcheckbox"]')].find((e) =>
+      e.textContent?.includes("Own worktree")
+    )!
+  try {
+    await act(async () =>
+      root.render(
+        <KanbanScreen onClose={vi.fn()} onOpenConversation={vi.fn()} />
+      )
+    )
+    await press(document.querySelector('[aria-label="Actions for #1"]')!)
+    expect(item().getAttribute("aria-checked")).toBe("true") // board default
+    await press(item())
+    expect(setOwnWorktree).toHaveBeenCalledWith("1", false)
+
+    await press(document.querySelector('[aria-label="Actions for #2"]')!)
+    expect(item().getAttribute("data-disabled")).not.toBeNull()
   } finally {
     act(() => root.unmount())
     container.remove()

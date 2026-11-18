@@ -155,6 +155,9 @@ const defaultRunCall: RunCall = async (call, board, signal) => {
 // and updates the Inbox. Fails closed: unapproved, unresolvable "me", or bad
 // output records an error and leaves the cards untouched.
 export class KanbanService {
+  // Set by the app once card runs exist: auto-promote after each sync.
+  afterSync?: (boardId: string) => Promise<void>
+
   constructor(
     private readonly runner: TaskRunner,
     private readonly runCall: RunCall = defaultRunCall
@@ -167,6 +170,7 @@ export class KanbanService {
     try {
       const count = await this.sync(board, signal)
       kanban.setSyncResult(board.id, null)
+      await this.afterSync?.(board.id)
       return { content: `synced ${count} items` }
     } catch (err) {
       if (signal.aborted) return { stopped: true }

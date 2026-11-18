@@ -1557,6 +1557,7 @@ const api = {
         worktrees: boolean
         parallelCommands: boolean
         notifications: boolean
+        autoPromote: { states: string[]; tags: string[] }
       }
     ) =>
       ipcRenderer.invoke(

@@ -7,6 +7,7 @@ import type { KanbanService } from "../kanban/service"
 import type { KanbanCardRuns } from "../kanban/card-runs"
 import {
   asFilter,
+  asPromoteGate,
   cardNeedsAttention,
   WRITE_APPROVALS,
   type KanbanColumnInput,
@@ -130,6 +131,7 @@ export function registerKanbanHandlers(
         worktrees: boolean
         parallelCommands: boolean
         notifications: boolean
+        autoPromote?: unknown
       }
     ) => {
       const board = kanban.getBoard(boardId)
@@ -158,6 +160,8 @@ export function registerKanbanHandlers(
           parallelCommands: patch.parallelCommands === true,
         })
         kanban.setNotifications(boardId, patch.notifications !== false)
+        if (patch.autoPromote !== undefined)
+          kanban.setAutoPromote(boardId, asPromoteGate(patch.autoPromote))
       } catch (err) {
         if (err instanceof kanban.KanbanColumnInUseError)
           return { ok: false, reason: err.message }
