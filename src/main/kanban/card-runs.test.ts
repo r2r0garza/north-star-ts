@@ -1,7 +1,13 @@
 import { describe, it, expect, beforeEach, vi } from "vitest"
 import Database from "better-sqlite3"
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { runMigrations } from "../db/migrations"
@@ -762,6 +768,9 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
 
     it("lets a card in a folder of repos open the repos it needs, as worktrees on its branch", async () => {
       workspace = folderOfRepos()
+      mkdirSync(path.join(workspace, "backend", "node_modules", "dep"), {
+        recursive: true,
+      })
       const { board: b, card, cols } = board()
       const seen: Record<string, unknown>[] = []
       onTurn = async (opts) => {
@@ -770,7 +779,12 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
         const open = opts.kanbanOpenRepo as (
           repo: string,
           base?: string
-        ) => Promise<{ path: string; branch: string; base: string }>
+        ) => Promise<{
+          path: string
+          branch: string
+          base: string
+          links: string[]
+        }>
         await expect(open("node_modules/pkg")).rejects.toThrow(
           /not one of the workspace's repos/
         )
@@ -780,7 +794,17 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
           open("./backend/"),
         ])
         expect(again).toEqual(backend)
-        expect(await open("frontend", "dev")).toMatchObject({ base: "dev" })
+        // Only backend has installed dependencies; its link command works.
+        expect(backend.links).toHaveLength(1)
+        execFileSync("sh", ["-c", backend.links[0]])
+        execFileSync("sh", ["-c", backend.links[0]]) // a second run is a no-op
+        expect(existsSync(path.join(backend.path, "node_modules", "dep"))).toBe(
+          true
+        )
+        expect(await open("frontend", "dev")).toMatchObject({
+          base: "dev",
+          links: [],
+        })
       }
       await cards.enter(card.id, cols[0].id)
       await exec(last())
@@ -793,6 +817,10 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
       expect(prompts[0]).toContain(
         'a folder of git repos: "backend", "frontend"'
       )
+      expect(prompts[0]).toMatch(
+        /"backend": \[ -e '[^']*\/backend\/node_modules' \] \|\| ln -s/
+      )
+      expect(prompts[0]).not.toContain('"frontend": [ -e')
       expect(ran.repos).toEqual([
         { path: "backend", branch, base: "HEAD" },
         { path: "frontend", branch, base: "dev" },
@@ -810,6 +838,35 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
       expect(await cards.remove(card.id)).toEqual({ ok: true })
       expect(existsSync(ran.worktree!)).toBe(false)
       expect(branchExists(path.join(workspace, "backend"), branch)).toBe(true)
+    })
+
+    it("uses the board's dependency links instead of the scan when it has them", async () => {
+      workspace = folderOfRepos()
+      mkdirSync(path.join(workspace, "backend", "node_modules"))
+      mkdirSync(
+        path.join(workspace, "frontend", "apps", "web", "node_modules"),
+        {
+          recursive: true,
+        }
+      )
+      const { card, cols, board: b } = board()
+      kanban.setDependencyLinks(b.id, [
+        "frontend/apps/web/node_modules",
+        "nope/x",
+      ])
+      onTurn = async (opts) => {
+        const open = opts.kanbanOpenRepo as (
+          repo: string
+        ) => Promise<{ path: string; links: string[] }>
+        expect((await open("backend")).links).toEqual([])
+        const frontend = await open("frontend")
+        expect(frontend.links).toHaveLength(1)
+        expect(frontend.links[0]).toContain("/frontend/apps/web/node_modules'")
+      }
+      await cards.enter(card.id, cols[0].id)
+      await exec(last())
+      expect(prompts[0]).toContain('"frontend": [ -e')
+      expect(prompts[0]).not.toContain('"backend": [ -e')
     })
 
     it("works in place with no branch when worktrees are off, and a card can override that before it runs", async () => {
@@ -931,6 +988,23 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
       expect(kanban.listRuns(card.id)).toMatchObject([
         { kind: "command", status: "completed", result: "exit 0\nok" },
       ])
+    })
+
+    it("tells a worktree card how to link the checkout's installed dependencies", async () => {
+      mkdirSync(path.join(workspace, "node_modules", "dep"), {
+        recursive: true,
+      })
+      const { card, cols } = board()
+      await cards.enter(card.id, cols[0].id)
+      await exec(last())
+      const { worktree } = kanban.getCard(card.id)!
+      const link = prompts[0].match(
+        /\[ -e '[^']*' \] \|\| ln -s '[^']*' '[^']*'/
+      )![0]
+      expect(link).toContain(path.join(realpathSync(worktree!), "node_modules"))
+      expect(prompts[0]).toContain("never install, update or remove packages")
+      execFileSync("sh", ["-c", link])
+      expect(existsSync(path.join(worktree!, "node_modules", "dep"))).toBe(true)
     })
 
     it("runs in the same subfolder of the card's worktree when the workspace is one", async () => {

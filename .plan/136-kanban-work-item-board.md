@@ -580,9 +580,8 @@ which.
 **Later**
 
 - Tracker actions per repo (e.g. one PR per repo, run inside each repo's worktree).
-- Linking `node_modules` / `.venv` into worktrees (Node resolves imports from the code's own folder, so a
-  worktree can't use the real `node_modules` without a link; a Python editable install points at the real
-  checkout either way).
+- ~~Linking `node_modules` / `.venv` into worktrees~~: recommended to the agent as of 2026-11-19, see
+  **Dependency links** under 136.6 as built.
 - Layout C (repos nested in a repo).
 - The agent suggesting a card's repos for the person to confirm.
 
@@ -616,6 +615,26 @@ which.
   place have no read-only root: their workspace is the checkout.
 - **Not covered by tests:** the card-menu toggle in the board view (the IPC and service behind it are
   tested).
+
+**Dependency links (2026-11-19).** Git leaves installed dependencies out of a worktree, so a worktree card
+couldn't build or test without reinstalling. Each board has a list of dependency links: paths relative to
+the repo (layout A) or to the workspace, starting with the repo (layout B), e.g. `frontend/apps/web/node_modules`.
+- **Default (stored `NULL`):** a deterministic scan finds `node_modules` and `.venv` at the top of each repo
+  (layout A: also at the workspace's subfolder). The graph carries it as `detectedLinks`.
+- **Board settings** (General & filters → Running cards, only when the workspace has repos) list the links
+  with Add / Remove. The first edit saves the list (`kanban_boards.dependency_links`, v88); *Use detected*
+  goes back to the scan. Paths are cleaned and must stay inside the workspace (`asDependencyLinks`: no
+  absolute paths, `..`, or empty parts; at most 50). The agent's `kanban_write` doesn't change them. Board
+  export/import carries them.
+- **The agent** gets one command per link that exists in the real checkout:
+  `[ -e '<worktree>/<link>' ] || ln -s '<real>/<link>' '<worktree>/<link>'` (absolute, single-quoted; its
+  shell has no `KANBAN_WORKSPACE`). Layout A: in the setup text. Layout B: grouped by repo (a link belongs to
+  the longest repo path it starts with) in the setup text, and again in `kanban_open_repo`'s result
+  (`linkDependencies`). The board recommends; it doesn't link. `ln` is checked only on its destination, so
+  the read-only checkout allows it. The prompt says not to install or remove packages through the links,
+  and that a `.venv`'s editable install still imports the real checkout's code.
+- **Code:** `detectedLinks`, `linkRepo`, `linkCommands` in `src/main/kanban/layout.ts`; `boardLinks` in
+  `card-runs.ts`; the editor in `kanban-settings-sheet.tsx`.
 
 ## 136.7 Column placeholders (built 2026-11-17)
 

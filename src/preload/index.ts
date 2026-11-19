@@ -1562,6 +1562,8 @@ const api = {
           tags: string[]
           fields?: { field: string; values: string[] }[]
         }
+        // null: use the workspace scan's.
+        dependencyLinks?: string[] | null
       }
     ) =>
       ipcRenderer.invoke(

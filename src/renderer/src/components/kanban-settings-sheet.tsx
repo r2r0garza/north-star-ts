@@ -42,6 +42,7 @@ import {
 } from "@/components/ui/dialog"
 import type { AgentSummary } from "../../../preload/index"
 import {
+  asDependencyLinks,
   DEFAULT_MAX_RETURNS,
   type KanbanBoardGraph,
   type KanbanColumnInput,
@@ -385,6 +386,21 @@ export function KanbanSettingsSheet({
   const [worktrees, setWorktrees] = useState(board.worktrees)
   const [parallel, setParallel] = useState(board.parallelCommands)
   const [notifications, setNotifications] = useState(board.notifications)
+  // null: the workspace scan's links, until the person edits the list.
+  const [links, setLinks] = useState(board.dependencyLinks)
+  const [newLink, setNewLink] = useState("")
+  const shownLinks = links ?? graph.detectedLinks
+  const addLink = () => {
+    const [link] = asDependencyLinks([newLink]) ?? []
+    if (!link) {
+      toast.error(
+        "Use a path inside the workspace, like apps/web/node_modules."
+      )
+      return
+    }
+    setLinks([...new Set([...shownLinks, link])])
+    setNewLink("")
+  }
   // Worktrees need repos; without them, cards always share the workspace.
   const canWorktree = graph.layout !== "none"
   const [agents, setAgents] = useState<AgentSummary[]>([])
@@ -461,6 +477,7 @@ export function KanbanSettingsSheet({
         worktrees,
         parallelCommands: parallel,
         notifications,
+        dependencyLinks: links,
         autoPromote: {
           states: splitTags(promoteStates),
           tags: splitTags(promoteTags),
@@ -819,6 +836,94 @@ export function KanbanSettingsSheet({
                       checked={worktrees}
                       onCheckedChange={setWorktrees}
                     />
+                  </div>
+                ) : null}
+                {canWorktree ? (
+                  <div className="flex flex-col gap-3 rounded-lg border p-4">
+                    <div className="flex flex-col gap-1.5">
+                      <Label htmlFor="kb-link-new">Dependency links</Label>
+                      <p
+                        id="kb-links-description"
+                        className="text-xs text-muted-foreground"
+                      >
+                        Installed folders git leaves out of a worktree, like
+                        node_modules. A worktree card&apos;s agent is told to
+                        link each one from your checkout before building or
+                        testing. Paths are relative to{" "}
+                        {graph.layout === "repos"
+                          ? "the workspace and start with the repo (backend/node_modules)"
+                          : "the repo (apps/web/node_modules)"}
+                        .{" "}
+                        {links === null
+                          ? "Found by checking the top of each repo; add nested ones here."
+                          : null}
+                      </p>
+                    </div>
+                    {shownLinks.length ? (
+                      <ul
+                        className="flex flex-col gap-1"
+                        aria-label="Dependency links"
+                      >
+                        {shownLinks.map((link) => (
+                          <li
+                            key={link}
+                            className="flex items-center justify-between gap-2 text-sm"
+                          >
+                            <code className="truncate">{link}</code>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              aria-label={`Remove ${link}`}
+                              onClick={() =>
+                                setLinks(shownLinks.filter((l) => l !== link))
+                              }
+                            >
+                              Remove
+                            </Button>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">None.</p>
+                    )}
+                    <div className="flex gap-2">
+                      <Input
+                        id="kb-link-new"
+                        aria-describedby="kb-links-description"
+                        placeholder={
+                          graph.layout === "repos"
+                            ? "frontend/packages/ui/node_modules"
+                            : "apps/web/node_modules"
+                        }
+                        value={newLink}
+                        onChange={(e) => setNewLink(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key !== "Enter") return
+                          e.preventDefault()
+                          if (newLink.trim()) addLink()
+                        }}
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={!newLink.trim()}
+                        onClick={addLink}
+                      >
+                        Add
+                      </Button>
+                      {links !== null ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setLinks(null)}
+                        >
+                          Use detected
+                        </Button>
+                      ) : null}
+                    </div>
                   </div>
                 ) : null}
                 {!worktrees || !canWorktree ? (

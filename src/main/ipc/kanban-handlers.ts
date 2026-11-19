@@ -7,6 +7,7 @@ import type { KanbanService } from "../kanban/service"
 import type { KanbanCardRuns } from "../kanban/card-runs"
 import {
   asFilter,
+  asDependencyLinks,
   asPromoteGate,
   cardNeedsAttention,
   WRITE_APPROVALS,
@@ -132,6 +133,7 @@ export function registerKanbanHandlers(
         parallelCommands: boolean
         notifications: boolean
         autoPromote?: unknown
+        dependencyLinks?: unknown
       }
     ) => {
       const board = kanban.getBoard(boardId)
@@ -162,6 +164,11 @@ export function registerKanbanHandlers(
         kanban.setNotifications(boardId, patch.notifications !== false)
         if (patch.autoPromote !== undefined)
           kanban.setAutoPromote(boardId, asPromoteGate(patch.autoPromote))
+        if (patch.dependencyLinks !== undefined)
+          kanban.setDependencyLinks(
+            boardId,
+            asDependencyLinks(patch.dependencyLinks)
+          )
       } catch (err) {
         if (err instanceof kanban.KanbanColumnInUseError)
           return { ok: false, reason: err.message }

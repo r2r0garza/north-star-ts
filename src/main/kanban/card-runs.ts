@@ -41,7 +41,13 @@ import {
   type KanbanOutcome,
   type KanbanUpstreamAction,
 } from "../../shared/kanban"
-import { workspaceLayout } from "./layout"
+import {
+  DEPENDENCY_LINK_NOTE,
+  detectedLinks,
+  linkCommands,
+  linkRepo,
+  workspaceLayout,
+} from "./layout"
 import { actionHash, boardActionsHash, type CommandRunResult } from "./service"
 
 export const KANBAN_CARD_RUN_KIND = "kanban_card_run"
@@ -179,6 +185,19 @@ const lastResult = (cardId: string, columnId: string) =>
   kanban
     .listRuns(cardId)
     .findLast((r) => r.columnId === columnId && r.status === "completed")
+
+// What kanban_open_repo hands the agent; `links` link the repo's installed
+// dependencies into its worktree.
+type OpenedRepo = {
+  path: string
+  branch: string
+  base: string
+  links: string[]
+}
+
+// The board's dependency links, or the workspace scan's when it has none set.
+const boardLinks = (board: KanbanBoard, workspace: string) =>
+  board.dependencyLinks ?? detectedLinks(workspace)
 
 function formatHandoff(h: TaskHandoff): string {
   return [
@@ -929,10 +948,7 @@ export class KanbanCardRuns {
     // A worktree card's real checkout: readable, never writable (shell writes
     // there are hard-blocked; file tools reach it only as skill://).
     readOnlyRoot?: string
-    openRepo?: (
-      repo: string,
-      base?: string
-    ) => Promise<{ path: string; branch: string; base: string }>
+    openRepo?: (repo: string, base?: string) => Promise<OpenedRepo>
   }> {
     const { layout, repos } = workspaceLayout(workspace)
     if (layout === "none" || !(card.ownWorktree ?? board.worktrees))
@@ -941,11 +957,13 @@ export class KanbanCardRuns {
       const cwd = await this.workdir(card, board, workspace)
       // The whole real repo: the card's worktree is a copy of all of it.
       const top = await runGit(workspace, ["rev-parse", "--show-toplevel"])
+      const cwdTop = await runGit(cwd, ["rev-parse", "--show-toplevel"])
+      const links = linkCommands(boardLinks(board, workspace), top, cwdTop)
       return {
         cwd,
         isolated: true,
         readOnlyRoot: top,
-        setup: `You are in a git worktree on branch ${card.branch}, shared by every column of this card; commit your changes there with clear messages. The user's own checkout at ${JSON.stringify(top)} is read-only (skill://${WORKSPACE_ROOT_NAME}/<path> for the file tools); never change files there.`,
+        setup: `You are in a git worktree on branch ${card.branch}, shared by every column of this card; commit your changes there with clear messages. The user's own checkout at ${JSON.stringify(top)} is read-only (skill://${WORKSPACE_ROOT_NAME}/<path> for the file tools); never change files there.${links.length ? ` The checkout has installed dependencies this worktree lacks; before building or testing, link them with: ${links.join(" ; ")}. ${DEPENDENCY_LINK_NOTE}` : ""}`,
       }
     }
     const folder = path.join(this.worktreeRoot, board.id, card.id)
@@ -957,11 +975,22 @@ export class KanbanCardRuns {
       card.branch = branch
     }
     const open = card.repos.map((r) => r.path)
+    const all = boardLinks(board, workspace)
+    const withDeps = repos
+      .map((r) => ({
+        repo: r,
+        links: linkCommands(
+          all.filter((l) => linkRepo(l, repos) === r),
+          workspace,
+          folder
+        ),
+      }))
+      .filter((r) => r.links.length)
     return {
       cwd: folder,
       isolated: true,
       readOnlyRoot: workspace,
-      setup: `Your working folder is this card's own folder, shared by every column of this card. The workspace ${JSON.stringify(workspace)} is a folder of git repos: ${repos.map((r) => JSON.stringify(r)).join(", ")}. ${open.length ? `Already open here: ${open.map((r) => JSON.stringify(r)).join(", ")}.` : "None is open here yet."} To change a repo, call kanban_open_repo with its path when your work reaches it; it appears here as a git worktree on branch ${branch}. Open only the repos you will change. Commit your changes in each repo you change, with clear messages. To decide which repos a ticket needs, read the real workspace first: it is read-only, at skill://${WORKSPACE_ROOT_NAME}/<path> for the file tools, or at its path above for read-only shell commands. Never change files in the real workspace.`,
+      setup: `Your working folder is this card's own folder, shared by every column of this card. The workspace ${JSON.stringify(workspace)} is a folder of git repos: ${repos.map((r) => JSON.stringify(r)).join(", ")}. ${open.length ? `Already open here: ${open.map((r) => JSON.stringify(r)).join(", ")}.` : "None is open here yet."} To change a repo, call kanban_open_repo with its path when your work reaches it; it appears here as a git worktree on branch ${branch}. Open only the repos you will change. Commit your changes in each repo you change, with clear messages. To decide which repos a ticket needs, read the real workspace first: it is read-only, at skill://${WORKSPACE_ROOT_NAME}/<path> for the file tools, or at its path above for read-only shell commands. Never change files in the real workspace.${withDeps.length ? ` These repos have installed dependencies their worktrees lack; after opening one, and before building or testing in it, link them: ${withDeps.map((r) => `${JSON.stringify(r.repo)}: ${r.links.join(" ; ")}`).join(". ")}. ${DEPENDENCY_LINK_NOTE}` : ""}`,
       openRepo: (repo, base) =>
         this.openRepo(card.id, board, workspace, repo, base),
     }
@@ -970,10 +999,7 @@ export class KanbanCardRuns {
   // Bring one workspace repo into a layout-B card's folder as a worktree on the
   // card's branch, from `base` (default: origin's default branch). Recorded on
   // the card; opening it again returns the same path.
-  private opening = new Map<
-    string,
-    Promise<{ path: string; branch: string; base: string }>
-  >()
+  private opening = new Map<string, Promise<OpenedRepo>>()
 
   openRepo(
     cardId: string,
@@ -981,7 +1007,7 @@ export class KanbanCardRuns {
     workspace: string,
     repo: string,
     base?: string
-  ): Promise<{ path: string; branch: string; base: string }> {
+  ): Promise<OpenedRepo> {
     const name = repo.replace(/^\.\//, "").replace(/\/+$/, "")
     const key = `${cardId}:${name}`
     const running = this.opening.get(key)
@@ -999,7 +1025,7 @@ export class KanbanCardRuns {
     workspace: string,
     repo: string,
     base?: string
-  ): Promise<{ path: string; branch: string; base: string }> {
+  ): Promise<OpenedRepo> {
     const { repos } = workspaceLayout(workspace)
     if (!repos.includes(repo))
       throw new Error(
@@ -1010,9 +1036,14 @@ export class KanbanCardRuns {
       throw new Error("this card has no folder of its own")
     const directory = path.join(card.worktree, repo)
     const known = card.repos.find((r) => r.path === repo)
-    if (known && existsSync(directory))
-      return { path: directory, branch: known.branch, base: known.base }
     const root = path.join(workspace, repo)
+    const links = linkCommands(
+      boardLinks(board, workspace).filter((l) => linkRepo(l, repos) === repo),
+      workspace,
+      card.worktree
+    )
+    if (known && existsSync(directory))
+      return { path: directory, branch: known.branch, base: known.base, links }
     const start = await resolveBase(root, base)
     await runGit(root, ["worktree", "prune"])
     if (
@@ -1038,7 +1069,7 @@ export class KanbanCardRuns {
     kanban.updateCard(cardId, {
       repos: [...fresh.repos.filter((r) => r.path !== repo), entry],
     })
-    return { path: directory, branch: entry.branch, base: entry.base }
+    return { path: directory, branch: entry.branch, base: entry.base, links }
   }
 
   // The card's working directory: its own worktree in a git workspace (created

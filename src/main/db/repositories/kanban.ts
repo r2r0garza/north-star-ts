@@ -4,6 +4,7 @@ import {
   asActions,
   asFilter,
   asOutcomes,
+  asDependencyLinks,
   asPromoteGate,
   columnProblem,
   commandTimeoutProblem,
@@ -55,6 +56,7 @@ interface BoardRow {
   parallel_commands: number
   notifications: number
   auto_promote: string
+  dependency_links: string | null
   sync_interval_ms: number
   last_sync_at: number | null
   last_sync_error: string | null
@@ -81,6 +83,7 @@ function toBoard(r: BoardRow): KanbanBoard {
     parallelCommands: r.parallel_commands === 1,
     notifications: r.notifications !== 0,
     autoPromote: asPromoteGate(parse(r.auto_promote)),
+    dependencyLinks: asDependencyLinks(parse(r.dependency_links)),
     syncIntervalMs: r.sync_interval_ms,
     lastSyncAt: r.last_sync_at,
     lastSyncError: r.last_sync_error,
@@ -266,6 +269,13 @@ export function setAutoPromote(id: string, gate: KanbanPromoteGate): void {
   getDb()
     .prepare("UPDATE kanban_boards SET auto_promote = ? WHERE id = ?")
     .run(JSON.stringify(asPromoteGate(gate)), id)
+}
+
+export function setDependencyLinks(id: string, links: string[] | null): void {
+  const clean = asDependencyLinks(links)
+  getDb()
+    .prepare("UPDATE kanban_boards SET dependency_links = ? WHERE id = ?")
+    .run(clean ? JSON.stringify(clean) : null, id)
 }
 
 export function addApprovedAction(id: string, hash: string): void {

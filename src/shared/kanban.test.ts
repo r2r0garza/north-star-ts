@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import {
+  asDependencyLinks,
   asFilter,
   cardNeedsAttention,
   compileIntakeQuery,
@@ -53,6 +54,26 @@ const item = (patch: Partial<KanbanItem>): KanbanItem => ({
   assignees: [],
   updatedAt: null,
   ...patch,
+})
+
+describe("asDependencyLinks", () => {
+  it("keeps relative paths inside the workspace, cleaned and deduped", () => {
+    expect(
+      asDependencyLinks([
+        " ./apps/web/node_modules/ ",
+        "apps\\web\\node_modules",
+        "/etc",
+        "C:/x",
+        "../up",
+        "a/../b",
+        "a//b",
+        "",
+        7,
+      ])
+    ).toEqual(["apps/web/node_modules"])
+    expect(asDependencyLinks([])).toEqual([])
+    expect(asDependencyLinks(null)).toBeNull()
+  })
 })
 
 describe("cardNeedsAttention", () => {

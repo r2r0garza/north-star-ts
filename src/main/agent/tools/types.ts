@@ -169,7 +169,7 @@ export interface ToolContext {
   kanbanOpenRepo?: (
     repo: string,
     base?: string
-  ) => Promise<{ path: string; branch: string; base: string }>
+  ) => Promise<{ path: string; branch: string; base: string; links?: string[] }>
   // Flip plan mode on/off for the CURRENT turn (see present_plan_tool). Set by the
   // real agent loop, which holds plan mode as a mutable flag and rebuilds the
   // toolset each iteration — so approving a plan (setPlanMode(false)) unlocks the

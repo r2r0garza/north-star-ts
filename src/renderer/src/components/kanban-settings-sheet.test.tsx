@@ -52,6 +52,7 @@ const graph: KanbanBoardGraph = {
     parallelCommands: false,
     notifications: true,
     autoPromote: { states: [], tags: [] },
+    dependencyLinks: null,
     syncIntervalMs: 300_000,
     lastSyncAt: null,
     lastSyncError: null,
@@ -98,6 +99,7 @@ const graph: KanbanBoardGraph = {
   intakeCall: null,
   intakeError: null,
   layout: "repo",
+  detectedLinks: [],
 }
 const button = (name: string) =>
   [...document.querySelectorAll<HTMLButtonElement>("button")].find(
@@ -524,4 +526,53 @@ it("shows the column notify switch only with board notifications off, and saves 
   ]
   expect(saved[1].notifications).toBe(false)
   expect(saved[1].columns[0].notify).toBe(true)
+})
+
+it("starts dependency links from the scan, lets the person add and remove them, and goes back to the scan", async () => {
+  await act(async () =>
+    root.render(
+      <KanbanSettingsSheet
+        graph={{ ...graph, detectedLinks: ["node_modules"] }}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+      />
+    )
+  )
+  await act(() => {
+    button("General & filters").dispatchEvent(
+      new MouseEvent("mousedown", { bubbles: true, button: 0 })
+    )
+  })
+  const input = document.querySelector("#kb-link-new") as HTMLInputElement
+  const type = (value: string) =>
+    act(() => {
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value"
+      )!.set!.call(input, value)
+      input.dispatchEvent(new Event("input", { bubbles: true }))
+    })
+  await type("../outside")
+  await click("Add")
+  expect(button("Use detected")).toBeUndefined() // rejected: nothing changed
+  await type("./apps/web/node_modules/")
+  await click("Add")
+  await act(() =>
+    (
+      document.querySelector(
+        '[aria-label="Remove node_modules"]'
+      ) as HTMLButtonElement
+    ).click()
+  )
+  await click("Save changes")
+  expect(saveSettings).toHaveBeenLastCalledWith(
+    "board",
+    expect.objectContaining({ dependencyLinks: ["apps/web/node_modules"] })
+  )
+  await click("Use detected")
+  await click("Save changes")
+  expect(saveSettings).toHaveBeenLastCalledWith(
+    "board",
+    expect.objectContaining({ dependencyLinks: null })
+  )
 })

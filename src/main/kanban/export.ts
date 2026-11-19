@@ -1,6 +1,7 @@
 import * as kanban from "../db/repositories/kanban"
 import {
   asActions,
+  asDependencyLinks,
   asFilter,
   asOutcomes,
   asPromoteGate,
@@ -34,6 +35,7 @@ export function exportBoard(board: KanbanBoard, columns: KanbanColumn[]) {
     parallelCommands: board.parallelCommands,
     notifications: board.notifications,
     autoPromote: board.autoPromote,
+    dependencyLinks: board.dependencyLinks,
     // goto targets are ids on this machine; names survive the trip.
     columns: columns.map((c) => ({
       name: c.name,
@@ -173,5 +175,6 @@ export function importBoard(raw: unknown, workspace: string): KanbanBoard {
   })
   kanban.setNotifications(board.id, o.notifications !== false)
   kanban.setAutoPromote(board.id, asPromoteGate(o.autoPromote))
+  kanban.setDependencyLinks(board.id, asDependencyLinks(o.dependencyLinks))
   return kanban.getBoard(board.id)!
 }

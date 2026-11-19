@@ -253,6 +253,8 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureKanbanWorktreeChoices,
   ensureKanbanNotifications,
   ensureKanbanFlow,
+  // v88: board dependency links (136.6); NULL = the workspace scan's.
+  (db) => addColumnIfMissing(db, "kanban_boards", "dependency_links", "TEXT"),
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {

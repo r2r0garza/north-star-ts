@@ -135,6 +135,10 @@ export interface KanbanBoard {
   notifications: boolean
   // Inbox cards matching this move to the first column after each sync.
   autoPromote: KanbanPromoteGate
+  // Installed-dependency folders a worktree card links from the real checkout
+  // (relative to the repo in layout A, to the workspace in layout B). null:
+  // the scan's (KanbanBoardGraph.detectedLinks).
+  dependencyLinks: string[] | null
   syncIntervalMs: number
   lastSyncAt: number | null
   lastSyncError: string | null
@@ -191,6 +195,29 @@ export function asFieldRules(raw: unknown): KanbanFieldRule[] | undefined {
     }))
     .filter((r) => r.field && r.values.length)
   return rules.length ? rules : undefined
+}
+
+// Board dependency links from the settings sheet or a board file: relative
+// paths that stay inside the workspace. Anything but an array is null (the scan).
+export function asDependencyLinks(raw: unknown): string[] | null {
+  if (!Array.isArray(raw)) return null
+  const links = raw
+    .filter((l): l is string => typeof l === "string")
+    .map((l) =>
+      l
+        .trim()
+        .replace(/\\/g, "/")
+        .replace(/^(\.\/)+/, "")
+        .replace(/\/+$/, "")
+    )
+    .filter(
+      (l) =>
+        l &&
+        !l.startsWith("/") &&
+        !/^[a-z]:/i.test(l) &&
+        !l.split("/").some((part) => !part || part === "." || part === "..")
+    )
+  return [...new Set(links)].slice(0, 50)
 }
 
 export function asPromoteGate(raw: unknown): KanbanPromoteGate {
@@ -452,6 +479,8 @@ export interface KanbanBoardGraph {
   sourceHash: string | null
   approved: boolean
   layout: KanbanLayout
+  // Dependency links the workspace scan finds (the default for dependencyLinks).
+  detectedLinks: string[]
   // What a sync runs (query bound in), or why it can't run.
   intakeCall: KanbanCall | null
   intakeError: string | null

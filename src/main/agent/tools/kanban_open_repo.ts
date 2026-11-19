@@ -51,6 +51,13 @@ export const kanbanOpenRepoTool: Tool = {
         branch: opened.branch,
         base: opened.base,
         note: "Work and commit inside this path.",
+        ...(opened.links?.length
+          ? {
+              linkDependencies: opened.links,
+              linkNote:
+                "Run these before building or testing here: they link the real checkout's installed dependencies, which a worktree lacks. Never install, update or remove packages through the links.",
+            }
+          : {}),
       })
     } catch (err) {
       return toolError("open_failed", (err as Error).message)
