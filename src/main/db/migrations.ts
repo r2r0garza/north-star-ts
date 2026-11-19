@@ -255,6 +255,14 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureKanbanFlow,
   // v88: board dependency links (136.6); NULL = the workspace scan's.
   (db) => addColumnIfMissing(db, "kanban_boards", "dependency_links", "TEXT"),
+  // v89: per-column entry gate (same shape as the board's auto-promote).
+  (db) =>
+    addColumnIfMissing(
+      db,
+      "kanban_columns",
+      "entry_gate",
+      "TEXT NOT NULL DEFAULT '{}'"
+    ),
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {

@@ -194,5 +194,4 @@ export function ensureKanbanFlow(db: Database.Database): void {
   add("kanban_boards", "auto_promote", "TEXT NOT NULL DEFAULT '{}'")
   add("kanban_cards", "promote_held", "INTEGER NOT NULL DEFAULT 0")
   add("kanban_columns", "wip_limit", "INTEGER")
-  add("kanban_columns", "entry_gate", "TEXT NOT NULL DEFAULT '{}'")
 }
