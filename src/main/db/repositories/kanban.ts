@@ -121,6 +121,7 @@ const RUN_STATES = new Set([
   "idle",
   "running",
   "waiting",
+  "gated",
   "blocked",
   "failed",
   "done",
@@ -321,6 +322,10 @@ export function saveColumns(boardId: string, input: KanbanColumnInput[]): void {
         notify: c.notify ?? match?.notify ?? false,
         wipLimit:
           c.wipLimit !== undefined ? c.wipLimit : (match?.wipLimit ?? null),
+        entryGate:
+          c.entryGate !== undefined
+            ? asPromoteGate(c.entryGate)
+            : (match?.entryGate ?? asPromoteGate(null)),
       }
     })
     // goto targets may name a column (the agent tool doesn't know ids).
@@ -378,15 +383,16 @@ export function saveColumns(boardId: string, input: KanbanColumnInput[]): void {
         c.commandTimeoutMs,
         c.notify ? 1 : 0,
         c.wipLimit,
+        JSON.stringify(c.entryGate),
         i,
       ]
       if (c.isNew)
         db.prepare(
-          "INSERT INTO kanban_columns (name, agent_name, instructions, gate, owner, outcomes, actions, command, command_timeout_ms, notify, wip_limit, position, id, board_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+          "INSERT INTO kanban_columns (name, agent_name, instructions, gate, owner, outcomes, actions, command, command_timeout_ms, notify, wip_limit, entry_gate, position, id, board_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         ).run(...values, c.id, boardId)
       else
         db.prepare(
-          "UPDATE kanban_columns SET name = ?, agent_name = ?, instructions = ?, gate = ?, owner = ?, outcomes = ?, actions = ?, command = ?, command_timeout_ms = ?, notify = ?, wip_limit = ?, position = ? WHERE id = ?"
+          "UPDATE kanban_columns SET name = ?, agent_name = ?, instructions = ?, gate = ?, owner = ?, outcomes = ?, actions = ?, command = ?, command_timeout_ms = ?, notify = ?, wip_limit = ?, entry_gate = ?, position = ? WHERE id = ?"
         ).run(...values, c.id)
     })
   })()
@@ -413,6 +419,7 @@ export function listColumns(boardId: string): KanbanColumn[] {
       command_timeout_ms: number | null
       notify: number
       wip_limit: number | null
+      entry_gate: string
     }>
   ).map((r) => ({
     id: r.id,
@@ -429,6 +436,7 @@ export function listColumns(boardId: string): KanbanColumn[] {
     commandTimeoutMs: r.command_timeout_ms,
     notify: r.notify === 1,
     wipLimit: r.wip_limit,
+    entryGate: asPromoteGate(parse(r.entry_gate)),
   }))
 }
 

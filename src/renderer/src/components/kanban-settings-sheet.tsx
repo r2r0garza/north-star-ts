@@ -347,8 +347,13 @@ export function KanbanSettingsSheet({
   const [promoteTags, setPromoteTags] = useState(
     board.autoPromote.tags.join(", ")
   )
+  // The entry gate is edited as comma-separated text, parsed on save.
   const [columns, setColumns] = useState<
-    (KanbanColumnInput & { sortId: string })[]
+    (KanbanColumnInput & {
+      sortId: string
+      gateStates?: string
+      gateTags?: string
+    })[]
   >(
     graph.columns.map(
       ({
@@ -364,6 +369,7 @@ export function KanbanSettingsSheet({
         commandTimeoutMs,
         notify,
         wipLimit,
+        entryGate,
       }) => ({
         sortId: id,
         id,
@@ -378,6 +384,9 @@ export function KanbanSettingsSheet({
         commandTimeoutMs,
         notify,
         wipLimit,
+        entryGate,
+        gateStates: entryGate.states.join(", "),
+        gateTags: entryGate.tags.join(", "),
       })
     )
   )
@@ -427,7 +436,7 @@ export function KanbanSettingsSheet({
       .catch(() => setAgents([]))
   }, [board.workspace])
 
-  const update = (i: number, patch: Partial<KanbanColumnInput>) =>
+  const update = (i: number, patch: Partial<(typeof columns)[number]>) =>
     setColumns((cols) => cols.map((c, j) => (j === i ? { ...c, ...patch } : c)))
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -464,14 +473,21 @@ export function KanbanSettingsSheet({
         syncIntervalMs: Math.max(1, Number(minutes) || 5) * 60_000,
         // goto targets are edited by sortId; a new column has no id yet, so
         // send its name. Actions are omitted, so the stored ones are kept.
-        columns: columns.map(({ sortId, actions, ...column }) => ({
-          ...column,
-          outcomes: (column.outcomes ?? []).map((o) => {
-            if (o.next !== "goto") return o
-            const t = columns.find((c) => c.sortId === o.target)
-            return { ...o, target: t ? (t.id ?? t.name) : o.target }
-          }),
-        })),
+        columns: columns.map(
+          ({ sortId, actions, gateStates, gateTags, ...column }) => ({
+            ...column,
+            entryGate: {
+              states: splitTags(gateStates ?? ""),
+              tags: splitTags(gateTags ?? ""),
+              fields: column.entryGate?.fields,
+            },
+            outcomes: (column.outcomes ?? []).map((o) => {
+              if (o.next !== "goto") return o
+              const t = columns.find((c) => c.sortId === o.target)
+              return { ...o, target: t ? (t.id ?? t.name) : o.target }
+            }),
+          })
+        ),
         writeApproval,
         actionsPaused: paused,
         worktrees,
@@ -1331,6 +1347,52 @@ export function KanbanSettingsSheet({
                         </span>
                       </div>
                     </div>
+                    <fieldset className="flex flex-col gap-3">
+                      <legend className="mb-2 text-sm font-medium">
+                        Entry gate
+                      </legend>
+                      <p
+                        id="kb-column-gate-description"
+                        className="text-xs text-muted-foreground"
+                      >
+                        When the board moves a card here, it waits until the
+                        tracker item matches, checked after each sync. Fill in
+                        states, tags, or both. Leave both empty to start right
+                        away. Cards you move here yourself skip the gate.
+                      </p>
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <div className="flex flex-col gap-1.5">
+                          <Label htmlFor="kb-column-gate-states">
+                            When the state is (comma-separated)
+                          </Label>
+                          <Input
+                            id="kb-column-gate-states"
+                            aria-describedby="kb-column-gate-description"
+                            value={col.gateStates ?? ""}
+                            onChange={(e) =>
+                              update(selectedIndex, {
+                                gateStates: e.target.value,
+                              })
+                            }
+                          />
+                        </div>
+                        <div className="flex flex-col gap-1.5">
+                          <Label htmlFor="kb-column-gate-tags">
+                            And it has a tag (comma-separated)
+                          </Label>
+                          <Input
+                            id="kb-column-gate-tags"
+                            aria-describedby="kb-column-gate-description"
+                            value={col.gateTags ?? ""}
+                            onChange={(e) =>
+                              update(selectedIndex, {
+                                gateTags: e.target.value,
+                              })
+                            }
+                          />
+                        </div>
+                      </div>
+                    </fieldset>
                     <OutcomesEditor
                       outcomes={col.outcomes ?? []}
                       columns={columns}

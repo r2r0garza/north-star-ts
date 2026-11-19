@@ -283,6 +283,9 @@ export interface KanbanColumn {
   // Most cards running here at once (agent or command); the rest wait as
   // Queued. null = no limit beyond the board's.
   wipLimit: number | null
+  // A card the board moves here waits as `gated` until its item matches this
+  // (checked after each sync); a person's move skips it. Empty = no gate.
+  entryGate: KanbanPromoteGate
 }
 
 // Matches the board-wide agent cap (MAX_PARALLEL_AGENTS); more would never run.
@@ -329,6 +332,7 @@ export interface KanbanColumnInput {
   commandTimeoutMs?: number | null
   notify?: boolean // omitted keeps the stored value
   wipLimit?: number | null // omitted keeps the stored value
+  entryGate?: KanbanPromoteGate // omitted keeps the stored value
 }
 
 // One upstream action attempt: the audit log and the idempotency record.
@@ -351,12 +355,14 @@ export interface KanbanUpstreamAction {
 }
 
 // idle: nothing to do here. waiting: the column's human gate needs approval.
-// done: finished the last column.
+// gated: the board moved it here but its item doesn't match the column's
+// entry gate yet. done: finished the last column.
 // blocked: the agent reported an obstacle only the user can clear.
 export type KanbanRunState =
   | "idle"
   | "running"
   | "waiting"
+  | "gated"
   | "blocked"
   | "failed"
   | "done"
@@ -462,6 +468,7 @@ export type KanbanContinuation =
       columnId: string | null
       feedback?: string
       findings?: KanbanFindings
+      gated?: boolean // apply the column's entry gate (board moves only)
     }
   | {
       kind: "leave"
@@ -470,6 +477,7 @@ export type KanbanContinuation =
       to: { columnId: string } | { done: true }
       findings?: KanbanFindings
       countReturn?: boolean
+      gated?: boolean
     }
 
 export interface KanbanBoardGraph {

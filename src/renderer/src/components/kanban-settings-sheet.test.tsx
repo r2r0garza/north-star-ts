@@ -75,6 +75,7 @@ const graph: KanbanBoardGraph = {
       commandTimeoutMs: null,
       notify: false,
       wipLimit: null,
+      entryGate: { states: [], tags: [] },
     },
     {
       id: "doing",
@@ -91,6 +92,7 @@ const graph: KanbanBoardGraph = {
       commandTimeoutMs: null,
       notify: false,
       wipLimit: null,
+      entryGate: { states: [], tags: [] },
     },
   ],
   cards: [],

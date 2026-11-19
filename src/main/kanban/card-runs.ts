@@ -30,6 +30,7 @@ import {
   MAX_PARALLEL_AGENTS,
   MAX_PARALLEL_COMMANDS,
   matchesPromoteGate,
+  promoteOn,
   type KanbanAction,
   type KanbanBoard,
   type KanbanCall,
@@ -358,6 +359,18 @@ export class KanbanCardRuns {
         matchesPromoteGate(card.item, board.autoPromote)
       )
         await this.enter(card.id, first.id)
+    // Cards the board moved into a gated column start once their item matches
+    // (or the gate was cleared).
+    const columns = kanban.listColumns(boardId)
+    for (const card of kanban.listCards(boardId)) {
+      const gate = columns.find((c) => c.id === card.columnId)?.entryGate
+      if (
+        card.runState === "gated" &&
+        gate &&
+        (!promoteOn(gate) || matchesPromoteGate(card.item, gate))
+      )
+        await this.proceed(card.id, { kind: "enter", columnId: card.columnId })
+    }
   }
 
   // Waiting card → where its outcome says (the next column without outcomes).
@@ -513,6 +526,7 @@ export class KanbanCardRuns {
     return this.proceed(card.id, {
       ...base,
       to: next ? { columnId: next.id } : { done: true },
+      gated: !byPerson,
     })
   }
 
@@ -562,6 +576,7 @@ export class KanbanCardRuns {
         kind: "enter",
         columnId: cont.to.columnId,
         findings: cont.findings,
+        gated: cont.gated,
       })
     }
 
@@ -586,6 +601,14 @@ export class KanbanCardRuns {
       visits,
     })
     if (!column) return OK
+    if (
+      cont.gated &&
+      promoteOn(column.entryGate) &&
+      !matchesPromoteGate(card.item, column.entryGate)
+    ) {
+      kanban.updateCard(card.id, { runState: "gated" })
+      return OK
+    }
     const stopped = await this.runActions(
       { ...card, visits },
       board,

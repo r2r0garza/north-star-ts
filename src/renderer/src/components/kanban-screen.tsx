@@ -127,6 +127,7 @@ const RUN_BADGE: Record<
   idle: null,
   running: { label: "running", variant: "secondary" },
   waiting: { label: "waiting on you", variant: "default" },
+  gated: { label: "waiting on tracker", variant: "outline" },
   blocked: { label: "needs you", variant: "default" },
   failed: { label: "failed", variant: "destructive" },
   done: { label: "done", variant: "outline" },

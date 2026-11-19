@@ -51,6 +51,7 @@ export function exportBoard(board: KanbanBoard, columns: KanbanColumn[]) {
       commandTimeoutMs: c.commandTimeoutMs,
       notify: c.notify,
       wipLimit: c.wipLimit,
+      entryGate: c.entryGate,
     })),
   }
 }
@@ -134,6 +135,7 @@ export function importBoard(raw: unknown, workspace: string): KanbanBoard {
         typeof r.commandTimeoutMs === "number" ? r.commandTimeoutMs : null,
       notify: r.notify === true,
       wipLimit: typeof r.wipLimit === "number" ? r.wipLimit : null,
+      entryGate: asPromoteGate(r.entryGate),
     }
   })
   if (columns.some((c) => !c.name))

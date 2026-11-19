@@ -438,6 +438,7 @@ describe("mergeAgentColumns", () => {
     commandTimeoutMs: null,
     notify: false,
     wipLimit: null,
+    entryGate: { states: [], tags: [] },
   })
   const existing = [
     column("Plan", "agent"),

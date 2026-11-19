@@ -1337,6 +1337,42 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
     expect(byId("7").columnId).toBeNull()
   })
 
+  it("holds board-moved cards at a column's entry gate until a sync matches; a person's move skips it", async () => {
+    const { board: b, cols } = customBoard([
+      { name: "Dev", instructions: "build" },
+      {
+        name: "UAT",
+        instructions: "test",
+        entryGate: { states: ["Ready for UAT"], tags: [] },
+      },
+    ])
+    kanban.applySync(b.id, [item("1"), item("2")])
+    const byId = (id: string) =>
+      kanban.listCards(b.id).find((c) => c.externalId === id)!
+    const uatTasks = () =>
+      enqueued.filter((t) => t.input.columnId === cols[1].id)
+
+    await cards.enter(byId("1").id, cols[0].id)
+    await exec(enqueued.find((t) => t.input.columnId === cols[0].id)!)
+    expect(byId("1").columnId).toBe(cols[1].id)
+    expect(byId("1").runState).toBe("gated")
+    expect(uatTasks()).toHaveLength(0)
+
+    await cards.autoPromote(b.id) // still no match
+    expect(byId("1").runState).toBe("gated")
+
+    kanban.applySync(b.id, [
+      { ...item("1"), state: "Ready for UAT" },
+      item("2"),
+    ])
+    await cards.autoPromote(b.id)
+    expect(byId("1").runState).toBe("running")
+    expect(uatTasks()).toHaveLength(1)
+
+    await cards.enter(byId("2").id, cols[1].id)
+    expect(byId("2").runState).toBe("running")
+  })
+
   it("asks once for the whole board under `once_per_board`, and again when an action changes", async () => {
     const {
       board: b,
