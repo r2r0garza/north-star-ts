@@ -75,6 +75,8 @@ const steps = [
       `-c.productName=${displayName}`,
       `-c.appId=${appId}`,
       `-c.extraMetadata.productName=${displayName}`,
+      // Forward target flags, e.g. `pnpm dist --win --x64`.
+      ...process.argv.slice(2),
     ],
   ],
 ]
