@@ -290,8 +290,8 @@ describe("command session tools", () => {
     "$definition.function.name timeout",
     (tool) => {
       it.each([
-        [undefined, 300_000],
-        [0, 300_000],
+        [undefined, 30_000],
+        [0, 30_000],
         [900_000, 900_000],
         [7_200_000, 5_400_000],
       ])(
