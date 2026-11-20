@@ -15,6 +15,7 @@ import { config as loadEnv } from "dotenv"
 import { readMessageMedia } from "./media/tool-media"
 import { readConversationArtifact } from "./db/repositories/conversation-artifacts"
 import { saveFileLink } from "./files/save-link"
+import { checkForUpdates } from "./updater"
 import { electronApps } from "./electron-apps"
 import { registerElectronAppHandlers } from "./ipc/electron-app-handlers"
 
@@ -1612,6 +1613,9 @@ app.whenReady().then(async () => {
   startMemoryMaintenance()
   await startPlanMaintenance()
   createWindow()
+  void checkForUpdates().catch((err) =>
+    console.warn("[updater] update check failed:", err)
+  )
   // Interactive chat's Python venv (~/.<system-slug>/venv): check or create it in
   // the background so launch never waits on it. Chat turns await the same
   // promise, so the first turn can't race the creation.
