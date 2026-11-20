@@ -820,14 +820,22 @@ function FeedbackDialog({
 }
 
 export function KanbanScreen({
+  focusBoard,
   onClose,
   onOpenConversation,
 }: {
+  // Open this board (the rail bell's target); a new object re-selects it.
+  focusBoard?: { id: string } | null
   onClose: () => void
   onOpenConversation: (conversationId: string) => void
 }) {
   const [boards, setBoards] = useState<KanbanBoardSummary[]>([])
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(
+    focusBoard?.id ?? null
+  )
+  useEffect(() => {
+    if (focusBoard) setSelectedId(focusBoard.id)
+  }, [focusBoard])
   const [graph, setGraph] = useState<KanbanBoardGraph | null>(null)
   const [syncing, setSyncing] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<KanbanBoard | null>(null)

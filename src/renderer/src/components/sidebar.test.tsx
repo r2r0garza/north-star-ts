@@ -33,7 +33,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-async function renderSidebar() {
+async function renderSidebar(onKanbanClick = vi.fn()) {
   await act(async () => {
     root.render(
       <TooltipProvider>
@@ -50,7 +50,7 @@ async function renderSidebar() {
             onAgentsClick={vi.fn()}
             onMcpClick={vi.fn()}
             onDashboardsClick={vi.fn()}
-            onKanbanClick={vi.fn()}
+            onKanbanClick={onKanbanClick}
             onWorkflowsClick={vi.fn()}
             onConversationsClick={vi.fn()}
             activeDestination="conversations"
@@ -63,6 +63,35 @@ async function renderSidebar() {
     )
   })
 }
+
+describe("boards bell", () => {
+  it("opens the first waiting board by name, or just Boards when none wait", async () => {
+    window.cowork.kanban.list = async () =>
+      [
+        { id: "z", name: "zeta", needsAttention: true },
+        { id: "a", name: "Alpha", needsAttention: false },
+        { id: "b", name: "beta", needsAttention: true },
+      ] as unknown as Awaited<ReturnType<typeof window.cowork.kanban.list>>
+    const onKanbanClick = vi.fn()
+    await renderSidebar(onKanbanClick)
+    const bell = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Boards (needs your attention)"]'
+    )!
+    await act(async () => bell.click())
+    expect(onKanbanClick).toHaveBeenLastCalledWith("b")
+  })
+
+  it("opens Boards with no target when nothing waits", async () => {
+    const onKanbanClick = vi.fn()
+    await renderSidebar(onKanbanClick)
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('button[aria-label="Boards"]')!
+        .click()
+    )
+    expect(onKanbanClick).toHaveBeenLastCalledWith(undefined)
+  })
+})
 
 describe("conversation search shortcut", () => {
   it.each(["metaKey", "ctrlKey"] as const)(

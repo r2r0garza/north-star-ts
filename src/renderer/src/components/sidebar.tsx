@@ -604,7 +604,8 @@ export function AppSidebar({
   onAgentsClick: () => void
   onMcpClick: () => void
   onDashboardsClick: () => void
-  onKanbanClick: () => void
+  // boardId: the board to open (the first one waiting on the user).
+  onKanbanClick: (boardId?: string) => void
   onWorkflowsClick: () => void
   // Rail's Conversations icon: close any open screen and show the list.
   onConversationsClick: () => void
@@ -919,13 +920,21 @@ export function AppSidebar({
   }
 
   // Same 3s poll the Boards screen uses; there is no push event for board state.
-  const [boardsNeedAttention, setBoardsNeedAttention] = useState(false)
+  // The first waiting board by name (the Boards screen's order), or null.
+  const [waitingBoardId, setWaitingBoardId] = useState<string | null>(null)
+  const boardsNeedAttention = waitingBoardId !== null
   useEffect(() => {
     const check = () =>
       void window.cowork.kanban
         .list()
         .then((list) =>
-          setBoardsNeedAttention(list.some((b) => b.needsAttention))
+          setWaitingBoardId(
+            list
+              .filter((b) => b.needsAttention)
+              .sort((a, b) =>
+                a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+              )[0]?.id ?? null
+          )
         )
         .catch(() => {})
     check()
@@ -967,7 +976,7 @@ export function AppSidebar({
       id: "boards",
       label: "Boards",
       icon: SquareKanban,
-      onClick: onKanbanClick,
+      onClick: () => onKanbanClick(waitingBoardId ?? undefined),
     },
     { id: "agents", label: "Agents", icon: Bot, onClick: onAgentsClick },
     { id: "mcp", label: "MCP", icon: Plug, onClick: onMcpClick },

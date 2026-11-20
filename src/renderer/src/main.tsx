@@ -134,6 +134,7 @@ function Shell() {
   const [dashboardsOpen, setDashboardsOpen] = useState(false)
   // Kanban boards fed by external trackers (plan 136).
   const [kanbanOpen, setKanbanOpen] = useState(false)
+  const [kanbanFocus, setKanbanFocus] = useState<{ id: string } | null>(null)
   const [workflowsOpen, setWorkflowsOpen] = useState(false)
   const [startupGuideOpen, setStartupGuideOpen] = useState(false)
   // Which section Settings opens on. Normal entry starts in General; first launch
@@ -672,7 +673,9 @@ function Shell() {
             setAgentsOpen(false)
             setSkillsOpen(false)
           }}
-          onKanbanClick={() => {
+          onKanbanClick={(boardId) => {
+            // A new object each click, so the screen jumps even if already open.
+            if (boardId) setKanbanFocus({ id: boardId })
             setWorkflowsOpen(false)
             setDashboardsOpen(false)
             setKanbanOpen(true)
@@ -748,6 +751,7 @@ function Shell() {
           )}
           {kanbanOpen && (
             <KanbanScreen
+              focusBoard={kanbanFocus}
               onClose={() => setKanbanOpen(false)}
               onOpenConversation={(id) =>
                 handleSelectConversation(id, "north_star")
