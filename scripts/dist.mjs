@@ -81,11 +81,16 @@ const steps = [
   ],
 ]
 
+// On Windows the command runs through the shell (needed to resolve the .cmd
+// shims), which splits unquoted args on spaces — so "North Star" must be quoted.
+const useShell = process.platform === "win32"
+const quote = (arg) => (useShell && /\s/.test(arg) ? `"${arg}"` : arg)
+
 for (const [cmd, args] of steps) {
-  const result = spawnSync(cmd, args, {
+  const result = spawnSync(cmd, args.map(quote), {
     cwd: root,
     stdio: "inherit",
-    shell: process.platform === "win32",
+    shell: useShell,
   })
   if (result.status !== 0) process.exit(result.status ?? 1)
 }
