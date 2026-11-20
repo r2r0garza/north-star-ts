@@ -1068,6 +1068,22 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
       })
     })
 
+    it("reruns a card with its own edited command, leaving the column's for other runs", async () => {
+      const { card, cols } = customBoard([
+        { name: "Run", owner: "user", command: "./s.sh --ticket {{id}}" },
+      ])
+      commandResults = [{ exitCode: 1, timedOut: false, output: "half done" }]
+      await cards.enter(card.id, cols[0].id)
+      await execCommand(last())
+      expect(kanban.getCard(card.id)!.runState).toBe("failed")
+      await cards.retry(card.id, undefined, "./s.sh --ticket {{id}} --continue")
+      await execCommand(last())
+      expect(commands.at(-1)!.command).toBe("./s.sh --ticket '7' --continue")
+      await cards.retry(card.id)
+      await execCommand(last())
+      expect(commands.at(-1)!.command).toBe("./s.sh --ticket '7'")
+    })
+
     it("routes by passed/failed outcomes", async () => {
       const { card, cols } = commandBoard({
         outcomes: [

@@ -179,8 +179,8 @@ export function registerKanbanHandlers(
   )
   ipcMain.handle(
     "kanban:moveCard",
-    (_e, cardId: string, columnId: string | null) =>
-      cards.enter(cardId, columnId)
+    (_e, cardId: string, columnId: string | null, command?: unknown) =>
+      cards.enter(cardId, columnId, undefined, str(command))
   )
   ipcMain.handle("kanban:approveCard", (_e, cardId: string, outcome?: string) =>
     cards.approve(cardId, outcome)
@@ -196,11 +196,15 @@ export function registerKanbanHandlers(
   ipcMain.handle("kanban:actions", (_e, cardId: string) =>
     kanban.listActions(cardId)
   )
-  ipcMain.handle("kanban:sendBack", (_e, cardId: string, feedback?: string) =>
-    cards.sendBack(cardId, feedback)
+  ipcMain.handle(
+    "kanban:sendBack",
+    (_e, cardId: string, feedback?: string, command?: unknown) =>
+      cards.sendBack(cardId, feedback, str(command))
   )
-  ipcMain.handle("kanban:retry", (_e, cardId: string, feedback?: string) =>
-    cards.retry(cardId, feedback)
+  ipcMain.handle(
+    "kanban:retry",
+    (_e, cardId: string, feedback?: string, command?: unknown) =>
+      cards.retry(cardId, feedback, str(command))
   )
   ipcMain.handle("kanban:stop", (_e, cardId: string) => cards.stop(cardId))
   ipcMain.handle(
@@ -213,3 +217,5 @@ export function registerKanbanHandlers(
   )
   ipcMain.handle("kanban:runs", (_e, cardId: string) => kanban.listRuns(cardId))
 }
+
+const str = (v: unknown) => (typeof v === "string" ? v : undefined)

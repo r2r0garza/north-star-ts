@@ -298,6 +298,9 @@ export class KanbanCardRuns {
     string,
     { feedback: string | null; findings: KanbanFindings | null }
   >()
+  // A command run's one-off command (by run id). shortcut: in memory, like
+  // agentInputs above.
+  private readonly commandOverrides = new Map<string, string>()
 
   constructor(
     private readonly runner: TaskRunner,
@@ -324,7 +327,8 @@ export class KanbanCardRuns {
   async enter(
     cardId: string,
     columnId: string | null,
-    feedback?: string
+    feedback?: string,
+    command?: string
   ): Promise<Result> {
     const card = kanban.getCard(cardId)
     if (!card) return refuse("card not found")
@@ -341,7 +345,12 @@ export class KanbanCardRuns {
       // A person putting it in the Inbox overrides auto-promote for good.
       ...(columnId === null ? { promoteHeld: true } : {}),
     })
-    return this.proceed(card.id, { kind: "enter", columnId, feedback })
+    return this.proceed(card.id, {
+      kind: "enter",
+      columnId,
+      feedback,
+      command,
+    })
   }
 
   // After a sync: Inbox cards that match the board's promote gate move to the
@@ -401,23 +410,36 @@ export class KanbanCardRuns {
   }
 
   // Back to the previous column (or the Inbox), rerunning it with feedback.
-  async sendBack(cardId: string, feedback?: string): Promise<Result> {
+  async sendBack(
+    cardId: string,
+    feedback?: string,
+    command?: string
+  ): Promise<Result> {
     const card = kanban.getCard(cardId)
     if (!card) return refuse("card not found")
     const columns = kanban.listColumns(card.boardId)
     const index = columns.findIndex((c) => c.id === card.columnId)
     if (index < 0) return refuse("the card is already in the Inbox")
-    return this.enter(card.id, columns[index - 1]?.id ?? null, feedback)
+    return this.enter(
+      card.id,
+      columns[index - 1]?.id ?? null,
+      feedback,
+      command
+    )
   }
 
   // Resume a move parked on a tracker write, or rerun the card's column.
-  async retry(cardId: string, feedback?: string): Promise<Result> {
+  async retry(
+    cardId: string,
+    feedback?: string,
+    command?: string
+  ): Promise<Result> {
     const card = kanban.getCard(cardId)
     if (!card) return refuse("card not found")
     if (card.continuation && card.runState !== "running")
       return this.proceed(card.id, card.continuation)
     if (!card.columnId) return refuse("the card is in the Inbox")
-    return this.enter(card.id, card.columnId, feedback)
+    return this.enter(card.id, card.columnId, feedback, command)
   }
 
   // Answer the tracker write a card is parked on. Approval is recorded at the
@@ -632,12 +654,14 @@ export class KanbanCardRuns {
           "failed"
         )
       getDb().transaction(() => {
-        kanban.createRun({
+        const run = kanban.createRun({
           cardId: card.id,
           columnId: column.id,
           columnName: column.name,
           kind: "command",
         })
+        const command = cont.command?.trim()
+        if (command) this.commandOverrides.set(run.id, command)
         kanban.updateCard(card.id, { runState: "running", runError: null })
       })()
       this.startNextCommands(board.id)
@@ -1347,6 +1371,7 @@ export class KanbanCardRuns {
     try {
       return await this.runCommandFor(run.id, run.cardId, columnId, signal)
     } finally {
+      this.commandOverrides.delete(run.id)
       const card = kanban.getCard(run.cardId)
       if (card) this.startNextCommands(card.boardId)
     }
@@ -1397,7 +1422,10 @@ export class KanbanCardRuns {
         release = await this.lock(workspace)
       if (signal.aborted || !current()) return { stopped: true }
       // The card's values go in shell-quoted, one argument each (136.7).
-      const command = fillCommand(column.command, cardVars(card))
+      const command = fillCommand(
+        this.commandOverrides.get(runId) ?? column.command,
+        cardVars(card)
+      )
       result = await this.upstream.runCommand(command, board, {
         cwd: place.cwd,
         // Values from the tracker reach the command as data, never as its text.

@@ -65,6 +65,7 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -111,7 +112,8 @@ type CardAction =
   | { kind: FeedbackKind }
 
 type FeedbackKind = "sendBack" | "retry" | "rejectWithFeedback"
-const FEEDBACK_TITLE: Record<FeedbackKind, string> = {
+const FEEDBACK_TITLE: Record<FeedbackKind | "move", string> = {
+  move: "Move and run",
   retry: "Rerun this column",
   sendBack: "Send back",
   rejectWithFeedback: "Reject with feedback",
@@ -743,31 +745,56 @@ function RunHistory({
 }
 
 // Optional feedback for a rerun or send-back; it leads the agent's prompt.
+// `command` set: the target column runs a command, so the person may edit it
+// for this one run instead of giving an agent feedback.
 function FeedbackDialog({
   title,
   required = false,
+  command,
   onClose,
   onSubmit,
 }: {
   title: string | null
   required?: boolean
+  command?: string
   onClose: () => void
-  onSubmit: (feedback: string) => void
+  onSubmit: (text: string) => void
 }) {
   const [text, setText] = useState("")
-  useEffect(() => setText(""), [title])
+  const runRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => setText(command ?? ""), [title, command])
   return (
     <Dialog open={!!title} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent>
+      <DialogContent
+        // A command usually runs as is: Enter runs it; Tab reaches the text.
+        onOpenAutoFocus={(e) => {
+          if (command === undefined) return
+          e.preventDefault()
+          runRef.current?.focus()
+        }}
+      >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
+          {command !== undefined ? (
+            <DialogDescription>
+              Edit the command for this card's run only. The column's command
+              stays as is for other cards.
+            </DialogDescription>
+          ) : null}
         </DialogHeader>
         <Textarea
-          aria-label="Feedback for the agent"
+          aria-label={
+            command !== undefined
+              ? "Command for this run"
+              : "Feedback for the agent"
+          }
+          className={command !== undefined ? "font-mono text-xs" : undefined}
           placeholder={
-            required
-              ? "What should the agent change?"
-              : "Optional: what should the agent do differently?"
+            command !== undefined
+              ? "The command to run"
+              : required
+                ? "What should the agent change?"
+                : "Optional: what should the agent do differently?"
           }
           value={text}
           onChange={(e) => setText(e.target.value)}
@@ -778,7 +805,8 @@ function FeedbackDialog({
             Cancel
           </Button>
           <Button
-            disabled={required && !text.trim()}
+            ref={runRef}
+            disabled={(required || command !== undefined) && !text.trim()}
             onClick={() => onSubmit(text)}
           >
             Run
@@ -804,7 +832,9 @@ export function KanbanScreen({
   const [historyCard, setHistoryCard] = useState<KanbanCard | null>(null)
   const [feedbackFor, setFeedbackFor] = useState<{
     card: KanbanCard
-    kind: FeedbackKind
+    kind: FeedbackKind | "move"
+    columnId?: string | null // a move's target
+    command?: string // the target column's command, to edit for this run
   } | null>(null)
   const [pendingRemove, setPendingRemove] = useState<KanbanCard | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -896,10 +926,26 @@ export function KanbanScreen({
     if (selectedId) await loadGraph(selectedId)
   }
 
+  // The command a user column runs, if any: the person may edit it per run.
+  const commandOf = (columnId: string | null | undefined) => {
+    const column = graph?.columns.find((c) => c.id === columnId)
+    return column?.owner === "user" ? column.command || undefined : undefined
+  }
+
   function onCardAction(card: KanbanCard, action: CardAction) {
     const k = window.cowork.kanban
-    if (action.kind === "move") void act(k.moveCard(card.id, action.columnId))
-    else if (action.kind === "approve")
+    if (action.kind === "move") {
+      const command = commandOf(action.columnId)
+      // Back into a command column the card ran in: offer to edit the command.
+      if (command && action.columnId && card.visits[action.columnId])
+        setFeedbackFor({
+          card,
+          kind: "move",
+          columnId: action.columnId,
+          command,
+        })
+      else void act(k.moveCard(card.id, action.columnId))
+    } else if (action.kind === "approve")
       void act(k.approveCard(card.id, action.outcome))
     else if (action.kind === "approveAction")
       void act(k.approveAction(card.id, action.actionId))
@@ -919,7 +965,17 @@ export function KanbanScreen({
       void act(k.setOwnWorktree(card.id, action.value))
     else if (action.kind === "remove") setPendingRemove(card)
     else if (action.kind === "history") setHistoryCard(card)
-    else setFeedbackFor({ card, kind: action.kind })
+    else {
+      const columns = graph?.columns ?? []
+      const index = columns.findIndex((c) => c.id === card.columnId)
+      const target =
+        action.kind === "retry"
+          ? card.columnId
+          : action.kind === "sendBack"
+            ? (columns[index - 1]?.id ?? null)
+            : null
+      setFeedbackFor({ card, kind: action.kind, command: commandOf(target) })
+    }
   }
 
   useEffect(() => {
@@ -1260,15 +1316,25 @@ export function KanbanScreen({
       <FeedbackDialog
         title={feedbackFor ? FEEDBACK_TITLE[feedbackFor.kind] : null}
         required={feedbackFor?.kind === "rejectWithFeedback"}
+        command={feedbackFor?.command}
         onClose={() => setFeedbackFor(null)}
-        onSubmit={(feedback) => {
+        onSubmit={(text) => {
           if (!feedbackFor) return
-          const { card, kind } = feedbackFor
+          const { card, kind, columnId, command } = feedbackFor
           setFeedbackFor(null)
+          const k = window.cowork.kanban
+          // Unchanged: run the column's own command.
+          const edited =
+            command !== undefined && text.trim() !== command.trim()
+              ? text
+              : undefined
+          const feedback = command === undefined ? text : undefined
           void act(
-            kind !== "sendBack"
-              ? window.cowork.kanban.retry(card.id, feedback)
-              : window.cowork.kanban.sendBack(card.id, feedback)
+            kind === "move"
+              ? k.moveCard(card.id, columnId ?? null, edited)
+              : kind === "sendBack"
+                ? k.sendBack(card.id, feedback, edited)
+                : k.retry(card.id, feedback, edited)
           )
         }}
       />

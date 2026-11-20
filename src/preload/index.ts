@@ -1579,11 +1579,13 @@ const api = {
         value
       ) as Promise<KanbanResult>,
     // Card moves (plan 136.2). Entering a column with instructions starts its run.
-    moveCard: (cardId: string, columnId: string | null) =>
+    // `command`: a command column's command for this one run.
+    moveCard: (cardId: string, columnId: string | null, command?: string) =>
       ipcRenderer.invoke(
         "kanban:moveCard",
         cardId,
-        columnId
+        columnId,
+        command
       ) as Promise<KanbanResult>,
     // `outcome` overrides the one the agent reported (plan 136.3).
     approveCard: (cardId: string, outcome?: string) =>
@@ -1609,17 +1611,19 @@ const api = {
       ipcRenderer.invoke("kanban:actions", cardId) as Promise<
         KanbanUpstreamAction[]
       >,
-    sendBack: (cardId: string, feedback?: string) =>
+    sendBack: (cardId: string, feedback?: string, command?: string) =>
       ipcRenderer.invoke(
         "kanban:sendBack",
         cardId,
-        feedback
+        feedback,
+        command
       ) as Promise<KanbanResult>,
-    retry: (cardId: string, feedback?: string) =>
+    retry: (cardId: string, feedback?: string, command?: string) =>
       ipcRenderer.invoke(
         "kanban:retry",
         cardId,
-        feedback
+        feedback,
+        command
       ) as Promise<KanbanResult>,
     // Answer the tool call a running card's agent is waiting on.
     answerApproval: (cardId: string, decision: "approved" | "denied") =>

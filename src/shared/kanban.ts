@@ -467,6 +467,8 @@ export type KanbanContinuation =
       kind: "enter"
       columnId: string | null
       feedback?: string
+      // A command column's command for this one run, in place of the column's.
+      command?: string
       findings?: KanbanFindings
       gated?: boolean // apply the column's entry gate (board moves only)
     }
