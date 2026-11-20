@@ -1052,7 +1052,7 @@ export function KanbanScreen({
                           {boards.find((b) => b.id === board.id)
                             ?.needsAttention ? (
                             <Bell
-                              className="size-3.5 shrink-0 text-amber-500"
+                              className="size-4 shrink-0 fill-current text-orange-600 dark:text-orange-400"
                               aria-label="Needs your attention"
                             />
                           ) : null}
@@ -1086,7 +1086,7 @@ export function KanbanScreen({
                               >
                                 {b.needsAttention ? (
                                   <Bell
-                                    className="size-3.5 shrink-0 text-amber-500"
+                                    className="size-4 shrink-0 fill-current text-orange-600 dark:text-orange-400"
                                     aria-label="Needs your attention"
                                   />
                                 ) : null}

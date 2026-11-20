@@ -7,7 +7,7 @@ import {
   type CSSProperties,
 } from "react"
 import {
-  BellDot,
+  Bell,
   BookOpen,
   Bot,
   ChevronRight,
@@ -279,10 +279,10 @@ function SessionRow({
             )}
             <span className="truncate">{conversation.title ?? "Untitled"}</span>
             {isWaiting ? (
-              // Needs-you indicator — takes precedence over the spinner. Amber +
+              // Needs-you indicator — takes precedence over the spinner. Filled orange +
               // a subtle pulse so a blocked conversation stands out in the list.
-              <BellDot
-                className="ml-auto size-3.5 shrink-0 animate-pulse text-amber-500"
+              <Bell
+                className="ml-auto size-4 shrink-0 animate-pulse fill-current text-orange-600 dark:text-orange-400"
                 aria-label="Waiting for your input"
               />
             ) : (
@@ -450,8 +450,8 @@ function ProjectSection({
             {/* Expanded sections show status per row; collapsed ones roll it up. */}
             {!open &&
               (anyWaiting ? (
-                <BellDot
-                  className="size-3 shrink-0 animate-pulse text-amber-500"
+                <Bell
+                  className="size-3.5 shrink-0 animate-pulse fill-current text-orange-600 dark:text-orange-400"
                   aria-label="A conversation is waiting for your input"
                 />
               ) : (
@@ -1003,10 +1003,14 @@ export function AppSidebar({
             >
               <Icon className="size-4" />
               {id === "boards" && boardsNeedAttention && (
-                <BellDot
-                  className="absolute -top-0.5 -right-0.5 size-3 animate-pulse text-amber-500"
+                // Solid badge, not an outline glyph: the rail icon is tiny, so the
+                // cue needs a filled shape and a ring to separate it from the icon.
+                <span
+                  className="absolute -top-1 -right-1 flex size-4 animate-pulse items-center justify-center rounded-full bg-orange-600 text-white ring-2 ring-sidebar"
                   aria-hidden
-                />
+                >
+                  <Bell className="size-2.5 fill-current" />
+                </span>
               )}
             </TooltipButton>
           ))}
