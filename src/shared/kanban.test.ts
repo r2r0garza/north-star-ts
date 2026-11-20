@@ -10,6 +10,8 @@ import {
   matchesPromoteGate,
   mergeAgentColumns,
   placeholderProblem,
+  presetSource,
+  withAdoCustomFields,
   COMMAND_PLACEHOLDERS,
   INSTRUCTION_PLACEHOLDERS,
   normalizeItems,
@@ -681,5 +683,140 @@ describe("custom field rules", () => {
         fields: [{ field: "Custom.QAAssigned", values: ["Bo"] }],
       })
     ).toBe(false)
+  })
+})
+
+describe("presetSource", () => {
+  const filter = asFilter({ tags: ["agent-go"], assignee: { mode: "me" } })
+
+  it("builds a quoted gh recipe from a pasted repo URL", () => {
+    const source = presetSource({
+      tracker: "github",
+      repo: "https://github.com/acme/app/",
+    })
+    expect(resolveIntakeCall(source, filter).command).toBe(
+      "gh issue list --repo 'acme/app' --search 'is:issue is:open label:\"agent-go\" assignee:@me' " +
+        "--json number,title,url,body,labels,assignees,state,updatedAt --limit 200"
+    )
+    expect(
+      normalizeItems(
+        [
+          {
+            number: 7,
+            title: "T",
+            labels: [{ name: "agent-go" }],
+            assignees: [{ login: "me" }],
+          },
+        ],
+        source
+      )[0]
+    ).toMatchObject({ id: "7", tags: ["agent-go"], assignees: ["me"] })
+  })
+
+  it("maps az boards query output, splitting tags", () => {
+    const source = presetSource({
+      tracker: "ado",
+      org: "https://dev.azure.com/acme/Some Project",
+      project: "Some Project",
+    })
+    expect(resolveIntakeCall(source, filter).command).toMatch(
+      /^az boards query --org 'https:\/\/dev\.azure\.com\/acme' --project 'Some Project' --wiql 'SELECT .*' -o json$/
+    )
+    const [item] = normalizeItems(
+      [
+        {
+          id: 12,
+          fields: {
+            "System.Title": "Fix it",
+            "System.WorkItemType": "Bug",
+            "System.State": "Active",
+            "System.Tags": "agent-go; ui",
+            "System.AssignedTo": {
+              displayName: "Me",
+              uniqueName: "me@acme.com",
+            },
+          },
+        },
+      ],
+      source
+    )
+    expect(item).toMatchObject({
+      id: "12",
+      title: "Fix it",
+      type: "Bug",
+      state: "Active",
+      tags: ["agent-go", "ui"],
+      assignees: ["me@acme.com"],
+    })
+  })
+
+  it.each([
+    "acme",
+    "dev.azure.com/acme",
+    "https://dev.azure.com/acme/Some%20Project/_workitems",
+    "acme.visualstudio.com",
+    "https://acme.visualstudio.com/Some Project/",
+  ])("reads the org from %s", (org) => {
+    expect(
+      presetSource({ tracker: "ado", org, project: "P" }).command
+    ).toContain("--org 'https://dev.azure.com/acme' ")
+  })
+
+  it("rejects malformed targets", () => {
+    expect(() => presetSource({ tracker: "github", repo: "acme" })).toThrow()
+    expect(() =>
+      presetSource({ tracker: "ado", org: "ac me", project: "P" })
+    ).toThrow()
+    expect(() =>
+      presetSource({ tracker: "ado", org: "acme", project: " " })
+    ).toThrow()
+  })
+})
+
+describe("withAdoCustomFields", () => {
+  const ado = presetSource({ tracker: "ado", org: "acme", project: "P" })
+
+  it("maps rule fields on az boards query recipes and matches people by name or email", () => {
+    const source = withAdoCustomFields(ado, [
+      "Custom.QAAssigned",
+      "Custom.Flag",
+    ])
+    expect(source.fields.custom).toEqual({
+      "Custom.QAAssigned": ["fields", "Custom.QAAssigned"],
+      "Custom.Flag": ["fields", "Custom.Flag"],
+    })
+    const filter = asFilter({
+      assignee: { mode: "anyone" },
+      fields: [{ field: "Custom.QAAssigned", values: ["bo@acme.com"] }],
+    })
+    expect(compileIntakeQuery(filter, "ado")).toContain(
+      "[Custom.QAAssigned] IN ('bo@acme.com')"
+    )
+    const [item] = normalizeItems(
+      [
+        {
+          id: 1,
+          fields: {
+            "System.Title": "T",
+            "Custom.QAAssigned": {
+              displayName: "Bo",
+              uniqueName: "bo@acme.com",
+            },
+            "Custom.Flag": true,
+          },
+        },
+      ],
+      source
+    )
+    expect(item.custom).toEqual({
+      "Custom.QAAssigned": ["Bo", "bo@acme.com"],
+      "Custom.Flag": ["true"],
+    })
+    expect(matchesFilter(item, filter, null)).toBe(true)
+  })
+
+  it("leaves other recipes alone", () => {
+    const gh = presetSource({ tracker: "github", repo: "a/b" })
+    expect(withAdoCustomFields(gh, ["X"])).toBe(gh)
   })
 })

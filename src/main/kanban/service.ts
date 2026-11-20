@@ -231,6 +231,16 @@ export class KanbanService {
     )
   }
 
+  // The "New board" form's Test: the same fetch a sync does, before saving.
+  testDraft(
+    draft: Pick<KanbanBoard, "workspace" | "source" | "filter">,
+    signal: AbortSignal
+  ): Promise<KanbanItem[]> {
+    const board = { ...draft, id: "draft" } as KanbanBoard
+    board.approvedHash = approvalHash(board)
+    return this.fetchMatching(board, signal)
+  }
+
   // Before an upstream action: re-fetch and re-check the item (still tagged,
   // still assigned to the filter's person). Throws when that can't be checked.
   async stillMatches(board: KanbanBoard, card: KanbanCard): Promise<boolean> {

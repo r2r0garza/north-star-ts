@@ -96,7 +96,9 @@ import type {
 import type { IndexStatus } from "../main/ipc/index-handlers"
 import type { ApproveResult } from "../main/dashboards/service"
 import type {
+  KanbanBoardDraft,
   KanbanBoardSummary,
+  KanbanItem,
   KanbanBoardGraph,
   KanbanCardRun,
   KanbanColumnInput,
@@ -1642,6 +1644,16 @@ const api = {
       ipcRenderer.invoke("kanban:runs", cardId) as Promise<KanbanCardRun[]>,
     sync: (boardId: string) =>
       ipcRenderer.invoke("kanban:sync", boardId) as Promise<string | null>,
+    // "New board" form: preview the first matching items, then create (approved).
+    testDraft: (draft: KanbanBoardDraft) =>
+      ipcRenderer.invoke("kanban:testDraft", draft) as Promise<
+        | { ok: true; count: number; items: KanbanItem[] }
+        | { ok: false; reason: string }
+      >,
+    create: (draft: KanbanBoardDraft) =>
+      ipcRenderer.invoke("kanban:create", draft) as Promise<
+        { ok: true; boardId: string } | { ok: false; reason: string }
+      >,
     approveSource: (boardId: string, hash: string) =>
       ipcRenderer.invoke("kanban:approveSource", boardId, hash) as Promise<
         { ok: true; taskId: string | null } | { ok: false; reason: string }

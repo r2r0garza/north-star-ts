@@ -10,10 +10,33 @@ import {
   asDependencyLinks,
   asPromoteGate,
   cardNeedsAttention,
+  presetSource,
+  resolveIntakeCall,
+  withAdoCustomFields,
   WRITE_APPROVALS,
+  type KanbanBoardDraft,
   type KanbanColumnInput,
   type KanbanWriteApproval,
 } from "../../shared/kanban"
+import { approvalHash } from "../kanban/service"
+
+// The "New board" form's values as a board, or why they can't be one.
+export function boardFromDraft(raw: unknown) {
+  const d = (raw ?? {}) as Partial<KanbanBoardDraft>
+  const name = typeof d.name === "string" ? d.name.trim() : ""
+  if (!name) throw new Error("name is required")
+  const workspace = typeof d.workspace === "string" ? d.workspace.trim() : ""
+  if (!workspace) throw new Error("choose a workspace folder")
+  if (!d.target || !["github", "ado"].includes(d.target.tracker))
+    throw new Error("choose GitHub or Azure DevOps")
+  const filter = asFilter(d.filter)
+  const source = withAdoCustomFields(
+    presetSource(d.target),
+    (filter.fields ?? []).map((r) => r.field)
+  )
+  resolveIntakeCall(source, filter) // throws on a filter the tracker can't express
+  return { name, workspace, source, filter }
+}
 
 // Kanban board IPC (plans 136.1/136.2). Boards are authored by the kanban_write
 // agent tool or edited in the board settings sheet; cards move through columns.
@@ -112,6 +135,29 @@ export function registerKanbanHandlers(
     "kanban:sync",
     (_e, boardId: string) => service.ensureSync(boardId)?.id ?? null
   )
+  // The "New board" form (no agent): a built-in recipe from the user's values.
+  ipcMain.handle("kanban:testDraft", async (_e, raw: unknown) => {
+    try {
+      const items = await service.testDraft(
+        boardFromDraft(raw),
+        AbortSignal.timeout(120_000)
+      )
+      return { ok: true, count: items.length, items: items.slice(0, 5) }
+    } catch (err) {
+      return { ok: false, reason: (err as Error).message }
+    }
+  })
+  // The user filled the recipe in themselves, so creating it approves it.
+  ipcMain.handle("kanban:create", (_e, raw: unknown) => {
+    try {
+      const board = kanban.saveBoard({ ...boardFromDraft(raw), columns: [] })
+      const result = service.approveSource(board.id, approvalHash(board)!)
+      if (!result.ok) return result
+      return { ok: true, boardId: board.id }
+    } catch (err) {
+      return { ok: false, reason: (err as Error).message }
+    }
+  })
   ipcMain.handle("kanban:approveSource", (_e, boardId: string, hash: string) =>
     service.approveSource(boardId, hash)
   )
@@ -144,12 +190,23 @@ export function registerKanbanHandlers(
       if (!WRITE_APPROVALS.includes(patch.writeApproval))
         return { ok: false, reason: "unknown write-approval level" }
       try {
+        const filter = asFilter(patch.filter)
+        const promote =
+          patch.autoPromote === undefined
+            ? undefined
+            : asPromoteGate(patch.autoPromote)
         kanban.saveBoard({
           id: boardId,
           name: patch.name.trim(),
           workspace: board.workspace,
-          source: board.source,
-          filter: asFilter(patch.filter),
+          // A changed mapping changes the recipe, so it's approved again.
+          source: withAdoCustomFields(
+            board.source,
+            [...(filter.fields ?? []), ...(promote?.fields ?? [])].map(
+              (r) => r.field
+            )
+          ),
+          filter,
           syncIntervalMs: patch.syncIntervalMs,
           columns: patch.columns,
         })
@@ -162,8 +219,7 @@ export function registerKanbanHandlers(
           parallelCommands: patch.parallelCommands === true,
         })
         kanban.setNotifications(boardId, patch.notifications !== false)
-        if (patch.autoPromote !== undefined)
-          kanban.setAutoPromote(boardId, asPromoteGate(patch.autoPromote))
+        if (promote) kanban.setAutoPromote(boardId, promote)
         if (patch.dependencyLinks !== undefined)
           kanban.setDependencyLinks(
             boardId,

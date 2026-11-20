@@ -22,6 +22,7 @@ import {
   Settings2,
   ShieldCheck,
   Trash2,
+  Plus,
   Upload,
   XIcon,
 } from "lucide-react"
@@ -81,6 +82,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Spinner } from "@/components/ui/spinner"
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { KanbanSettingsSheet } from "@/components/kanban-settings-sheet"
+import { NewBoardDialog } from "@/components/kanban-new-board-dialog"
 import { cn } from "@/lib/utils"
 import { waitForTask } from "@/components/dashboards-screen"
 import type {
@@ -838,6 +840,7 @@ export function KanbanScreen({
   } | null>(null)
   const [pendingRemove, setPendingRemove] = useState<KanbanCard | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [newOpen, setNewOpen] = useState(false)
   const [switcherOpen, setSwitcherOpen] = useState(false)
   const selectedRef = useRef<string | null>(null)
   selectedRef.current = selectedId
@@ -1076,6 +1079,10 @@ export function KanbanScreen({
           <h1 className="font-heading text-base font-medium">Boards</h1>
         </button>
         <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => setNewOpen(true)}>
+            <Plus className="size-4" />
+            New board
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -1301,13 +1308,21 @@ export function KanbanScreen({
           ) : (
             <div className="flex flex-1 items-center justify-center p-8 text-center text-sm text-muted-foreground">
               {boards.length === 0
-                ? 'No boards yet. Import one, or ask an agent to set one up, e.g. "Make a board from my GitHub issues labeled agent-go."'
+                ? 'No boards yet. Create one with New board, import one, or ask an agent to set one up, e.g. "Make a board from my GitHub issues labeled agent-go."'
                 : "Loading board…"}
             </div>
           )}
         </div>
       </div>
 
+      <NewBoardDialog
+        open={newOpen}
+        onOpenChange={setNewOpen}
+        onCreated={(boardId) => {
+          void refreshList().then(() => setSelectedId(boardId))
+          toast.success("Board created. Add columns in its settings.")
+        }}
+      />
       <RunHistory
         card={historyCard}
         onClose={() => setHistoryCard(null)}

@@ -543,6 +543,13 @@ function scalar(value: unknown, path: KanbanPath | undefined): string | null {
   return leaf === undefined ? null : String(leaf)
 }
 
+// An ADO identity ({ displayName, uniqueName }) matches by either name.
+function identityNames(v: unknown): unknown[] {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return [v]
+  const o = v as Record<string, unknown>
+  return [o.displayName, o.uniqueName].filter((n) => typeof n === "string")
+}
+
 function strings(
   value: unknown,
   path: KanbanPath | undefined,
@@ -550,7 +557,11 @@ function strings(
 ): string[] {
   if (path === undefined) return []
   return pickAll(value, path)
-    .filter((v) => typeof v === "string" || typeof v === "number")
+    .flatMap(identityNames)
+    .filter(
+      (v) =>
+        typeof v === "string" || typeof v === "number" || typeof v === "boolean"
+    )
     .flatMap((v) => (separator ? String(v).split(separator) : [String(v)]))
     .map((s) => s.trim())
     .filter(Boolean)
@@ -780,8 +791,10 @@ function jiraQuery(f: KanbanIntakeFilter): string {
 }
 
 // ADO field reference names: letters, digits, `_` and `.` (e.g. Custom.QAAssigned).
+export const ADO_FIELD_REF = /^[A-Za-z][\w.]*$/
+
 function wiqlField(ref: string): string {
-  if (!/^[A-Za-z][\w.]*$/.test(ref))
+  if (!ADO_FIELD_REF.test(ref))
     throw new Error(
       `"${ref}" isn't an ADO field reference name (like Custom.QAAssigned)`
     )
@@ -838,6 +851,96 @@ export function compileIntakeQuery(
 }
 
 export const shellQuote = (s: string) => `'${s.replace(/'/g, "'\\''")}'`
+
+// ── built-in recipes for the "New board" form (no agent) ────────────────────
+
+export type KanbanPresetTarget =
+  | { tracker: "github"; repo: string }
+  | { tracker: "ado"; org: string; project: string }
+
+export interface KanbanBoardDraft {
+  name: string
+  workspace: string
+  target: KanbanPresetTarget
+  filter: KanbanIntakeFilter
+}
+
+// `az boards query` returns every selected field under `fields`, and the
+// compiled WIQL selects each field a rule names, so those map themselves.
+export function withAdoCustomFields(
+  source: KanbanSource,
+  refs: string[]
+): KanbanSource {
+  if (!adoFieldsMapSelf(source)) return source
+  const custom = { ...source.fields.custom }
+  for (const ref of refs) custom[ref] ??= ["fields", ref]
+  return { ...source, fields: { ...source.fields, custom } }
+}
+
+export const adoFieldsMapSelf = (source: KanbanSource | null) =>
+  source?.tracker === "ado" && !!source.command?.startsWith("az boards query")
+
+// The intake recipe for a standard CLI setup. Throws on a malformed target.
+// Values are shell-quoted, but validated too so typos fail here, not at sync.
+export function presetSource(target: KanbanPresetTarget): KanbanSource {
+  if (target.tracker === "github") {
+    const repo = target.repo
+      .trim()
+      .replace(/^https:\/\/github\.com\//, "")
+      .replace(/\/$/, "")
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo))
+      throw new Error("repository must look like owner/repo")
+    return {
+      tracker: "github",
+      command:
+        `gh issue list --repo ${shellQuote(repo)} --search ${QUERY_PLACEHOLDER} ` +
+        "--json number,title,url,body,labels,assignees,state,updatedAt --limit 200",
+      fields: {
+        id: "number",
+        title: "title",
+        url: "url",
+        body: "body",
+        state: "state",
+        tags: "labels.*.name",
+        assignee: "assignees.*.login",
+        updatedAt: "updatedAt",
+      },
+      whoami: { command: "gh api user", path: "login" },
+    }
+  }
+  // Accept <org>, dev.azure.com/<org>/..., or <org>.visualstudio.com/...
+  // (scheme optional). Legacy visualstudio.com orgs also live at dev.azure.com/<org>.
+  const org = target.org
+    .trim()
+    .replace(/^https?:\/\//i, "")
+    .replace(/^dev\.azure\.com\//i, "")
+    .replace(/\.visualstudio\.com(\/.*)?$/i, "")
+    .replace(/\/.*$/, "")
+  const project = target.project.trim()
+  if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(org))
+    throw new Error(
+      "organization must be <org>, dev.azure.com/<org>, or <org>.visualstudio.com"
+    )
+  if (!project || /[\r\n]/.test(project)) throw new Error("project is required")
+  // shortcut: no url mapped; az boards query returns only the REST API url.
+  return {
+    tracker: "ado",
+    command:
+      `az boards query --org ${shellQuote(`https://dev.azure.com/${org}`)} ` +
+      `--project ${shellQuote(project)} --wiql ${QUERY_PLACEHOLDER} -o json`,
+    fields: {
+      id: "id",
+      title: ["fields", "System.Title"],
+      type: ["fields", "System.WorkItemType"],
+      state: ["fields", "System.State"],
+      tags: ["fields", "System.Tags"],
+      assignee: ["fields", "System.AssignedTo", "uniqueName"],
+      updatedAt: ["fields", "System.ChangedDate"],
+    },
+    tagSeparator: ";",
+    whoami: { command: "az account show -o json", path: ["user", "name"] },
+  }
+}
 
 function usesPlaceholder(call: KanbanCall): boolean {
   return JSON.stringify([call.command, call.args]).includes(QUERY_PLACEHOLDER)

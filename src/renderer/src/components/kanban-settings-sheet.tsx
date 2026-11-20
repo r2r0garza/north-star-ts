@@ -43,6 +43,8 @@ import {
 import type { AgentSummary } from "../../../preload/index"
 import {
   asDependencyLinks,
+  ADO_FIELD_REF,
+  adoFieldsMapSelf,
   DEFAULT_MAX_RETURNS,
   type KanbanBoardGraph,
   type KanbanColumnInput,
@@ -326,15 +328,22 @@ export function KanbanSettingsSheet({
   const [query, setQuery] = useState(board.filter.query ?? "")
   const [types, setTypes] = useState(board.filter.types.join(", "))
   const [states, setStates] = useState(board.filter.states.join(", "))
-  const mappedFields = new Set(Object.keys(board.source?.fields.custom ?? {}))
+  // az boards query boards map any field a rule names on save.
+  const selfMapping = adoFieldsMapSelf(board.source)
+  const [addedFields, setAddedFields] = useState<string[]>([])
+  const [newField, setNewField] = useState("")
   // Mapped fields plus any a rule still names, so a stale rule can be cleared.
   const customFields = [
     ...new Set([
-      ...mappedFields,
+      ...Object.keys(board.source?.fields.custom ?? {}),
+      ...addedFields,
       ...(board.filter.fields ?? []).map((r) => r.field),
       ...(board.autoPromote.fields ?? []).map((r) => r.field),
     ]),
   ]
+  const mappedFields = new Set(
+    selfMapping ? customFields : Object.keys(board.source?.fields.custom ?? {})
+  )
   const [fieldText, setFieldText] = useState(() =>
     ruleText(board.filter.fields)
   )
@@ -699,7 +708,32 @@ export function KanbanSettingsSheet({
                     text={fieldText}
                     onChange={setFieldText}
                   />
-                ) : (
+                ) : null}
+                {selfMapping ? (
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="kb-new-field">
+                      Add a custom field (reference name)
+                    </Label>
+                    <div className="flex gap-2">
+                      <Input
+                        id="kb-new-field"
+                        placeholder="Custom.QAAssigned"
+                        value={newField}
+                        onChange={(e) => setNewField(e.target.value)}
+                      />
+                      <Button
+                        variant="outline"
+                        disabled={!ADO_FIELD_REF.test(newField.trim())}
+                        onClick={() => {
+                          setAddedFields([...addedFields, newField.trim()])
+                          setNewField("")
+                        }}
+                      >
+                        Add
+                      </Button>
+                    </div>
+                  </div>
+                ) : customFields.length ? null : (
                   <p className="text-xs text-muted-foreground">
                     To filter on a custom field (like QA Assigned), ask the
                     agent to map it in the intake recipe.
