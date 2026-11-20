@@ -85,6 +85,8 @@ import { spawnSubagentTool } from "./spawn_subagent"
 import { spawnSubagentsTool } from "./spawn_subagents"
 import { dashboardWriteTool } from "./dashboard_write"
 import { dashboardReadTool } from "./dashboard_read"
+import { kanbanWriteTool } from "./kanban_write"
+import { kanbanOpenRepoTool } from "./kanban_open_repo"
 import { presentChartTool } from "./present_chart"
 import { presentTableTool } from "./present_table"
 import { presentUiTool } from "./present_ui"
@@ -157,6 +159,11 @@ const otherTools: Tool[] = [
   // dashboard_write: offered by runChat in interactive modes (plan 033.2 —
   // gated on showTodos like todo_write). Writes only its own tables; not gated.
   dashboardWriteTool,
+  // kanban_write (plan 136.1): same offering as dashboard_write.
+  kanbanWriteTool,
+  // kanban_open_repo (plan 136.6): offered only on board card runs that can
+  // open repos (RunAgentLoopOptions.kanbanOpenRepo).
+  kanbanOpenRepoTool,
   presentChartTool,
   presentTableTool,
   presentUiTool,
@@ -284,6 +291,8 @@ export { presentPlanTool } from "./present_plan_tool"
 export { spawnSubagentsTool } from "./spawn_subagents"
 export { dashboardWriteTool } from "./dashboard_write"
 export { dashboardReadTool } from "./dashboard_read"
+export { kanbanWriteTool } from "./kanban_write"
+export { kanbanOpenRepoTool } from "./kanban_open_repo"
 export {
   conversationReadTool,
   conversationSearchTool,

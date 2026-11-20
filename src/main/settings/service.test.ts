@@ -253,6 +253,7 @@ describe("settings service — conversations", () => {
       defaultMode: "north_star",
       showRunInBackgroundButton: false,
       allowConversationSubagents: false,
+      syncBoardsInBackground: true,
     })
   })
 
@@ -261,12 +262,14 @@ describe("settings service — conversations", () => {
       defaultMode: "chat",
       showRunInBackgroundButton: true,
       allowConversationSubagents: true,
+      syncBoardsInBackground: false,
     })
     service._resetCacheForTests()
     expect(service.getConversations()).toEqual({
       defaultMode: "chat",
       showRunInBackgroundButton: true,
       allowConversationSubagents: true,
+      syncBoardsInBackground: false,
     })
   })
 
@@ -276,6 +279,7 @@ describe("settings service — conversations", () => {
       defaultMode: "interactive",
       showRunInBackgroundButton: false,
       allowConversationSubagents: false,
+      syncBoardsInBackground: true,
     })
   })
 
@@ -285,6 +289,7 @@ describe("settings service — conversations", () => {
       defaultMode: "north_star",
       showRunInBackgroundButton: false,
       allowConversationSubagents: false,
+      syncBoardsInBackground: true,
     })
     service._resetCacheForTests()
     store.set("conversations", "{not json")
@@ -292,6 +297,7 @@ describe("settings service — conversations", () => {
       defaultMode: "north_star",
       showRunInBackgroundButton: false,
       allowConversationSubagents: false,
+      syncBoardsInBackground: true,
     })
   })
 })

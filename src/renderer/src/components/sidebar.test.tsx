@@ -15,6 +15,7 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
   window.cowork = {
     system: () => ({ mainAgentName: "North Star" }),
+    kanban: { list: async () => [] },
     db: {
       conversations: { list: async () => [] },
       projects: { list: async () => [] },
@@ -49,6 +50,7 @@ async function renderSidebar() {
             onAgentsClick={vi.fn()}
             onMcpClick={vi.fn()}
             onDashboardsClick={vi.fn()}
+            onKanbanClick={vi.fn()}
             onWorkflowsClick={vi.fn()}
             onConversationsClick={vi.fn()}
             activeDestination="conversations"
@@ -142,6 +144,7 @@ describe("sidebar Mission Control visibility", () => {
       onAgentsClick: vi.fn(),
       onMcpClick: vi.fn(),
       onDashboardsClick: vi.fn(),
+      onKanbanClick: vi.fn(),
       onWorkflowsClick: vi.fn(),
       onConversationsClick: vi.fn(),
       activeDestination: "conversations",
@@ -205,6 +208,7 @@ describe("project section cap and collapse", () => {
               onAgentsClick={vi.fn()}
               onMcpClick={vi.fn()}
               onDashboardsClick={vi.fn()}
+              onKanbanClick={vi.fn()}
               onWorkflowsClick={vi.fn()}
               onConversationsClick={vi.fn()}
               activeDestination="conversations"
@@ -251,6 +255,7 @@ describe("rail destinations", () => {
       onAgentsClick: vi.fn(),
       onMcpClick: vi.fn(),
       onDashboardsClick: vi.fn(),
+      onKanbanClick: vi.fn(),
       onWorkflowsClick: vi.fn(),
       onConversationsClick: vi.fn(),
       refreshKey: 0,
@@ -308,6 +313,7 @@ describe("collapsed sidebar", () => {
               onAgentsClick={vi.fn()}
               onMcpClick={vi.fn()}
               onDashboardsClick={vi.fn()}
+              onKanbanClick={vi.fn()}
               onWorkflowsClick={vi.fn()}
               onConversationsClick={onConversationsClick}
               activeDestination="conversations"

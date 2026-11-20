@@ -375,7 +375,7 @@ export class LocalEnvironment implements Environment {
       commandToRun,
       opts.cwd,
       ["ignore", "pipe", "pipe"],
-      await this.hostEnv()
+      { ...(await this.hostEnv()), ...(opts.env ?? {}) }
     )
     try {
       const result = await captureSpawn(child, { ...opts, killGroup: true })

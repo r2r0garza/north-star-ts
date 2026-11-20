@@ -764,10 +764,14 @@ PY
     // through a separate bounded runtime exec.
     const env = await (this.cfg.hostCliEnv ?? hostCliEnv)()
     const pidFile = this.commandPidFile()
+    const containerEnv = Object.entries(opts.env ?? {}).flatMap(
+      ([key, value]) => (value === undefined ? [] : ["-e", `${key}=${value}`])
+    )
     const child = (this.cfg.runtimeSpawn ?? spawn)(
       this.cfg.runtime,
       [
         "exec",
+        ...containerEnv,
         "-w",
         this.toContainerPath(opts.cwd),
         this.name,

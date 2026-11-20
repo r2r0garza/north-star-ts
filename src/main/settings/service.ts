@@ -200,6 +200,9 @@ export interface ConversationSettings {
   defaultMode: DefaultConversationMode
   showRunInBackgroundButton: boolean
   allowConversationSubagents: boolean
+  // Sync approved boards on their interval while the app is open; off = only
+  // while the board is open in the Boards view.
+  syncBoardsInBackground: boolean
 }
 
 // Default container image when a runtime is chosen but no image is set.
@@ -279,6 +282,7 @@ const DEFAULT_CONVERSATIONS: ConversationSettings = {
   defaultMode: "north_star",
   showRunInBackgroundButton: false,
   allowConversationSubagents: false,
+  syncBoardsInBackground: true,
 }
 
 function defaultExecution(): ExecutionSettings {
@@ -675,6 +679,9 @@ function loadConversations(): ConversationSettings {
         allowConversationSubagents:
           parsed.allowConversationSubagents ??
           DEFAULT_CONVERSATIONS.allowConversationSubagents,
+        syncBoardsInBackground:
+          parsed.syncBoardsInBackground ??
+          DEFAULT_CONVERSATIONS.syncBoardsInBackground,
       }
       return conversationsCache
     } catch {

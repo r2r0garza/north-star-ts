@@ -60,6 +60,16 @@ import { ensureWorkflows, ensureWorkflowRuns } from "./workflow-schema"
 import { ensureSteeringMessages } from "./steering-schema"
 import { ensureConversationArtifacts } from "./artifact-schema"
 import {
+  ensureKanban,
+  ensureKanbanActions,
+  ensureKanbanColumnOwner,
+  ensureKanbanColumnCommands,
+  ensureKanbanRuns,
+  ensureKanbanWorktreeChoices,
+  ensureKanbanNotifications,
+  ensureKanbanFlow,
+} from "./kanban-schema"
+import {
   ORCHESTRATION_TABLES,
   retireOrchestration,
 } from "./retire-orchestration"
@@ -235,6 +245,24 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureConversationArtifacts,
   ensureMessageReasoningColumn,
   ensureConversationEffortColumn,
+  ensureKanban,
+  ensureKanbanRuns,
+  ensureKanbanActions,
+  ensureKanbanColumnOwner,
+  ensureKanbanColumnCommands,
+  ensureKanbanWorktreeChoices,
+  ensureKanbanNotifications,
+  ensureKanbanFlow,
+  // v88: board dependency links (136.6); NULL = the workspace scan's.
+  (db) => addColumnIfMissing(db, "kanban_boards", "dependency_links", "TEXT"),
+  // v89: per-column entry gate (same shape as the board's auto-promote).
+  (db) =>
+    addColumnIfMissing(
+      db,
+      "kanban_columns",
+      "entry_gate",
+      "TEXT NOT NULL DEFAULT '{}'"
+    ),
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {

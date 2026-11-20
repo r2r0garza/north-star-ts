@@ -1368,6 +1368,29 @@ export function SettingsScreen({
                         </Field>
                         <Field orientation="horizontal">
                           <FieldContent>
+                            <FieldLabel htmlFor="boards-background-sync">
+                              Sync boards in the background
+                            </FieldLabel>
+                            <FieldDescription>
+                              Sync every approved board on its interval while
+                              the app is open, so auto-promote can start agents
+                              while you work elsewhere. Off: a board syncs only
+                              while it&apos;s open in Boards.
+                            </FieldDescription>
+                          </FieldContent>
+                          <Switch
+                            id="boards-background-sync"
+                            checked={conversations.syncBoardsInBackground}
+                            onCheckedChange={(checked) =>
+                              saveConversations({
+                                ...conversations,
+                                syncBoardsInBackground: checked,
+                              })
+                            }
+                          />
+                        </Field>
+                        <Field orientation="horizontal">
+                          <FieldContent>
                             <FieldLabel htmlFor="memory-enabled">
                               Automatic memory
                             </FieldLabel>

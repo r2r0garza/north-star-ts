@@ -10,6 +10,8 @@ export interface TaskHandoff {
   verification: string[]
   unresolved: string[]
   nextAction: string | null
+  // Kanban columns with outcomes ask for this extra field (plan 136.3).
+  outcome?: string
 }
 
 export function handoffInstruction(taskId: string): string {
@@ -114,6 +116,7 @@ export function parseTaskHandoff(
     verification: o.verification as string[],
     unresolved: o.unresolved as string[],
     nextAction: nextAction as string | null,
+    ...(typeof o.outcome === "string" ? { outcome: o.outcome } : {}),
   }
 }
 

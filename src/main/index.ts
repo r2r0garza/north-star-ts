@@ -135,6 +135,13 @@ import { IndexWatcher } from "./index/watcher"
 import { SummaryService, SUMMARIZE_KIND } from "./summaries/service"
 import { DashboardService, DASHBOARD_REFRESH_KIND } from "./dashboards/service"
 import { registerDashboardHandlers } from "./ipc/dashboard-handlers"
+import { KanbanService, KANBAN_SYNC_KIND } from "./kanban/service"
+import {
+  KanbanCardRuns,
+  KANBAN_CARD_RUN_KIND,
+  KANBAN_COMMAND_RUN_KIND,
+} from "./kanban/card-runs"
+import { registerKanbanHandlers } from "./ipc/kanban-handlers"
 import { BrowserManager } from "./browser/manager"
 import { registerTerminalHandlers } from "./ipc/terminal-handlers"
 import { registerFileWatchHandlers } from "./ipc/file-handlers"
@@ -189,6 +196,8 @@ const summaryService = new SummaryService(taskRunner)
 // Deterministic dashboard refresh (plan 033.3): re-runs each widget's stored
 // recipe headless. Holds the runner reference so ensureRefresh can enqueue.
 const dashboardService = new DashboardService(taskRunner)
+// Kanban intake sync (plan 136.1): replays a board's approved recipe, no LLM.
+const kanbanService = new KanbanService(taskRunner)
 const terminalService = new TerminalService()
 
 // The agent's browser (secondary window + WebContentsView driven over CDP).
@@ -1513,6 +1522,47 @@ app.whenReady().then(async () => {
     hasIndependentSurface: true,
     run: dashboardService.execute,
   })
+  // kanban_sync: same shape as dashboard_refresh — driven from the board view.
+  taskRunner.registerKind(KANBAN_SYNC_KIND, {
+    autoResume: false,
+    lane: "background",
+    hasIndependentSurface: true,
+    run: kanbanService.execute,
+  })
+  // kanban_card_run (plan 136.2): one unattended agent turn per column a card
+  // enters, in the card's own worktree. Work lane, like workflow runs.
+  const kanbanCardRuns = new KanbanCardRuns(
+    taskRunner,
+    join(app.getPath("userData"), "kanban-worktrees"),
+    kanbanService
+  )
+  kanbanCardRuns.recoverInterrupted()
+  kanbanService.afterSync = (boardId) => kanbanCardRuns.autoPromote(boardId)
+  // Background board intake, checked each minute (each board keeps its own
+  // interval). Off in settings = the Boards view syncs the open board instead.
+  const syncBoards = () => {
+    try {
+      if (settingsService.getConversations().syncBoardsInBackground)
+        kanbanService.syncDue()
+    } catch (err) {
+      console.error("[kanban] background sync failed", err)
+    }
+  }
+  setInterval(syncBoards, 60_000)
+  taskRunner.registerKind(KANBAN_CARD_RUN_KIND, {
+    autoResume: false,
+    lane: "work",
+    hasIndependentSurface: true,
+    run: kanbanCardRuns.execute,
+  })
+  // kanban_command_run (plan 136.5): a user column's own command for one card.
+  // The column queue keeps it to one at a time per column.
+  taskRunner.registerKind(KANBAN_COMMAND_RUN_KIND, {
+    autoResume: false,
+    lane: "work",
+    hasIndependentSurface: true,
+    run: kanbanCardRuns.executeCommand,
+  })
   const workflowService = new WorkflowService(
     taskRunner,
     { service: indexService, watcher: indexWatcher },
@@ -1539,6 +1589,7 @@ app.whenReady().then(async () => {
   registerTaskHandlers(taskRunner)
   registerIndexHandlers(taskRunner, indexService, indexWatcher)
   registerDashboardHandlers(taskRunner, dashboardService)
+  registerKanbanHandlers(kanbanService, kanbanCardRuns)
   registerTerminalHandlers(terminalService)
   registerFileWatchHandlers()
   await indexWatcher.setEnabled(settingsService.getIndexing().watchWorkspaces)

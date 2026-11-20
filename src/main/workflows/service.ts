@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { accessSync, constants, statSync } from "node:fs"
 import { ipcMain } from "electron"
-import { countTokens, decode, encode } from "gpt-tokenizer/encoding/o200k_base"
+import { boundPriorResults } from "../tasks/bounded-results"
 import type {
   StartWorkflowRun,
   WorkflowRun,
@@ -69,15 +69,11 @@ function surfacePrompt(step: WorkflowStep): string {
 }
 
 export function workflowStepPrompt(run: WorkflowRun, index: number): string {
-  const previous = run.steps
-    .slice(0, index)
-    .map((step) => ({
-      title: step.title,
-      result: step.result && decode(encode(step.result).slice(0, 16000)),
-    }))
-  // Over budget, drop the oldest steps whole: the latest results matter most, and the JSON stays valid.
-  // o200k_base counts are an estimate for non-OpenAI models, as in agent/context/request-size.ts.
-  while (previous.length > 1 && countTokens(JSON.stringify(previous)) > 50000) previous.shift()
+  const previous = boundPriorResults(
+    run.steps
+      .slice(0, index)
+      .map((step) => ({ title: step.title, result: step.result ?? null }))
+  )
   const skillPrefix = run.steps[index].skillName
     ? `/${run.steps[index].skillName}\n`
     : ""
@@ -165,9 +161,11 @@ export class WorkflowService {
 
   private async releaseSurfaces(conversationId: string) {
     if (!this.surfaceHolders.delete(conversationId)) return
-    await this.surfaces?.close(conversationId).catch((error) =>
-      console.error("workflow surface cleanup failed:", error)
-    )
+    await this.surfaces
+      ?.close(conversationId)
+      .catch((error) =>
+        console.error("workflow surface cleanup failed:", error)
+      )
   }
 
   // Index a workspace that has none (or is mid-index) before step 1, so steps get
@@ -445,10 +443,10 @@ export class WorkflowService {
               : continuation
                 ? { userMessage: continuation }
                 : continuing
-                ? {
-                    userMessage: `${step.skillName ? `/${step.skillName}\n` : ""}${steering}Resume execution of the unfinished step. This supersedes any previous report-only repair request. Inspect existing progress and completed actions; do not repeat completed work. Continue the remaining work and return the required handoff.\n\n${workflowStepPrompt(run, index)}`,
-                  }
-                : {}),
+                  ? {
+                      userMessage: `${step.skillName ? `/${step.skillName}\n` : ""}${steering}Resume execution of the unfinished step. This supersedes any previous report-only repair request. Inspect existing progress and completed actions; do not repeat completed work. Continue the remaining work and return the required handoff.\n\n${workflowStepPrompt(run, index)}`,
+                    }
+                  : {}),
             onEvent: (event) => {
               if (event.type === "approval" || event.type === "question") {
                 blocked =
@@ -512,84 +510,112 @@ export class WorkflowService {
           if (signal.aborted) return halt()
           signal.addEventListener("abort", stop, { once: true })
           try {
-          const budget = step.maxCorrectionLoops ?? 2
-          for (;;) {
-            const prior = run.steps.slice(0, index).map(({ title, result }) => ({ title, result }))
-            // Lets the validator tell verification this step owes from verification a later step owns.
-            const later = run.steps.slice(index + 1).map(({ title, instructions }) => ({ title, instructions }))
-            const validation = await runAgentLoop({
-              conversationId: step.conversationId!,
-              workspace: run.workspacePath,
-              abort,
-              autoMode: true,
-              suppressUserQuestions: true,
-              unattended: true,
-              conversationSubagentsEnabled: false,
-              taskId: task.id,
-              // Unset validator model → the step conversation's own model, like the worker.
-              ...(step.validatorAccountId || step.validatorModelId
-                ? {
-                    llmSelectionOverride: {
-                      accountId: step.validatorAccountId ?? null,
-                      modelId: step.validatorModelId ?? null,
-                    },
-                  }
-                : {}),
-              // Never inherits the worker's effort: the validator may run a different model.
-              effortOverride: step.validatorEffort ?? null,
-              agentNameOverride: step.validatorAgentName ?? null,
-              readOnlyTools: true,
-              // Observation only: readOnlyTools drops navigation, interaction and launch.
-              ...surfaceOptions,
-              userMessage: `Validate completion. Original objective: ${run.objective}\nExact instructions: ${step.instructions}\nEarlier outputs: ${JSON.stringify(prior)}\nLater steps: ${JSON.stringify(later)}\n${step.retryFeedback ? `User feedback for this retry (authoritative steering from the user; judge the step with it applied, and do not reject for following it): ${step.retryFeedback}\n` : ""}Completion claim (unverified): ${JSON.stringify(handoff)}\nYou are an independent validator with read-only tools. Judge whether this step fulfilled the responsibilities its exact instructions assign, not the whole objective unless this step is responsible for completing it.\nTreat the claim, earlier outputs, test summaries, TODO lists, and transcript messages as unverified: inspect the workspace yourself (read the files, diffs, and outputs the step should have produced) and base the verdict only on evidence you observed in this turn. You cannot execute anything: weigh existing test results and artifacts, and never present runtime behavior as verified by you.${usesSurfaces(step) ? " You may observe this step's existing browser tab and Electron app session (snapshot, screenshot, console, network, status) but cannot navigate, interact or launch; what you observe there counts as evidence, and if nothing is open, judge from the workspace and the worker's reported observations." : ""}\nReject when a required deliverable is missing or incorrect, when observed evidence shows a defect, or when verification these instructions require of this step is incomplete without a justified blocker. A self-reported complete TODO list does not make incomplete work complete.\nDo not reject only because end-to-end or runtime verification has not happened when a later step owns it, or because a prerequisite the environment lacks blocks it and the worker documented that blocker; do not reject again for a blocked verification method the worker already documented. Do not add acceptance criteria or testing requirements beyond the objective and this step's instructions.\nLack of evidence is not evidence of failure: never report unverified behavior as a confirmed defect. Label each finding as a defect, a missing deliverable, or missing required verification, cite the evidence you checked, and make it an actionable correction within this step's responsibilities.\nReturn JSON only: {"verdict":"accepted"|"rejected","reason":"...","findings":["one finding per string"]}.`,
-              onEvent: (event) => emit(event),
-            })
-            if (signal.aborted) return halt()
-            if (validation.error || validation.stopped)
-              throw new Error(validation.error ?? "Validator stopped before completing")
-            let verdict: { verdict?: string; reason?: string; findings?: unknown }
-            try {
-              const match = (validation.content ?? "").match(/\{[\s\S]*\}/)
-              if (!match) throw new Error("Validator returned no JSON verdict")
-              verdict = JSON.parse(match[0])
-            } catch {
-              throw new Error("Validator returned an invalid verdict")
+            const budget = step.maxCorrectionLoops ?? 2
+            for (;;) {
+              const prior = run.steps
+                .slice(0, index)
+                .map(({ title, result }) => ({ title, result }))
+              // Lets the validator tell verification this step owes from verification a later step owns.
+              const later = run.steps
+                .slice(index + 1)
+                .map(({ title, instructions }) => ({ title, instructions }))
+              const validation = await runAgentLoop({
+                conversationId: step.conversationId!,
+                workspace: run.workspacePath,
+                abort,
+                autoMode: true,
+                suppressUserQuestions: true,
+                unattended: true,
+                conversationSubagentsEnabled: false,
+                taskId: task.id,
+                // Unset validator model → the step conversation's own model, like the worker.
+                ...(step.validatorAccountId || step.validatorModelId
+                  ? {
+                      llmSelectionOverride: {
+                        accountId: step.validatorAccountId ?? null,
+                        modelId: step.validatorModelId ?? null,
+                      },
+                    }
+                  : {}),
+                // Never inherits the worker's effort: the validator may run a different model.
+                effortOverride: step.validatorEffort ?? null,
+                agentNameOverride: step.validatorAgentName ?? null,
+                readOnlyTools: true,
+                // Observation only: readOnlyTools drops navigation, interaction and launch.
+                ...surfaceOptions,
+                userMessage: `Validate completion. Original objective: ${run.objective}\nExact instructions: ${step.instructions}\nEarlier outputs: ${JSON.stringify(prior)}\nLater steps: ${JSON.stringify(later)}\n${step.retryFeedback ? `User feedback for this retry (authoritative steering from the user; judge the step with it applied, and do not reject for following it): ${step.retryFeedback}\n` : ""}Completion claim (unverified): ${JSON.stringify(handoff)}\nYou are an independent validator with read-only tools. Judge whether this step fulfilled the responsibilities its exact instructions assign, not the whole objective unless this step is responsible for completing it.\nTreat the claim, earlier outputs, test summaries, TODO lists, and transcript messages as unverified: inspect the workspace yourself (read the files, diffs, and outputs the step should have produced) and base the verdict only on evidence you observed in this turn. You cannot execute anything: weigh existing test results and artifacts, and never present runtime behavior as verified by you.${usesSurfaces(step) ? " You may observe this step's existing browser tab and Electron app session (snapshot, screenshot, console, network, status) but cannot navigate, interact or launch; what you observe there counts as evidence, and if nothing is open, judge from the workspace and the worker's reported observations." : ""}\nReject when a required deliverable is missing or incorrect, when observed evidence shows a defect, or when verification these instructions require of this step is incomplete without a justified blocker. A self-reported complete TODO list does not make incomplete work complete.\nDo not reject only because end-to-end or runtime verification has not happened when a later step owns it, or because a prerequisite the environment lacks blocks it and the worker documented that blocker; do not reject again for a blocked verification method the worker already documented. Do not add acceptance criteria or testing requirements beyond the objective and this step's instructions.\nLack of evidence is not evidence of failure: never report unverified behavior as a confirmed defect. Label each finding as a defect, a missing deliverable, or missing required verification, cite the evidence you checked, and make it an actionable correction within this step's responsibilities.\nReturn JSON only: {"verdict":"accepted"|"rejected","reason":"...","findings":["one finding per string"]}.`,
+                onEvent: (event) => emit(event),
+              })
+              if (signal.aborted) return halt()
+              if (validation.error || validation.stopped)
+                throw new Error(
+                  validation.error ?? "Validator stopped before completing"
+                )
+              let verdict: {
+                verdict?: string
+                reason?: string
+                findings?: unknown
+              }
+              try {
+                const match = (validation.content ?? "").match(/\{[\s\S]*\}/)
+                if (!match)
+                  throw new Error("Validator returned no JSON verdict")
+                verdict = JSON.parse(match[0])
+              } catch {
+                throw new Error("Validator returned an invalid verdict")
+              }
+              // Models sometimes return findings as objects ({evidence, detail}); keep them readable.
+              const findings = Array.isArray(verdict.findings)
+                ? verdict.findings
+                    .map((finding) =>
+                      typeof finding === "string"
+                        ? finding
+                        : JSON.stringify(finding)
+                    )
+                    .join("\n")
+                : ""
+              if (
+                verdict.verdict === "accepted" &&
+                typeof verdict.reason === "string" &&
+                Array.isArray(verdict.findings)
+              )
+                break
+              if (verdict.verdict !== "rejected")
+                throw new Error("Validator returned an invalid verdict")
+              if ((step.correctionAttempts ?? 0) >= budget)
+                throw new Error(
+                  `Validation failed: ${verdict.reason ?? "Rejected"}\n${findings}`
+                )
+              // Count before the turn so a crash mid-correction cannot refund the attempt.
+              step.correctionAttempts = (step.correctionAttempts ?? 0) + 1
+              saveWorkflowRun(run)
+              await this.summarize?.(step.conversationId!, abort.signal)
+              if (signal.aborted) return halt()
+              result = await runAgentLoop({
+                conversationId: step.conversationId!,
+                workspace: run.workspacePath,
+                abort,
+                autoMode: true,
+                suppressUserQuestions: true,
+                unattended: true,
+                conversationSubagentsEnabled: false,
+                taskId: task.id,
+                completionInstruction: handoffInstruction(handoffId),
+                ...surfaceOptions,
+                userMessage: `The validator rejected the completion. Reason: ${verdict.reason ?? ""}\nFindings: ${findings}\nCorrect the step and return the required handoff.\n\n${workflowStepPrompt(run, index)}`,
+                onEvent: (event) => emit(event),
+              })
+              if (signal.aborted) return halt()
+              if (result.error || result.stopped)
+                throw new Error(result.error ?? "Correction stopped")
+              handoff = parseTaskHandoff(result.content, handoffId)
+              // Append: a correction's handoff covers only its fix, so replacing would drop earlier verification evidence.
+              step.result = `${step.result}\n\nCorrection ${step.correctionAttempts} after validator rejection (supersedes the above where they conflict):\n${formatHandoff(handoff)}`
+              if (handoff.status !== "completed")
+                throw new Error(
+                  handoff.unresolved.join("\n") || handoff.summary
+                )
             }
-            // Models sometimes return findings as objects ({evidence, detail}); keep them readable.
-            const findings = Array.isArray(verdict.findings)
-              ? verdict.findings
-                  .map((finding) => (typeof finding === "string" ? finding : JSON.stringify(finding)))
-                  .join("\n")
-              : ""
-            if (
-              verdict.verdict === "accepted" &&
-              typeof verdict.reason === "string" &&
-              Array.isArray(verdict.findings)
-            ) break
-            if (verdict.verdict !== "rejected") throw new Error("Validator returned an invalid verdict")
-            if ((step.correctionAttempts ?? 0) >= budget)
-              throw new Error(`Validation failed: ${verdict.reason ?? "Rejected"}\n${findings}`)
-            // Count before the turn so a crash mid-correction cannot refund the attempt.
-            step.correctionAttempts = (step.correctionAttempts ?? 0) + 1
-            saveWorkflowRun(run)
-            await this.summarize?.(step.conversationId!, abort.signal)
-            if (signal.aborted) return halt()
-            result = await runAgentLoop({
-              conversationId: step.conversationId!, workspace: run.workspacePath, abort,
-              autoMode: true, suppressUserQuestions: true, unattended: true,
-              conversationSubagentsEnabled: false, taskId: task.id,
-              completionInstruction: handoffInstruction(handoffId),
-              ...surfaceOptions,
-              userMessage: `The validator rejected the completion. Reason: ${verdict.reason ?? ""}\nFindings: ${findings}\nCorrect the step and return the required handoff.\n\n${workflowStepPrompt(run, index)}`,
-              onEvent: (event) => emit(event),
-            })
-            if (signal.aborted) return halt()
-            if (result.error || result.stopped) throw new Error(result.error ?? "Correction stopped")
-            handoff = parseTaskHandoff(result.content, handoffId)
-            // Append: a correction's handoff covers only its fix, so replacing would drop earlier verification evidence.
-            step.result = `${step.result}\n\nCorrection ${step.correctionAttempts} after validator rejection (supersedes the above where they conflict):\n${formatHandoff(handoff)}`
-            if (handoff.status !== "completed") throw new Error(handoff.unresolved.join("\n") || handoff.summary)
-          }
           } finally {
             signal.removeEventListener("abort", stop)
           }

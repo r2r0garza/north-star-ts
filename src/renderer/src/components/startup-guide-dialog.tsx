@@ -2,6 +2,7 @@ import { useState } from "react"
 import {
   BarChart3Icon,
   BotIcon,
+  KanbanIcon,
   MessageSquareIcon,
   MousePointerClickIcon,
   NetworkIcon,
@@ -61,6 +62,13 @@ function guideItems() {
       icon: WorkflowIcon,
       description:
         "Create and save reusable workflows, then start runs and follow their progress across your projects.",
+    },
+    {
+      key: "kanban",
+      title: "Kanban Board",
+      icon: KanbanIcon,
+      description:
+        "Sync work items into a board, move cards through columns, and let agents handle tasks with your review and approvals along the way.",
     },
   ]
 }

@@ -7,7 +7,7 @@ import {
   type CSSProperties,
 } from "react"
 import {
-  BellDot,
+  Bell,
   BookOpen,
   Bot,
   ChevronRight,
@@ -15,6 +15,7 @@ import {
   GripVertical,
   LayoutDashboard,
   MessageSquare,
+  SquareKanban,
   Network,
   MoreHorizontal,
   Pin,
@@ -107,6 +108,7 @@ export type Destination =
   | "conversations"
   | "workflows"
   | "dashboards"
+  | "boards"
   | "agents"
   | "mcp"
   | "skills"
@@ -277,10 +279,10 @@ function SessionRow({
             )}
             <span className="truncate">{conversation.title ?? "Untitled"}</span>
             {isWaiting ? (
-              // Needs-you indicator — takes precedence over the spinner. Amber +
+              // Needs-you indicator — takes precedence over the spinner. Filled orange +
               // a subtle pulse so a blocked conversation stands out in the list.
-              <BellDot
-                className="ml-auto size-3.5 shrink-0 animate-pulse text-amber-500"
+              <Bell
+                className="ml-auto size-4 shrink-0 animate-pulse fill-current text-orange-600 dark:text-orange-400"
                 aria-label="Waiting for your input"
               />
             ) : (
@@ -448,8 +450,8 @@ function ProjectSection({
             {/* Expanded sections show status per row; collapsed ones roll it up. */}
             {!open &&
               (anyWaiting ? (
-                <BellDot
-                  className="size-3 shrink-0 animate-pulse text-amber-500"
+                <Bell
+                  className="size-3.5 shrink-0 animate-pulse fill-current text-orange-600 dark:text-orange-400"
                   aria-label="A conversation is waiting for your input"
                 />
               ) : (
@@ -580,6 +582,7 @@ export function AppSidebar({
   onAgentsClick,
   onMcpClick,
   onDashboardsClick,
+  onKanbanClick,
   onWorkflowsClick,
   onConversationsClick,
   activeDestination,
@@ -600,6 +603,7 @@ export function AppSidebar({
   onAgentsClick: () => void
   onMcpClick: () => void
   onDashboardsClick: () => void
+  onKanbanClick: () => void
   onWorkflowsClick: () => void
   // Rail's Conversations icon: close any open screen and show the list.
   onConversationsClick: () => void
@@ -913,6 +917,21 @@ export function AppSidebar({
     setProjectDialogOpen(true)
   }
 
+  // Same 3s poll the Boards screen uses; there is no push event for board state.
+  const [boardsNeedAttention, setBoardsNeedAttention] = useState(false)
+  useEffect(() => {
+    const check = () =>
+      void window.cowork.kanban
+        .list()
+        .then((list) =>
+          setBoardsNeedAttention(list.some((b) => b.needsAttention))
+        )
+        .catch(() => {})
+    check()
+    const timer = setInterval(check, 3000)
+    return () => clearInterval(timer)
+  }, [])
+
   // App destinations, shown as an icon rail beside the conversation list so they
   // don't eat vertical space. Settings is pinned to the bottom of the rail.
   const navItems: {
@@ -943,6 +962,12 @@ export function AppSidebar({
       icon: LayoutDashboard,
       onClick: onDashboardsClick,
     },
+    {
+      id: "boards",
+      label: "Boards",
+      icon: SquareKanban,
+      onClick: onKanbanClick,
+    },
     { id: "agents", label: "Agents", icon: Bot, onClick: onAgentsClick },
     { id: "mcp", label: "MCP", icon: Plug, onClick: onMcpClick },
     { id: "skills", label: "Skills", icon: BookOpen, onClick: onSkillsClick },
@@ -967,12 +992,26 @@ export function AppSidebar({
               tooltip={label}
               side="right"
               type="button"
-              aria-label={label}
+              aria-label={
+                id === "boards" && boardsNeedAttention
+                  ? `${label} (needs your attention)`
+                  : label
+              }
               aria-current={activeDestination === id ? "page" : undefined}
               onClick={onClick}
-              className={railButton}
+              className={cn(railButton, "relative")}
             >
               <Icon className="size-4" />
+              {id === "boards" && boardsNeedAttention && (
+                // Solid badge, not an outline glyph: the rail icon is tiny, so the
+                // cue needs a filled shape and a ring to separate it from the icon.
+                <span
+                  className="absolute -top-1 -right-1 flex size-4 animate-pulse items-center justify-center rounded-full bg-orange-600 text-white ring-2 ring-sidebar"
+                  aria-hidden
+                >
+                  <Bell className="size-2.5 fill-current" />
+                </span>
+              )}
             </TooltipButton>
           ))}
           <div className="flex-1" />

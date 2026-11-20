@@ -94,7 +94,7 @@ const TERMINAL_TASK_STATUSES = new Set([
 // task that settled before we subscribed still resolves; a timeout guards against
 // a lost event. Used to know when a dashboard_refresh executor has finished so
 // the view can re-read the cache.
-function waitForTask(taskId: string): Promise<void> {
+export function waitForTask(taskId: string): Promise<void> {
   return new Promise<void>((resolve) => {
     let done = false
     const finish = () => {

@@ -1,0 +1,649 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workflows and Boards</title>
+<style>
+:root{
+  --bg:#f6f5f2;--panel:#fff;--ink:#1d1d1b;--muted:#6b6a66;--line:#e2e0da;
+  --accent:#3b5bdb;--ok:#2b8a3e;--warn:#c27c0e;--bad:#c92a2a;--info:#1971c2;--you:#9c36b5;
+  --chip:#f0efeb;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#141413;--panel:#1e1e1c;--ink:#ecebe6;--muted:#9a9890;--line:#33322f;
+  --accent:#748ffc;--ok:#51cf66;--warn:#fcc419;--bad:#ff6b6b;--info:#4dabf7;--you:#da77f2;--chip:#2a2a27;
+}}
+:root[data-theme="dark"]{
+  --bg:#141413;--panel:#1e1e1c;--ink:#ecebe6;--muted:#9a9890;--line:#33322f;
+  --accent:#748ffc;--ok:#51cf66;--warn:#fcc419;--bad:#ff6b6b;--info:#4dabf7;--you:#da77f2;--chip:#2a2a27;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+header{padding:24px 16px 0;max-width:1200px;margin:0 auto}
+h1{margin:0 0 4px;font-size:22px}
+h2{font-size:16px;margin:0 0 8px}
+h3{font-size:13px;margin:0 0 6px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+p{margin:0 0 8px}
+.muted{color:var(--muted)}
+main{max-width:1200px;margin:0 auto;padding:16px}
+.tabs{display:flex;gap:4px;margin-top:16px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.tabs button{border:0;background:none;color:var(--muted);padding:8px 14px;font:inherit;cursor:pointer;border-bottom:2px solid transparent}
+.tabs button[aria-selected="true"]{color:var(--ink);border-color:var(--accent);font-weight:600}
+.grid{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:16px}
+@media (max-width:860px){.grid{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+button.b{font:inherit;font-size:13px;border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:6px;padding:5px 10px;cursor:pointer}
+button.b:hover:not(:disabled){border-color:var(--accent)}
+button.b:disabled{opacity:.4;cursor:not-allowed}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.danger{color:var(--bad)}
+.chip{display:inline-block;font-size:11px;padding:1px 8px;border-radius:99px;background:var(--chip);color:var(--muted);white-space:nowrap}
+.s-waiting,.s-idle{color:var(--muted)}
+.s-active,.s-running{background:color-mix(in srgb,var(--info) 18%,transparent);color:var(--info)}
+.s-completed,.s-done,.s-Completed{background:color-mix(in srgb,var(--ok) 18%,transparent);color:var(--ok)}
+.s-failed,.s-Failed,.s-cancelled,.s-Cancelled{background:color-mix(in srgb,var(--bad) 16%,transparent);color:var(--bad)}
+.s-paused,.s-Paused{background:color-mix(in srgb,var(--warn) 20%,transparent);color:var(--warn)}
+.s-blocked,.s-approval{background:color-mix(in srgb,var(--you) 18%,transparent);color:var(--you)}
+.s-Active{background:color-mix(in srgb,var(--info) 18%,transparent);color:var(--info)}
+.log{font:12px/1.5 ui-monospace,Menlo,monospace;max-height:360px;overflow:auto;background:var(--chip);border-radius:8px;padding:8px;margin:0;white-space:pre-wrap}
+.log div{border-bottom:1px dashed var(--line);padding:2px 0}
+.steps{display:flex;flex-direction:column;gap:8px}
+.step{border:1px solid var(--line);border-radius:8px;padding:10px;display:grid;grid-template-columns:28px 1fr auto;gap:8px;align-items:start}
+.step.on{border-color:var(--info);box-shadow:0 0 0 2px color-mix(in srgb,var(--info) 25%,transparent)}
+.num{width:24px;height:24px;border-radius:50%;background:var(--chip);display:grid;place-items:center;font-size:12px;font-weight:600}
+.counters{font-size:12px;color:var(--muted)}
+.choices{margin-top:10px;padding:10px;border-radius:8px;background:var(--chip)}
+.choices h3{margin-bottom:8px}
+svg text{fill:var(--ink);font:12px -apple-system,sans-serif}
+svg .node rect{fill:var(--panel);stroke:var(--line);stroke-width:1.5}
+svg .node.hot rect{stroke:var(--accent);stroke-width:3;fill:color-mix(in srgb,var(--accent) 12%,var(--panel))}
+svg .edge{stroke:var(--muted);fill:none;stroke-width:1.3}
+svg .lbl{fill:var(--muted);font-size:10.5px}
+.diagram{width:100%;height:auto;display:block}
+.board{display:flex;gap:10px;overflow-x:auto;padding-bottom:6px}
+.col{flex:0 0 200px;background:var(--chip);border-radius:10px;padding:8px;min-height:220px}
+.col header{padding:0;margin:0 0 6px}
+.col .name{font-weight:600;font-size:13px}
+.col .meta{font-size:11px;color:var(--muted)}
+.kc{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px;cursor:pointer;font-size:12.5px}
+.kc:hover,.kc.sel{border-color:var(--accent)}
+.kc .t{font-weight:600;margin-bottom:4px}
+.pipe{display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:12px}
+.pipe .p{padding:4px 10px;border-radius:6px;background:var(--chip);border:1px solid var(--line)}
+.pipe .p.hot{border-color:var(--accent);color:var(--accent);font-weight:600}
+.pipe .p.badp{border-color:var(--bad);color:var(--bad)}
+.arrow{color:var(--muted)}
+label.t{display:flex;gap:6px;align-items:center;font-size:13px}
+table{border-collapse:collapse;width:100%;font-size:12.5px}
+td,th{border-bottom:1px solid var(--line);padding:5px 6px;text-align:left;vertical-align:top}
+.note{border-left:3px solid var(--accent);padding:6px 10px;background:var(--chip);border-radius:0 6px 6px 0;font-size:13px}
+.sec{margin-top:16px}
+.hidden{display:none}
+.drawer h2{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+code{font:12px ui-monospace,Menlo,monospace;background:var(--chip);padding:0 4px;border-radius:4px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Workflows and Boards</h1>
+  <p class="muted">Interactive walkthrough of how North Star runs workflows (<code>src/main/workflows/service.ts</code>) and kanban boards (<code>src/main/kanban/</code>). You play the agent: pick what each turn returns and watch the state change.</p>
+  <nav class="tabs" role="tablist">
+    <button role="tab" aria-selected="true" data-tab="wf">Workflows</button>
+    <button role="tab" aria-selected="false" data-tab="kb">Kanban board</button>
+    <button role="tab" aria-selected="false" data-tab="cmp">Side by side</button>
+  </nav>
+</header>
+
+<main>
+<!-- ============ WORKFLOWS ============ -->
+<section id="tab-wf">
+  <div class="grid">
+    <div>
+      <div class="card">
+        <div class="row" style="justify-content:space-between">
+          <h2 style="margin:0">Run: “Ship a feature” <span id="wfRunStatus" class="chip">not started</span></h2>
+          <div class="row">
+            <button class="b primary" id="wfStart">Start run</button>
+            <button class="b" id="wfPause">Pause</button>
+            <button class="b" id="wfResume">Resume</button>
+            <button class="b" id="wfRetry">Retry…</button>
+            <button class="b danger" id="wfCancel">Cancel</button>
+            <button class="b" id="wfReset">Reset</button>
+          </div>
+        </div>
+        <p class="muted" style="margin-top:8px">Start enqueues one durable <code>workflow_run</code> task. If the workspace has no index, it indexes first (waits up to 60 s, then starts on a partial index). Steps run in order; each gets its own conversation and an unattended Auto-mode turn.</p>
+        <div class="steps" id="wfSteps"></div>
+        <div id="wfChoices"></div>
+      </div>
+
+      <div class="card sec">
+        <h3>Step lifecycle (highlight follows the active step)</h3><p class="muted" style="font-size:12px">“unfinished” loops back into the agent turn up to 3 times before the step fails.</p>
+        <svg class="diagram" viewBox="0 0 760 300" id="wfDiagram"></svg>
+      </div>
+    </div>
+    <div>
+      <div class="card">
+        <h3>Event log</h3>
+        <div class="log" id="wfLog"></div>
+      </div>
+      <div class="card sec">
+        <h3>Rules worth knowing</h3>
+        <table>
+          <tr><td>Prompt</td><td>Step instructions + earlier step results as <em>untrusted reference data</em> (bounded).</td></tr>
+          <tr><td>Handoff</td><td>Each turn must end with handoff JSON: <code>completed</code>, <code>unfinished</code>, or a blocker.</td></tr>
+          <tr><td>Bad JSON</td><td>One tool-free repair turn. Still bad → step fails.</td></tr>
+          <tr><td>Unfinished</td><td>Up to 3 automatic continuation turns, each summarizing the transcript first.</td></tr>
+          <tr><td>Validator</td><td>Optional, read-only, independent model. Rejection → correction turn; budget <code>maxCorrectionLoops</code> (default 2).</td></tr>
+          <tr><td>Retry</td><td>Restarts from the first unfinished step with a fresh correction budget. Feedback leads the next message and overrides the plan.</td></tr>
+          <tr><td>Resume</td><td>Keeps the budget. Refused if a step has unknown side-effecting tool outcomes.</td></tr>
+          <tr><td>Browser / Electron</td><td>Per-step opt-in; max 4 such steps at once; tabs/apps don't survive pause.</td></tr>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ KANBAN ============ -->
+<section id="tab-kb" class="hidden">
+  <div class="card">
+    <h3>Intake: tracker → Inbox (no LLM on replay)</h3>
+    <div class="pipe" id="kbPipe"></div>
+    <div class="row" style="margin-top:10px">
+      <button class="b primary" id="kbSync">Sync</button>
+      <button class="b" id="kbApprove">Approve recipe</button>
+      <button class="b" id="kbEditRecipe">Edit recipe / filter</button>
+      <button class="b" id="kbUpstream">Simulate upstream change</button>
+      <button class="b" id="kbReset">Reset</button>
+      <span class="muted" style="font-size:12px">Filter: tags <code>agent-go</code> (any), exclude <code>agent-skip</code>, assignee <code>me</code></span>
+    </div>
+  </div>
+
+  <div class="grid sec">
+    <div>
+      <div class="card">
+        <h3>Board — click a card to act on it</h3>
+        <div class="board" id="kbBoard"></div>
+      </div>
+      <div class="card sec drawer" id="kbDrawer"><p class="muted">Select a card.</p></div>
+    </div>
+    <div>
+      <div class="card">
+        <h3>Card run states</h3>
+        <svg class="diagram" viewBox="0 0 420 330" id="kbDiagram"></svg>
+      </div>
+      <div class="card sec">
+        <h3>Event log</h3>
+        <div class="log" id="kbLog"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card sec">
+    <h3>Not built yet (plan 136.3 / 136.4)</h3>
+    <table>
+      <tr><th>Slice</th><th>What it adds</th></tr>
+      <tr><td>136.3</td><td>On-enter / on-exit upstream actions (set state, comment, tag) with preview, approval levels (<code>always</code>, <code>once_per_action</code>, <code>once_per_board</code>, <code>auto</code>), idempotency keys and an audit log. Column outcomes (e.g. <code>passed</code>→advance, <code>failed</code>→end, <code>incomplete</code>→wait) with actions filtered by outcome.</td></tr>
+      <tr><td>136.4</td><td>WIP limits, budget caps, upstream drift handling. Today any number of cards can run; the work lane caps it at 6.</td></tr>
+    </table>
+  </div>
+</section>
+
+<!-- ============ COMPARE ============ -->
+<section id="tab-cmp" class="hidden">
+  <div class="card">
+    <h2>Same engine, different shape</h2>
+    <p class="muted">Both are durable tasks on the shared task runner, run unattended Auto-mode turns, parse the same handoff, and bound prior results the same way (<code>src/main/tasks/bounded-results.ts</code>).</p>
+    <table>
+      <tr><th></th><th>Workflow</th><th>Kanban board</th></tr>
+      <tr><td>Unit of work</td><td>One run of an ordered list of steps against an objective</td><td>Many cards (tracker items), each moving through columns</td></tr>
+      <tr><td>Task kind</td><td><code>workflow_run</code> (one per run)</td><td><code>kanban_sync</code> + <code>kanban_card_run</code> (one per column attempt)</td></tr>
+      <tr><td>Where input comes from</td><td>User's objective</td><td>Tracker item via an approved CLI/MCP recipe, inserted as a <code>DATA:</code> untrusted envelope</td></tr>
+      <tr><td>Progression</td><td>Automatic, step after step</td><td>Per column gate: <code>agent</code> advances, <code>human</code> waits for Approve</td></tr>
+      <tr><td>Quality check</td><td>Optional independent validator + correction loops</td><td>Human gate, Reject / Reject with feedback / Send back</td></tr>
+      <tr><td>Tool calls needing a yes</td><td>End the step (it fails)</td><td>Card parks on “needs approval”; Allow / Deny on the card</td></tr>
+      <tr><td>Isolation</td><td>Runs in the workspace</td><td>One git worktree + branch per card: <code>ns/kanban/&lt;board&gt;/&lt;item&gt;</code>, shared by all its columns</td></tr>
+      <tr><td>After an app restart</td><td>Run shows <em>Interrupted</em>; Resume or Retry</td><td>Running card marked <em>failed (interrupted)</em>; Rerun</td></tr>
+      <tr><td>Continuations</td><td>Up to 3, with transcript summary between turns</td><td>Up to 3, no summary between turns (known limit)</td></tr>
+    </table>
+  </div>
+</section>
+</main>
+
+<script>
+// ---------- helpers ----------
+const $ = (s) => document.querySelector(s)
+const el = (tag, attrs = {}, ...kids) => {
+  const n = document.createElement(tag)
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "on") for (const [e, f] of Object.entries(v)) n.addEventListener(e, f)
+    else if (k === "class") n.className = v
+    else n.setAttribute(k, v)
+  }
+  for (const k of kids.flat()) if (k != null && k !== false) n.append(k)
+  return n
+}
+const chip = (s, label) => el("span", { class: "chip s-" + s }, label ?? s)
+function logTo(box, msg) {
+  const t = new Date().toLocaleTimeString([], { hour12: false })
+  box.prepend(el("div", {}, `${t}  ${msg}`))
+}
+document.querySelectorAll(".tabs button").forEach((b) =>
+  b.addEventListener("click", () => {
+    document.querySelectorAll(".tabs button").forEach((x) => x.setAttribute("aria-selected", x === b))
+    for (const id of ["wf", "kb", "cmp"]) $("#tab-" + id).classList.toggle("hidden", id !== b.dataset.tab)
+  })
+)
+
+// Generic box-and-arrow state diagram.
+function drawDiagram(svg, nodes, edges, hot) {
+  svg.innerHTML = `<defs><marker id="${svg.id}-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="currentColor" style="color:var(--muted)"/></marker></defs>`
+  const W = 104, H = 30, c = {}
+  for (const n of nodes) c[n.id] = n
+  for (const [a, b, lbl, bend = 0] of edges) {
+    const A = c[a], B = c[b]
+    const ax = A.x + W / 2, ay = A.y + H / 2, bx = B.x + W / 2, by = B.y + H / 2
+    // clip line endpoints to box edges
+    const clip = (x, y, tx, ty) => {
+      const dx = tx - x, dy = ty - y
+      const s = Math.min(Math.abs(W / 2 / (dx || 1e-9)), Math.abs(H / 2 / (dy || 1e-9)))
+      return [x + dx * s, y + dy * s]
+    }
+    const mx = (ax + bx) / 2 + bend, my = (ay + by) / 2 + bend
+    const [sx, sy] = clip(ax, ay, mx, my), [ex, ey] = clip(bx, by, mx, my)
+    svg.insertAdjacentHTML("beforeend",
+      `<path class="edge" d="M${sx},${sy} Q${mx},${my} ${ex},${ey}" marker-end="url(#${svg.id}-a)"/>` +
+      (lbl ? `<text class="lbl" x="${mx}" y="${my - 3}" text-anchor="middle">${lbl}</text>` : ""))
+  }
+  for (const n of nodes)
+    svg.insertAdjacentHTML("beforeend",
+      `<g class="node ${hot === n.id ? "hot" : ""}"><rect x="${n.x}" y="${n.y}" width="${W}" height="${H}" rx="7"/><text x="${n.x + W / 2}" y="${n.y + 19}" text-anchor="middle">${n.label}</text></g>`)
+}
+
+// =================== WORKFLOWS ===================
+const WF_STEPS = [
+  { title: "Plan", instructions: "Read the code and write an implementation plan.", validate: false },
+  { title: "Implement", instructions: "Implement the plan and run the tests.", validate: true },
+  { title: "Review", instructions: "Review the diff and report risks.", validate: false },
+]
+const MAX_CONT = 3
+let wf
+const wfLog = $("#wfLog")
+function wfInit() {
+  wf = {
+    status: null, // Active | Completed | Paused | Cancelled | Failed
+    phase: null, // which choice panel: indexing | turn | repair | validate
+    idx: -1,
+    steps: WF_STEPS.map((s) => ({ ...s, status: "waiting", continued: 0, corrections: 0, budget: 2, feedback: "", result: "", error: "", node: null })),
+  }
+  wfLog.innerHTML = ""
+  logTo(wfLog, "Workflow defined: 3 steps. Step 2 has completion validation (budget 2).")
+  wfRender()
+}
+const wfStep = () => wf.steps[wf.idx]
+function wfStartStep(i, fresh = true) {
+  wf.idx = i
+  const s = wfStep()
+  s.status = "active"
+  s.node = "turn"
+  if (fresh) s.continued = 0
+  wf.phase = "turn"
+  logTo(wfLog, `Step ${i + 1} “${s.title}”: ${s.conv ? "continuing its conversation" : "new conversation"}; Auto-mode unattended turn.${s.feedback ? " User feedback leads the message." : ""}`)
+  s.conv = true
+}
+function wfFinishStep() {
+  const s = wfStep()
+  s.status = "completed"
+  s.node = "done"
+  s.feedback = ""
+  logTo(wfLog, `Step ${wf.idx + 1} completed. Result is passed to later steps as bounded untrusted data.`)
+  if (wf.idx + 1 < wf.steps.length) wfStartStep(wf.idx + 1)
+  else {
+    wf.status = "Completed"
+    wf.phase = null
+    logTo(wfLog, "Run Completed. Task result = last step's result.")
+  }
+}
+function wfFail(msg) {
+  const s = wfStep()
+  s.status = "failed"
+  s.error = msg
+  s.node = "failed"
+  wf.status = "Failed"
+  wf.phase = null
+  logTo(wfLog, `Step ${wf.idx + 1} failed: ${msg}. Run Failed. Use Retry (optionally with feedback).`)
+}
+const WF_ACTIONS = {
+  turn: [
+    ["Handoff: completed", () => {
+      const s = wfStep()
+      if (s.validate) {
+        wf.phase = "validate"; s.node = "validate"
+        logTo(wfLog, "Handoff completed → independent validator (read-only tools) inspects the workspace.")
+      } else wfFinishStep()
+    }],
+    ["Handoff: unfinished", () => {
+      const s = wfStep()
+      if (s.continued >= MAX_CONT) return wfFail(`still unfinished after ${MAX_CONT} continuations`)
+      s.continued++
+      s.node = "turn"
+      logTo(wfLog, `Unfinished, no external blocker → summarize transcript, continuation ${s.continued}/${MAX_CONT}.`)
+    }],
+    ["Handoff JSON invalid", () => { wf.phase = "repair"; wfStep().node = "repair"; logTo(wfLog, "Handoff didn't parse → one tool-free repair turn.") }],
+    ["Blocker (credentials / login…)", () => wfFail("blocked: needs credentials")],
+    ["Tool needs explicit yes", () => wfFail("a tool call needed approval in Auto mode")],
+  ],
+  repair: [
+    ["Repair returns valid handoff", () => { wf.phase = "turn"; wfStep().node = "turn"; logTo(wfLog, "Repair OK; handoff accepted."); WF_ACTIONS.turn[0][1]() }],
+    ["Repair still invalid", () => wfFail("invalid handoff after repair")],
+  ],
+  validate: [
+    ["Validator: accepted", () => wfFinishStep()],
+    ["Validator: rejected", () => {
+      const s = wfStep()
+      if (s.corrections >= s.budget) return wfFail(`validation failed after ${s.budget} corrections`)
+      s.corrections++
+      s.node = "correct"
+      logTo(wfLog, `Rejected with findings → correction turn ${s.corrections}/${s.budget} (counted before the turn). Result appended, not replaced.`)
+    }],
+    ["Correction turn finished → validate again", () => { wfStep().node = "validate"; logTo(wfLog, "Correction handoff completed → validator runs again.") }],
+  ],
+}
+function wfRender() {
+  const rs = $("#wfRunStatus")
+  rs.className = "chip " + (wf.status ? "s-" + wf.status : "")
+  rs.textContent = wf.status ?? "not started"
+  const box = $("#wfSteps")
+  box.innerHTML = ""
+  wf.steps.forEach((s, i) => {
+    box.append(el("div", { class: "step" + (i === wf.idx && s.status === "active" ? " on" : "") },
+      el("div", { class: "num" }, String(i + 1)),
+      el("div", {},
+        el("div", {}, el("strong", {}, s.title), " ", s.validate ? el("span", { class: "chip" }, "validator") : null),
+        el("div", { class: "muted", style: "font-size:12.5px" }, s.instructions),
+        el("div", { class: "counters" }, `continuations ${s.continued}/${MAX_CONT} · corrections ${s.corrections}/${s.validate ? s.budget : "–"}`),
+        s.feedback ? el("div", { class: "counters" }, `retry feedback: “${s.feedback}”`) : null,
+        s.error ? el("div", { style: "color:var(--bad);font-size:12px" }, s.error) : null),
+      chip(s.status)))
+  })
+  const ch = $("#wfChoices")
+  ch.innerHTML = ""
+  if (wf.status === "Active" && wf.phase) {
+    let opts = WF_ACTIONS[wf.phase]
+    if (wf.phase === "validate") opts = wfStep().node === "correct" ? [opts[2]] : opts.slice(0, 2)
+    ch.append(el("div", { class: "choices" },
+      el("h3", {}, wf.phase === "turn" ? `You are the agent on step ${wf.idx + 1}: what does the turn return?` : wf.phase === "repair" ? "Repair turn result" : "Validation"),
+      el("div", { class: "row" }, opts.map(([label, fn]) =>
+        el("button", { class: "b", on: { click: () => { fn(); wfRender() } } }, label)))))
+  }
+  $("#wfStart").disabled = wf.status !== null
+  $("#wfPause").disabled = wf.status !== "Active"
+  $("#wfResume").disabled = wf.status !== "Paused"
+  $("#wfRetry").disabled = !["Failed", "Cancelled", "Paused"].includes(wf.status)
+  $("#wfCancel").disabled = !["Active", "Paused"].includes(wf.status)
+  const s = wf.idx >= 0 ? wfStep() : null
+  const hot = !wf.status ? "start" : wf.status === "Paused" ? "paused" : wf.status === "Cancelled" ? "paused" : s?.node
+  drawDiagram($("#wfDiagram"), [
+    { id: "start", label: "waiting", x: 10, y: 20 },
+    { id: "turn", label: "agent turn", x: 170, y: 20 },
+    { id: "repair", label: "repair turn", x: 170, y: 140 },
+    { id: "validate", label: "validator", x: 400, y: 20 },
+    { id: "correct", label: "correction", x: 400, y: 140 },
+    { id: "done", label: "completed", x: 630, y: 20 },
+    { id: "failed", label: "failed", x: 285, y: 250 },
+    { id: "paused", label: "paused / cancelled", x: 10, y: 140 },
+  ], [
+    ["start", "turn", "start"],
+    ["turn", "repair", "bad JSON", -30],
+    ["repair", "turn", "ok", 30],
+    ["turn", "validate", "completed"],
+    ["turn", "done", "completed (no validator)", -40],
+    ["validate", "done", "accepted"],
+    ["validate", "correct", "rejected", -30],
+    ["correct", "validate", "", 30],
+    ["turn", "failed", "blocker / >3 unfinished"],
+    ["repair", "failed", "still bad"],
+    ["correct", "failed", "budget spent"],
+    ["paused", "turn", "resume / retry"],
+  ], hot)
+  // self-loop label for continuation
+}
+$("#wfStart").onclick = () => {
+  wf.status = "Active"
+  logTo(wfLog, "Start: validated (steps have instructions), saved, enqueued task kind workflow_run.")
+  logTo(wfLog, "Workspace had no index → indexing before step 1 (advisory, 60 s cap).")
+  wfStartStep(0)
+  wfRender()
+}
+$("#wfPause").onclick = () => {
+  wf.status = "Paused"; wfStep().status = "paused"
+  logTo(wfLog, "Pause: abort signal with pause reason; active step → paused. Browser tabs/apps released.")
+  wfRender()
+}
+$("#wfResume").onclick = () => {
+  wf.status = "Active"
+  logTo(wfLog, "Resume: checked no unknown side-effecting tool outcomes; continues the step's conversation with a resume message. Correction budget kept.")
+  wfStartStep(wf.idx, false)
+  wfRender()
+}
+$("#wfRetry").onclick = () => {
+  const fb = prompt("Optional feedback for the retried step (leave empty to clear earlier feedback):", "") ?? null
+  if (fb === null) return
+  const i = wf.steps.findIndex((s) => s.status !== "completed")
+  wf.steps.forEach((s) => { if (s.status !== "completed") { s.corrections = 0; s.error = "" } })
+  wf.steps[i].feedback = fb.trim()
+  wf.status = "Active"
+  logTo(wfLog, `Retry: task restarted from step ${i + 1}; correction budgets reset.${fb.trim() ? " Feedback saved; it leads the next message and overrides the plan." : " Feedback cleared."}`)
+  wfStartStep(i)
+  wfRender()
+}
+$("#wfCancel").onclick = () => {
+  wf.status = "Cancelled"; wfStep().status = "cancelled"; wf.phase = null
+  logTo(wfLog, "Cancel: active step → cancelled. Retry is still possible.")
+  wfRender()
+}
+$("#wfReset").onclick = wfInit
+wfInit()
+
+// =================== KANBAN ===================
+const kbLog = $("#kbLog")
+const UPSTREAM = [
+  { id: "#41", title: "Fix login timeout", tags: ["agent-go", "bug"], assignee: "me" },
+  { id: "#42", title: "Add CSV export", tags: ["agent-go"], assignee: "me" },
+  { id: "#43", title: "Refactor billing", tags: ["agent-go"], assignee: "teammate" },
+  { id: "#44", title: "Dark mode toggle", tags: ["agent-go", "agent-skip"], assignee: "me" },
+  { id: "#45", title: "Update docs", tags: ["docs"], assignee: "me" },
+]
+const COLS = [
+  { id: "plan", name: "Plan", gate: "agent", instructions: "Write a plan." , agent: "North Star" },
+  { id: "build", name: "Build", gate: "agent", instructions: "Implement in the card worktree.", agent: "coder" },
+  { id: "review", name: "Review", gate: "human", instructions: "Review the diff, open a PR.", agent: "North Star" },
+  { id: "done", name: "Done", gate: "agent", instructions: "", agent: "—" },
+]
+let kb
+function kbInit() {
+  kb = { approved: false, synced: 0, cards: [], sel: null, upstream: structuredClone(UPSTREAM), pipeHot: null, pipeBad: null }
+  kbLog.innerHTML = ""
+  logTo(kbLog, "Board created. Intake recipe authored by an agent (kanban_write): `gh issue list --search {{query}}`. Not approved yet.")
+  kbRender()
+}
+const colIdx = (id) => COLS.findIndex((c) => c.id === id)
+const card = (id) => kb.cards.find((c) => c.id === id)
+function matches(it) {
+  return it.tags.includes("agent-go") && !it.tags.includes("agent-skip") && it.assignee === "me"
+}
+function enterColumn(c, colId, note = "") {
+  c.col = colId
+  c.pending = null
+  const col = COLS[colIdx(colId)]
+  if (!col) { c.state = "idle"; return }
+  if (!col.instructions) {
+    c.state = "idle"
+    logTo(kbLog, `${c.id} → ${col.name}: no instructions, no run. Card sits here.`)
+    return
+  }
+  if (!c.worktree) {
+    c.worktree = `ns/kanban/b1/${c.id.slice(1)}`
+    logTo(kbLog, `${c.id}: first run → worktree + branch ${c.worktree} (shared by every column).`)
+  }
+  c.state = "running"
+  c.runs.push({ col: col.name, status: "running" })
+  logTo(kbLog, `${c.id} → ${col.name}: kanban_card_run enqueued. Prompt = column instructions + item as DATA: envelope + bounded prior results. Agent: ${col.agent}.${note}`)
+}
+function finishRun(c, status) {
+  const r = c.runs.at(-1)
+  if (r && r.status === "running") r.status = status
+}
+const KB_TURNS = [
+  ["Handoff: completed", (c) => {
+    finishRun(c, "completed")
+    const i = colIdx(c.col), col = COLS[i]
+    if (col.gate === "human") { c.state = "waiting"; logTo(kbLog, `${c.id}: completed in ${col.name} (human gate) → waiting for Approve.`) }
+    else if (i === COLS.length - 1) { c.state = "done"; logTo(kbLog, `${c.id}: finished the last column → done.`) }
+    else { logTo(kbLog, `${c.id}: completed in ${col.name} (agent gate) → advances.`); enterColumn(c, COLS[i + 1].id) }
+  }],
+  ["Handoff: blocked (needs login…)", (c) => { finishRun(c, "completed"); c.state = "blocked"; c.err = "needs gh auth login"; logTo(kbLog, `${c.id}: blocked → shown as “needs you”, not a failure.`) }],
+  ["Handoff: failed / invalid after repair", (c) => { finishRun(c, "failed"); c.state = "failed"; c.err = "handoff invalid after repair"; logTo(kbLog, `${c.id}: failed.`) }],
+  ["Tool call needs your yes", (c) => { c.pending = "mcp__github__create_pull_request"; logTo(kbLog, `${c.id}: agent waits on ${c.pending} (in memory). Card shows “needs approval”.`) }],
+]
+function kbActions(c) {
+  const i = colIdx(c.col), A = []
+  const add = (label, fn, cls = "b") => A.push(el("button", { class: cls, on: { click: () => { fn(); kbRender() } } }, label))
+  if (c.state === "running" && c.pending) {
+    add("Allow", () => { logTo(kbLog, `${c.id}: Allowed ${c.pending}; agent continues.`); c.pending = null }, "b primary")
+    add("Deny", () => { logTo(kbLog, `${c.id}: Denied ${c.pending}; agent continues without it.`); c.pending = null })
+  } else if (c.state === "running") {
+    KB_TURNS.forEach(([l, f]) => add(l, () => f(c)))
+  }
+  if (c.state === "waiting") {
+    add("Approve", () => {
+      logTo(kbLog, `${c.id}: approved.`)
+      if (i === COLS.length - 1) c.state = "done"; else enterColumn(c, COLS[i + 1].id)
+    }, "b primary")
+    add("Reject", () => { c.col = null; c.state = "idle"; logTo(kbLog, `${c.id}: rejected → back to Inbox.`) })
+    add("Reject with feedback", () => { const f = prompt("Feedback (required):"); if (f) enterColumn(c, c.col, ` Rerun with feedback “${f}”.`) })
+  }
+  if (c.state === "running") add("Stop", () => { finishRun(c, "failed"); c.state = "failed"; c.err = "stopped"; c.pending = null; logTo(kbLog, `${c.id}: stopped → failed.`) }, "b danger")
+  if (c.col && ["failed", "blocked", "idle", "done"].includes(c.state) && COLS[i]?.instructions)
+    add("Rerun", () => { c.err = null; enterColumn(c, c.col, " Rerun.") })
+  if (c.col && i > 0 && c.state !== "running")
+    add("Send back", () => { const f = prompt("Feedback for the previous column:"); if (f) { c.err = null; enterColumn(c, COLS[i - 1].id, ` Sent back with feedback “${f}”.`) } })
+  const sel = el("select", { class: "b", on: { change: (e) => { if (!e.target.value) return; const v = e.target.value === "inbox" ? null : e.target.value; if (v === null) { c.col = null; c.state = "idle"; logTo(kbLog, `${c.id} moved to Inbox.`) } else { c.err = null; enterColumn(c, v, " (moved by you)") } kbRender() } } },
+    el("option", { value: "" }, "Move to…"), el("option", { value: "inbox" }, "Inbox"), COLS.map((col) => el("option", { value: col.id }, col.name)))
+  if (c.state !== "running") A.push(sel)
+  add("Remove", () => { kb.cards = kb.cards.filter((x) => x !== c); kb.sel = null; logTo(kbLog, `${c.id} removed; worktree deleted, branch kept.`) }, "b danger")
+  return A
+}
+function stateLabel(c) {
+  if (c.state === "running" && c.pending) return chip("approval", "needs approval")
+  if (c.state === "blocked") return chip("blocked", "needs you")
+  if (c.status === "unmatched") return chip("failed", "unmatched")
+  return chip(c.state)
+}
+function kbRender() {
+  const steps = [
+    ["recipe", "Approved recipe?"], ["whoami", "Resolve “me” (gh api user)"], ["query", "Compile filter → {{query}}"],
+    ["run", "Replay CLI / MCP call"], ["normalize", "Normalize items"], ["recheck", "Re-check filter locally"], ["inbox", "Upsert Inbox"],
+  ]
+  const pipe = $("#kbPipe"); pipe.innerHTML = ""
+  steps.forEach(([id, l], n) => {
+    if (n) pipe.append(el("span", { class: "arrow" }, "→"))
+    pipe.append(el("span", { class: "p" + (kb.pipeHot?.includes(id) ? " hot" : "") + (kb.pipeBad === id ? " badp" : "") }, l))
+  })
+  $("#kbApprove").disabled = kb.approved
+  const board = $("#kbBoard"); board.innerHTML = ""
+  const columns = [{ id: null, name: "Inbox", gate: null, instructions: "", agent: "" }, ...COLS]
+  for (const col of columns) {
+    const box = el("div", { class: "col" },
+      el("header", {}, el("div", { class: "name" }, col.name),
+        el("div", { class: "meta" }, col.id === null ? "not worked; you promote" : `${col.instructions ? col.agent : "no run"} · ${col.gate} gate`)))
+    for (const c of kb.cards.filter((c) => c.col === col.id))
+      box.append(el("div", { class: "kc" + (kb.sel === c.id ? " sel" : ""), on: { click: () => { kb.sel = c.id; kbRender() } } },
+        el("div", { class: "t" }, `${c.id} ${c.title}`), stateLabel(c)))
+    board.append(box)
+  }
+  const d = $("#kbDrawer"); d.innerHTML = ""
+  const c = kb.sel && card(kb.sel)
+  if (!c) d.append(el("p", { class: "muted" }, kb.cards.length ? "Select a card." : "Approve the recipe, then Sync to pull items into the Inbox."))
+  else {
+    d.append(
+      el("h2", {}, `${c.id} ${c.title}`, stateLabel(c)),
+      el("p", { class: "muted", style: "font-size:12.5px" }, `Column: ${c.col ? COLS[colIdx(c.col)].name : "Inbox"} · tags: ${c.tags.join(", ")} · branch: ${c.worktree ?? "none yet"}`),
+      c.err ? el("p", { style: "color:var(--bad);font-size:12.5px" }, c.err) : null,
+      c.pending ? el("p", { class: "note" }, `Waiting on ${c.pending}: “Create PR from ${c.worktree}”`) : null,
+      el("div", { class: "row" }, kbActions(c)),
+      c.runs.length ? el("div", { class: "sec" }, el("h3", {}, "Run history"),
+        el("table", {}, c.runs.map((r, i) => el("tr", {}, el("td", {}, String(i + 1)), el("td", {}, r.col), el("td", {}, chip(r.status)))))) : null)
+  }
+  const hot = c ? (c.pending ? "approval" : c.col === null ? "inbox" : c.state) : null
+  drawDiagram($("#kbDiagram"), [
+    { id: "inbox", label: "Inbox (idle)", x: 10, y: 10 },
+    { id: "running", label: "running", x: 160, y: 80 },
+    { id: "approval", label: "needs approval", x: 305, y: 10 },
+    { id: "waiting", label: "waiting (gate)", x: 305, y: 150 },
+    { id: "blocked", label: "blocked", x: 10, y: 150 },
+    { id: "failed", label: "failed", x: 160, y: 220 },
+    { id: "idle", label: "idle (no run)", x: 10, y: 285 },
+    { id: "done", label: "done", x: 305, y: 285 },
+  ], [
+    ["inbox", "running", "move"],
+    ["running", "approval", "tool needs yes", -20],
+    ["approval", "running", "allow/deny", 20],
+    ["running", "waiting", "completed, human gate"],
+    ["waiting", "running", "approve → next col", 30],
+    ["running", "blocked", "blocker"],
+    ["running", "failed", "fail / stop"],
+    ["failed", "running", "rerun", -35],
+    ["running", "done", "last column", 40],
+    ["running", "idle", "next col has no instructions", -60],
+  ], hot)
+  $("#kbDiagram").insertAdjacentHTML("beforeend", `<text class="lbl" x="212" y="74" text-anchor="middle">agent gate → next column</text>`)
+}
+$("#kbApprove").onclick = () => {
+  kb.approved = true; kb.pipeBad = null
+  logTo(kbLog, "You approved the recipe. Stored as a hash of the recipe + the resolved call.")
+  kbRender()
+}
+$("#kbEditRecipe").onclick = () => {
+  kb.approved = false
+  logTo(kbLog, "Recipe or filter changed the resolved call → hash differs → approval needed again.")
+  kbRender()
+}
+$("#kbSync").onclick = () => {
+  if (!kb.approved) {
+    kb.pipeHot = []; kb.pipeBad = "recipe"
+    logTo(kbLog, "kanban_sync failed closed: recipe not approved (hash mismatch). Nothing fetched.")
+    return kbRender()
+  }
+  kb.pipeBad = null
+  kb.pipeHot = ["recipe", "whoami", "query", "run", "normalize", "recheck", "inbox"]
+  kb.synced++
+  logTo(kbLog, `Sync #${kb.synced}: whoami → login; query = is:issue label:agent-go -label:agent-skip assignee:@me.`)
+  for (const it of kb.upstream) {
+    const existing = card(it.id)
+    if (matches(it)) {
+      if (!existing) {
+        kb.cards.push({ id: it.id, title: it.title, tags: it.tags, col: null, state: "idle", status: "active", runs: [], worktree: null, err: null, pending: null })
+        logTo(kbLog, `  ${it.id} “${it.title}” → Inbox.`)
+      } else { existing.tags = it.tags; existing.status = "active" }
+    } else {
+      const why = it.assignee !== "me" ? "assigned to a teammate" : it.tags.includes("agent-skip") ? "has agent-skip" : "missing agent-go"
+      if (existing) {
+        if (existing.col === null) { kb.cards = kb.cards.filter((x) => x !== existing); logTo(kbLog, `  ${it.id} no longer matches (${why}) → dropped from Inbox.`) }
+        else { existing.status = "unmatched"; logTo(kbLog, `  ${it.id} no longer matches (${why}) → kept, marked unmatched.`) }
+      } else logTo(kbLog, `  ${it.id} skipped by local re-check: ${why}.`)
+    }
+  }
+  kbRender()
+}
+$("#kbUpstream").onclick = () => {
+  const target = kb.upstream.find((u) => u.id === "#42")
+  target.assignee = target.assignee === "me" ? "teammate" : "me"
+  logTo(kbLog, `Upstream: #42 reassigned to ${target.assignee}. Sync to see the effect.`)
+}
+$("#kbReset").onclick = kbInit
+kbInit()
+</script>
+</body>
+</html>

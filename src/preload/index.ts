@@ -96,6 +96,16 @@ import type {
 import type { IndexStatus } from "../main/ipc/index-handlers"
 import type { ApproveResult } from "../main/dashboards/service"
 import type {
+  KanbanBoardSummary,
+  KanbanBoardGraph,
+  KanbanCardRun,
+  KanbanColumnInput,
+  KanbanUpstreamAction,
+  KanbanWriteApproval,
+} from "../shared/kanban"
+
+type KanbanResult = { ok: true } | { ok: false; reason: string }
+import type {
   McpServerView,
   McpTree,
   McpSourceRow,
@@ -1513,6 +1523,127 @@ const api = {
         "dashboard:approveRecipe",
         widgetId
       ) as Promise<ApproveResult>,
+  },
+
+  // Kanban boards fed by external trackers (plan 136.1). Boards are authored by
+  // the kanban_write agent tool; sync replays the approved intake recipe.
+  kanban: {
+    list: () =>
+      ipcRenderer.invoke("kanban:list") as Promise<KanbanBoardSummary[]>,
+    graph: (boardId: string) =>
+      ipcRenderer.invoke(
+        "kanban:graph",
+        boardId
+      ) as Promise<KanbanBoardGraph | null>,
+    delete: (boardId: string) =>
+      ipcRenderer.invoke("kanban:delete", boardId) as Promise<KanbanResult>,
+    exportFile: (boardId: string) =>
+      ipcRenderer.invoke("kanban:exportFile", boardId) as Promise<
+        KanbanResult & { canceled?: boolean }
+      >,
+    importFile: () =>
+      ipcRenderer.invoke("kanban:importFile") as Promise<
+        KanbanResult & { canceled?: boolean; boardId?: string; name?: string }
+      >,
+    saveSettings: (
+      boardId: string,
+      patch: {
+        name: string
+        filter: unknown
+        syncIntervalMs: number
+        columns: KanbanColumnInput[]
+        writeApproval: KanbanWriteApproval
+        actionsPaused: boolean
+        worktrees: boolean
+        parallelCommands: boolean
+        notifications: boolean
+        autoPromote: {
+          states: string[]
+          tags: string[]
+          fields?: { field: string; values: string[] }[]
+        }
+        // null: use the workspace scan's.
+        dependencyLinks?: string[] | null
+      }
+    ) =>
+      ipcRenderer.invoke(
+        "kanban:saveSettings",
+        boardId,
+        patch
+      ) as Promise<KanbanResult>,
+    // The card's own worktree choice (null = the board's), until it first runs (136.6).
+    setOwnWorktree: (cardId: string, value: boolean | null) =>
+      ipcRenderer.invoke(
+        "kanban:setOwnWorktree",
+        cardId,
+        value
+      ) as Promise<KanbanResult>,
+    // Card moves (plan 136.2). Entering a column with instructions starts its run.
+    // `command`: a command column's command for this one run.
+    moveCard: (cardId: string, columnId: string | null, command?: string) =>
+      ipcRenderer.invoke(
+        "kanban:moveCard",
+        cardId,
+        columnId,
+        command
+      ) as Promise<KanbanResult>,
+    // `outcome` overrides the one the agent reported (plan 136.3).
+    approveCard: (cardId: string, outcome?: string) =>
+      ipcRenderer.invoke(
+        "kanban:approveCard",
+        cardId,
+        outcome
+      ) as Promise<KanbanResult>,
+    // Answer the tracker write a card is parked on (by id, as shown).
+    approveAction: (cardId: string, actionId: string) =>
+      ipcRenderer.invoke(
+        "kanban:approveAction",
+        cardId,
+        actionId
+      ) as Promise<KanbanResult>,
+    skipAction: (cardId: string, actionId: string) =>
+      ipcRenderer.invoke(
+        "kanban:skipAction",
+        cardId,
+        actionId
+      ) as Promise<KanbanResult>,
+    actions: (cardId: string) =>
+      ipcRenderer.invoke("kanban:actions", cardId) as Promise<
+        KanbanUpstreamAction[]
+      >,
+    sendBack: (cardId: string, feedback?: string, command?: string) =>
+      ipcRenderer.invoke(
+        "kanban:sendBack",
+        cardId,
+        feedback,
+        command
+      ) as Promise<KanbanResult>,
+    retry: (cardId: string, feedback?: string, command?: string) =>
+      ipcRenderer.invoke(
+        "kanban:retry",
+        cardId,
+        feedback,
+        command
+      ) as Promise<KanbanResult>,
+    // Answer the tool call a running card's agent is waiting on.
+    answerApproval: (cardId: string, decision: "approved" | "denied") =>
+      ipcRenderer.invoke(
+        "kanban:answerApproval",
+        cardId,
+        decision
+      ) as Promise<KanbanResult>,
+    stop: (cardId: string) =>
+      ipcRenderer.invoke("kanban:stop", cardId) as Promise<KanbanResult>,
+    removeCard: (cardId: string) =>
+      ipcRenderer.invoke("kanban:removeCard", cardId) as Promise<KanbanResult>,
+    runs: (cardId: string) =>
+      ipcRenderer.invoke("kanban:runs", cardId) as Promise<KanbanCardRun[]>,
+    sync: (boardId: string) =>
+      ipcRenderer.invoke("kanban:sync", boardId) as Promise<string | null>,
+    approveSource: (boardId: string, hash: string) =>
+      ipcRenderer.invoke("kanban:approveSource", boardId, hash) as Promise<
+        { ok: true; taskId: string | null } | { ok: false; reason: string }
+      >,
   },
 
   // LLM provider accounts, their models, API keys, and the active selection.
