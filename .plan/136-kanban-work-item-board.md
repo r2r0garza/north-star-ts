@@ -1,9 +1,11 @@
 # PR136: Kanban board fed by external work trackers
 
-> Status: 136.1 built 2026-11-12 (`b0ba775`), verified against real GitHub Issues via `gh`. 136.2 built
-> 2026-11-12, unit-tested, not yet run in the app. 136.3 built 2026-11-16, unit-tested, not yet run in the
-> app or against a live tracker. 136.4 partly built 2026-11-18: per-column WIP limits (plus 136.8's
-> per-board agent cap); budget caps and upstream drift handling not started. 136.5 built 2026-11-16, unit-tested, not yet run in the app. 136.6 built 2026-11-17, unit-tested, not yet run in the app. 136.7 built 2026-11-17, unit-tested. 136.8 built 2026-11-18 (`4e756db`), unit-tested.
+> Status (2026-11-19): 136.1–136.3 and 136.5–136.8 built and unit-tested on `feat/kanban-board`, and run
+> in the app by the user on 2026-11-19, where they worked. 136.1 was also verified against real GitHub
+> Issues via `gh`. 136.4 is built only in part: per-column WIP limits (plus 136.8's per-board agent cap).
+> **Budget caps and upstream drift handling moved to plan 137**
+> (`.plan/137-kanban-budget-caps-and-drift.md`). Built after the audit: per-column entry gates and
+> per-run command edits (see **Additions 2026-11-19**).
 > Open decisions settled 2026-11-12 (see **Decisions**). Checked against the code 2026-11-18; its gaps
 > were built the same day (see **Audit 2026-11-18**).
 
@@ -251,7 +253,8 @@ locally; the recipe's command (`gh -R owner/repo`, a Jira project in the JQL) or
 - `136.3` **Built.** Upstream actions: on-enter/on-exit recipes, preview, approval, idempotency, audit log. Column
   outcomes with `advance | wait | end | goto <column>` (with `maxReturns`) and on-exit actions filtered by `when` (see **Column outcomes and
   outcome-based exit actions**).
-- `136.4` WIP limits (**built 2026-11-18**, see **Audit 2026-11-18**), budget caps, upstream drift handling.
+- `136.4` WIP limits (**built 2026-11-18**, see **Audit 2026-11-18**). Budget caps and upstream drift
+  handling **moved to plan 137**.
 - `136.5` User-column commands: a user column can run a command the user wrote on each card that enters
   (see **136.5 User-column commands**).
 - `136.6` Worktree choices and folders of repos: worktrees on or off per board and per card, parallel
@@ -457,8 +460,8 @@ The user wrote it, so it skips the approval prompt and can run with no timeout. 
 - **Restart:** runs don't auto-resume; at startup a card left `running` is marked `failed` ("interrupted").
 - **Known limits:** continuation turns don't summarize the transcript between turns the way workflow
   steps do (in-turn compaction still applies); no per-column model choice. (Since built: drag-and-drop
-  moves by a handle, `324ef2d`; at most 4 agent runs at once per board, 136.8. Per-column WIP limits
-  are still 136.4.)
+  moves by a handle, `324ef2d`; at most 4 agent runs at once per board, 136.8; per-column WIP limits,
+  136.4.)
 
 **136.5 as built**
 
@@ -655,7 +658,7 @@ card: `./repo-3/script.sh --ticket-id {{id}}`, "write the plan to plan-{{id}}.md
 - **Code:** `placeholderProblem`, `fillCommand`, `fillInstructions`, `cardVars` in `src/shared/kanban.ts`.
 
 
-## 136.8 Board files, notifications, and an agent-run cap (built, not committed yet)
+## 136.8 Board files, notifications, and an agent-run cap (built 2026-11-18, `4e756db`)
 
 - **Board files:** export a board as `<name>.board.json` (format `north-star/kanban-board`, version 1):
   its recipe, filter, sync interval, settings and columns. Never its workspace, cards, run history or
@@ -711,10 +714,30 @@ gaps it found were settled and built the same day:
   reaches the column instructions, and the agent run gets the same options (tools, roots, mode) as a
   benign card.
 
+## Additions 2026-11-19
+
+- **Per-column entry gates** (`e1bf899`, migration v89 in `5fb76fe`). A column can have an `entryGate`, the
+  same shape as the board's auto-promote gate (states, tags, custom fields). A card that the *board* moves
+  into the column (an `advance`, or `goto`) waits as `gated` until its item matches. Each sync re-checks
+  gated cards (`KanbanCardRuns.autoPromote`), and a gated card also starts if the gate is cleared. A
+  person's move skips the gate. Edited in the settings sheet; the agent's `kanban_write` keeps the stored
+  value; board export/import carries it. New run state `gated`.
+- **Per-run command edits** (`9477092`). Moving a card into a command column, Retry, and Send back can
+  carry a one-off command that replaces the column's command for that run only (`commandOverrides` in
+  `card-runs.ts`, in memory like `agentInputs`). It still goes through the policy check and placeholders;
+  the column's stored command doesn't change.
+- **Dependency links** (`8ffaba1`): see **136.6 as built**.
+- **Attention indicators** (`23d93b1`): more visible on cards and in the sidebar.
+
 **Still open:**
 
 - **Injection with a real model:** whether an agent *obeys* instructions in a ticket can't be unit-tested;
   it is a manual check.
-- **136.4 budget caps and upstream drift handling** are not started.
-- **Not run:** no slice after 136.1 has been run in the app or against a live tracker; the **Manual**
-  checks in Verification are all still open.
+- **Budget caps and upstream drift handling:** plan 137.
+- **Manual checks:** the user ran the board in the app on 2026-11-19 and it worked. The tracker-specific
+  **Manual** checks in Verification (ADO via `az boards` and MCP, Jira via Atlassian MCP, GitHub via MCP, a
+  teammate's same-tagged item staying off the board, one upstream state change per exit) are not
+  recorded as done.
+- **Pre-existing test failures** (also on `main`): two `read_document` tests in
+  `src/main/agent/tool-error-feedback.integration.test.ts` and the reasoning-effort test in
+  `src/main/db/repositories/conversations.test.ts`. Not caused by this plan.
