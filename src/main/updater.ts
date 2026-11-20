@@ -66,29 +66,68 @@ function install(file: string): void {
   app.quit()
 }
 
-export async function checkForUpdates(): Promise<void> {
-  if (!app.isPackaged) return
+// Auto checks prompt once per version; "Later" leaves it to the rail button.
+let dismissedTag: string | undefined
+let downloaded: { tag: string; file: string } | undefined
+let inFlight: Promise<string> | undefined
+// Set by a button click, even one that joins a background check already running.
+let manual = false
+
+// Resolves with a short status for the manual button's toast.
+export function checkForUpdates(isManual = false): Promise<string> {
+  if (isManual) manual = true
+  inFlight ??= runCheck().finally(() => {
+    inFlight = undefined
+    manual = false
+  })
+  return inFlight
+}
+
+async function runCheck(): Promise<string> {
+  if (!app.isPackaged) return "Updates only work in the packaged app."
   const res = await fetch(LATEST_RELEASE, {
     headers: { Accept: "application/vnd.github+json" },
   })
   if (!res.ok) throw new Error(`GitHub releases: HTTP ${res.status}`)
   const release = (await res.json()) as { tag_name: string; assets: Asset[] }
-  if (!isNewer(release.tag_name, app.getVersion())) return
+  const version = release.tag_name.replace(/^v/, "")
+  if (!isNewer(release.tag_name, app.getVersion()))
+    return `You're on the latest version (${app.getVersion()}).`
+  if (!manual && dismissedTag === release.tag_name) return "Update postponed."
   const asset = pickAsset(release.assets, process.platform, process.arch)
-  if (!asset) return
+  if (!asset) return `Version ${version} has no download for this platform yet.`
 
-  const file = join(app.getPath("temp"), asset.name)
-  const dl = await fetch(asset.browser_download_url)
-  if (!dl.ok || !dl.body) throw new Error(`Download failed: HTTP ${dl.status}`)
-  await pipeline(Readable.fromWeb(dl.body as never), createWriteStream(file))
+  if (downloaded?.tag !== release.tag_name) {
+    const file = join(app.getPath("temp"), asset.name)
+    const dl = await fetch(asset.browser_download_url)
+    if (!dl.ok || !dl.body) throw new Error(`Download failed: HTTP ${dl.status}`)
+    await pipeline(Readable.fromWeb(dl.body as never), createWriteStream(file))
+    downloaded = { tag: release.tag_name, file }
+  }
 
   const { response } = await dialog.showMessageBox({
     type: "info",
     buttons: ["Restart and update", "Later"],
     defaultId: 0,
     cancelId: 1,
-    message: `Version ${release.tag_name.replace(/^v/, "")} is ready to install`,
+    message: `Version ${version} is ready to install`,
     detail: `You have ${app.getVersion()}. The app will restart to finish updating.`,
   })
-  if (response === 0) install(file)
+  if (response === 0) {
+    install(downloaded.file)
+    return `Installing ${version}…`
+  }
+  dismissedTag = release.tag_name
+  return "Update postponed."
+}
+
+const HOUR = 60 * 60 * 1000
+// Check at launch and hourly after, so a release pushed mid-day reaches open apps.
+export function startUpdateChecks(): void {
+  const run = () =>
+    void checkForUpdates().catch((err) =>
+      console.warn("[updater] update check failed:", err)
+    )
+  run()
+  setInterval(run, HOUR)
 }

@@ -22,6 +22,7 @@ import {
   PinOff,
   Plug,
   Plus,
+  RefreshCw,
   Search,
   Settings,
   Workflow,
@@ -1015,6 +1016,22 @@ export function AppSidebar({
             </TooltipButton>
           ))}
           <div className="flex-1" />
+          <TooltipButton
+            tooltip="Check for updates"
+            side="right"
+            type="button"
+            aria-label="Check for updates"
+            onClick={() =>
+              toast.promise(window.cowork.checkForUpdates(), {
+                loading: "Checking for updates…",
+                success: (status) => status,
+                error: (err) => `Update check failed: ${err}`,
+              })
+            }
+            className={railButton}
+          >
+            <RefreshCw className="size-4" />
+          </TooltipButton>
           <TooltipButton
             tooltip="Settings"
             side="right"

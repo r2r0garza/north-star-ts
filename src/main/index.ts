@@ -15,7 +15,7 @@ import { config as loadEnv } from "dotenv"
 import { readMessageMedia } from "./media/tool-media"
 import { readConversationArtifact } from "./db/repositories/conversation-artifacts"
 import { saveFileLink } from "./files/save-link"
-import { checkForUpdates } from "./updater"
+import { checkForUpdates, startUpdateChecks } from "./updater"
 import { electronApps } from "./electron-apps"
 import { registerElectronAppHandlers } from "./ipc/electron-app-handlers"
 
@@ -1424,6 +1424,8 @@ ipcMain.handle(
     return openInIde(workspace.trim(), abs, settingsService.getIde().ide)
   }
 )
+// Manual "Check for updates" from the rail. Resolves with a status line.
+ipcMain.handle("updates:check", () => checkForUpdates(true))
 // Initial fullscreen state, queried by the renderer on mount.
 ipcMain.handle("is-fullscreen", (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
@@ -1613,9 +1615,7 @@ app.whenReady().then(async () => {
   startMemoryMaintenance()
   await startPlanMaintenance()
   createWindow()
-  void checkForUpdates().catch((err) =>
-    console.warn("[updater] update check failed:", err)
-  )
+  startUpdateChecks()
   // Interactive chat's Python venv (~/.<system-slug>/venv): check or create it in
   // the background so launch never waits on it. Chat turns await the same
   // promise, so the first turn can't race the creation.
