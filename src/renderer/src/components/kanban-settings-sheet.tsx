@@ -1,3 +1,4 @@
+import { agentSourceLabel } from "@/lib/agent-source-label"
 import { useEffect, useRef, useState } from "react"
 import {
   ArrowDown,
@@ -28,7 +29,25 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
+  Combobox,
+  ComboboxCollection,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxGroup,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxLabel,
+  ComboboxList,
+  ComboboxTrigger,
+} from "@/components/ui/combobox"
 import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
@@ -58,6 +77,104 @@ import {
   type KanbanOutcomeNext,
   type KanbanWriteApproval,
 } from "../../../shared/kanban"
+
+function SettingsSelect({
+  id,
+  children,
+  describedBy,
+  ...props
+}: React.ComponentProps<typeof Select> & { id: string; describedBy?: string }) {
+  return (
+    <Select {...props}>
+      <SelectTrigger id={id} aria-describedby={describedBy} className="w-full">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent position="popper">{children}</SelectContent>
+    </Select>
+  )
+}
+
+type PickerItem = { value: string; label: string; description?: string }
+type PickerGroup = { value: string; label: string; items: PickerItem[] }
+
+function SettingsCombobox({
+  id,
+  groups,
+  value,
+  onValueChange,
+  kind,
+  portalContainer,
+  describedBy,
+}: {
+  id: string
+  groups: PickerGroup[]
+  value: string
+  onValueChange: (value: string) => void
+  kind: string
+  portalContainer: React.RefObject<HTMLDivElement | null>
+  describedBy?: string
+}) {
+  const [search, setSearch] = useState("")
+  const selected = groups
+    .flatMap((group) => group.items)
+    .find((item) => item.value === value)
+  return (
+    <Combobox
+      items={groups}
+      value={selected ?? null}
+      inputValue={search}
+      onInputValueChange={setSearch}
+      isItemEqualToValue={(a, b) => a.value === b.value}
+      onOpenChange={(open) => {
+        if (!open) setSearch("")
+      }}
+      onValueChange={(item) => {
+        if (item) onValueChange(item.value)
+        setSearch("")
+      }}
+    >
+      <ComboboxTrigger
+        id={id}
+        aria-describedby={describedBy}
+        className="flex h-8 w-full items-center justify-between gap-1.5 rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30 dark:hover:bg-input/50"
+      >
+        <span className="truncate">{selected?.label ?? value}</span>
+      </ComboboxTrigger>
+      <ComboboxContent
+        portalContainer={portalContainer}
+        className="min-w-(--anchor-width)"
+      >
+        <ComboboxInput
+          aria-label={`Search ${kind}`}
+          placeholder={`Search ${kind}…`}
+          showTrigger={false}
+        />
+        <ComboboxEmpty>No {kind} found.</ComboboxEmpty>
+        <ComboboxList>
+          {(group: PickerGroup) => (
+            <ComboboxGroup key={group.value} items={group.items}>
+              <ComboboxLabel>{group.label}</ComboboxLabel>
+              <ComboboxCollection>
+                {(item: PickerItem) => (
+                  <ComboboxItem key={item.value} value={item}>
+                    <span className="flex min-w-0 flex-col gap-0.5">
+                      <span>{item.label}</span>
+                      {item.description && (
+                        <span className="line-clamp-2 text-xs text-muted-foreground">
+                          {item.description}
+                        </span>
+                      )}
+                    </span>
+                  </ComboboxItem>
+                )}
+              </ComboboxCollection>
+            </ComboboxGroup>
+          )}
+        </ComboboxList>
+      </ComboboxContent>
+    </Combobox>
+  )
+}
 
 const APPROVAL_LABEL: Record<KanbanWriteApproval, string> = {
   always: "Ask before every write",
@@ -189,7 +306,9 @@ function OutcomesEditor({
   columns,
   self,
   onChange,
+  portalContainer,
 }: {
+  portalContainer: React.RefObject<HTMLDivElement | null>
   outcomes: KanbanOutcome[]
   columns: Array<{ sortId: string; name: string }>
   self: string
@@ -221,12 +340,11 @@ function OutcomesEditor({
           <div className="flex flex-wrap items-end gap-2">
             <div className="flex min-w-40 flex-1 flex-col gap-1">
               <Label htmlFor={`kb-outcome-next-${i}`}>Then</Label>
-              <NativeSelect
+              <SettingsSelect
                 id={`kb-outcome-next-${i}`}
-                className="w-full"
                 value={o.next}
-                onChange={(e) => {
-                  const next = e.target.value as KanbanOutcomeNext
+                onValueChange={(value) => {
+                  const next = value as KanbanOutcomeNext
                   set(
                     i,
                     next === "goto"
@@ -240,28 +358,33 @@ function OutcomesEditor({
                 }}
               >
                 {(Object.keys(NEXT_LABEL) as KanbanOutcomeNext[]).map((n) => (
-                  <NativeSelectOption key={n} value={n}>
+                  <SelectItem key={n} value={n}>
                     {NEXT_LABEL[n]}
-                  </NativeSelectOption>
+                  </SelectItem>
                 ))}
-              </NativeSelect>
+              </SettingsSelect>
             </div>
             {o.next === "goto" ? (
               <>
                 <div className="flex min-w-32 flex-1 flex-col gap-1">
                   <Label htmlFor={`kb-outcome-target-${i}`}>Column</Label>
-                  <NativeSelect
+                  <SettingsCombobox
                     id={`kb-outcome-target-${i}`}
-                    className="w-full"
+                    kind="columns"
+                    portalContainer={portalContainer}
                     value={o.target ?? ""}
-                    onChange={(e) => set(i, { target: e.target.value })}
-                  >
-                    {others.map((c) => (
-                      <NativeSelectOption key={c.sortId} value={c.sortId}>
-                        {c.name || "Untitled column"}
-                      </NativeSelectOption>
-                    ))}
-                  </NativeSelect>
+                    onValueChange={(target) => set(i, { target })}
+                    groups={[
+                      {
+                        value: "columns",
+                        label: "Columns",
+                        items: others.map((c) => ({
+                          value: c.sortId,
+                          label: c.name || "Untitled column",
+                        })),
+                      },
+                    ]}
+                  />
                 </div>
                 <div className="flex w-24 flex-col gap-1">
                   <Label htmlFor={`kb-outcome-max-${i}`}>Max returns</Label>
@@ -443,7 +566,97 @@ export function KanbanSettingsSheet({
     const list = columnList.current
     list?.scrollTo?.({ top: list.scrollHeight })
   }, [columns.length])
+  const popupContainerRef = useRef<HTMLDivElement>(null)
   const col = columns[selectedIndex]
+  const selectedAgent = agents.find(
+    (agent) =>
+      (agent.ref ?? agent.name) === col?.agentName ||
+      agent.name === col?.agentName
+  )
+  const agentGroups: PickerGroup[] = [
+    {
+      value: "default",
+      label: "Default",
+      items: [{ value: "", label: "North Star (default)" }],
+    },
+    ...Array.from(new Set(agents.map((agent) => agent.sourceKind))).map(
+      (sourceKind) => ({
+        value: sourceKind,
+        label: agentSourceLabel(sourceKind, "North Star"),
+        items: agents
+          .filter((agent) => agent.sourceKind === sourceKind)
+          .map((agent) => ({
+            value: agent.ref ?? agent.name,
+            label: agent.label ?? agent.name,
+            description: agent.description,
+          })),
+      })
+    ),
+  ]
+  if (
+    col?.agentName &&
+    !agentGroups.some((group) =>
+      group.items.some((item) => item.value === col.agentName)
+    )
+  ) {
+    agentGroups.push({
+      value: "unavailable",
+      label: "Saved selection",
+      items: [
+        {
+          value: col.agentName,
+          label:
+            selectedAgent?.label ||
+            selectedAgent?.name ||
+            `${col.agentName} (unavailable)`,
+        },
+      ],
+    })
+  }
+  const modelGroups: PickerGroup[] = [
+    {
+      value: "default",
+      label: "Default",
+      items: [{ value: "", label: "Use application default" }],
+    },
+    ...accounts
+      .filter((account) => models[account.id]?.length)
+      .map((account) => ({
+        value: account.id,
+        label: account.displayName,
+        items: models[account.id].map((model) => ({
+          value: `${account.id}::${model.modelId}`,
+          label: `${model.modelName?.trim() || model.modelId}${account.enabled ? "" : " (disabled)"}`,
+        })),
+      })),
+  ]
+  const modelMissing = !!(
+    col?.accountId &&
+    col.modelId &&
+    !modelGroups.some((group) =>
+      group.items.some(
+        (item) => item.value === `${col.accountId}::${col.modelId}`
+      )
+    )
+  )
+  const modelUnavailable =
+    modelMissing ||
+    !!(
+      col?.accountId &&
+      !accounts.find((account) => account.id === col.accountId)?.enabled
+    )
+  if (modelMissing) {
+    modelGroups.push({
+      value: "unavailable",
+      label: "Saved selection",
+      items: [
+        {
+          value: `${col.accountId}::${col.modelId}`,
+          label: `${col.accountId} · ${col.modelId} (unavailable)`,
+        },
+      ],
+    })
+  }
   const mine = col?.owner === "user"
   const occupied =
     !!col?.id && graph.cards.some((card) => card.columnId === col.id)
@@ -551,7 +764,17 @@ export function KanbanSettingsSheet({
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="flex h-[min(48rem,calc(100dvh-3rem))] max-w-[calc(100%-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[56rem]">
+      <DialogContent
+        className="flex h-[min(48rem,calc(100dvh-3rem))] max-w-[calc(100%-2rem)] flex-col gap-0 p-0 sm:max-w-[56rem]"
+        onEscapeKeyDown={(event) => {
+          if (
+            event.target instanceof Element &&
+            event.target.closest('[data-slot="combobox-content"]')
+          ) {
+            event.preventDefault()
+          }
+        }}
+      >
         <DialogHeader className="shrink-0 px-6 pt-6 pr-12 pb-4">
           <DialogTitle>Board settings</DialogTitle>
           <DialogDescription className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
@@ -644,17 +867,16 @@ export function KanbanSettingsSheet({
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label htmlFor="kb-match">Match</Label>
-                    <NativeSelect
-                      className="w-full"
+                    <SettingsSelect
                       id="kb-match"
                       value={match}
-                      onChange={(e) =>
-                        setMatch(e.target.value as "any" | "all")
+                      onValueChange={(value) =>
+                        setMatch(value as "any" | "all")
                       }
                     >
-                      <NativeSelectOption value="any">any</NativeSelectOption>
-                      <NativeSelectOption value="all">all</NativeSelectOption>
-                    </NativeSelect>
+                      <SelectItem value="any">any</SelectItem>
+                      <SelectItem value="all">all</SelectItem>
+                    </SettingsSelect>
                   </div>
                 </div>
                 <div className="flex flex-col gap-1.5">
@@ -699,22 +921,17 @@ export function KanbanSettingsSheet({
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-[10rem_1fr]">
                   <div className="flex flex-col gap-1.5">
                     <Label htmlFor="kb-assignee">Assigned to</Label>
-                    <NativeSelect
-                      className="w-full"
+                    <SettingsSelect
                       id="kb-assignee"
                       value={assignee}
-                      onChange={(e) =>
-                        setAssignee(e.target.value as "me" | "anyone" | "user")
+                      onValueChange={(value) =>
+                        setAssignee(value as "me" | "anyone" | "user")
                       }
                     >
-                      <NativeSelectOption value="me">me</NativeSelectOption>
-                      <NativeSelectOption value="user">
-                        a person
-                      </NativeSelectOption>
-                      <NativeSelectOption value="anyone">
-                        anyone
-                      </NativeSelectOption>
-                    </NativeSelect>
+                      <SelectItem value="me">me</SelectItem>
+                      <SelectItem value="user">a person</SelectItem>
+                      <SelectItem value="anyone">anyone</SelectItem>
+                    </SettingsSelect>
                   </div>
                   {assignee === "user" ? (
                     <div className="flex flex-col gap-1.5">
@@ -846,23 +1063,26 @@ export function KanbanSettingsSheet({
                 </legend>
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor="kb-write-approval">Approval</Label>
-                  <NativeSelect
-                    className="w-full"
+                  <SettingsSelect
                     id="kb-write-approval"
+                    describedBy="kb-write-approval-description"
                     value={writeApproval}
-                    onChange={(e) =>
-                      setWriteApproval(e.target.value as KanbanWriteApproval)
+                    onValueChange={(value) =>
+                      setWriteApproval(value as KanbanWriteApproval)
                     }
                   >
                     {(Object.keys(APPROVAL_LABEL) as KanbanWriteApproval[]).map(
                       (level) => (
-                        <NativeSelectOption key={level} value={level}>
+                        <SelectItem key={level} value={level}>
                           {APPROVAL_LABEL[level]}
-                        </NativeSelectOption>
+                        </SelectItem>
                       )
                     )}
-                  </NativeSelect>
-                  <p className="text-xs text-muted-foreground">
+                  </SettingsSelect>
+                  <p
+                    id="kb-write-approval-description"
+                    className="text-xs text-muted-foreground"
+                  >
                     Column actions write to the tracker (state, comments,
                     labels). Each write is logged and runs once per visit to a
                     column. A changed action asks again.
@@ -1184,56 +1404,35 @@ export function KanbanSettingsSheet({
                     </div>
                     <div className="flex min-w-0 flex-col gap-1.5">
                       <Label htmlFor="kb-column-owner">Who works it</Label>
-                      <NativeSelect
+                      <SettingsSelect
                         id="kb-column-owner"
-                        className="w-full"
                         value={col.owner ?? "agent"}
-                        onChange={(e) =>
+                        onValueChange={(value) =>
                           update(selectedIndex, {
-                            owner: e.target.value as "agent" | "user",
+                            owner: value as "agent" | "user",
                           })
                         }
                       >
-                        <NativeSelectOption value="agent">
-                          An agent
-                        </NativeSelectOption>
-                        <NativeSelectOption value="user">Me</NativeSelectOption>
-                      </NativeSelect>
+                        <SelectItem value="agent">An agent</SelectItem>
+                        <SelectItem value="user">Me</SelectItem>
+                      </SettingsSelect>
                     </div>
                     {mine ? null : (
                       <div className="flex min-w-0 flex-col gap-1.5">
                         <Label htmlFor="kb-column-agent">Agent</Label>
-                        <NativeSelect
+                        <SettingsCombobox
+                          key={`${col.sortId}-agent`}
                           id="kb-column-agent"
-                          className="w-full"
+                          kind="agents"
+                          portalContainer={popupContainerRef}
+                          groups={agentGroups}
                           value={col.agentName ?? ""}
-                          onChange={(e) =>
+                          onValueChange={(agentName) =>
                             update(selectedIndex, {
-                              agentName: e.target.value || null,
+                              agentName: agentName || null,
                             })
                           }
-                        >
-                          <NativeSelectOption value="">
-                            North Star (default)
-                          </NativeSelectOption>
-                          {col.agentName &&
-                          !agents.some(
-                            (agent) =>
-                              (agent.ref ?? agent.name) === col.agentName
-                          ) ? (
-                            <NativeSelectOption value={col.agentName}>
-                              {col.agentName}
-                            </NativeSelectOption>
-                          ) : null}
-                          {agents.map((agent) => (
-                            <NativeSelectOption
-                              key={agent.ref ?? agent.name}
-                              value={agent.ref ?? agent.name}
-                            >
-                              {agent.label || agent.name}
-                            </NativeSelectOption>
-                          ))}
-                        </NativeSelect>
+                        />
                       </div>
                     )}
                     {mine ? (
@@ -1243,65 +1442,38 @@ export function KanbanSettingsSheet({
                     ) : (
                       <div className="flex min-w-0 flex-col gap-1.5">
                         <Label htmlFor="kb-column-model">Model</Label>
-                        <NativeSelect
+                        <SettingsCombobox
+                          key={`${col.sortId}-model`}
                           id="kb-column-model"
-                          className="w-full"
+                          kind="models"
+                          portalContainer={popupContainerRef}
+                          groups={modelGroups}
                           value={
                             col.accountId && col.modelId
                               ? `${col.accountId}::${col.modelId}`
                               : ""
                           }
-                          onChange={(e) => {
-                            const [accountId, modelId] = e.target.value
-                              ? e.target.value.split("::")
-                              : [null, null]
-                            update(selectedIndex, { accountId, modelId })
+                          describedBy={
+                            modelUnavailable
+                              ? "kb-column-model-error"
+                              : undefined
+                          }
+                          onValueChange={(value) => {
+                            const sep = value.indexOf("::")
+                            update(selectedIndex, {
+                              accountId: value ? value.slice(0, sep) : null,
+                              modelId: value ? value.slice(sep + 2) : null,
+                            })
                           }}
-                        >
-                          <NativeSelectOption value="">
-                            Use application default
-                          </NativeSelectOption>
-                          {accounts.map((account) => (
-                            <optgroup
-                              key={account.id}
-                              label={account.displayName}
-                            >
-                              {(models[account.id] ?? []).map((model) => (
-                                <NativeSelectOption
-                                  key={`${account.id}::${model.modelId}`}
-                                  value={`${account.id}::${model.modelId}`}
-                                >
-                                  {model.modelName || model.modelId}
-                                  {account.enabled ? "" : " (disabled)"}
-                                </NativeSelectOption>
-                              ))}
-                            </optgroup>
-                          ))}
-                          {col.accountId &&
-                          col.modelId &&
-                          (!accounts.some(
-                            (account) => account.id === col.accountId
-                          ) ||
-                            !(models[col.accountId] ?? []).some(
-                              (model) => model.modelId === col.modelId
-                            )) ? (
-                            <NativeSelectOption
-                              value={`${col.accountId}::${col.modelId}`}
-                            >
-                              {col.accountId} · {col.modelId} (unavailable)
-                            </NativeSelectOption>
-                          ) : null}
-                        </NativeSelect>
-                        {col.accountId &&
-                        (!accounts.some(
-                          (account) => account.id === col.accountId
-                        ) ||
-                          !accounts.find(
-                            (account) => account.id === col.accountId
-                          )?.enabled) ? (
-                          <p className="text-xs text-destructive">
-                            Saved provider account is unavailable or disabled.
-                            Choose another model or Use application default.
+                        />
+                        {modelUnavailable ? (
+                          <p
+                            id="kb-column-model-error"
+                            className="text-xs text-destructive"
+                          >
+                            Saved provider account or model is unavailable or
+                            disabled. Choose another model or Use application
+                            default.
                           </p>
                         ) : null}
                       </div>
@@ -1369,32 +1541,26 @@ export function KanbanSettingsSheet({
                         </div>
                         <div className="flex min-w-0 flex-col gap-1.5">
                           <Label htmlFor="kb-column-timeout">Time limit</Label>
-                          <NativeSelect
+                          <SettingsSelect
                             id="kb-column-timeout"
-                            className="w-full"
                             disabled={!col.command?.trim()}
                             value={String(col.commandTimeoutMs ?? "off")}
-                            onChange={(e) =>
+                            onValueChange={(value) =>
                               update(selectedIndex, {
                                 commandTimeoutMs:
-                                  e.target.value === "off"
-                                    ? null
-                                    : Number(e.target.value),
+                                  value === "off" ? null : Number(value),
                               })
                             }
                           >
-                            <NativeSelectOption value="off">
+                            <SelectItem value="off">
                               Off (runs until it finishes)
-                            </NativeSelectOption>
+                            </SelectItem>
                             {COMMAND_TIMEOUT_MINUTES.map((m) => (
-                              <NativeSelectOption
-                                key={m}
-                                value={String(m * 60_000)}
-                              >
+                              <SelectItem key={m} value={String(m * 60_000)}>
                                 {m} minutes
-                              </NativeSelectOption>
+                              </SelectItem>
                             ))}
-                          </NativeSelect>
+                          </SettingsSelect>
                         </div>
                       </div>
                     ) : null}
@@ -1527,6 +1693,7 @@ export function KanbanSettingsSheet({
                       </div>
                     </fieldset>
                     <OutcomesEditor
+                      portalContainer={popupContainerRef}
                       outcomes={col.outcomes ?? []}
                       columns={columns}
                       self={col.sortId}
@@ -1592,6 +1759,10 @@ export function KanbanSettingsSheet({
             {saving ? "Saving…" : "Save changes"}
           </Button>
         </DialogFooter>
+        <div
+          ref={popupContainerRef}
+          className="pointer-events-none absolute inset-0 [&>*]:pointer-events-auto"
+        />
       </DialogContent>
     </Dialog>
   )

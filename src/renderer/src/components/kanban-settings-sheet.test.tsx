@@ -111,6 +111,26 @@ const click = (name: string) =>
   act(async () => {
     button(name).click()
   })
+const openPicker = async (id: string) => {
+  await act(async () => {
+    const trigger = document.getElementById(id)!
+    trigger.focus()
+    trigger.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })
+    )
+  })
+}
+const choose = async (id: string, label: string) => {
+  await openPicker(id)
+  await act(async () => {
+    const option = [
+      ...document.querySelectorAll<HTMLElement>('[role="option"]'),
+    ].find((item) => item.textContent === label)!
+    expect(option, label).toBeDefined()
+    option.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }))
+    option.click()
+  })
+}
 beforeEach(() => {
   saveSettings.mockClear()
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
@@ -176,9 +196,9 @@ it("keeps column identities and approval choices when navigating and reordering"
     (document.querySelector('[role="switch"]') as HTMLButtonElement).click()
   )
   await click("In progress")
-  expect(
-    (document.querySelector("#kb-column-agent") as HTMLSelectElement).value
-  ).toBe("custom-agent")
+  expect(document.querySelector("#kb-column-agent")?.textContent).toContain(
+    "custom-agent"
+  )
   await act(() =>
     (
       document.querySelector(
@@ -209,17 +229,10 @@ it("selects a provider model independently of the agent and saves both", async (
     )
   )
   await click("In progress")
-  const model = document.querySelector("#kb-column-model") as HTMLSelectElement
-  expect(
-    model.querySelector('option[value="acct::model-1"]')?.textContent
-  ).toContain("Model One")
-  await act(() => {
-    model.value = "acct::model-1"
-    model.dispatchEvent(new Event("change", { bubbles: true }))
-  })
-  expect(
-    (document.querySelector("#kb-column-agent") as HTMLSelectElement).value
-  ).toBe("custom-agent")
+  await choose("kb-column-model", "Model One")
+  expect(document.querySelector("#kb-column-agent")?.textContent).toContain(
+    "custom-agent"
+  )
   await click("Save changes")
   expect(saveSettings).toHaveBeenCalledWith(
     "board",
@@ -419,18 +432,14 @@ it("saves goto outcomes by column id and the tracker-write settings, keeping sto
   expect(document.body.textContent).toContain("gh issue edit {{id}}")
   await click("Add outcome")
   const input = document.querySelector("#kb-outcome-0") as HTMLInputElement
-  const select = document.querySelector(
-    "#kb-outcome-next-0"
-  ) as HTMLSelectElement
   await act(() => {
     Object.getOwnPropertyDescriptor(
       HTMLInputElement.prototype,
       "value"
     )!.set!.call(input, "changes_requested")
     input.dispatchEvent(new Event("input", { bubbles: true }))
-    select.value = "goto"
-    select.dispatchEvent(new Event("change", { bubbles: true }))
   })
+  await choose("kb-outcome-next-0", "Send to…")
   await click("Save changes")
   const saved = saveSettings.mock.calls[0] as unknown as [
     string,
@@ -472,18 +481,11 @@ it("edits a command and its time limit only on the user's own columns", async ()
   const command = document.querySelector(
     "#kb-column-command"
   ) as HTMLTextAreaElement
-  const limit = document.querySelector(
-    "#kb-column-timeout"
-  ) as HTMLSelectElement
   expect(command.value).toBe("npm run deploy")
-  expect(limit.value).toBe("off")
-  const minutes = [...limit.options].map((o) => o.value).slice(1)
-  expect(Number(minutes[0])).toBe(5 * 60_000)
-  expect(Number(minutes.at(-1))).toBe(90 * 60_000)
-  await act(() => {
-    limit.value = String(30 * 60_000)
-    limit.dispatchEvent(new Event("change", { bubbles: true }))
-  })
+  expect(document.querySelector("#kb-column-timeout")?.textContent).toContain(
+    "Off"
+  )
+  await choose("kb-column-timeout", "30 minutes")
   await click("Save changes")
   const saved = saveSettings.mock.calls[0] as unknown as [
     string,
@@ -621,5 +623,282 @@ it("starts dependency links from the scan, lets the person add and remove them, 
   expect(saveSettings).toHaveBeenLastCalledWith(
     "board",
     expect.objectContaining({ dependencyLinks: null })
+  )
+})
+
+it("uses shared fixed choices and keeps their saved values", async () => {
+  await act(async () =>
+    root.render(
+      <KanbanSettingsSheet graph={graph} onClose={vi.fn()} onSaved={vi.fn()} />
+    )
+  )
+  expect(document.querySelector('[data-slot="native-select"]')).toBeNull()
+  await choose("kb-column-owner", "Me")
+  expect(
+    (document.querySelector("#kb-column-timeout") as HTMLButtonElement).disabled
+  ).toBe(true)
+  await choose("kb-column-owner", "An agent")
+  await openGeneral()
+  await choose("kb-match", "any")
+  await choose("kb-assignee", "a person")
+  expect(document.querySelector("#kb-user")).not.toBeNull()
+  await choose("kb-write-approval", "Never ask")
+  await click("Save changes")
+  expect(saveSettings).toHaveBeenCalledWith(
+    "board",
+    expect.objectContaining({
+      filter: expect.objectContaining({
+        match: "any",
+        assignee: { mode: "user", user: "" },
+      }),
+      writeApproval: "auto",
+      columns: expect.arrayContaining([
+        expect.objectContaining({ id: "todo", owner: "agent" }),
+      ]),
+    })
+  )
+})
+
+it("searches grouped agents inside the modal and restores focus without dismissing it", async () => {
+  window.cowork.agents.list = vi.fn().mockResolvedValue([
+    {
+      name: "reviewer",
+      ref: "github:reviewer",
+      label: "Reviewer",
+      sourceKind: "github",
+      description: "Reviews changes",
+    },
+    {
+      name: "planner",
+      ref: "claude:planner",
+      label: "Planner",
+      sourceKind: "claude",
+    },
+  ])
+  const onClose = vi.fn()
+  await act(async () =>
+    root.render(
+      <KanbanSettingsSheet graph={graph} onClose={onClose} onSaved={vi.fn()} />
+    )
+  )
+  await openPicker("kb-column-agent")
+  const popup = document.querySelector('[data-slot="combobox-content"]')!
+  expect(popup.closest('[role="dialog"]')).not.toBeNull()
+  expect(popup.textContent).toContain("GitHub")
+  expect(popup.textContent).toContain("Claude")
+  const search = document.querySelector<HTMLInputElement>(
+    '[aria-label="Search agents"]'
+  )!
+  const type = async (value: string) =>
+    act(async () => {
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value"
+      )!.set!.call(search, value)
+      search.dispatchEvent(new Event("input", { bubbles: true }))
+    })
+  await type("no-such-agent")
+  expect(document.querySelectorAll('[role="option"]')).toHaveLength(0)
+  expect(popup.textContent).toContain("No agents found.")
+  await type("Reviewer")
+  expect(document.querySelectorAll('[role="option"]')).toHaveLength(1)
+  await act(async () => {
+    search.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })
+    )
+  })
+  await act(async () => {
+    search.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true })
+    )
+  })
+  expect(document.querySelector("#kb-column-agent")?.textContent).toContain(
+    "Reviewer"
+  )
+  expect(document.activeElement?.id).toBe("kb-column-agent")
+  expect(onClose).not.toHaveBeenCalled()
+  await click("Save changes")
+  expect(saveSettings).toHaveBeenCalledWith(
+    "board",
+    expect.objectContaining({
+      columns: expect.arrayContaining([
+        expect.objectContaining({ agentName: "github:reviewer" }),
+      ]),
+    })
+  )
+})
+
+it("preserves unavailable agent and model selections until explicitly reset", async () => {
+  const saved = {
+    ...graph,
+    columns: graph.columns.map((c) => ({
+      ...c,
+      agentName: "missing-agent",
+      accountId: "missing-account",
+      modelId: "missing-model",
+    })),
+  }
+  await act(async () =>
+    root.render(
+      <KanbanSettingsSheet graph={saved} onClose={vi.fn()} onSaved={vi.fn()} />
+    )
+  )
+  expect(document.querySelector("#kb-column-agent")?.textContent).toContain(
+    "missing-agent (unavailable)"
+  )
+  expect(document.querySelector("#kb-column-model")?.textContent).toContain(
+    "missing-model (unavailable)"
+  )
+  expect(
+    document.querySelector("#kb-column-model")?.getAttribute("aria-describedby")
+  ).toBe("kb-column-model-error")
+  await click("Save changes")
+  expect(saveSettings).toHaveBeenLastCalledWith(
+    "board",
+    expect.objectContaining({
+      columns: expect.arrayContaining([
+        expect.objectContaining({
+          agentName: "missing-agent",
+          accountId: "missing-account",
+          modelId: "missing-model",
+        }),
+      ]),
+    })
+  )
+  await choose("kb-column-model", "Use application default")
+  await choose("kb-column-agent", "North Star (default)")
+  await click("Save changes")
+  expect(saveSettings).toHaveBeenLastCalledWith(
+    "board",
+    expect.objectContaining({
+      columns: expect.arrayContaining([
+        expect.objectContaining({
+          id: "todo",
+          agentName: null,
+          accountId: null,
+          modelId: null,
+        }),
+      ]),
+    })
+  )
+})
+
+it("limits goto search to other columns and keeps target identity across reorder and rename", async () => {
+  const saved = {
+    ...graph,
+    columns: graph.columns.map((c) =>
+      c.id === "todo"
+        ? {
+            ...c,
+            outcomes: [
+              {
+                name: "failed",
+                next: "goto" as const,
+                target: "doing",
+                maxReturns: 2,
+              },
+            ],
+          }
+        : c
+    ),
+  }
+  await act(async () =>
+    root.render(
+      <KanbanSettingsSheet graph={saved} onClose={vi.fn()} onSaved={vi.fn()} />
+    )
+  )
+  await openPicker("kb-outcome-target-0")
+  expect(
+    [...document.querySelectorAll('[role="option"]')].map(
+      (item) => item.textContent
+    )
+  ).toEqual(["In progress"])
+  await act(async () =>
+    (document.querySelector('[role="option"]') as HTMLElement).click()
+  )
+  await drop("doing", "todo")
+  await click("Save changes")
+  expect(saveSettings).toHaveBeenCalledWith(
+    "board",
+    expect.objectContaining({
+      columns: [
+        expect.objectContaining({ id: "doing" }),
+        expect.objectContaining({
+          id: "todo",
+          outcomes: [expect.objectContaining({ target: "doing" })],
+        }),
+      ],
+    })
+  )
+})
+
+it("searches models by label and Escape returns focus without closing settings", async () => {
+  const onClose = vi.fn()
+  await act(async () =>
+    root.render(
+      <KanbanSettingsSheet graph={graph} onClose={onClose} onSaved={vi.fn()} />
+    )
+  )
+  await openPicker("kb-column-model")
+  const search = document.querySelector<HTMLInputElement>(
+    '[aria-label="Search models"]'
+  )!
+  expect(
+    document.querySelector('[data-slot="combobox-content"]')?.textContent
+  ).toContain("Test account")
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value"
+    )!.set!.call(search, "Model One")
+    search.dispatchEvent(new Event("input", { bubbles: true }))
+  })
+  expect(
+    [...document.querySelectorAll('[role="option"]')].map(
+      (item) => item.textContent
+    )
+  ).toEqual(["Model One"])
+  await act(async () =>
+    search.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      })
+    )
+  )
+  expect(onClose).not.toHaveBeenCalled()
+  expect(document.activeElement?.id).toBe("kb-column-model")
+  expect(document.querySelector("#kb-column-model")?.textContent).toContain(
+    "Use application default"
+  )
+})
+
+it("displays a discoverable legacy agent name without rewriting it on save", async () => {
+  window.cowork.agents.list = vi.fn().mockResolvedValue([
+    {
+      name: "custom-agent",
+      ref: "github:custom-agent",
+      label: "Custom Agent",
+      sourceKind: "github",
+    },
+  ])
+  await act(async () =>
+    root.render(
+      <KanbanSettingsSheet graph={graph} onClose={vi.fn()} onSaved={vi.fn()} />
+    )
+  )
+  await click("In progress")
+  expect(document.querySelector("#kb-column-agent")?.textContent).toBe(
+    "Custom Agent"
+  )
+  await click("Save changes")
+  expect(saveSettings).toHaveBeenCalledWith(
+    "board",
+    expect.objectContaining({
+      columns: expect.arrayContaining([
+        expect.objectContaining({ id: "doing", agentName: "custom-agent" }),
+      ]),
+    })
   )
 })
