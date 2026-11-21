@@ -11,7 +11,13 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Spinner } from "@/components/ui/spinner"
 import type { KanbanBoardDraft, KanbanItem } from "../../../shared/kanban"
 
@@ -125,20 +131,21 @@ export function NewBoardDialog({
             </div>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="nb-tracker">Tracker</Label>
-              <NativeSelect
-                className="w-full"
-                id="nb-tracker"
+              <Select
                 value={tracker}
-                onChange={(e) => {
-                  setTracker(e.target.value as "github" | "ado")
+                onValueChange={(value) => {
+                  setTracker(value as "github" | "ado")
                   setTest(null)
                 }}
               >
-                <NativeSelectOption value="github">GitHub</NativeSelectOption>
-                <NativeSelectOption value="ado">
-                  Azure DevOps
-                </NativeSelectOption>
-              </NativeSelect>
+                <SelectTrigger id="nb-tracker" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent position="popper">
+                  <SelectItem value="github">GitHub</SelectItem>
+                  <SelectItem value="ado">Azure DevOps</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           </div>
 
@@ -205,15 +212,18 @@ export function NewBoardDialog({
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="nb-match">Match</Label>
-                <NativeSelect
-                  className="w-full"
-                  id="nb-match"
+                <Select
                   value={match}
-                  onChange={(e) => setMatch(e.target.value as "any" | "all")}
+                  onValueChange={(value) => setMatch(value as "any" | "all")}
                 >
-                  <NativeSelectOption value="any">any</NativeSelectOption>
-                  <NativeSelectOption value="all">all</NativeSelectOption>
-                </NativeSelect>
+                  <SelectTrigger id="nb-match" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent position="popper">
+                    <SelectItem value="any">any</SelectItem>
+                    <SelectItem value="all">all</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
             </div>
             <div className="flex flex-col gap-1.5">
@@ -249,18 +259,21 @@ export function NewBoardDialog({
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-[10rem_1fr]">
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="nb-assignee">Assignee</Label>
-                <NativeSelect
-                  className="w-full"
-                  id="nb-assignee"
+                <Select
                   value={assignee}
-                  onChange={(e) =>
-                    setAssignee(e.target.value as "me" | "anyone" | "user")
+                  onValueChange={(value) =>
+                    setAssignee(value as "me" | "anyone" | "user")
                   }
                 >
-                  <NativeSelectOption value="me">me</NativeSelectOption>
-                  <NativeSelectOption value="anyone">anyone</NativeSelectOption>
-                  <NativeSelectOption value="user">a person</NativeSelectOption>
-                </NativeSelect>
+                  <SelectTrigger id="nb-assignee" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent position="popper">
+                    <SelectItem value="me">me</SelectItem>
+                    <SelectItem value="anyone">anyone</SelectItem>
+                    <SelectItem value="user">a person</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
               {assignee === "user" ? (
                 <div className="flex flex-col gap-1.5">
