@@ -125,6 +125,21 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     db.close()
   })
 
+  it("heals a DB stamped v90 without the per-column model columns", () => {
+    const db = new Database(":memory:")
+    runMigrations(db)
+    db.exec("ALTER TABLE kanban_columns DROP COLUMN account_id")
+    db.exec("ALTER TABLE kanban_columns DROP COLUMN model_id")
+    runMigrations(db)
+    const cols = (
+      db.prepare("PRAGMA table_info(kanban_columns)").all() as Array<{
+        name: string
+      }>
+    ).map((c) => c.name)
+    expect(cols).toEqual(expect.arrayContaining(["account_id", "model_id"]))
+    db.close()
+  })
+
   it("adds durable tool-call lifecycle records in v38", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")

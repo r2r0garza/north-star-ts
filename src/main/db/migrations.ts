@@ -254,7 +254,6 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureKanbanWorktreeChoices,
   ensureKanbanNotifications,
   ensureKanbanFlow,
-  ensureKanbanColumnModel,
   // v88: board dependency links (136.6); NULL = the workspace scan's.
   (db) => addColumnIfMissing(db, "kanban_boards", "dependency_links", "TEXT"),
   // v89: per-column entry gate (same shape as the board's auto-promote).
@@ -265,6 +264,9 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
       "entry_gate",
       "TEXT NOT NULL DEFAULT '{}'"
     ),
+  // v90: per-column model. Append new migrations here, never mid-list: a DB
+  // already past the insertion point would skip the inserted one.
+  ensureKanbanColumnModel,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -743,6 +745,8 @@ export function runMigrations(
       // After ensureSubscriptionProviderConstraints: its V65 table rebuild
       // predates this column and would drop it.
       ensureProviderImageInputColumn(db)
+      // Was once inserted mid-list, so DBs stamped v90 by that build skipped it.
+      if (tableExists(db, "kanban_columns")) ensureKanbanColumnModel(db)
       ensureWorkflows(db)
       ensureWorkflowRuns(db)
       addColumnIfMissing(
