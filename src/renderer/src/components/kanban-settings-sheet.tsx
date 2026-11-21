@@ -369,6 +369,8 @@ export function KanbanSettingsSheet({
         id,
         name,
         agentName,
+        accountId,
+        modelId,
         instructions,
         gate,
         owner,
@@ -384,6 +386,8 @@ export function KanbanSettingsSheet({
         id,
         name,
         agentName,
+        accountId,
+        modelId,
         instructions,
         gate,
         owner,
@@ -422,6 +426,12 @@ export function KanbanSettingsSheet({
   // Worktrees need repos; without them, cards always share the workspace.
   const canWorktree = graph.layout !== "none"
   const [agents, setAgents] = useState<AgentSummary[]>([])
+  const [accounts, setAccounts] = useState<
+    Awaited<ReturnType<typeof window.cowork.providers.list>>
+  >([])
+  const [models, setModels] = useState<
+    Record<string, Awaited<ReturnType<typeof window.cowork.models.list>>>
+  >({})
   const [saving, setSaving] = useState(false)
   const [selectedIndex, setSelectedIndex] = useState(0)
   const columnList = useRef<HTMLDivElement>(null)
@@ -437,6 +447,25 @@ export function KanbanSettingsSheet({
   const mine = col?.owner === "user"
   const occupied =
     !!col?.id && graph.cards.some((card) => card.columnId === col.id)
+
+  useEffect(() => {
+    void window.cowork.providers
+      .list()
+      .then(async (available) => {
+        setAccounts(available)
+        const entries = await Promise.all(
+          available.map(
+            async (account) =>
+              [account.id, await window.cowork.models.list(account.id)] as const
+          )
+        )
+        setModels(Object.fromEntries(entries))
+      })
+      .catch(() => {
+        setAccounts([])
+        setModels({})
+      })
+  }, [])
 
   useEffect(() => {
     void window.cowork.agents
@@ -1205,6 +1234,76 @@ export function KanbanSettingsSheet({
                             </NativeSelectOption>
                           ))}
                         </NativeSelect>
+                      </div>
+                    )}
+                    {mine ? (
+                      <p className="text-xs text-muted-foreground">
+                        Model selection is only used by agent-owned columns.
+                      </p>
+                    ) : (
+                      <div className="flex min-w-0 flex-col gap-1.5">
+                        <Label htmlFor="kb-column-model">Model</Label>
+                        <NativeSelect
+                          id="kb-column-model"
+                          className="w-full"
+                          value={
+                            col.accountId && col.modelId
+                              ? `${col.accountId}::${col.modelId}`
+                              : ""
+                          }
+                          onChange={(e) => {
+                            const [accountId, modelId] = e.target.value
+                              ? e.target.value.split("::")
+                              : [null, null]
+                            update(selectedIndex, { accountId, modelId })
+                          }}
+                        >
+                          <NativeSelectOption value="">
+                            Use application default
+                          </NativeSelectOption>
+                          {accounts.map((account) => (
+                            <optgroup
+                              key={account.id}
+                              label={account.displayName}
+                            >
+                              {(models[account.id] ?? []).map((model) => (
+                                <NativeSelectOption
+                                  key={`${account.id}::${model.modelId}`}
+                                  value={`${account.id}::${model.modelId}`}
+                                >
+                                  {model.modelName || model.modelId}
+                                  {account.enabled ? "" : " (disabled)"}
+                                </NativeSelectOption>
+                              ))}
+                            </optgroup>
+                          ))}
+                          {col.accountId &&
+                          col.modelId &&
+                          (!accounts.some(
+                            (account) => account.id === col.accountId
+                          ) ||
+                            !(models[col.accountId] ?? []).some(
+                              (model) => model.modelId === col.modelId
+                            )) ? (
+                            <NativeSelectOption
+                              value={`${col.accountId}::${col.modelId}`}
+                            >
+                              {col.accountId} · {col.modelId} (unavailable)
+                            </NativeSelectOption>
+                          ) : null}
+                        </NativeSelect>
+                        {col.accountId &&
+                        (!accounts.some(
+                          (account) => account.id === col.accountId
+                        ) ||
+                          !accounts.find(
+                            (account) => account.id === col.accountId
+                          )?.enabled) ? (
+                          <p className="text-xs text-destructive">
+                            Saved provider account is unavailable or disabled.
+                            Choose another model or Use application default.
+                          </p>
+                        ) : null}
                       </div>
                     )}
                     <div className="flex flex-col gap-1.5">

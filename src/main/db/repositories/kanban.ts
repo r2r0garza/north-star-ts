@@ -1,5 +1,7 @@
 import { randomUUID } from "crypto"
 import { getDb } from "../connection"
+import { getAccount } from "./provider-accounts"
+import { listModels } from "./models"
 import {
   asActions,
   asFilter,
@@ -177,6 +179,7 @@ export function saveBoard(input: {
   filter: KanbanIntakeFilter
   syncIntervalMs?: number
   columns?: KanbanColumnInput[]
+  allowUnavailableModels?: boolean
 }): KanbanBoard {
   const db = getDb()
   const now = Date.now()
@@ -212,7 +215,8 @@ export function saveBoard(input: {
         now
       )
     }
-    if (input.columns) saveColumns(id, input.columns)
+    if (input.columns)
+      saveColumns(id, input.columns, input.allowUnavailableModels)
     return getBoard(id)!
   })()
 }
@@ -290,7 +294,11 @@ export function addApprovedAction(id: string, hash: string): void {
 // Set a board's columns in order. A column keeps its id (and its cards and run
 // history) when matched by `id`, or by name when no id is sent (the agent tool
 // doesn't know ids). Removing a column that still holds cards is refused.
-export function saveColumns(boardId: string, input: KanbanColumnInput[]): void {
+export function saveColumns(
+  boardId: string,
+  input: KanbanColumnInput[],
+  allowUnavailableModels = false
+): void {
   const db = getDb()
   db.transaction(() => {
     const existing = listColumns(boardId)
@@ -308,6 +316,9 @@ export function saveColumns(boardId: string, input: KanbanColumnInput[]): void {
         isNew: !match,
         actions: c.actions ? asActions(c.actions) : (match?.actions ?? []),
         outcomes: c.outcomes ? asOutcomes(c.outcomes) : (match?.outcomes ?? []),
+        accountId:
+          c.accountId !== undefined ? c.accountId : (match?.accountId ?? null),
+        modelId: c.modelId !== undefined ? c.modelId : (match?.modelId ?? null),
         // Only a user column has a command; omitted keeps the stored one.
         command:
           c.owner !== "user"
@@ -328,6 +339,32 @@ export function saveColumns(boardId: string, input: KanbanColumnInput[]): void {
             : (match?.entryGate ?? asPromoteGate(null)),
       }
     })
+    // Validate newly selected models; preserve imported/stale references so they fail safely at run time.
+    for (const c of rows) {
+      if ((c.accountId == null) !== (c.modelId == null))
+        throw new KanbanColumnInUseError(
+          `column "${c.name}": choose both a provider account and model`
+        )
+      const previous = existing.find((e) => e.id === c.id)
+      const unchanged =
+        previous?.accountId === c.accountId && previous?.modelId === c.modelId
+      if (
+        !allowUnavailableModels &&
+        !unchanged &&
+        c.owner !== "user" &&
+        c.accountId &&
+        c.modelId
+      ) {
+        const account = getAccount(c.accountId)
+        if (
+          !account?.enabled ||
+          !listModels(c.accountId).some((m) => m.modelId === c.modelId)
+        )
+          throw new KanbanColumnInUseError(
+            `column "${c.name}": the selected provider account/model is unavailable; choose an available model or Use application default`
+          )
+      }
+    }
     // goto targets may name a column (the agent tool doesn't know ids).
     for (const c of rows) {
       c.outcomes = c.outcomes.map((o) =>
@@ -384,15 +421,17 @@ export function saveColumns(boardId: string, input: KanbanColumnInput[]): void {
         c.notify ? 1 : 0,
         c.wipLimit,
         JSON.stringify(c.entryGate),
+        c.accountId,
+        c.modelId,
         i,
       ]
       if (c.isNew)
         db.prepare(
-          "INSERT INTO kanban_columns (name, agent_name, instructions, gate, owner, outcomes, actions, command, command_timeout_ms, notify, wip_limit, entry_gate, position, id, board_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+          "INSERT INTO kanban_columns (name, agent_name, instructions, gate, owner, outcomes, actions, command, command_timeout_ms, notify, wip_limit, entry_gate, account_id, model_id, position, id, board_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         ).run(...values, c.id, boardId)
       else
         db.prepare(
-          "UPDATE kanban_columns SET name = ?, agent_name = ?, instructions = ?, gate = ?, owner = ?, outcomes = ?, actions = ?, command = ?, command_timeout_ms = ?, notify = ?, wip_limit = ?, entry_gate = ?, position = ? WHERE id = ?"
+          "UPDATE kanban_columns SET name = ?, agent_name = ?, instructions = ?, gate = ?, owner = ?, outcomes = ?, actions = ?, command = ?, command_timeout_ms = ?, notify = ?, wip_limit = ?, entry_gate = ?, account_id = ?, model_id = ?, position = ? WHERE id = ?"
         ).run(...values, c.id)
     })
   })()
@@ -420,6 +459,8 @@ export function listColumns(boardId: string): KanbanColumn[] {
       notify: number
       wip_limit: number | null
       entry_gate: string
+      account_id: string | null
+      model_id: string | null
     }>
   ).map((r) => ({
     id: r.id,
@@ -427,6 +468,8 @@ export function listColumns(boardId: string): KanbanColumn[] {
     name: r.name,
     position: r.position,
     agentName: r.agent_name,
+    accountId: r.account_id,
+    modelId: r.model_id,
     instructions: r.instructions,
     gate: r.gate === "human" ? "human" : "agent",
     owner: r.owner === "user" ? "user" : "agent",
