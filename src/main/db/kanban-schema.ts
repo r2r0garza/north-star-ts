@@ -183,6 +183,18 @@ export function ensureKanbanNotifications(db: Database.Database): void {
 
 // Auto-promote gate per board (JSON { states, tags }; empty = off), whether a
 // person held a card in the Inbox, and a per-column WIP limit (null = none).
+export function ensureKanbanColumnModel(db: Database.Database): void {
+  const add = (column: string) => {
+    const cols = db
+      .prepare("PRAGMA table_info(kanban_columns)")
+      .all() as Array<{ name: string }>
+    if (!cols.some((c) => c.name === column))
+      db.exec(`ALTER TABLE kanban_columns ADD COLUMN ${column} TEXT;`)
+  }
+  add("account_id")
+  add("model_id")
+}
+
 export function ensureKanbanFlow(db: Database.Database): void {
   const add = (table: string, column: string, definition: string) => {
     const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{

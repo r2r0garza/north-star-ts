@@ -40,6 +40,8 @@ export function exportBoard(board: KanbanBoard, columns: KanbanColumn[]) {
     columns: columns.map((c) => ({
       name: c.name,
       agentName: c.agentName,
+      accountId: c.accountId,
+      modelId: c.modelId,
       instructions: c.instructions,
       gate: c.gate,
       owner: c.owner,
@@ -125,6 +127,8 @@ export function importBoard(raw: unknown, workspace: string): KanbanBoard {
     return {
       name: text(r.name),
       agentName: text(r.agentName) || null,
+      accountId: text(r.accountId) || null,
+      modelId: text(r.modelId) || null,
       instructions: text(r.instructions),
       gate: r.gate === "human" ? "human" : "agent",
       owner: user ? "user" : "agent",
@@ -164,6 +168,7 @@ export function importBoard(raw: unknown, workspace: string): KanbanBoard {
       syncIntervalMs:
         typeof o.syncIntervalMs === "number" ? o.syncIntervalMs : undefined,
       columns,
+      allowUnavailableModels: true,
     })
   } catch (err) {
     if (err instanceof kanban.KanbanColumnInUseError)

@@ -10,6 +10,8 @@ vi.mock("../db/connection", () => ({ getDb: () => db }))
 
 import { copyName, exportBoard, importBoard } from "./export"
 import * as kanban from "../db/repositories/kanban"
+import { createAccount } from "../db/repositories/provider-accounts"
+import { addModel } from "../db/repositories/models"
 
 it("names a clashing import Copy, then Copy 2, Copy 3", () => {
   expect(copyName("B", ["A"])).toBe("B")
@@ -24,7 +26,11 @@ describe.skipIf(!sqliteLoads)("board export/import", () => {
     runMigrations(db)
   })
 
+  let accountId: string
   function original() {
+    const account = createAccount({ provider: "openai", displayName: "A" })
+    accountId = account.id
+    addModel({ accountId: account.id, modelId: "model-a" })
     const b = kanban.saveBoard({
       name: "Team",
       workspace: "/mine",
@@ -46,6 +52,8 @@ describe.skipIf(!sqliteLoads)("board export/import", () => {
         {
           name: "Dev",
           instructions: "Build it",
+          accountId: account.id,
+          modelId: "model-a",
           outcomes: [{ name: "done", next: "advance" }],
         },
         {
@@ -74,6 +82,8 @@ describe.skipIf(!sqliteLoads)("board export/import", () => {
     expect(JSON.stringify(file)).not.toContain("/mine")
     expect(JSON.stringify(file)).not.toContain("approved-here")
 
+    file.columns[1].accountId = accountId
+    file.columns[1].modelId = "missing-model"
     const copy = importBoard(file, "/theirs")
     expect(copy.name).toBe("Team - Copy")
     expect(copy.workspace).toBe("/theirs")
@@ -87,6 +97,11 @@ describe.skipIf(!sqliteLoads)("board export/import", () => {
     expect(cols.map((c) => c.name)).toEqual(["Dev", "Review", "Deploy"])
     expect(cols[1].outcomes[0].target).toBe(cols[0].id) // goto by new id
     expect(cols[1].notify).toBe(true)
+    expect(cols[1]).toMatchObject({
+      accountId,
+      modelId: "missing-model",
+    })
+    expect(cols[0]).toMatchObject({ accountId, modelId: "model-a" })
     expect(cols[2]).toMatchObject({ owner: "user", command: "./deploy.sh" })
 
     expect(importBoard(file, "/theirs").name).toBe("Team - Copy 2")

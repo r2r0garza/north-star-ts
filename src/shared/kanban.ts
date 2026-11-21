@@ -269,6 +269,8 @@ export interface KanbanColumn {
   name: string
   position: number
   agentName: string | null // null = the built-in North Star agent
+  accountId?: string | null
+  modelId?: string | null
   instructions: string // empty = no agent run; the card just sits here
   gate: KanbanGate
   owner: KanbanOwner
@@ -322,6 +324,8 @@ export interface KanbanColumnInput {
   id?: string
   name: string
   agentName?: string | null
+  accountId?: string | null
+  modelId?: string | null
   instructions?: string
   gate?: KanbanGate
   owner?: KanbanOwner

@@ -68,6 +68,7 @@ import {
   ensureKanbanWorktreeChoices,
   ensureKanbanNotifications,
   ensureKanbanFlow,
+  ensureKanbanColumnModel,
 } from "./kanban-schema"
 import {
   ORCHESTRATION_TABLES,
@@ -253,6 +254,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureKanbanWorktreeChoices,
   ensureKanbanNotifications,
   ensureKanbanFlow,
+  ensureKanbanColumnModel,
   // v88: board dependency links (136.6); NULL = the workspace scan's.
   (db) => addColumnIfMissing(db, "kanban_boards", "dependency_links", "TEXT"),
   // v89: per-column entry gate (same shape as the board's auto-promote).

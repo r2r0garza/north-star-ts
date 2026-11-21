@@ -115,7 +115,18 @@ beforeEach(() => {
   saveSettings.mockClear()
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
   Object.assign(window, {
-    cowork: { agents: { list: async () => [] }, kanban: { saveSettings } },
+    cowork: {
+      agents: { list: async () => [] },
+      providers: {
+        list: async () => [
+          { id: "acct", displayName: "Test account", enabled: true },
+        ],
+      },
+      models: {
+        list: async () => [{ modelId: "model-1", modelName: "Model One" }],
+      },
+      kanban: { saveSettings },
+    },
   })
   container = document.createElement("div")
   document.body.append(container)
@@ -187,6 +198,40 @@ it("keeps column identities and approval choices when navigating and reordering"
         expect.objectContaining({ id: "todo", gate: "agent" }),
       ],
       filter: graph.board.filter,
+    })
+  )
+})
+
+it("selects a provider model independently of the agent and saves both", async () => {
+  await act(async () =>
+    root.render(
+      <KanbanSettingsSheet graph={graph} onClose={vi.fn()} onSaved={vi.fn()} />
+    )
+  )
+  await click("In progress")
+  const model = document.querySelector("#kb-column-model") as HTMLSelectElement
+  expect(
+    model.querySelector('option[value="acct::model-1"]')?.textContent
+  ).toContain("Model One")
+  await act(() => {
+    model.value = "acct::model-1"
+    model.dispatchEvent(new Event("change", { bubbles: true }))
+  })
+  expect(
+    (document.querySelector("#kb-column-agent") as HTMLSelectElement).value
+  ).toBe("custom-agent")
+  await click("Save changes")
+  expect(saveSettings).toHaveBeenCalledWith(
+    "board",
+    expect.objectContaining({
+      columns: expect.arrayContaining([
+        expect.objectContaining({
+          id: "doing",
+          agentName: "custom-agent",
+          accountId: "acct",
+          modelId: "model-1",
+        }),
+      ]),
     })
   )
 })

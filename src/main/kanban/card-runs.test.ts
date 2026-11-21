@@ -32,6 +32,8 @@ import {
 } from "./card-runs"
 import type { CommandRunResult } from "./service"
 import * as kanban from "../db/repositories/kanban"
+import { createAccount } from "../db/repositories/provider-accounts"
+import { addModel } from "../db/repositories/models"
 import type { TaskRunner } from "../tasks/runner"
 import type { runAgentLoop } from "../agent"
 import { MAX_PARALLEL_AGENTS, cardVars, fillCommand } from "../../shared/kanban"
@@ -1452,6 +1454,66 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
       actionName: "review",
     })
     expect(writes).toHaveLength(2)
+  })
+
+  it("rejects a newly selected account/model pair that is not configured", () => {
+    const { board: b, cols } = customBoard([{ name: "A", instructions: "run" }])
+    expect(() =>
+      kanban.saveColumns(b.id, [
+        { ...cols[0], accountId: "missing", modelId: "missing" },
+      ])
+    ).toThrow(/selected provider account\/model is unavailable/)
+  })
+
+  it("passes each run its saved account/model pair", async () => {
+    const account = createAccount({ provider: "openai", displayName: "Test" })
+    addModel({ accountId: account.id, modelId: "gpt-test" })
+    const { card, cols } = customBoard([
+      {
+        name: "A",
+        instructions: "run",
+        accountId: account.id,
+        modelId: "gpt-test",
+      },
+      { name: "B", instructions: "run" },
+    ])
+    await cards.enter(card.id, cols[0].id)
+    expect(last().input).toMatchObject({
+      accountId: account.id,
+      modelId: "gpt-test",
+    })
+    await exec(last())
+    expect(
+      db
+        .prepare(
+          "SELECT account_id, model_id FROM conversations ORDER BY created_at DESC LIMIT 1"
+        )
+        .get()
+    ).toEqual({ account_id: account.id, model_id: "gpt-test" })
+  })
+
+  it("fails an unavailable saved model without falling back to the application default", async () => {
+    const account = createAccount({ provider: "openai", displayName: "Test" })
+    addModel({ accountId: account.id, modelId: "gone-model" })
+    const { card, cols } = customBoard([
+      {
+        name: "A",
+        instructions: "run",
+        accountId: account.id,
+        modelId: "gone-model",
+      },
+    ])
+    db.prepare("DELETE FROM models WHERE account_id = ?").run(account.id)
+    await cards.enter(card.id, cols[0].id)
+    const result = await exec(last())
+    expect(result).toMatchObject({
+      error: expect.stringContaining(
+        `Column \"A\" model ${account.id} / gone-model is unavailable`
+      ),
+    })
+    expect(
+      db.prepare("SELECT COUNT(*) AS count FROM conversations").get()
+    ).toEqual({ count: 0 })
   })
 
   it("keeps hostile ticket text out of instructions, command text, and run options", async () => {

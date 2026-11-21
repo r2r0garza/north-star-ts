@@ -7,6 +7,8 @@ import { createConversation } from "../db/repositories/conversations"
 import { appendMessage } from "../db/repositories/messages"
 import type { TaskRunner, TaskExecutor } from "../tasks/runner"
 import { runAgentLoop, resolveApproval } from "../agent"
+import { getAccount } from "../db/repositories/provider-accounts"
+import { listModels } from "../db/repositories/models"
 import {
   handoffInstruction,
   parseTaskHandoff,
@@ -296,7 +298,12 @@ export class KanbanCardRuns {
   // memory only; recoverInterrupted fails unfinished runs on restart anyway.
   private readonly agentInputs = new Map<
     string,
-    { feedback: string | null; findings: KanbanFindings | null }
+    {
+      feedback: string | null
+      findings: KanbanFindings | null
+      accountId: string | null
+      modelId: string | null
+    }
   >()
   // A command run's one-off command (by run id). shortcut: in memory, like
   // agentInputs above.
@@ -682,6 +689,8 @@ export class KanbanCardRuns {
       this.agentInputs.set(run.id, {
         feedback: cont.feedback ?? null,
         findings: cont.findings ?? null,
+        accountId: column.accountId ?? null,
+        modelId: column.modelId ?? null,
       })
       kanban.updateCard(card.id, { runState: "running" })
     })()
@@ -837,6 +846,8 @@ export class KanbanCardRuns {
           runId: next.id,
           feedback: pending?.feedback ?? null,
           findings: pending?.findings ?? null,
+          accountId: pending?.accountId ?? null,
+          modelId: pending?.modelId ?? null,
           quiet: quietColumn(
             board,
             columns.find((c) => c.id === next.columnId)
@@ -1179,6 +1190,8 @@ export class KanbanCardRuns {
       runId?: string
       feedback?: string | null
       findings?: KanbanFindings | null
+      accountId?: string | null
+      modelId?: string | null
     }
     const card = input.cardId ? kanban.getCard(input.cardId) : null
     const board = card ? kanban.getBoard(card.boardId) : null
@@ -1198,6 +1211,16 @@ export class KanbanCardRuns {
 
     let release = () => {}
     try {
+      if (input.accountId && input.modelId) {
+        const account = getAccount(input.accountId)
+        if (
+          !account?.enabled ||
+          !listModels(input.accountId).some((m) => m.modelId === input.modelId)
+        )
+          return fail(
+            `Column "${column.name}" model ${input.accountId} / ${input.modelId} is unavailable. Update Column Settings to choose an enabled provider model or Use application default.`
+          )
+      }
       const place = await this.place(card, board, workspace)
       if (!place.isolated) release = await this.lock(workspace)
       const cwd = place.cwd
@@ -1221,6 +1244,8 @@ export class KanbanCardRuns {
           mode: "north_star",
           workingDirectory: cwd,
           agentName: column.agentName,
+          accountId: input.accountId,
+          modelId: input.modelId,
           title: `${column.name}: ${card.item.title}`.slice(0, 120),
         }).id
         appendMessage({ conversationId: id, role: "user", content: prompt })
