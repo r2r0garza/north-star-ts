@@ -1,3 +1,4 @@
+import { CommandOutputStore } from "./command-output"
 import { existsSync } from "node:fs"
 import { mkdir, rm } from "node:fs/promises"
 import path from "node:path"
@@ -84,6 +85,8 @@ export interface Upstream {
       env: Record<string, string>
       timeoutMs: number | null
       signal: AbortSignal
+      onOutput?: import("../agent/env/types").ExecOptions["onOutput"]
+      onStarted?: () => void
     }
   ): Promise<CommandRunResult>
 }
@@ -276,6 +279,18 @@ ${JSON.stringify(input.prior)}`
 // instructions starts one unattended agent turn in the card's worktree; the
 // column's gate then advances the card or waits for the user.
 export class KanbanCardRuns {
+  private readonly commandOutput = new CommandOutputStore()
+
+  runs(cardId: string): KanbanCardRun[] {
+    return kanban
+      .listRuns(cardId)
+      .map((run) =>
+        run.kind === "command"
+          ? { ...run, commandOutput: this.commandOutput.get(run.id) }
+          : run
+      )
+  }
+
   // Non-git workspaces run one card at a time (no isolation).
   private locks = new Map<string, Promise<unknown>>()
   // In memory like the agent's own gate: a quit ends the run anyway.
@@ -669,6 +684,12 @@ export class KanbanCardRuns {
         })
         const command = cont.command?.trim()
         if (command) this.commandOverrides.set(run.id, command)
+        this.commandOutput.start(
+          run.id,
+          fillCommand(command ?? column.command!, cardVars(card)),
+          "",
+          true
+        )
         kanban.updateCard(card.id, { runState: "running", runError: null })
       })()
       this.startNextCommands(board.id)
@@ -907,6 +928,7 @@ export class KanbanCardRuns {
   private dropRun(cardId: string, reason: string): boolean {
     const run = this.droppableRun(cardId)
     if (!run) return false
+    this.commandOutput.stop(run.id, reason)
     kanban.finishRun(run.id, { error: reason })
     this.agentInputs.delete(run.id)
     if (run.taskId) this.runner.cancel(run.taskId)
@@ -1420,6 +1442,13 @@ export class KanbanCardRuns {
     const fail = (error: string) => {
       if (!current()) return { stopped: true }
       const lines = error.trimEnd().split("\n")
+      if (
+        !this.commandOutput.get(runId) ||
+        ["queued", "starting", "running"].includes(
+          this.commandOutput.get(runId)!.status
+        )
+      )
+        this.commandOutput.finish(runId, { status: "failed", error })
       kanban.finishRun(runId, { error })
       kanban.updateCard(cardId, {
         runState: "failed",
@@ -1451,7 +1480,10 @@ export class KanbanCardRuns {
         this.commandOverrides.get(runId) ?? column.command,
         cardVars(card)
       )
+      this.commandOutput.start(runId, command, place.cwd)
       result = await this.upstream.runCommand(command, board, {
+        onStarted: () => this.commandOutput.running(runId),
+        onOutput: (chunk) => this.commandOutput.append(runId, chunk),
         cwd: place.cwd,
         // Values from the tracker reach the command as data, never as its text.
         env: {
@@ -1467,10 +1499,24 @@ export class KanbanCardRuns {
         signal,
       })
     } catch (error) {
+      this.commandOutput.finish(runId, {
+        status: signal.aborted || !current() ? "stopped" : "failed",
+        error: message(error),
+      })
       return fail(message(error))
     } finally {
       release()
     }
+    this.commandOutput.finish(runId, {
+      status:
+        signal.aborted || result.aborted || !current()
+          ? "stopped"
+          : result.timedOut
+            ? "timed_out"
+            : "exited",
+      exitCode: result.exitCode,
+      signal: result.signal ?? null,
+    })
     if (signal.aborted || !current()) return { stopped: true }
     if (result.timedOut)
       return fail(

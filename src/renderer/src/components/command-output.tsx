@@ -16,7 +16,7 @@ import {
   type CommandSnapshot,
 } from "@/lib/command-presentation"
 
-function LiteralBlock({
+export function LiteralBlock({
   title,
   value,
   destructive = false,

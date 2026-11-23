@@ -282,7 +282,7 @@ export function registerKanbanHandlers(
   ipcMain.handle("kanban:removeCard", (_e, cardId: string) =>
     cards.remove(cardId)
   )
-  ipcMain.handle("kanban:runs", (_e, cardId: string) => kanban.listRuns(cardId))
+  ipcMain.handle("kanban:runs", (_e, cardId: string) => cards.runs(cardId))
 }
 
 const str = (v: unknown) => (typeof v === "string" ? v : undefined)

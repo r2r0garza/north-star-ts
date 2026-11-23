@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
+import { KanbanCommandOutput } from "./kanban-command-output"
 import {
   DndContext,
   DragOverlay,
@@ -613,7 +614,7 @@ function Column({
 }
 
 // A card's runs, newest first, each linking to its transcript.
-function RunHistory({
+export function RunHistory({
   card,
   onClose,
   onOpenConversation,
@@ -624,16 +625,40 @@ function RunHistory({
 }) {
   const [runs, setRuns] = useState<KanbanCardRun[]>([])
   const [writes, setWrites] = useState<KanbanUpstreamAction[]>([])
+  const [historyError, setHistoryError] = useState(false)
+  const cardId = card?.id
   useEffect(() => {
-    if (!card) return
-    void window.cowork.kanban.runs(card.id).then((r) => setRuns(r.reverse()))
-    void window.cowork.kanban
-      .actions(card.id)
-      .then((a) => setWrites(a.reverse()))
-  }, [card])
+    setRuns([])
+    setWrites([])
+    setHistoryError(false)
+    if (!cardId) return
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout>
+    const refresh = async () => {
+      try {
+        const [nextRuns, nextWrites] = await Promise.all([
+          window.cowork.kanban.runs(cardId),
+          window.cowork.kanban.actions(cardId),
+        ])
+        if (cancelled) return
+        setRuns(nextRuns.reverse())
+        setWrites(nextWrites.reverse())
+        setHistoryError(false)
+      } catch {
+        if (!cancelled) setHistoryError(true)
+      } finally {
+        if (!cancelled) timer = setTimeout(refresh, 250)
+      }
+    }
+    void refresh()
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [cardId])
   return (
     <Sheet open={!!card} onOpenChange={(open) => !open && onClose()}>
-      <SheetContent className="w-[28rem] sm:max-w-[28rem]">
+      <SheetContent className="w-[28rem] max-w-full sm:max-w-[28rem]">
         <SheetHeader>
           <SheetTitle>
             #{card?.item.id} {card?.item.title}
@@ -644,6 +669,12 @@ function RunHistory({
         </SheetHeader>
         <ScrollArea className="min-h-0 flex-1 px-4 pb-4">
           <div className="flex flex-col gap-3">
+            {historyError && (
+              <p role="status" className="text-xs text-destructive">
+                Live updates unavailable; retrying. Displayed output may be
+                stale.
+              </p>
+            )}
             {runs.length === 0 ? (
               <p className="text-xs text-muted-foreground">No runs yet.</p>
             ) : null}
@@ -677,6 +708,9 @@ function RunHistory({
                 <span className="text-xs text-muted-foreground">
                   {new Date(r.startedAt).toLocaleString()}
                 </span>
+                {r.kind === "command" && (
+                  <KanbanCommandOutput key={r.id} run={r} />
+                )}
                 {r.result || r.error ? (
                   <p
                     className={cn(
@@ -847,6 +881,7 @@ export function KanbanScreen({
   const [syncing, setSyncing] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<KanbanBoard | null>(null)
   const [historyCard, setHistoryCard] = useState<KanbanCard | null>(null)
+  useEffect(() => setHistoryCard(null), [selectedId])
   const [feedbackFor, setFeedbackFor] = useState<{
     card: KanbanCard
     kind: FeedbackKind | "move"
