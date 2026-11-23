@@ -41,6 +41,9 @@ async function pressureFixture() {
     closed = resolve
   })
   let paused = 0
+  // Node's chunked-string drain regression (nodejs/node#66781) can stall
+  // multibyte text. Buffer writes preserve the same UTF-8 payload and pressure.
+  const deltaBytes = Buffer.from(delta, "utf8")
   const server = createServer(async (req, res) => {
     req.resume()
     res.writeHead(200, { "content-type": "text/event-stream" })
@@ -48,7 +51,7 @@ async function pressureFixture() {
     try {
       res.write(start)
       for (let i = 0; i < 192; i++) {
-        if (!res.write(delta)) {
+        if (!res.write(deltaBytes)) {
           paused++
           await once(res, "drain")
         }

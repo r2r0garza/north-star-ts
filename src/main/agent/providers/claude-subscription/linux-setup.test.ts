@@ -10,7 +10,7 @@ import {
   symlink,
   writeFile,
 } from "fs/promises"
-import { join } from "path"
+import { delimiter, join } from "path"
 import { tmpdir } from "os"
 import {
   privateDirectories,
@@ -27,6 +27,37 @@ beforeEach(async () => {
 afterEach(async () => {
   await rm(root, { recursive: true, force: true })
 })
+
+describe.skipIf(process.platform === "win32")(
+  "POSIX native CLI discovery",
+  () => {
+    it("discovers a fixture CLI from GUI-style minimal PATH and HOME", async () => {
+      const bin = join(root, ".local", "bin")
+      const executable = join(bin, "claude")
+      await mkdir(bin, { recursive: true })
+      await writeFile(executable, "#!/bin/sh\nexit 0\n", { mode: 0o700 })
+
+      const env = buildHostCliEnv({ HOME: root, PATH: "/usr/bin:/bin" })
+      const paths = env.PATH!.split(delimiter)
+      expect(paths).toContain(bin)
+      // Exercise the discovered HOME fallback without finding a real Claude
+      // installation in one of the machine-wide fallback directories first.
+      const fixtureEnv = {
+        ...env,
+        PATH: paths.filter((path) => path === bin).join(delimiter),
+      }
+      expect(await resolveExecutable(fixtureEnv)).toBe(
+        await realpath(executable)
+      )
+
+      await rm(executable)
+      await expect(resolveExecutable(fixtureEnv)).rejects.toMatchObject({
+        code: "claude_subscription_cli_missing",
+      })
+    })
+  }
+)
+
 describe.skipIf(process.platform !== "linux")(
   "native Linux private state and executable discovery",
   () => {
@@ -107,15 +138,7 @@ describe.skipIf(process.platform !== "linux")(
         code: "claude_subscription_cli_missing",
       })
     })
-    it("discovers the installed native CLI from GUI-style minimal PATH and HOME", async () => {
-      const env = buildHostCliEnv({
-        HOME: process.env.HOME,
-        PATH: "/usr/bin:/bin",
-      })
-      expect(await resolveExecutable(env)).toBe(
-        await resolveExecutable(process.env)
-      )
-    })
+
     it.each(["failed", "stalled"])(
       "sanitizes %s native version probes",
       async (mode) => {

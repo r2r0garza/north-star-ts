@@ -1,6 +1,11 @@
 import * as kanban from "../db/repositories/kanban"
 import {
   asActions,
+  copyName,
+  boardDraftFromBoard,
+  presetSource,
+  withAdoCustomFields,
+  type KanbanBoardDraft,
   asDependencyLinks,
   asFilter,
   asOutcomes,
@@ -58,13 +63,60 @@ export function exportBoard(board: KanbanBoard, columns: KanbanColumn[]) {
   }
 }
 
-// "Board", then "Board - Copy", then "Board - Copy 2", "Board - Copy 3"...
-export function copyName(name: string, taken: string[]): string {
-  const names = new Set(taken.map((n) => n.trim()))
-  if (!names.has(name)) return name
-  let candidate = `${name} - Copy`
-  for (let n = 2; names.has(candidate); n++) candidate = `${name} - Copy ${n}`
-  return candidate
+export { copyName } from "../../shared/kanban"
+
+export function duplicateBoard(
+  boardId: string,
+  name: string,
+  draft?: KanbanBoardDraft
+): KanbanBoard {
+  const original = kanban.getBoard(boardId)
+  if (!original?.source)
+    throw new Error("board not found or has no intake recipe")
+  if (typeof name !== "string" || !name.trim())
+    throw new Error("Enter a name for the duplicate board.")
+  let intake = {
+    name: name.trim(),
+    workspace: original.workspace,
+    source: original.source,
+    filter: original.filter,
+  }
+  if (draft) {
+    if (!draft.target || !["github", "ado"].includes(draft.target.tracker))
+      throw new Error("choose GitHub or Azure DevOps")
+    const initial = boardDraftFromBoard(original)
+    const filter = asFilter(draft.filter)
+    const source = withAdoCustomFields(
+      JSON.stringify(draft.target) === JSON.stringify(initial.target)
+        ? original.source
+        : presetSource(draft.target),
+      [...(filter.fields ?? []), ...(original.autoPromote.fields ?? [])].map(
+        (r) => r.field
+      )
+    )
+    if (!draft.workspace?.trim()) throw new Error("choose a workspace folder")
+    intake = {
+      name: intake.name,
+      workspace: draft.workspace.trim(),
+      source,
+      filter,
+    }
+  }
+  const problem = callProblem(
+    resolveIntakeCall(intake.source, intake.filter),
+    intake.workspace
+  )
+  if (problem) throw new Error(`Intake recipe: ${problem}`)
+  const columns = exportBoard(original, kanban.listColumns(boardId)).columns
+  for (const column of columns)
+    for (const action of column.actions) {
+      const bad = callProblem(action, intake.workspace)
+      if (bad)
+        throw new Error(
+          `Column "${column.name}", action "${action.name}": ${bad}`
+        )
+    }
+  return kanban.duplicateBoard(original, intake, columns)
 }
 
 const text = (v: unknown) => (typeof v === "string" ? v.trim() : "")

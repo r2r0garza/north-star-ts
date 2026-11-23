@@ -6,6 +6,7 @@ import { NewBoardDialog } from "./kanban-new-board-dialog"
 
 let root: Root
 let container: HTMLDivElement
+const duplicate = vi.fn(async () => ({ ok: true, boardId: "copy" }))
 const create = vi.fn(async () => ({ ok: true, boardId: "new-board" }))
 const testDraft = vi.fn(async () => ({ ok: true, count: 0, items: [] }))
 const onCreated = vi.fn()
@@ -57,7 +58,9 @@ const fill = async (id: string, value: string) =>
 beforeEach(async () => {
   vi.clearAllMocks()
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
-  Object.assign(window, { cowork: { kanban: { create, testDraft } } })
+  Object.assign(window, {
+    cowork: { kanban: { create, testDraft, duplicate } },
+  })
   container = document.createElement("div")
   document.body.append(container)
   root = createRoot(container)
@@ -145,6 +148,115 @@ it("retains person text across assignee and tracker changes without leaking it i
     expect.objectContaining({
       target: { tracker: "github", repo: "" },
       filter: expect.objectContaining({ assignee: { mode: "anyone" } }),
+    })
+  )
+})
+
+it("prefills every Azure intake field and submits edits through duplication, not creation", async () => {
+  const draft = {
+    name: "Team - Copy 2",
+    workspace: "/team",
+    target: { tracker: "ado" as const, org: "example", project: "Project" },
+    filter: {
+      tags: ["ready"],
+      match: "all" as const,
+      excludeTags: ["hold"],
+      assignee: { mode: "user" as const, user: "pat@example.com" },
+      types: ["Bug"],
+      states: ["Active"],
+      fields: [{ field: "Custom.QA", values: ["Pat", "Sam"] }],
+    },
+  }
+  await act(async () =>
+    root.render(
+      <NewBoardDialog
+        key="duplicate"
+        open
+        duplicate={{ boardId: "original", draft }}
+        onCreated={onCreated}
+        onOpenChange={onOpenChange}
+      />
+    )
+  )
+  for (const [id, value] of Object.entries({
+    name: draft.name,
+    org: "example",
+    project: "Project",
+    workspace: "/team",
+    tags: "ready",
+    exclude: "hold",
+    user: "pat@example.com",
+    types: "Bug",
+    states: "Active",
+  })) {
+    expect(
+      (document.getElementById(`nb-${id}`) as HTMLInputElement).value
+    ).toBe(value)
+  }
+  expect(document.getElementById("nb-match")?.textContent).toContain("all")
+  expect(
+    document.querySelector<HTMLInputElement>(
+      '[aria-label="Field reference name"]'
+    )?.value
+  ).toBe("Custom.QA")
+  expect(
+    document.querySelector<HTMLInputElement>(
+      '[aria-label="Values (comma-separated)"]'
+    )?.value
+  ).toBe("Pat, Sam")
+  await fill("nb-tags", "changed")
+  await fill("nb-states", "Resolved")
+  await fill("nb-project", "Other")
+  await fill("nb-user", "sam@example.com")
+  await click("Duplicate board")
+  expect(duplicate).toHaveBeenCalledWith("original", draft.name, {
+    ...draft,
+    target: { ...draft.target, project: "Other" },
+    filter: {
+      ...draft.filter,
+      tags: ["changed"],
+      states: ["Resolved"],
+      assignee: { mode: "user", user: "sam@example.com" },
+    },
+  })
+  expect(create).not.toHaveBeenCalled()
+  expect(onCreated).toHaveBeenCalledWith("copy")
+})
+
+it("preserves prefilled GitHub state filters that are not editable in New Board", async () => {
+  const draft = {
+    name: "Copy",
+    workspace: "/repo",
+    target: { tracker: "github" as const, repo: "owner/repo" },
+    filter: {
+      tags: [],
+      match: "any" as const,
+      excludeTags: [],
+      assignee: { mode: "anyone" as const },
+      types: [],
+      states: ["closed"],
+    },
+  }
+  await act(async () =>
+    root.render(
+      <NewBoardDialog
+        key="github-copy"
+        open
+        duplicate={{ boardId: "original", draft }}
+        onCreated={onCreated}
+        onOpenChange={onOpenChange}
+      />
+    )
+  )
+  expect((document.getElementById("nb-repo") as HTMLInputElement).value).toBe(
+    "owner/repo"
+  )
+  await click("Duplicate board")
+  expect(duplicate).toHaveBeenCalledWith(
+    "original",
+    "Copy",
+    expect.objectContaining({
+      filter: expect.objectContaining({ states: ["closed"] }),
     })
   )
 })

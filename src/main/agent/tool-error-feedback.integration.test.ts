@@ -3404,8 +3404,12 @@ describe.skipIf(!sqliteLoads)("tool batch durability and cancellation", () => {
       // The note must route each attachment to the reader that can parse it —
       // read_file_tool would only return ERROR[binary] for the PDF.
       const content = lastMessage(request, "user")?.content as string
-      expect(content).toContain("read with read_file_tool: notes.txt")
-      expect(content).toContain("read with read_document: report.pdf")
+      expect(content).toContain(
+        `read with read_file_tool: ${JSON.stringify(notes)}`
+      )
+      expect(content).toContain(
+        `read with read_document: ${JSON.stringify(pdf)}`
+      )
       return streamText("Read it.")
     })
 
@@ -3430,7 +3434,7 @@ describe.skipIf(!sqliteLoads)("tool batch durability and cancellation", () => {
       expect(request.tools).toContain("read_file_tool")
       expect(request.tools).not.toContain("read_document")
       expect(lastMessage(request, "user")?.content).toContain(
-        "read with read_file_tool: notes.txt"
+        `read with read_file_tool: ${JSON.stringify(notes)}`
       )
       return streamText("Read it.")
     })

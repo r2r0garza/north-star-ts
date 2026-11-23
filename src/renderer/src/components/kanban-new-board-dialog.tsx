@@ -37,27 +37,51 @@ export function NewBoardDialog({
   open,
   onOpenChange,
   onCreated,
+  duplicate,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   onCreated: (boardId: string) => void
+  duplicate?: { boardId: string; draft: KanbanBoardDraft }
 }) {
-  const [name, setName] = useState("")
-  const [tracker, setTracker] = useState<"github" | "ado">("github")
-  const [repo, setRepo] = useState("")
-  const [org, setOrg] = useState("")
-  const [project, setProject] = useState("")
-  const [workspace, setWorkspace] = useState("")
-  const [tags, setTags] = useState("")
-  const [match, setMatch] = useState<"any" | "all">("any")
-  const [exclude, setExclude] = useState("")
-  const [assignee, setAssignee] = useState<"me" | "anyone" | "user">("me")
-  const [user, setUser] = useState("")
-  const [types, setTypes] = useState("")
-  const [states, setStates] = useState("")
+  const initial = duplicate?.draft
+  const [name, setName] = useState(initial?.name ?? "")
+  const [tracker, setTracker] = useState<"github" | "ado">(
+    initial?.target.tracker ?? "github"
+  )
+  const [repo, setRepo] = useState(
+    initial?.target.tracker === "github" ? initial.target.repo : ""
+  )
+  const [org, setOrg] = useState(
+    initial?.target.tracker === "ado" ? initial.target.org : ""
+  )
+  const [project, setProject] = useState(
+    initial?.target.tracker === "ado" ? initial.target.project : ""
+  )
+  const [workspace, setWorkspace] = useState(initial?.workspace ?? "")
+  const [tags, setTags] = useState(initial?.filter.tags.join(", ") ?? "")
+  const [match, setMatch] = useState<"any" | "all">(
+    initial?.filter.match ?? "any"
+  )
+  const [exclude, setExclude] = useState(
+    initial?.filter.excludeTags.join(", ") ?? ""
+  )
+  const [assignee, setAssignee] = useState<"me" | "anyone" | "user">(
+    initial?.filter.assignee.mode ?? "me"
+  )
+  const [user, setUser] = useState(
+    initial?.filter.assignee.mode === "user" ? initial.filter.assignee.user : ""
+  )
+  const [types, setTypes] = useState(initial?.filter.types.join(", ") ?? "")
+  const [states, setStates] = useState(initial?.filter.states.join(", ") ?? "")
   const [fieldRules, setFieldRules] = useState<
     { field: string; values: string }[]
-  >([])
+  >(
+    (initial?.filter.fields ?? []).map((r) => ({
+      field: r.field,
+      values: r.values.join(", "),
+    }))
+  )
   const [busy, setBusy] = useState<"test" | "create" | null>(null)
   const [test, setTest] = useState<TestResult | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -68,20 +92,33 @@ export function NewBoardDialog({
     target:
       tracker === "github" ? { tracker, repo } : { tracker, org, project },
     filter: {
+      ...initial?.filter,
       tags: list(tags),
       match,
       excludeTags: list(exclude),
       assignee:
         assignee === "user" ? { mode: "user", user } : { mode: assignee },
       // GitHub's preset maps no type, and its states are only open/closed.
-      types: tracker === "ado" ? list(types) : [],
-      states: tracker === "ado" ? list(states) : [],
+      types:
+        tracker === "ado"
+          ? list(types)
+          : initial?.target.tracker === tracker
+            ? initial.filter.types
+            : [],
+      states:
+        tracker === "ado"
+          ? list(states)
+          : initial?.target.tracker === tracker
+            ? initial.filter.states
+            : [],
       fields:
         tracker === "ado"
           ? fieldRules
               .map((r) => ({ field: r.field.trim(), values: list(r.values) }))
               .filter((r) => r.field && r.values.length)
-          : undefined,
+          : initial?.target.tracker === tracker
+            ? initial.filter.fields
+            : undefined,
     },
   })
 
@@ -100,7 +137,9 @@ export function NewBoardDialog({
   async function create() {
     setBusy("create")
     setError(null)
-    const result = await window.cowork.kanban.create(draft())
+    const result = duplicate
+      ? await window.cowork.kanban.duplicate(duplicate.boardId, name, draft())
+      : await window.cowork.kanban.create(draft())
     setBusy(null)
     if (!result.ok) return setError(result.reason)
     onCreated(result.boardId)
@@ -111,8 +150,13 @@ export function NewBoardDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>New board</DialogTitle>
+          <DialogTitle>
+            {duplicate ? "Duplicate board — edit intake" : "New board"}
+          </DialogTitle>
           <DialogDescription>
+            {duplicate
+              ? "Create a copy with the original columns and advanced settings. Review and approve its intake before syncing. "
+              : ""}
             Pull issues with the GitHub CLI (gh) or Azure CLI (az boards),
             signed in on this machine. Columns and more filters are in the
             board&apos;s settings afterwards.
@@ -380,7 +424,7 @@ export function NewBoardDialog({
           </Button>
           <Button disabled={!!busy} onClick={() => void create()}>
             {busy === "create" ? <Spinner /> : null}
-            Create board
+            {duplicate ? "Duplicate board" : "Create board"}
           </Button>
         </DialogFooter>
       </DialogContent>

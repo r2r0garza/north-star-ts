@@ -221,6 +221,33 @@ export function saveBoard(input: {
   })()
 }
 
+export function duplicateBoard(
+  original: KanbanBoard,
+  intake: Pick<KanbanBoard, "name" | "workspace" | "source" | "filter">,
+  columns: KanbanColumnInput[]
+): KanbanBoard {
+  if (!intake.source) throw new Error("The board has no intake recipe.")
+  const source = intake.source
+  return getDb().transaction(() => {
+    const board = saveBoard({
+      ...intake,
+      source,
+      syncIntervalMs: original.syncIntervalMs,
+      columns,
+      allowUnavailableModels: true,
+    })
+    setActionSettings(board.id, {
+      writeApproval: original.writeApproval,
+      actionsPaused: false,
+    })
+    setRunSettings(board.id, original)
+    setNotifications(board.id, original.notifications)
+    setAutoPromote(board.id, original.autoPromote)
+    setDependencyLinks(board.id, original.dependencyLinks)
+    return getBoard(board.id)!
+  })()
+}
+
 export function deleteBoard(id: string): void {
   getDb().prepare("DELETE FROM kanban_boards WHERE id = ?").run(id)
 }
