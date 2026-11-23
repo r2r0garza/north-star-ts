@@ -1155,23 +1155,7 @@ typecheck` clean (sole error, `src/main/ide/open.test.ts`, is **pre-existing on 
   7 interactive sessions intact, `foreign_key_check` + `integrity_check` clean (after clearing
   unrelated `pr21-test-task` manual-test debris). Built on `feat/orphaned-task-cleanup` (commit
   `95f05e0`; not yet merged to `main`).
-- **`021` — Approvals context section.** Built on `pr21-approvals-context-section` (commit ref pending
-  merge). Filled the last `014`-reserved section slot (`SECTION_PRIORITY.approvals = 20`): a read-only,
-  advisory section giving the agent visibility into what the user has **already granted/denied**, so it
-  doesn't re-request an allowlisted action or retry a denied one. **Shipped both halves.** (1) _Allowlist_
-  — a new `listRules({ workspacePath, conversationId })` read on `action-allowlist.ts` returning all
-  in-scope grants (global + matching workspace + matching conversation), mirroring `findMatch`'s scope
-  logic but returning every match and **not** touching `last_used_at` (a display read must not mark rules
-  used). Meaningful on any non-chat turn. (2) _Task approvals_ — recent/pending `approvals` rows
-  (`009`/`012`) surfaced only when the turn belongs to a durable task; an optional `taskId` was threaded
-  into `RunAgentLoopOptions` and set by the runner's `runOne`; pending decisions render as "NOT yet
-  granted". Both fold into an `approvalsSection` in `context/sections.ts` (deduped by kind/identity/scope,
-  capped), pushed in `runAgentLoop` at the existing `showTodos` gate; returns null (no block) for a bare
-  turn. **No schema change, no migration.** Advisory only — never bypasses the live gate
-  (`agent/approval` unchanged). Verified: `pnpm typecheck` + `pnpm build` clean; 15 unit tests
-  (`action-allowlist.test.ts` scope resolution + no-touch-`last_used_at`; `sections.test.ts`
-  renderer/dedup/gating); manual E2E (grant line appears in-scope, absent cross-workspace and in bare
-  chat; task half renders on resume). Testing surfaced an unrelated data-lifecycle bug → `022`.
+
 - **`014` — Context builder (framework + available sources).** Built on `feat/workspace-indexing`
   (commit `aff2db5`; not yet merged to `main`). Evolved the `ContextBuilder` from a single-budget
   history walk-back into a section assembler: a `ContextSection` abstraction, one global token budget

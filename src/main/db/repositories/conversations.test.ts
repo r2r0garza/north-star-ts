@@ -101,12 +101,17 @@ describe.skipIf(!sqliteLoads)(
 )
 
 describe.skipIf(!sqliteLoads)("conversations — reasoning effort", () => {
-  it("stores known levels and drops anything else", () => {
+  it("stores provider-defined level names and rejects malformed values", () => {
     const conversation = createConversation({ mode: "chat", effort: "xhigh" })
     expect(conversation.effort).toBe("xhigh")
-    expect(
-      updateConversation(conversation.id, { effort: "turbo" }).effort
-    ).toBeNull()
+    for (const effort of ["turbo", "provider_level-2", "a".repeat(32)]) {
+      expect(updateConversation(conversation.id, { effort }).effort).toBe(effort)
+      expect(getConversation(conversation.id)?.effort).toBe(effort)
+    }
+    for (const effort of ["", "Turbo", "very high", "1high", "a".repeat(33)]) {
+      expect(updateConversation(conversation.id, { effort }).effort).toBeNull()
+      expect(createConversation({ mode: "chat", effort }).effort).toBeNull()
+    }
     expect(updateConversation(conversation.id, { effort: "low" }).effort).toBe(
       "low"
     )

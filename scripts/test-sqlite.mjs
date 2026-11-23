@@ -38,7 +38,9 @@ const vitest = spawnSync(
     "vitest",
     "run",
     ...sqliteTestFiles,
+    "--reporter=default",
     "--reporter=json",
+    "--silent=passed-only",
     `--outputFile=${reportPath}`,
   ],
   {
@@ -58,19 +60,22 @@ try {
   report = null
 }
 
+if (vitest.error) {
+  console.error("Failed to start SQLite tests:", vitest.error)
+  process.exit(1)
+}
+
+if (vitest.signal) {
+  console.error(`SQLite tests terminated by signal ${vitest.signal}.`)
+}
+
 if (vitest.status !== 0) {
-  if (report) {
-    const failures = (report.testResults ?? []).filter(
-      (result) => result.status === "failed"
-    )
-    for (const result of failures.slice(0, 3)) {
-      if (result.status !== "failed") continue
-      console.error(`${result.name}: ${result.message}`)
-    }
-    if (failures.length > 3) {
-      console.error(`...and ${failures.length - 3} more failed SQLite suites.`)
-    }
-  }
+  console.error(`SQLite tests failed (exit code ${vitest.status ?? "unavailable"}).`)
+  console.error(
+    report
+      ? `SQLite JSON report: ${reportPath}`
+      : `SQLite test run did not produce a readable JSON report at ${reportPath}`
+  )
   process.exit(vitest.status ?? 1)
 }
 
