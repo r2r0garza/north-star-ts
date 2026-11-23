@@ -107,6 +107,8 @@ function isHardBlocked(command: string, workspace: string): boolean {
 export interface CommandRunResult {
   exitCode: number | null
   timedOut: boolean
+  signal?: string | null
+  aborted?: boolean
   output: string
 }
 
@@ -266,6 +268,8 @@ export class KanbanService {
       env: Record<string, string>
       timeoutMs: number | null
       signal: AbortSignal
+      onOutput?: import("../agent/env/types").ExecOptions["onOutput"]
+      onStarted?: () => void
     }
   ): Promise<CommandRunResult> {
     if (isHardBlocked(command, opts.cwd))
@@ -284,11 +288,15 @@ export class KanbanService {
         maxOutputBytes: MAX_OUTPUT_BYTES,
         env: opts.env,
         signal: opts.signal,
+        onOutput: opts.onOutput,
+        onStarted: opts.onStarted,
       })
       if (result.spawnError) throw new Error(result.spawnError)
       return {
         exitCode: result.exitCode,
         timedOut: result.timedOut,
+        signal: result.signal,
+        aborted: result.aborted,
         output: stripAnsi(result.stdout.toString("utf8")).slice(
           -COMMAND_OUTPUT_TAIL_CHARS
         ),

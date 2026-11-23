@@ -44,6 +44,9 @@ export interface ExecOptions {
   env?: Record<string, string | undefined>
   // Hard cap on captured output bytes, so a runaway command can't exhaust memory.
   maxOutputBytes: number
+  // Read-only observer; receives both streams in delivery order, before capture caps.
+  onOutput?: (chunk: CommandChunk) => void
+  onStarted?: () => void
   // Abort seam (see .plan/005): when it fires, the running process is killed.
   // Nothing fires it yet, so with no signal the behavior is identical to before.
   signal?: AbortSignal

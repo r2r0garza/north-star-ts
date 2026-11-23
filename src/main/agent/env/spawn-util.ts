@@ -17,7 +17,7 @@ export interface CapturedProcessResult {
 
 type CaptureOptions = Pick<
   ExecOptions,
-  "timeoutMs" | "maxOutputBytes" | "signal"
+  "timeoutMs" | "maxOutputBytes" | "signal" | "onOutput" | "onStarted"
 > & {
   // When true, kill the child's whole process group instead of just the child.
   // LocalEnvironment spawns `detached` (the child leads its own group), so a
@@ -83,6 +83,7 @@ function captureChildProcess<T extends ExecResult | CapturedProcessResult>(
     let settled = false
 
     const capture = (chunk: Buffer, stream: "stdout" | "stderr") => {
+      opts.onOutput?.({ stream, data: chunk })
       observedBytes += chunk.length
       if (bytes >= opts.maxOutputBytes) {
         outputTruncated = true
@@ -98,6 +99,7 @@ function captureChildProcess<T extends ExecResult | CapturedProcessResult>(
       if (stream === "stderr") stderrChunks.push(keep)
       bytes += keep.length
     }
+    child.once("spawn", () => opts.onStarted?.())
     child.stdout?.on("data", (chunk: Buffer) => capture(chunk, "stdout"))
     child.stderr?.on("data", (chunk: Buffer) => capture(chunk, "stderr"))
 

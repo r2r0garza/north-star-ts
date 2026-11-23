@@ -105,8 +105,13 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
         cwd: string
         env: Record<string, string>
         timeoutMs: number | null
+        onStarted?: () => void
+        onOutput?: import("../agent/env/types").ExecOptions["onOutput"]
       }
     ) => {
+      opts.onStarted?.()
+      opts.onOutput?.({ stream: "stdout", data: Buffer.from("live stdout\n") })
+      opts.onOutput?.({ stream: "stderr", data: Buffer.from("live stderr\n") })
       commands.push({
         command,
         cwd: opts.cwd,
@@ -1102,6 +1107,9 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
         runState: "running",
       })
       expect(prompts).toHaveLength(0)
+      expect(
+        cards.runs(card.id).find((r) => r.kind === "command")!.commandOutput
+      ).toMatchObject({ status: "exited", exitCode: 1 })
       await exec(last()) // Dev's agent gets the findings
       expect(prompts[0]).toContain("boom")
     })
@@ -1118,9 +1126,19 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
       await cards.enter(a.id, cols[1].id)
       await execCommand(last())
       expect(kanban.getCard(a.id)!.runError).toBe("timed out after 5 min\nslow")
+      expect(cards.runs(a.id)[0].commandOutput).toMatchObject({
+        status: "timed_out",
+        output: "live stdout\nlive stderr\n",
+        exitCode: null,
+      })
       await cards.enter(b.id, cols[1].id)
       await execCommand(last())
       expect(kanban.getCard(b.id)!.runError).toContain("blocked by policy")
+      expect(cards.runs(b.id)[0].commandOutput).toMatchObject({
+        status: "failed",
+        error: expect.stringContaining("blocked by policy"),
+      })
+      expect(cards.runs(a.id)[0].commandOutput!.status).toBe("timed_out")
     })
 
     it("runs one card at a time per column, and other columns in parallel", async () => {

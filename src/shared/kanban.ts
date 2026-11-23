@@ -391,7 +391,27 @@ export const MAX_PARALLEL_COMMANDS = 4
 // wait (shown as Queued), leaving the app's other model slots free.
 export const MAX_PARALLEL_AGENTS = 4
 
+export interface KanbanCommandOutput {
+  runId: string
+  command: string
+  cwd: string
+  status:
+    | "queued"
+    | "starting"
+    | "running"
+    | "exited"
+    | "timed_out"
+    | "stopped"
+    | "failed"
+  output: string
+  omittedBytes: number
+  exitCode: number | null
+  signal: string | null
+  error?: string
+}
+
 export interface KanbanCardRun {
+  commandOutput?: KanbanCommandOutput | null
   id: string
   // agent: an agent turn. command: a user column's command (136.5).
   kind: "agent" | "command"
