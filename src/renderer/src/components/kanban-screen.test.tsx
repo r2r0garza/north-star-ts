@@ -313,3 +313,107 @@ it("toggles a card's own worktree from its menu, until the card has run", async 
     vi.unstubAllGlobals()
   }
 })
+
+it.each([false, true])(
+  "selects the fresh duplicate after saving (edit intake: %s)",
+  async (edit) => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
+    const original = {
+      ...board,
+      source: {
+        tracker: "github" as const,
+        command: "gh issue list --repo 'owner/repo' --search {{query}}",
+        fields: { id: "number", title: "title" },
+      },
+    }
+    const copy = { ...original, id: "copy", name: "Board - Copy 3" }
+    let boards = [
+      original,
+      { ...original, id: "c1", name: "Board - Copy" },
+      { ...original, id: "c2", name: "Board - Copy 2" },
+    ]
+    const duplicate = vi.fn(async () => {
+      boards = [...boards, copy]
+      return { ok: true, boardId: copy.id }
+    })
+    const graph = vi.fn(async (id: string) => ({
+      board: boards.find((b) => b.id === id),
+      columns: [],
+      cards: [],
+      sourceHash: "fresh",
+      approved: false,
+      intakeCall: { command: "gh issue list" },
+      intakeError: null,
+      layout: "repo",
+      detectedLinks: [],
+    }))
+    Object.assign(window, {
+      cowork: { kanban: { list: vi.fn(async () => boards), graph, duplicate } },
+    })
+    const container = document.createElement("div")
+    document.body.append(container)
+    const root = createRoot(container)
+    const clickText = async (text: string) =>
+      act(async () => {
+        ;[
+          ...document.querySelectorAll<HTMLElement>(
+            'button, [role="menuitem"]'
+          ),
+        ]
+          .find((el) => el.textContent === text)!
+          .click()
+      })
+    try {
+      await act(async () =>
+        root.render(
+          <KanbanScreen
+            onClose={vi.fn()}
+            onOpenConversation={vi.fn()}
+            focusBoard={{ id: "b" }}
+          />
+        )
+      )
+      await act(async () => {
+        const trigger = document.querySelector('[aria-label="Board actions"]')!
+        trigger.dispatchEvent(
+          new PointerEvent("pointerdown", {
+            bubbles: true,
+            button: 0,
+            ctrlKey: false,
+          })
+        )
+        trigger.dispatchEvent(
+          new PointerEvent("pointerup", {
+            bubbles: true,
+            button: 0,
+            ctrlKey: false,
+          })
+        )
+        trigger.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+      })
+      await clickText("Duplicate board")
+      expect(
+        (document.getElementById("duplicate-name") as HTMLInputElement).value
+      ).toBe("Board - Copy 3")
+      if (edit) {
+        await clickText("Edit intake settings")
+        expect(
+          (document.getElementById("nb-name") as HTMLInputElement).value
+        ).toBe("Board - Copy 3")
+        expect(
+          (document.getElementById("nb-repo") as HTMLInputElement).value
+        ).toBe("owner/repo")
+        await clickText("Duplicate board")
+      } else await clickText("Keep intake and duplicate")
+      expect(duplicate).toHaveBeenCalled()
+      expect(graph).toHaveBeenLastCalledWith("copy")
+      expect(
+        document.querySelector('[aria-label="Switch board: Board - Copy 3"]')
+      ).not.toBeNull()
+    } finally {
+      act(() => root.unmount())
+      container.remove()
+      vi.unstubAllGlobals()
+    }
+  }
+)

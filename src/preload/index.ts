@@ -1545,6 +1545,10 @@ const api = {
       ipcRenderer.invoke("kanban:exportFile", boardId) as Promise<
         KanbanResult & { canceled?: boolean }
       >,
+    duplicate: (boardId: string, name: string, draft?: KanbanBoardDraft) =>
+      ipcRenderer.invoke("kanban:duplicate", boardId, name, draft) as Promise<
+        { ok: true; boardId: string } | { ok: false; reason: string }
+      >,
     importFile: () =>
       ipcRenderer.invoke("kanban:importFile") as Promise<
         KanbanResult & { canceled?: boolean; boardId?: string; name?: string }

@@ -862,11 +862,51 @@ export type KanbanPresetTarget =
   | { tracker: "github"; repo: string }
   | { tracker: "ado"; org: string; project: string }
 
+// "Board", then "Board - Copy", then "Board - Copy 2", "Board - Copy 3"...
+export function copyName(name: string, taken: string[]): string {
+  const names = new Set(taken.map((n) => n.trim()))
+  if (!names.has(name)) return name
+  let candidate = `${name} - Copy`
+  for (let n = 2; names.has(candidate); n++) candidate = `${name} - Copy ${n}`
+  return candidate
+}
+
 export interface KanbanBoardDraft {
   name: string
   workspace: string
   target: KanbanPresetTarget
   filter: KanbanIntakeFilter
+}
+
+// Read CLI target flags without executing the recipe. Custom/MCP recipes can
+// still be copied unchanged; switching target explicitly builds a CLI preset.
+export function boardDraftFromBoard(board: KanbanBoard): KanbanBoardDraft {
+  const tokens =
+    (board.source?.command ?? "").match(
+      /(?:[^\s'\"\\]+|\\.|'[^']*'|\"[^\"]*\")+/g
+    ) ?? []
+  const flag = (...names: string[]) => {
+    const i = tokens.findIndex((t) => names.includes(t))
+    return i < 0
+      ? ""
+      : (tokens[i + 1] ?? "").replace(
+          /\\(.)|'([^']*)'|\"([^\"]*)\"/g,
+          (_m, escaped, single, double) => escaped ?? single ?? double
+        )
+  }
+  return {
+    name: board.name,
+    workspace: board.workspace ?? "",
+    target:
+      board.source?.tracker === "ado"
+        ? {
+            tracker: "ado",
+            org: flag("--org", "--organization"),
+            project: flag("--project", "-p"),
+          }
+        : { tracker: "github", repo: flag("--repo", "-R") },
+    filter: board.filter,
+  }
 }
 
 // `az boards query` returns every selected field under `fields`, and the

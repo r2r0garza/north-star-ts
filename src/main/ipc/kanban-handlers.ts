@@ -1,6 +1,6 @@
 import { BrowserWindow, dialog, ipcMain } from "electron"
 import { readFile, writeFile } from "node:fs/promises"
-import { exportBoard, importBoard } from "../kanban/export"
+import { duplicateBoard, exportBoard, importBoard } from "../kanban/export"
 import { pickWorkspace } from "../pick-workspace"
 import * as kanban from "../db/repositories/kanban"
 import type { KanbanService } from "../kanban/service"
@@ -130,6 +130,17 @@ export function registerKanbanHandlers(
       return { ok: false, reason: (err as Error).message }
     }
   })
+  ipcMain.handle(
+    "kanban:duplicate",
+    (_e, boardId: string, name: string, draft?: KanbanBoardDraft) => {
+      try {
+        const board = duplicateBoard(boardId, name, draft)
+        return { ok: true, boardId: board.id }
+      } catch (err) {
+        return { ok: false, reason: (err as Error).message }
+      }
+    }
+  )
   // Returns the sync task id, or null when one is already in flight.
   ipcMain.handle(
     "kanban:sync",

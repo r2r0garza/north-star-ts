@@ -15,6 +15,7 @@ import {
   Bell,
   ChevronDown,
   Download,
+  Copy,
   ExternalLink,
   GripVertical,
   MoreHorizontal,
@@ -83,6 +84,7 @@ import { Spinner } from "@/components/ui/spinner"
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { KanbanSettingsSheet } from "@/components/kanban-settings-sheet"
 import { NewBoardDialog } from "@/components/kanban-new-board-dialog"
+import { DuplicateBoardDialog } from "@/components/kanban-duplicate-board-dialog"
 import { cn } from "@/lib/utils"
 import { waitForTask } from "@/components/dashboards-screen"
 import type {
@@ -97,7 +99,12 @@ import type {
   KanbanSource,
   KanbanUpstreamAction,
 } from "../../../shared/kanban"
-import { cardVars, fillInstructions } from "../../../shared/kanban"
+import {
+  boardDraftFromBoard,
+  copyName,
+  cardVars,
+  fillInstructions,
+} from "../../../shared/kanban"
 
 // Kanban board view (plans 136.1/136.2). Boards are authored by an agent
 // (kanban_write) or the settings sheet; this view approves the intake recipe,
@@ -849,6 +856,11 @@ export function KanbanScreen({
   const [pendingRemove, setPendingRemove] = useState<KanbanCard | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [newOpen, setNewOpen] = useState(false)
+  const [duplicate, setDuplicate] = useState<{
+    board: KanbanBoard
+    name: string
+    edit: boolean
+  } | null>(null)
   const [switcherOpen, setSwitcherOpen] = useState(false)
   const selectedRef = useRef<string | null>(null)
   selectedRef.current = selectedId
@@ -1027,6 +1039,11 @@ export function KanbanScreen({
     if (!result.ok) toast.error(result.reason)
     setPendingDelete(null)
     await refreshList()
+  }
+
+  function duplicated(boardId: string) {
+    void refreshList().then(() => setSelectedId(boardId))
+    toast.success("Board duplicated. Review and approve its intake recipe.")
   }
 
   async function exportBoard(id: string) {
@@ -1213,6 +1230,21 @@ export function KanbanScreen({
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
                         <DropdownMenuItem
+                          onSelect={() =>
+                            setDuplicate({
+                              board,
+                              name: copyName(
+                                board.name,
+                                boards.map((b) => b.name)
+                              ),
+                              edit: false,
+                            })
+                          }
+                        >
+                          <Copy />
+                          Duplicate board
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
                           onSelect={() => void exportBoard(board.id)}
                         >
                           <Download />
@@ -1323,6 +1355,35 @@ export function KanbanScreen({
         </div>
       </div>
 
+      {duplicate ? (
+        duplicate.edit ? (
+          <NewBoardDialog
+            key={duplicate.board.id}
+            open
+            duplicate={{
+              boardId: duplicate.board.id,
+              draft: {
+                ...boardDraftFromBoard(duplicate.board),
+                name: duplicate.name,
+              },
+            }}
+            onOpenChange={(open) => {
+              if (!open) setDuplicate(null)
+            }}
+            onCreated={duplicated}
+          />
+        ) : (
+          <DuplicateBoardDialog
+            boardId={duplicate.board.id}
+            initialName={duplicate.name}
+            onOpenChange={(open) => {
+              if (!open) setDuplicate(null)
+            }}
+            onEdit={(name) => setDuplicate({ ...duplicate, name, edit: true })}
+            onCreated={duplicated}
+          />
+        )
+      ) : null}
       <NewBoardDialog
         open={newOpen}
         onOpenChange={setNewOpen}
