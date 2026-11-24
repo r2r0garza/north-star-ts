@@ -73,6 +73,7 @@ const graph: KanbanBoardGraph = {
       actions: [],
       command: null,
       commandTimeoutMs: null,
+      commandShell: "powershell",
       notify: false,
       wipLimit: null,
       entryGate: { states: [], tags: [] },
@@ -90,6 +91,7 @@ const graph: KanbanBoardGraph = {
       actions: [],
       command: null,
       commandTimeoutMs: null,
+      commandShell: "powershell",
       notify: false,
       wipLimit: null,
       entryGate: { states: [], tags: [] },
@@ -497,6 +499,74 @@ it("edits a command and its time limit only on the user's own columns", async ()
     command: "npm run deploy",
     commandTimeoutMs: 30 * 60_000,
   })
+})
+
+it.each([
+  ["win32", true],
+  ["darwin", false],
+  ["linux", false],
+])(
+  "offers a column's command shell only on Windows: %s",
+  async (platform, shown) => {
+    window.cowork.platform = platform as NodeJS.Platform
+    const withUser = {
+      ...graph,
+      columns: graph.columns.map((c) =>
+        c.id === "doing"
+          ? { ...c, owner: "user", command: "npm test", commandShell: "cmd" }
+          : c
+      ),
+    } as KanbanBoardGraph
+    await act(async () =>
+      root.render(
+        <KanbanSettingsSheet
+          graph={withUser}
+          onClose={vi.fn()}
+          onSaved={vi.fn()}
+        />
+      )
+    )
+    await act(() => button("In progress").click())
+    const shell = document.querySelector("#kb-column-shell")
+    const help = document.querySelector("#kb-column-command")!.parentElement!
+    if (!shown) {
+      expect(shell).toBeNull()
+      expect(help.textContent).toContain("$KANBAN_ITEM_ID")
+      return
+    }
+    // A column that ran under cmd before keeps it until the user switches.
+    expect(shell?.textContent).toContain("Command Prompt (cmd)")
+    expect(help.textContent).toContain("%KANBAN_ITEM_ID%")
+    await choose("kb-column-shell", "PowerShell")
+    expect(help.textContent).toContain("$env:KANBAN_ITEM_ID")
+    expect(
+      document.querySelector("#kb-column-shell-description")?.textContent
+    ).toContain("&&")
+    await click("Save changes")
+    const saved = saveSettings.mock.calls[0] as unknown as [
+      string,
+      { columns: Record<string, unknown>[] },
+    ]
+    expect(saved[1].columns[1]).toMatchObject({
+      id: "doing",
+      command: "npm test",
+      commandShell: "powershell",
+    })
+  }
+)
+
+it("shows PowerShell for a new column on Windows", async () => {
+  window.cowork.platform = "win32"
+  await act(async () =>
+    root.render(
+      <KanbanSettingsSheet graph={graph} onClose={vi.fn()} onSaved={vi.fn()} />
+    )
+  )
+  await click("Add column")
+  await choose("kb-column-owner", "Me")
+  expect(document.querySelector("#kb-column-shell")?.textContent).toContain(
+    "PowerShell"
+  )
 })
 
 const openGeneral = () =>

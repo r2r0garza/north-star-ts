@@ -7,6 +7,7 @@ import {
   withAdoCustomFields,
   type KanbanBoardDraft,
   asDependencyLinks,
+  asCommandShell,
   asFilter,
   asOutcomes,
   asPromoteGate,
@@ -56,6 +57,7 @@ export function exportBoard(board: KanbanBoard, columns: KanbanColumn[]) {
       actions: c.actions,
       command: c.command,
       commandTimeoutMs: c.commandTimeoutMs,
+      commandShell: c.commandShell,
       notify: c.notify,
       wipLimit: c.wipLimit,
       entryGate: c.entryGate,
@@ -176,6 +178,7 @@ export function importBoard(raw: unknown, workspace: string): KanbanBoard {
   ).map((c) => {
     const r = (c && typeof c === "object" ? c : {}) as Record<string, unknown>
     const user = r.owner === "user"
+    const command = user ? text(r.command) || null : null
     return {
       name: text(r.name),
       agentName: text(r.agentName) || null,
@@ -186,9 +189,12 @@ export function importBoard(raw: unknown, workspace: string): KanbanBoard {
       owner: user ? "user" : "agent",
       outcomes: asOutcomes(r.outcomes),
       actions: asActions(r.actions),
-      command: user ? text(r.command) || null : null,
+      command,
       commandTimeoutMs:
         typeof r.commandTimeoutMs === "number" ? r.commandTimeoutMs : null,
+      // An export from before this setting ran its command under cmd.
+      commandShell:
+        asCommandShell(r.commandShell) ?? (command ? "cmd" : undefined),
       notify: r.notify === true,
       wipLimit: typeof r.wipLimit === "number" ? r.wipLimit : null,
       entryGate: asPromoteGate(r.entryGate),

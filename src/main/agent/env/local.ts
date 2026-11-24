@@ -2,7 +2,7 @@ import { spawn } from "child_process"
 import type { ChildProcess } from "child_process"
 import { randomUUID } from "crypto"
 import { EventEmitter } from "events"
-import { constants } from "fs"
+import { constants, lstatSync } from "fs"
 import type { Dir } from "fs"
 import {
   chmod as fsChmod,
@@ -25,6 +25,7 @@ import {
   resolve,
   join,
   sep,
+  win32 as win32Path,
 } from "path"
 import { tmpdir } from "os"
 import { StringDecoder } from "string_decoder"
@@ -73,6 +74,66 @@ export function normalizeHostShellCommand(
   // app-execution alias that exits without useful captured output. Prefer the
   // Python Launcher, which is the standard way to request Python 3 on Windows.
   return command.replace(/^(\s*)python3(?:\.exe)?\b/i, "$1py -3")
+}
+
+// PowerShell for a board column's command on Windows (ExecOptions.windowsShell).
+// pwsh (PowerShell 7+) when it's on PATH, else in its standard install folder
+// (Program Files\PowerShell\7, which an install that skipped PATH still uses and
+// VS Code also checks), else the Windows PowerShell 5.1 that ships with
+// Windows. Looked up in the env the command runs with, whose keys may be
+// spelled `Path` / `ProgramFiles` once copied out of process.env.
+//
+// lstat, not existsSync: a Microsoft Store install puts pwsh.exe on PATH as an
+// app execution alias (WindowsApps\pwsh.exe), which stat/existsSync report as
+// missing (EACCES) even though spawning it works.
+function pathEntryExists(path: string): boolean {
+  try {
+    lstatSync(path)
+    return true
+  } catch {
+    return false
+  }
+}
+
+export function resolveWindowsPowerShell(
+  env: NodeJS.ProcessEnv,
+  exists: (path: string) => boolean = pathEntryExists
+): string {
+  const get = (name: string) => {
+    const key = Object.keys(env).find(
+      (k) => k.toUpperCase() === name.toUpperCase()
+    )
+    return (key ? env[key] : undefined)?.trim() || undefined
+  }
+  const pathDirs = (get("PATH") ?? "").split(";").map((d) => d.trim())
+  // ProgramW6432 is the 64-bit Program Files even from a 32-bit process.
+  const installDirs = [get("ProgramW6432"), get("ProgramFiles")].map(
+    (root) => root && win32Path.join(root, "PowerShell", "7")
+  )
+  for (const dir of [...pathDirs, ...installDirs]) {
+    if (!dir) continue
+    const pwsh = win32Path.join(dir, "pwsh.exe")
+    if (exists(pwsh)) return pwsh
+  }
+  return "powershell.exe"
+}
+
+// The argv after the PowerShell executable. The user's profile loads (no
+// -NoProfile), so a column command sees the same env vars, PATH entries,
+// modules and aliases as in their own PowerShell terminal, where they wrote
+// and tested it. -NonInteractive makes a profile that prompts fail instead of
+// hanging. -Command reports only success (0) or failure (1), so the appended
+// line passes a native program's own exit code through when the command's
+// last step failed.
+export function windowsPowerShellArgs(command: string): string[] {
+  return [
+    "-NoLogo",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-Command",
+    `${command}\nif (-not $?) { if ($LASTEXITCODE) { exit $LASTEXITCODE }; exit 1 }`,
+  ]
 }
 
 function quoteWindowsArg(arg: string): string {
@@ -151,6 +212,7 @@ interface LocalEnvironmentDeps {
     mode?: number
   ) => Promise<FileHandle>
   opendir?: (path: string) => Promise<Dir>
+  pathExists?: (path: string) => boolean
 }
 
 function resolveRipgrepPath(): string {
@@ -371,12 +433,28 @@ export class LocalEnvironment implements Environment {
       commandToRun = materialized.command
     }
 
-    const child = this.spawnShell(
-      commandToRun,
-      opts.cwd,
-      ["ignore", "pipe", "pipe"],
-      { ...(await this.hostEnv()), ...(opts.env ?? {}) }
-    )
+    const env = { ...(await this.hostEnv()), ...(opts.env ?? {}) }
+    // PowerShell is spawned directly (no `shell: true`, which is always cmd).
+    // Attached like cmd, so captureSpawn's taskkill /T reaps its tree.
+    const child =
+      platform === "win32" && opts.windowsShell === "powershell"
+        ? this.commandSpawn()(
+            resolveWindowsPowerShell(env, this.deps.pathExists),
+            windowsPowerShellArgs(commandToRun),
+            {
+              cwd: opts.cwd,
+              shell: false,
+              detached: false,
+              stdio: ["ignore", "pipe", "pipe"],
+              env,
+            }
+          )
+        : this.spawnShell(
+            commandToRun,
+            opts.cwd,
+            ["ignore", "pipe", "pipe"],
+            env
+          )
     try {
       const result = await captureSpawn(child, { ...opts, killGroup: true })
       if (!cleanupPath) return result

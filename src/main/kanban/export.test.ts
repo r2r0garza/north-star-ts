@@ -79,6 +79,7 @@ describe.skipIf(!sqliteLoads)("board export/import", () => {
           owner: "user",
           command: "./deploy.sh",
           commandTimeoutMs: 300000,
+          commandShell: "cmd",
         },
       ],
     })
@@ -119,9 +120,23 @@ describe.skipIf(!sqliteLoads)("board export/import", () => {
       modelId: "missing-model",
     })
     expect(cols[0]).toMatchObject({ accountId, modelId: "model-a" })
-    expect(cols[2]).toMatchObject({ owner: "user", command: "./deploy.sh" })
+    expect(cols[2]).toMatchObject({
+      owner: "user",
+      command: "./deploy.sh",
+      commandShell: "cmd",
+    })
+    expect(cols[0].commandShell).toBe("powershell") // a new column's default
 
-    expect(importBoard(file, "/theirs").name).toBe("Team - Copy 2")
+    // An export from before the shell setting ran its command under cmd.
+    delete file.columns[2].commandShell
+    file.columns[1].owner = "user"
+    file.columns[1].command = ""
+    delete file.columns[1].commandShell
+    const legacy = kanban.listColumns(importBoard(file, "/theirs").id)
+    expect(legacy[2].commandShell).toBe("cmd")
+    expect(legacy[1].commandShell).toBe("powershell") // no command to keep
+
+    expect(importBoard(file, "/theirs").name).toBe("Team - Copy 3")
   })
 
   it("duplicates the complete definition with fresh IDs and no approvals or runtime", () => {

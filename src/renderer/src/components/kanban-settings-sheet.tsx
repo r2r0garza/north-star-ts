@@ -70,7 +70,9 @@ import {
   MAX_PARALLEL_COMMANDS,
   MAX_WIP_LIMIT,
   COMMAND_PLACEHOLDERS,
+  DEFAULT_COMMAND_SHELL,
   INSTRUCTION_PLACEHOLDERS,
+  type KanbanCommandShell,
   type KanbanFieldRule,
   type KanbanIntakeFilter,
   type KanbanOutcome,
@@ -245,6 +247,18 @@ const placeholderList = (names: readonly string[]) =>
 
 // Time-limit choices for a user column's command (5–90 minutes, or off).
 const COMMAND_TIMEOUT_MINUTES = [5, 10, 15, 20, 30, 45, 60, 75, 90]
+
+const COMMAND_SHELLS: Array<{ value: KanbanCommandShell; label: string }> = [
+  { value: "powershell", label: "PowerShell" },
+  { value: "cmd", label: "Command Prompt (cmd)" },
+]
+
+// How a command reads one of the card's env vars, in the shell it runs under.
+function envVarSyntax(shell: KanbanCommandShell | null, name: string): string {
+  if (shell === "powershell") return `$env:${name}`
+  if (shell === "cmd") return `%${name}%`
+  return `$${name}`
+}
 
 function SortableColumn({
   id,
@@ -501,6 +515,7 @@ export function KanbanSettingsSheet({
         actions,
         command,
         commandTimeoutMs,
+        commandShell,
         notify,
         wipLimit,
         entryGate,
@@ -518,6 +533,7 @@ export function KanbanSettingsSheet({
         actions,
         command,
         commandTimeoutMs,
+        commandShell,
         notify,
         wipLimit,
         entryGate,
@@ -658,6 +674,11 @@ export function KanbanSettingsSheet({
     })
   }
   const mine = col?.owner === "user"
+  // The shell choice exists only on Windows; elsewhere commands run under sh.
+  const windows = window.cowork?.platform === "win32"
+  const shell: KanbanCommandShell | null = windows
+    ? (col?.commandShell ?? DEFAULT_COMMAND_SHELL)
+    : null
   const occupied =
     !!col?.id && graph.cards.some((card) => card.columnId === col.id)
 
@@ -1534,11 +1555,41 @@ export function KanbanSettingsSheet({
                             {placeholderList(COMMAND_PLACEHOLDERS)}, e.g.{" "}
                             <code>./script.sh --ticket-id {"{{id}}"}</code>.
                             They go in quoted, so don&apos;t add quotes. They
-                            are also in KANBAN_ITEM_ID, KANBAN_ITEM_TITLE,
-                            KANBAN_ITEM_URL, KANBAN_BRANCH, KANBAN_CARD_ID and
-                            KANBAN_WORKSPACE.
+                            are also in env vars, e.g.{" "}
+                            <code>{envVarSyntax(shell, "KANBAN_ITEM_ID")}</code>
+                            , and likewise KANBAN_ITEM_TITLE, KANBAN_ITEM_URL,
+                            KANBAN_BRANCH, KANBAN_CARD_ID and KANBAN_WORKSPACE.
                           </p>
                         </div>
+                        {shell ? (
+                          <div className="flex min-w-0 flex-col gap-1.5">
+                            <Label htmlFor="kb-column-shell">Shell</Label>
+                            <SettingsSelect
+                              id="kb-column-shell"
+                              describedBy="kb-column-shell-description"
+                              value={shell}
+                              onValueChange={(value) =>
+                                update(selectedIndex, {
+                                  commandShell: value as KanbanCommandShell,
+                                })
+                              }
+                            >
+                              {COMMAND_SHELLS.map((s) => (
+                                <SelectItem key={s.value} value={s.value}>
+                                  {s.label}
+                                </SelectItem>
+                              ))}
+                            </SettingsSelect>
+                            <p
+                              id="kb-column-shell-description"
+                              className="text-xs text-muted-foreground"
+                            >
+                              {shell === "powershell"
+                                ? "Uses PowerShell 7 (pwsh) if it's installed, else Windows PowerShell, which has no && — use ; or if ($?) { … } instead. Switch to cmd for a command written for Command Prompt."
+                                : "Runs through Command Prompt, as board commands did before PowerShell became the default."}
+                            </p>
+                          </div>
+                        ) : null}
                         <div className="flex min-w-0 flex-col gap-1.5">
                           <Label htmlFor="kb-column-timeout">Time limit</Label>
                           <SettingsSelect

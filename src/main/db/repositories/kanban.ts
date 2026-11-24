@@ -5,7 +5,9 @@ import { listModels } from "./models"
 import {
   asActions,
   asFilter,
+  asCommandShell,
   asOutcomes,
+  DEFAULT_COMMAND_SHELL,
   asDependencyLinks,
   asPromoteGate,
   columnProblem,
@@ -357,6 +359,10 @@ export function saveColumns(
           c.commandTimeoutMs !== undefined
             ? c.commandTimeoutMs
             : (match?.commandTimeoutMs ?? null),
+        commandShell:
+          asCommandShell(c.commandShell) ??
+          match?.commandShell ??
+          DEFAULT_COMMAND_SHELL,
         notify: c.notify ?? match?.notify ?? false,
         wipLimit:
           c.wipLimit !== undefined ? c.wipLimit : (match?.wipLimit ?? null),
@@ -445,6 +451,7 @@ export function saveColumns(
         JSON.stringify(c.actions),
         c.command,
         c.commandTimeoutMs,
+        c.commandShell,
         c.notify ? 1 : 0,
         c.wipLimit,
         JSON.stringify(c.entryGate),
@@ -454,11 +461,11 @@ export function saveColumns(
       ]
       if (c.isNew)
         db.prepare(
-          "INSERT INTO kanban_columns (name, agent_name, instructions, gate, owner, outcomes, actions, command, command_timeout_ms, notify, wip_limit, entry_gate, account_id, model_id, position, id, board_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+          "INSERT INTO kanban_columns (name, agent_name, instructions, gate, owner, outcomes, actions, command, command_timeout_ms, command_shell, notify, wip_limit, entry_gate, account_id, model_id, position, id, board_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         ).run(...values, c.id, boardId)
       else
         db.prepare(
-          "UPDATE kanban_columns SET name = ?, agent_name = ?, instructions = ?, gate = ?, owner = ?, outcomes = ?, actions = ?, command = ?, command_timeout_ms = ?, notify = ?, wip_limit = ?, entry_gate = ?, account_id = ?, model_id = ?, position = ? WHERE id = ?"
+          "UPDATE kanban_columns SET name = ?, agent_name = ?, instructions = ?, gate = ?, owner = ?, outcomes = ?, actions = ?, command = ?, command_timeout_ms = ?, command_shell = ?, notify = ?, wip_limit = ?, entry_gate = ?, account_id = ?, model_id = ?, position = ? WHERE id = ?"
         ).run(...values, c.id)
     })
   })()
@@ -483,6 +490,7 @@ export function listColumns(boardId: string): KanbanColumn[] {
       actions: string
       command: string | null
       command_timeout_ms: number | null
+      command_shell: string | null
       notify: number
       wip_limit: number | null
       entry_gate: string
@@ -504,6 +512,7 @@ export function listColumns(boardId: string): KanbanColumn[] {
     actions: asActions(parse(r.actions)),
     command: r.owner === "user" ? r.command : null,
     commandTimeoutMs: r.command_timeout_ms,
+    commandShell: asCommandShell(r.command_shell) ?? DEFAULT_COMMAND_SHELL,
     notify: r.notify === 1,
     wipLimit: r.wip_limit,
     entryGate: asPromoteGate(parse(r.entry_gate)),

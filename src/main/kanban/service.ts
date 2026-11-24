@@ -23,6 +23,7 @@ import {
   type KanbanCall,
   type KanbanCard,
   type KanbanColumn,
+  type KanbanCommandShell,
   type KanbanItem,
 } from "../../shared/kanban"
 
@@ -270,6 +271,8 @@ export class KanbanService {
       signal: AbortSignal
       onOutput?: import("../agent/env/types").ExecOptions["onOutput"]
       onStarted?: () => void
+      // Windows only; see ExecOptions.windowsShell.
+      shell?: KanbanCommandShell
     }
   ): Promise<CommandRunResult> {
     if (isHardBlocked(command, opts.cwd))
@@ -290,6 +293,7 @@ export class KanbanService {
         signal: opts.signal,
         onOutput: opts.onOutput,
         onStarted: opts.onStarted,
+        windowsShell: opts.shell,
       })
       if (result.spawnError) throw new Error(result.spawnError)
       return {

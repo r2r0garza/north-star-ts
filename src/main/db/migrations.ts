@@ -69,6 +69,7 @@ import {
   ensureKanbanNotifications,
   ensureKanbanFlow,
   ensureKanbanColumnModel,
+  ensureKanbanColumnShell,
 } from "./kanban-schema"
 import {
   ORCHESTRATION_TABLES,
@@ -267,6 +268,8 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   // v90: per-column model. Append new migrations here, never mid-list: a DB
   // already past the insertion point would skip the inserted one.
   ensureKanbanColumnModel,
+  // v91: per-column Windows shell for user-column commands.
+  ensureKanbanColumnShell,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -747,6 +750,7 @@ export function runMigrations(
       ensureProviderImageInputColumn(db)
       // Was once inserted mid-list, so DBs stamped v90 by that build skipped it.
       if (tableExists(db, "kanban_columns")) ensureKanbanColumnModel(db)
+      if (tableExists(db, "kanban_columns")) ensureKanbanColumnShell(db)
       ensureWorkflows(db)
       ensureWorkflowRuns(db)
       addColumnIfMissing(

@@ -96,6 +96,7 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
     cwd: string
     env: Record<string, string>
     timeoutMs: number | null
+    shell?: string
   }>
   const upstream = {
     runCommand: async (
@@ -107,6 +108,7 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
         timeoutMs: number | null
         onStarted?: () => void
         onOutput?: import("../agent/env/types").ExecOptions["onOutput"]
+        shell?: string
       }
     ) => {
       opts.onStarted?.()
@@ -117,6 +119,7 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
         cwd: opts.cwd,
         env: opts.env,
         timeoutMs: opts.timeoutMs,
+        shell: opts.shell,
       })
       const next = commandResults.shift() ?? {
         exitCode: 0,
@@ -977,6 +980,7 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
           command: "npm run deploy",
           cwd: kanban.getCard(card.id)!.worktree,
           timeoutMs: 5 * 60_000,
+          shell: "powershell", // a new column's default
           env: {
             KANBAN_BOARD_ID: b.id,
             KANBAN_CARD_ID: card.id,
@@ -995,6 +999,34 @@ describe.skipIf(!sqliteLoads)("KanbanCardRuns", () => {
       expect(kanban.listRuns(card.id)).toMatchObject([
         { kind: "command", status: "completed", result: "exit 0\nok" },
       ])
+    })
+
+    it("runs each column's command under that column's Windows shell", async () => {
+      const { card, cols } = customBoard([
+        { name: "Legacy", owner: "user", command: "a", commandShell: "cmd" },
+        { name: "New", owner: "user", command: "b" },
+      ])
+      await cards.enter(card.id, cols[0].id)
+      await execCommand(last())
+      await cards.enter(card.id, cols[1].id)
+      await execCommand(last())
+      expect(commands.map((c) => [c.command, c.shell])).toEqual([
+        ["a", "cmd"],
+        ["b", "powershell"],
+      ])
+      // Switching a column's shell keeps its command and the other settings.
+      kanban.saveColumns(
+        card.boardId,
+        kanban
+          .listColumns(card.boardId)
+          .map((c, i) =>
+            i === 0 ? { ...c, commandShell: "powershell" as const } : c
+          )
+      )
+      expect(kanban.listColumns(card.boardId)[0]).toMatchObject({
+        command: "a",
+        commandShell: "powershell",
+      })
     })
 
     it("tells a worktree card how to link the checkout's installed dependencies", async () => {

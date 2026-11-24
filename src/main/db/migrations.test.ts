@@ -120,7 +120,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(90)
+    expect(db.pragma("user_version", { simple: true })).toBe(91)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
@@ -137,6 +137,39 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
       }>
     ).map((c) => c.name)
     expect(cols).toEqual(expect.arrayContaining(["account_id", "model_id"]))
+    db.close()
+  })
+
+  it("keeps cmd for columns that already had a command in v91; new columns get PowerShell", () => {
+    const db = new Database(":memory:")
+    runMigrations(db, { through: 90 })
+    db.exec(
+      "INSERT INTO kanban_boards (id, name, filter, sync_interval_ms, created_at, updated_at) VALUES ('b', 'B', '{}', 0, 0, 0)"
+    )
+    const insert = db.prepare(
+      "INSERT INTO kanban_columns (id, board_id, name, position, owner, command) VALUES (?, 'b', ?, ?, ?, ?)"
+    )
+    insert.run("run", "Run", 0, "user", "npm test")
+    insert.run("blank", "Blank", 1, "user", "  ")
+    insert.run("agent", "Agent", 2, "agent", null)
+    runMigrations(db)
+    const shells = db
+      .prepare("SELECT id, command_shell FROM kanban_columns ORDER BY position")
+      .all()
+    expect(shells).toEqual([
+      { id: "run", command_shell: "cmd" },
+      { id: "blank", command_shell: "powershell" },
+      { id: "agent", command_shell: "powershell" },
+    ])
+    // The self-healing pass runs on every start; it must not re-run the
+    // backfill over a column the user has since switched.
+    db.exec("UPDATE kanban_columns SET command_shell = 'powershell'")
+    runMigrations(db)
+    expect(
+      db
+        .prepare("SELECT command_shell FROM kanban_columns WHERE id = 'run'")
+        .get()
+    ).toEqual({ command_shell: "powershell" })
     db.close()
   })
 
@@ -449,7 +482,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
           .all()
       ).toEqual([{ value: 1 }])
       expect(db.pragma("user_version", { simple: true })).toBe(
-        version === 999 ? 999 : 90
+        version === 999 ? 999 : 91
       )
       expect(db.pragma("foreign_keys", { simple: true })).toBe(1)
       expect(db.pragma("foreign_key_check")).toEqual([])
