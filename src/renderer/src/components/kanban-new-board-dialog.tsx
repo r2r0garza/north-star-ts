@@ -148,7 +148,17 @@ export function NewBoardDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
+      <DialogContent
+        className="max-h-[90vh] overflow-y-auto sm:max-w-lg"
+        onInteractOutside={(event) => {
+          if (
+            event.target instanceof Element &&
+            event.target.closest('[data-slot="select-content"]')
+          ) {
+            event.preventDefault()
+          }
+        }}
+      >
         <DialogHeader>
           <DialogTitle>
             {duplicate ? "Duplicate board — edit intake" : "New board"}
