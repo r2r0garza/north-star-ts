@@ -87,6 +87,7 @@ export interface Upstream {
       signal: AbortSignal
       onOutput?: import("../agent/env/types").ExecOptions["onOutput"]
       onStarted?: () => void
+      shell?: import("../../shared/kanban").KanbanCommandShell
     }
   ): Promise<CommandRunResult>
 }
@@ -686,7 +687,11 @@ export class KanbanCardRuns {
         if (command) this.commandOverrides.set(run.id, command)
         this.commandOutput.start(
           run.id,
-          fillCommand(command ?? column.command!, cardVars(card)),
+          fillCommand(
+            command ?? column.command!,
+            cardVars(card),
+            column.commandShell
+          ),
           "",
           true
         )
@@ -1478,7 +1483,8 @@ export class KanbanCardRuns {
       // The card's values go in shell-quoted, one argument each (136.7).
       const command = fillCommand(
         this.commandOverrides.get(runId) ?? column.command,
-        cardVars(card)
+        cardVars(card),
+        column.commandShell
       )
       this.commandOutput.start(runId, command, place.cwd)
       result = await this.upstream.runCommand(command, board, {
@@ -1496,6 +1502,7 @@ export class KanbanCardRuns {
           KANBAN_WORKSPACE: workspace,
         },
         timeoutMs: column.commandTimeoutMs,
+        shell: column.commandShell,
         signal,
       })
     } catch (error) {

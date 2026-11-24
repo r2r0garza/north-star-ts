@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import { execSync } from "child_process"
+import type { ChildProcess, spawn as spawnType } from "child_process"
+import { EventEmitter } from "events"
 import {
   mkdtemp,
   rm,
@@ -14,6 +16,7 @@ import {
   open as fsOpen,
   realpath,
 } from "fs/promises"
+import { existsSync, lstatSync } from "fs"
 import type { Dir } from "fs"
 import type { FileHandle } from "fs/promises"
 import { tmpdir } from "os"
@@ -25,6 +28,8 @@ import {
   normalizeAsarUnpackedExecutablePath,
   normalizeHostShellCommand,
   reassertPathPrepend,
+  resolveWindowsPowerShell,
+  windowsPowerShellArgs,
 } from "./local"
 import { runToolCallBatches } from "../tool-batch-scheduler"
 import { TOOL_EFFECTS } from "../tools/types"
@@ -1607,4 +1612,175 @@ describe("chat venv env overlay", () => {
     )
     expect(reassertPathPrepend("ls", undefined, "darwin")).toBe("ls")
   })
+})
+
+describe("Windows column-command shell", () => {
+  type Call = {
+    file: string
+    args?: readonly string[]
+    opts: Record<string, unknown>
+  }
+  function fakeSpawn(calls: Call[]) {
+    return ((file: string, a?: unknown, b?: unknown) => {
+      const [args, opts] = Array.isArray(a) ? [a, b] : [undefined, a]
+      calls.push({ file, args, opts: opts as Record<string, unknown> })
+      const child = new EventEmitter() as ChildProcess
+      Object.assign(child, {
+        pid: 1,
+        stdout: new EventEmitter(),
+        stderr: new EventEmitter(),
+      })
+      setImmediate(() => child.emit("close", 0, null))
+      return child
+    }) as unknown as typeof spawnType
+  }
+  const env = (calls: Call[], pathExists = () => false) =>
+    new LocalEnvironment(tmpdir(), "host-access", {
+      platform: "win32",
+      spawn: fakeSpawn(calls),
+      hostCliEnv: async () => ({ Path: "C:\\Tools;C:\\pwsh7" }),
+      pathExists,
+    })
+  const opts = {
+    cwd: tmpdir(),
+    timeoutMs: 1000,
+    maxOutputBytes: 1000,
+    env: { KANBAN_ITEM_ID: "7" },
+  }
+
+  it("runs PowerShell directly, attached, with the card's env vars", async () => {
+    const calls: Call[] = []
+    await env(calls).exec("echo $env:KANBAN_ITEM_ID", {
+      ...opts,
+      windowsShell: "powershell",
+    })
+    expect(calls).toHaveLength(1)
+    expect(calls[0].file).toBe("powershell.exe")
+    expect(calls[0].args).toEqual(
+      windowsPowerShellArgs("echo $env:KANBAN_ITEM_ID")
+    )
+    expect(calls[0].args!.slice(0, 6)).toEqual([
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-Command",
+    ])
+    expect(calls[0].opts).toMatchObject({
+      shell: false,
+      detached: false,
+      env: { Path: "C:\\Tools;C:\\pwsh7", KANBAN_ITEM_ID: "7" },
+    })
+  })
+
+  it("keeps cmd (shell: true) when no shell is chosen or cmd is", async () => {
+    for (const windowsShell of [undefined, "cmd"] as const) {
+      const calls: Call[] = []
+      await env(calls).exec("npm test", { ...opts, windowsShell })
+      expect(calls[0]).toMatchObject({
+        file: "npm test",
+        args: undefined,
+        opts: { shell: true, detached: false },
+      })
+    }
+  })
+
+  it("still rewrites python3 for the Python launcher under PowerShell", async () => {
+    const calls: Call[] = []
+    await env(calls).exec("python3 -V", { ...opts, windowsShell: "powershell" })
+    expect(calls[0].args!.at(-1)).toMatch(/^py -3 -V\n/)
+  })
+
+  it("ignores the choice off Windows", async () => {
+    const calls: Call[] = []
+    await new LocalEnvironment(tmpdir(), "host-access", {
+      platform: "linux",
+      spawn: fakeSpawn(calls),
+      hostCliEnv: async () => ({ PATH: "/bin" }),
+    }).exec("true", { ...opts, windowsShell: "powershell" })
+    expect(calls[0]).toMatchObject({ file: "true", opts: { shell: true } })
+  })
+
+  it("prefers pwsh on PATH, whatever the key's case, else Windows PowerShell", () => {
+    const has = (p: string) => p === "C:\\pwsh7\\pwsh.exe"
+    expect(resolveWindowsPowerShell({ Path: "C:\\Tools;C:\\pwsh7" }, has)).toBe(
+      "C:\\pwsh7\\pwsh.exe"
+    )
+    expect(resolveWindowsPowerShell({ PATH: "C:\\Tools" }, has)).toBe(
+      "powershell.exe"
+    )
+    expect(resolveWindowsPowerShell({}, has)).toBe("powershell.exe")
+  })
+
+  it("falls back to pwsh in Program Files when it isn't on PATH, PATH first", () => {
+    const installed = "C:\\Program Files\\PowerShell\\7\\pwsh.exe"
+    const on =
+      (...paths: string[]) =>
+      (p: string) =>
+        paths.includes(p)
+    expect(
+      resolveWindowsPowerShell(
+        { Path: "C:\\Tools", programfiles: "C:\\Program Files" },
+        on(installed)
+      )
+    ).toBe(installed)
+    // A 32-bit process sees the x86 folder as ProgramFiles; ProgramW6432 wins.
+    expect(
+      resolveWindowsPowerShell(
+        {
+          ProgramFiles: "C:\\Program Files (x86)",
+          ProgramW6432: "C:\\Program Files",
+        },
+        on(installed)
+      )
+    ).toBe(installed)
+    expect(
+      resolveWindowsPowerShell(
+        { Path: "C:\\pwsh7", ProgramFiles: "C:\\Program Files" },
+        on(installed, "C:\\pwsh7\\pwsh.exe")
+      )
+    ).toBe("C:\\pwsh7\\pwsh.exe")
+    expect(
+      resolveWindowsPowerShell({ ProgramFiles: "C:\\Program Files" }, on())
+    ).toBe("powershell.exe")
+  })
+
+  it.runIf(
+    process.platform === "win32" &&
+      existsSync(
+        join(process.env.LOCALAPPDATA ?? "", "Microsoft", "WindowsApps")
+      )
+  )("finds a Microsoft Store pwsh (an app execution alias) on PATH", () => {
+    const apps = join(process.env.LOCALAPPDATA!, "Microsoft", "WindowsApps")
+    const alias = join(apps, "pwsh.exe")
+    // existsSync can't see aliases; skip quietly where pwsh isn't from the Store.
+    let isAlias = false
+    try {
+      lstatSync(alias)
+      isAlias = true
+    } catch {}
+    if (!isAlias) return
+    expect(existsSync(alias)).toBe(false)
+    expect(resolveWindowsPowerShell({ Path: apps })).toBe(alias)
+  })
+
+  it.runIf(process.platform === "win32")(
+    "passes env vars and a native exit code through real PowerShell",
+    async () => {
+      const r = await new LocalEnvironment(tmpdir()).exec(
+        'Write-Output "id=$env:KANBAN_ITEM_ID"; cmd /c exit 5',
+        { ...opts, timeoutMs: 60_000, windowsShell: "powershell" }
+      )
+      expect(r.stdout.toString()).toContain("id=7")
+      expect(r.exitCode).toBe(5)
+      const ok = await new LocalEnvironment(tmpdir()).exec("Write-Output ok", {
+        ...opts,
+        timeoutMs: 60_000,
+        windowsShell: "powershell",
+      })
+      expect(ok.exitCode).toBe(0)
+    },
+    90_000
+  )
 })

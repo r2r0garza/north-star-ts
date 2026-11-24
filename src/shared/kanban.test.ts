@@ -6,6 +6,7 @@ import {
   compileIntakeQuery,
   commandQuote,
   fillCommand,
+  powershellQuote,
   fillInstructions,
   matchesFilter,
   matchesPromoteGate,
@@ -486,6 +487,7 @@ describe("mergeAgentColumns", () => {
     actions: [],
     command: owner === "user" ? "npm run deploy" : null,
     commandTimeoutMs: null,
+    commandShell: "cmd",
     notify: false,
     wipLimit: null,
     entryGate: { states: [], tags: [] },
@@ -500,7 +502,12 @@ describe("mergeAgentColumns", () => {
   it("keeps each user column right after the agent column it followed, with its settings", () => {
     const merged = mergeAgentColumns(existing, [
       { name: "Plan" },
-      { name: "Build", owner: "user", command: "rm -rf ." },
+      {
+        name: "Build",
+        owner: "user",
+        command: "rm -rf .",
+        commandShell: "powershell",
+      },
       { name: "Review" },
     ])
     expect(merged.map((c) => c.name)).toEqual([
@@ -516,6 +523,7 @@ describe("mergeAgentColumns", () => {
       id: "deploy",
       owner: "user",
       command: "npm run deploy",
+      commandShell: "cmd",
     })
   })
 
@@ -560,6 +568,28 @@ describe("column placeholders", () => {
     ).toBe(
       `./repo-3/script.sh --ticket-id ${commandQuote(vars.id)} --title ${commandQuote(vars.title)}`
     )
+  })
+
+  it("quotes values for the column's shell on Windows", () => {
+    const command = "./s.ps1 -Id {{id}} -Title {{title}}"
+    expect(fillCommand(command, vars, "powershell", "win32")).toBe(
+      `./s.ps1 -Id '12346' -Title 'Fix it''; rm -rf / # {{url}}'`
+    )
+    expect(fillCommand(command, vars, "cmd", "win32")).toBe(
+      `./s.ps1 -Id "12346" -Title "Fix it'; rm -rf / # {{url}}"`
+    )
+    // The shell choice is Windows-only; sh quoting elsewhere.
+    expect(fillCommand(command, vars, "powershell", "linux")).toBe(
+      fillCommand(command, vars, "cmd", "linux")
+    )
+  })
+
+  it("keeps PowerShell from expanding anything in a value", () => {
+    expect(powershellQuote("$(Remove-Item -Recurse .) $env:HOME `n")).toBe(
+      "'$(Remove-Item -Recurse .) $env:HOME `n'"
+    )
+    // PowerShell also ends a literal at a typographic single quote.
+    expect(powershellQuote("it’s; calc")).toBe("'it’’s; calc'")
   })
 
   it("fills instructions as plain text, never with tracker text", () => {

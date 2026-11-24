@@ -150,6 +150,22 @@ export function ensureKanbanColumnCommands(db: Database.Database): void {
   add("kanban_card_runs", "kind", "TEXT NOT NULL DEFAULT 'agent'")
 }
 
+// Windows only: the shell a user column's command runs under. New columns
+// get PowerShell; a column that already had a command keeps cmd, which it was
+// written for. Idempotent: the backfill runs only when the column is added.
+export function ensureKanbanColumnShell(db: Database.Database): void {
+  const cols = db.prepare("PRAGMA table_info(kanban_columns)").all() as Array<{
+    name: string
+  }>
+  if (cols.some((c) => c.name === "command_shell")) return
+  db.exec(
+    "ALTER TABLE kanban_columns ADD COLUMN command_shell TEXT NOT NULL DEFAULT 'powershell';"
+  )
+  db.exec(
+    "UPDATE kanban_columns SET command_shell = 'cmd' WHERE command IS NOT NULL AND TRIM(command) <> '';"
+  )
+}
+
 // Plan 136.6: worktrees on/off per board (default on: today's behavior) and per
 // card (null = follow the board), parallel command runs, and the repos a card
 // in a folder of repos has opened (JSON list of { path, branch, base }).

@@ -7,6 +7,26 @@ const sqliteLoads = sqliteLoadsForTests()
 
 let db: Database.Database
 vi.mock("../db/connection", () => ({ getDb: () => db }))
+// Records what board commands ask the environment to run.
+const execs = vi.hoisted(
+  () => [] as Array<{ command: string; windowsShell?: string }>
+)
+vi.mock("../agent/env/factory", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../agent/env/factory")>()),
+  createEnvironment: async () => ({
+    exec: async (command: string, opts: { windowsShell?: string }) => {
+      execs.push({ command, windowsShell: opts.windowsShell })
+      return {
+        stdout: Buffer.from("[]"),
+        stderr: Buffer.alloc(0),
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+      }
+    },
+    dispose: async () => {},
+  }),
+}))
 
 import { KanbanService, approvalHash, type RunCall } from "./service"
 import * as kanban from "../db/repositories/kanban"
@@ -210,4 +230,33 @@ describe("KanbanService.runCommand", () => {
       })
     ).rejects.toThrow(/blocked by policy/)
   })
+
+  it.skipIf(!sqliteLoads)(
+    "passes the column's shell; intake and upstream recipes keep the default (cmd)",
+    async () => {
+      db = new Database(":memory:")
+      runMigrations(db)
+      execs.length = 0
+      const service = new KanbanService({} as TaskRunner)
+      const board = { id: "b", workspace: tmpdir() } as KanbanBoard
+      await service.runCommand("npm test", board, {
+        cwd: tmpdir(),
+        env: {},
+        timeoutMs: null,
+        signal: new AbortController().signal,
+        shell: "powershell",
+      })
+      await service.runAction(
+        { command: 'gh issue list --repo "o/r" --json number' },
+        board
+      )
+      expect(execs).toEqual([
+        { command: "npm test", windowsShell: "powershell" },
+        {
+          command: 'gh issue list --repo "o/r" --json number',
+          windowsShell: undefined,
+        },
+      ])
+    }
+  )
 })

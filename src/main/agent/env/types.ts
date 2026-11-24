@@ -50,6 +50,10 @@ export interface ExecOptions {
   // Abort seam (see .plan/005): when it fires, the running process is killed.
   // Nothing fires it yet, so with no signal the behavior is identical to before.
   signal?: AbortSignal
+  // Windows host only: the shell `command` runs under. Omitted = cmd.exe, which
+  // agent tools and board intake recipes rely on (their quoting is cmd's).
+  // Board column commands choose per column. Ignored elsewhere.
+  windowsShell?: "cmd" | "powershell"
 }
 
 export type ExecFileOptions = ExecOptions

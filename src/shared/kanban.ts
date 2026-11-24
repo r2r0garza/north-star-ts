@@ -280,6 +280,10 @@ export interface KanbanColumn {
   // card that enters. null timeout = no time limit.
   command: string | null
   commandTimeoutMs: number | null
+  // Windows only: the shell the command runs under. New columns use
+  // PowerShell; columns that had a command before this setting keep cmd.
+  // Ignored on macOS and Linux.
+  commandShell: KanbanCommandShell
   // Notify when a run here finishes; only used while the board's are off.
   notify: boolean
   // Most cards running here at once (agent or command); the rest wait as
@@ -301,6 +305,13 @@ export function wipLimitProblem(value: unknown): string | null {
     value <= MAX_WIP_LIMIT
     ? null
     : `the WIP limit must be empty or 1–${MAX_WIP_LIMIT}`
+}
+
+export type KanbanCommandShell = "powershell" | "cmd"
+export const DEFAULT_COMMAND_SHELL: KanbanCommandShell = "powershell"
+
+export function asCommandShell(value: unknown): KanbanCommandShell | undefined {
+  return value === "powershell" || value === "cmd" ? value : undefined
 }
 
 // A user-column command's time limit: off (null) or 5–90 minutes.
@@ -334,6 +345,7 @@ export interface KanbanColumnInput {
   // User path only; the agent path never sends these (stored values are kept).
   command?: string | null
   commandTimeoutMs?: number | null
+  commandShell?: KanbanCommandShell // omitted keeps the stored value
   notify?: boolean // omitted keeps the stored value
   wipLimit?: number | null // omitted keeps the stored value
   entryGate?: KanbanPromoteGate // omitted keeps the stored value
@@ -882,6 +894,11 @@ export const commandQuote = (
 ) =>
   platform === "win32" ? `"${value.replace(/"/g, '\\"')}"` : shellQuote(value)
 
+// A PowerShell literal: single quotes expand nothing. PowerShell also reads the
+// typographic single quotes as quote marks, so those are doubled too.
+export const powershellQuote = (value: string) =>
+  `'${value.replace(/['‘’‚‛]/g, "$&$&")}'`
+
 // ── built-in recipes for the "New board" form (no agent) ────────────────────
 
 export type KanbanPresetTarget =
@@ -1154,8 +1171,23 @@ function fill(
   )
 }
 
-export const fillCommand = (command: string, vars: KanbanCardVars) =>
-  fill(command, vars, COMMAND_PLACEHOLDERS, commandQuote)
+// A column command's values are quoted for the shell it runs under: PowerShell
+// expands $(...) inside double quotes, so cmd's quoting would let tracker text
+// run as code there.
+export const fillCommand = (
+  command: string,
+  vars: KanbanCardVars,
+  shell: KanbanCommandShell = "cmd",
+  platform: NodeJS.Platform = process.platform
+) =>
+  fill(
+    command,
+    vars,
+    COMMAND_PLACEHOLDERS,
+    platform === "win32" && shell === "powershell"
+      ? powershellQuote
+      : (value) => commandQuote(value, platform)
+  )
 
 export const fillInstructions = (text: string, vars: KanbanCardVars) =>
   fill(text, vars, INSTRUCTION_PLACEHOLDERS, (v) => v)
@@ -1289,7 +1321,10 @@ export function mergeAgentColumns(
       `"${clash.name}" is one of the user's own columns; you can't change it. Pick another name.`
     )
   const merged: KanbanColumnInput[] = input.map(
-    ({ command: _c, commandTimeoutMs: _t, ...c }) => ({ ...c, owner: "agent" })
+    ({ command: _c, commandTimeoutMs: _t, commandShell: _s, ...c }) => ({
+      ...c,
+      owner: "agent",
+    })
   )
   const isUser = (c: KanbanColumnInput) => c.owner === "user"
   for (const u of users) {
@@ -1320,6 +1355,7 @@ export function mergeAgentColumns(
       actions: u.actions,
       command: u.command,
       commandTimeoutMs: u.commandTimeoutMs,
+      commandShell: u.commandShell,
       notify: u.notify,
     })
   }
