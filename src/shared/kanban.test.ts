@@ -4,6 +4,7 @@ import {
   asFilter,
   cardNeedsAttention,
   compileIntakeQuery,
+  commandQuote,
   fillCommand,
   fillInstructions,
   matchesFilter,
@@ -383,6 +384,21 @@ describe("compileIntakeQuery", () => {
   })
 })
 
+describe("commandQuote", () => {
+  it("quotes a GitHub search as one Windows argument, preserving label quotes", () => {
+    expect(commandQuote('is:issue is:open label:"release-win"', "win32")).toBe(
+      '"is:issue is:open label:\\"release-win\\""'
+    )
+    expect(commandQuote('is:issue is:open label:"needs plan"', "win32")).toBe(
+      '"is:issue is:open label:\\"needs plan\\""'
+    )
+  })
+
+  it("retains POSIX quoting for apostrophes", () => {
+    expect(commandQuote("it's ready", "linux")).toBe("'it'\\''s ready'")
+  })
+})
+
 describe("resolveIntakeCall", () => {
   const f = asFilter({ tags: ["it's"], assignee: { mode: "anyone" } })
 
@@ -396,9 +412,41 @@ describe("resolveIntakeCall", () => {
       f
     )
     expect(call.command).toBe(
-      `gh issue list --search 'is:issue is:open label:"it'\\''s"' --json number`
+      `gh issue list --search ${commandQuote('is:issue is:open label:"it\'s"')} --json number`
     )
   })
+
+  it.skipIf(process.platform !== "win32")(
+    "repairs a saved GitHub board's single-quoted repository on Windows",
+    () => {
+      const source: KanbanSource = {
+        ...github,
+        tracker: "github",
+        command:
+          "gh issue list --repo 'r2r0garza/north-star-ts' --search {{query}} --json number",
+      }
+      const call = resolveIntakeCall(source, f)
+      expect(call.command).toBe(
+        `gh issue list --repo ${commandQuote("r2r0garza/north-star-ts")} --search ${commandQuote('is:issue is:open label:"it\'s"')} --json number`
+      )
+      expect(source.command).toContain("--repo 'r2r0garza/north-star-ts'")
+    }
+  )
+
+  it.skipIf(process.platform !== "win32")(
+    "repairs a legacy repository flag without a query placeholder",
+    () => {
+      const call = resolveIntakeCall(
+        {
+          ...github,
+          tracker: "github",
+          command: "gh issue list -R 'acme/app' --json number",
+        },
+        f
+      )
+      expect(call.command).toBe('gh issue list -R "acme/app" --json number')
+    }
+  )
 
   it("binds the query into MCP string args unquoted", () => {
     const call = resolveIntakeCall(
@@ -510,7 +558,7 @@ describe("column placeholders", () => {
         vars
       )
     ).toBe(
-      `./repo-3/script.sh --ticket-id '12346' --title 'Fix it'\\''; rm -rf / # {{url}}'`
+      `./repo-3/script.sh --ticket-id ${commandQuote(vars.id)} --title ${commandQuote(vars.title)}`
     )
   })
 
@@ -695,7 +743,7 @@ describe("presetSource", () => {
       repo: "https://github.com/acme/app/",
     })
     expect(resolveIntakeCall(source, filter).command).toBe(
-      "gh issue list --repo 'acme/app' --search 'is:issue is:open label:\"agent-go\" assignee:@me' " +
+      `gh issue list --repo ${commandQuote("acme/app")} --search ${commandQuote('is:issue is:open label:"agent-go" assignee:@me')} ` +
         "--json number,title,url,body,labels,assignees,state,updatedAt --limit 200"
     )
     expect(
@@ -719,8 +767,9 @@ describe("presetSource", () => {
       org: "https://dev.azure.com/acme/Some Project",
       project: "Some Project",
     })
-    expect(resolveIntakeCall(source, filter).command).toMatch(
-      /^az boards query --org 'https:\/\/dev\.azure\.com\/acme' --project 'Some Project' --wiql 'SELECT .*' -o json$/
+    expect(resolveIntakeCall(source, filter).command).toBe(
+      `az boards query --org ${commandQuote("https://dev.azure.com/acme")} ` +
+        `--project ${commandQuote("Some Project")} --wiql ${commandQuote(compileIntakeQuery(filter, "ado"))} -o json`
     )
     const [item] = normalizeItems(
       [
@@ -759,7 +808,7 @@ describe("presetSource", () => {
   ])("reads the org from %s", (org) => {
     expect(
       presetSource({ tracker: "ado", org, project: "P" }).command
-    ).toContain("--org 'https://dev.azure.com/acme' ")
+    ).toContain(`--org ${commandQuote("https://dev.azure.com/acme")} `)
   })
 
   it("rejects malformed targets", () => {

@@ -876,6 +876,12 @@ export function compileIntakeQuery(
 
 export const shellQuote = (s: string) => `'${s.replace(/'/g, "'\\''")}'`
 
+export const commandQuote = (
+  value: string,
+  platform: NodeJS.Platform = process.platform
+) =>
+  platform === "win32" ? `"${value.replace(/"/g, '\\"')}"` : shellQuote(value)
+
 // ── built-in recipes for the "New board" form (no agent) ────────────────────
 
 export type KanbanPresetTarget =
@@ -957,7 +963,7 @@ export function presetSource(target: KanbanPresetTarget): KanbanSource {
     return {
       tracker: "github",
       command:
-        `gh issue list --repo ${shellQuote(repo)} --search ${QUERY_PLACEHOLDER} ` +
+        `gh issue list --repo ${commandQuote(repo)} --search ${QUERY_PLACEHOLDER} ` +
         "--json number,title,url,body,labels,assignees,state,updatedAt --limit 200",
       fields: {
         id: "number",
@@ -990,8 +996,8 @@ export function presetSource(target: KanbanPresetTarget): KanbanSource {
   return {
     tracker: "ado",
     command:
-      `az boards query --org ${shellQuote(`https://dev.azure.com/${org}`)} ` +
-      `--project ${shellQuote(project)} --wiql ${QUERY_PLACEHOLDER} -o json`,
+      `az boards query --org ${commandQuote(`https://dev.azure.com/${org}`)} ` +
+      `--project ${commandQuote(project)} --wiql ${QUERY_PLACEHOLDER} -o json`,
     fields: {
       id: "id",
       title: ["fields", "System.Title"],
@@ -1021,6 +1027,22 @@ function replaceInArgs(value: unknown, query: string): unknown {
   return value
 }
 
+// Older GitHub board recipes stored POSIX quotes around --repo. cmd.exe passes
+// those quotes literally to gh, so repair only that known CLI argument on Windows.
+function githubRepoCommand(command: string | undefined): string | undefined {
+  if (
+    process.platform !== "win32" ||
+    !command ||
+    !/^gh\s+issue\s+list\b/.test(command)
+  )
+    return command
+  return command.replace(
+    /(^|\s)(--repo|-R)\s+'([\w.-]+\/[\w.-]+)'(?=\s|$)/g,
+    (_match, prefix: string, flag: string, repo: string) =>
+      `${prefix}${flag} ${commandQuote(repo)}`
+  )
+}
+
 // The call a sync actually runs. The query goes into a command shell-quoted as
 // one argument (never spliced raw), and into MCP args as plain strings.
 export function resolveIntakeCall(
@@ -1028,14 +1050,26 @@ export function resolveIntakeCall(
   filter: KanbanIntakeFilter
 ): KanbanCall {
   if (!usesPlaceholder(source))
-    return { command: source.command, tool: source.tool, args: source.args }
+    return {
+      command:
+        source.tracker === "github"
+          ? githubRepoCommand(source.command)
+          : source.command,
+      tool: source.tool,
+      args: source.args,
+    }
   if (!filter.query && !source.tracker)
     throw new Error(
       `the recipe uses ${QUERY_PLACEHOLDER} but sets no tracker and the filter has no raw query`
     )
   const query = compileIntakeQuery(filter, source.tracker ?? "github")
   return {
-    command: source.command?.split(QUERY_PLACEHOLDER).join(shellQuote(query)),
+    command: (source.tracker === "github"
+      ? githubRepoCommand(source.command)
+      : source.command
+    )
+      ?.split(QUERY_PLACEHOLDER)
+      .join(commandQuote(query)),
     tool: source.tool,
     args: source.args
       ? (replaceInArgs(source.args, query) as Record<string, unknown>)
@@ -1071,7 +1105,7 @@ export function bindActionCall(
   return {
     command: action.command
       ? ACTION_VARS.reduce(
-          (s, k) => s.split(`{{${k}}}`).join(shellQuote(vars[k])),
+          (s, k) => s.split(`{{${k}}}`).join(commandQuote(vars[k])),
           action.command
         )
       : undefined,
@@ -1121,7 +1155,7 @@ function fill(
 }
 
 export const fillCommand = (command: string, vars: KanbanCardVars) =>
-  fill(command, vars, COMMAND_PLACEHOLDERS, shellQuote)
+  fill(command, vars, COMMAND_PLACEHOLDERS, commandQuote)
 
 export const fillInstructions = (text: string, vars: KanbanCardVars) =>
   fill(text, vars, INSTRUCTION_PLACEHOLDERS, (v) => v)
