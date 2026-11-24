@@ -1659,9 +1659,9 @@ describe("Windows column-command shell", () => {
     expect(calls[0].args).toEqual(
       windowsPowerShellArgs("echo $env:KANBAN_ITEM_ID")
     )
-    expect(calls[0].args!.slice(0, 6)).toEqual([
+    // The user's profile loads, as in their own terminal: no -NoProfile.
+    expect(calls[0].args!.slice(0, 5)).toEqual([
       "-NoLogo",
-      "-NoProfile",
       "-NonInteractive",
       "-ExecutionPolicy",
       "Bypass",

@@ -118,14 +118,16 @@ export function resolveWindowsPowerShell(
   return "powershell.exe"
 }
 
-// The argv after the PowerShell executable. -NoProfile keeps a user's profile
-// out of the command's behavior, as cmd's /d keeps AutoRun out. -Command
-// reports only success (0) or failure (1), so the appended line passes a
-// native program's own exit code through when the command's last step failed.
+// The argv after the PowerShell executable. The user's profile loads (no
+// -NoProfile), so a column command sees the same env vars, PATH entries,
+// modules and aliases as in their own PowerShell terminal, where they wrote
+// and tested it. -NonInteractive makes a profile that prompts fail instead of
+// hanging. -Command reports only success (0) or failure (1), so the appended
+// line passes a native program's own exit code through when the command's
+// last step failed.
 export function windowsPowerShellArgs(command: string): string[] {
   return [
     "-NoLogo",
-    "-NoProfile",
     "-NonInteractive",
     "-ExecutionPolicy",
     "Bypass",
