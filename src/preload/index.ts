@@ -1989,6 +1989,7 @@ export type {
   ConversationSettings,
   Backend,
   LocalRuntimeProfile,
+  WindowsShell,
   FilePermission,
   ApprovalCategory,
 } from "../main/settings/service"

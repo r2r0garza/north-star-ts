@@ -100,6 +100,13 @@ describe("resolveSkillResourcesInCommand", () => {
     ).rejects.toThrow("cmd.exe")
   })
 
+  it("refuses $ in Windows paths, which PowerShell expands inside double quotes", async () => {
+    await mkdir(join(skillRoot, "a$b"))
+    await expect(
+      resolveSkillResourcesInCommand(ctx, "dir skill://demo/a%24b", "win32")
+    ).rejects.toThrow("PowerShell")
+  })
+
   it("ignores lookalike schemes such as myskill://", async () => {
     const command = "echo myskill://demo/scripts/tool.py"
     const result = await resolveSkillResourcesInCommand(ctx, command, "darwin")

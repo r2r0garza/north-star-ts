@@ -216,6 +216,24 @@ describe("environmentSection", () => {
     expect(section!.content).not.toContain("Git branch")
   })
 
+  it("names the Windows command shell, with or without a workspace", async () => {
+    gitBranch = null
+    modelLabel = "m"
+    for (const workspacePath of ["/ws", undefined]) {
+      const section = await environmentSection({
+        workspacePath,
+        now: fixedNow,
+        commandShell: "PowerShell 7+ (pwsh)",
+      })
+      expect(section!.content).toContain("- Shell: PowerShell 7+ (pwsh)")
+    }
+    const none = await environmentSection({
+      workspacePath: "/ws",
+      now: fixedNow,
+    })
+    expect(none!.content).not.toContain("Shell:")
+  })
+
   it("shows only the branch for a repo: no status or commits that churn the cache", async () => {
     gitBranch = { path: ".git/HEAD", value: { branch: "feat/x" } }
     modelLabel = "m"

@@ -72,6 +72,7 @@ import type {
   ConversationSettings,
   Backend,
   LocalRuntimeProfile,
+  WindowsShell,
   LocalProfileCapabilities,
   ApprovalCategory,
   Runtime,
@@ -1149,6 +1150,40 @@ export function SettingsScreen({
                             </FieldDescription>
                           </Field>
                         )}
+                        {execution.backend === "local" &&
+                          window.cowork.platform === "win32" && (
+                            <Field>
+                              <FieldLabel htmlFor="windows-shell-select">
+                                Shell
+                              </FieldLabel>
+                              <Select
+                                value={execution.windowsShell}
+                                onValueChange={(value) =>
+                                  saveExecution({
+                                    ...execution,
+                                    windowsShell: value as WindowsShell,
+                                  })
+                                }
+                              >
+                                <SelectTrigger id="windows-shell-select">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="powershell">
+                                    PowerShell
+                                  </SelectItem>
+                                  <SelectItem value="cmd">
+                                    Command Prompt (cmd)
+                                  </SelectItem>
+                                </SelectContent>
+                              </Select>
+                              <FieldDescription>
+                                {execution.windowsShell === "powershell"
+                                  ? "Agents run commands in PowerShell 7 (pwsh) when it's installed, else in Windows PowerShell 5.1. Your PowerShell profile is loaded. Board columns choose their own shell."
+                                  : "Agents run commands in Command Prompt. Board columns choose their own shell."}
+                              </FieldDescription>
+                            </Field>
+                          )}
                       </TabsContent>
 
                       {/* File-permission toggles — flip "require approval" per kind. */}

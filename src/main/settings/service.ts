@@ -1,6 +1,6 @@
 import * as settingsRepo from "../db/repositories/settings"
 import { envConfigFromEnv, type EnvConfig } from "../agent/env/factory"
-import type { LocalRuntimeProfile } from "../agent/env/types"
+import type { LocalRuntimeProfile, WindowsShell } from "../agent/env/types"
 
 // The single main-process read/write point for persisted settings. Backed by the
 // flat key→JSON `settings` table (SCHEMA_V4), it parses blobs into typed shapes,
@@ -13,7 +13,7 @@ import type { LocalRuntimeProfile } from "../agent/env/types"
 
 export type Backend = "local" | "docker" | "podman"
 export type FilePermission = "auto" | "require_approval"
-export type { LocalRuntimeProfile }
+export type { LocalRuntimeProfile, WindowsShell }
 
 // Approval categories a sandbox MAY auto-approve. Read ops aren't here (they're
 // never gated). Hardline commands aren't here (never downgraded — see policy.ts).
@@ -39,6 +39,9 @@ export const SANDBOX_CATEGORY_DEFAULTS: Record<ApprovalCategory, boolean> = {
 export interface ExecutionSettings {
   backend: Backend
   localProfile: LocalRuntimeProfile
+  // Windows only: the shell an agent's own commands run under in conversations.
+  // PowerShell = pwsh (7+) when installed, else Windows PowerShell 5.1.
+  windowsShell: WindowsShell
   image?: string
   sandbox: {
     // Master switch. When false, no sandbox downgrade happens at all.
@@ -289,6 +292,7 @@ function defaultExecution(): ExecutionSettings {
   return {
     backend: "local",
     localProfile: "host-access",
+    windowsShell: "powershell",
     sandbox: {
       autoApprove: false,
       prompted: false,
@@ -350,6 +354,10 @@ function loadExecution(): ExecutionSettings {
           parsed.localProfile === "host-access"
             ? parsed.localProfile
             : base.localProfile,
+        windowsShell:
+          parsed.windowsShell === "cmd" || parsed.windowsShell === "powershell"
+            ? parsed.windowsShell
+            : base.windowsShell,
         image: parsed.image,
         sandbox: {
           autoApprove: parsed.sandbox?.autoApprove ?? base.sandbox.autoApprove,
@@ -703,7 +711,12 @@ export function getExecution(): ExecutionSettings {
 // override keeps working until the UI takes over.
 export function getExecutionConfig(): EnvConfig {
   const exec = loadExecution()
-  if (!executionPersisted) return envConfigFromEnv()
+  if (!executionPersisted) {
+    const fromEnv = envConfigFromEnv()
+    return fromEnv.kind === "local"
+      ? { ...fromEnv, windowsShell: exec.windowsShell }
+      : fromEnv
+  }
   if (exec.backend === "docker" || exec.backend === "podman") {
     return {
       kind: "container",
@@ -711,7 +724,11 @@ export function getExecutionConfig(): EnvConfig {
       image: exec.image || DEFAULT_CONTAINER_IMAGE,
     }
   }
-  return { kind: "local", profile: exec.localProfile }
+  return {
+    kind: "local",
+    profile: exec.localProfile,
+    windowsShell: exec.windowsShell,
+  }
 }
 
 export function getPermissions(): PermissionSettings {
