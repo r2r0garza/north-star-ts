@@ -51,10 +51,16 @@ export interface ExecOptions {
   // Nothing fires it yet, so with no signal the behavior is identical to before.
   signal?: AbortSignal
   // Windows host only: the shell `command` runs under. Omitted = cmd.exe, which
-  // agent tools and board intake recipes rely on (their quoting is cmd's).
-  // Board column commands choose per column. Ignored elsewhere.
-  windowsShell?: "cmd" | "powershell"
+  // board intake recipes and dashboard widgets rely on (their quoting is cmd's).
+  // Board column commands choose per column. Ignored elsewhere. (A
+  // conversation's own commands go through spawnCommand, which uses the
+  // environment's configured shell instead.)
+  windowsShell?: WindowsShell
 }
+
+// Windows host only: the shell a command runs under. PowerShell means pwsh
+// (PowerShell 7+) when installed, else Windows PowerShell 5.1.
+export type WindowsShell = "cmd" | "powershell"
 
 export type ExecFileOptions = ExecOptions
 

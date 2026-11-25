@@ -1,12 +1,18 @@
 import { LocalEnvironment, type LocalEnvOverlay } from "./local"
 import { ContainerEnvironment } from "./container"
-import type { Environment, LocalRuntimeProfile } from "./types"
+import type { Environment, LocalRuntimeProfile, WindowsShell } from "./types"
 
 // Default image for the container backend (basics only — no build/pinning here).
 const DEFAULT_CONTAINER_IMAGE = "node:20-bookworm"
 
 export type EnvConfig =
-  | { kind: "local"; profile?: LocalRuntimeProfile }
+  | {
+      kind: "local"
+      profile?: LocalRuntimeProfile
+      // Windows only: the shell an agent's own commands run under (Settings →
+      // Execution). Omitted = cmd.exe.
+      windowsShell?: WindowsShell
+    }
   | { kind: "container"; runtime: "docker" | "podman"; image: string }
 
 // Build the execution backend for a turn. Local is the default; a container is
@@ -32,6 +38,7 @@ export async function createEnvironment(
   }
   return new LocalEnvironment(workspace, cfg.profile ?? "host-access", {
     envOverlay: localEnvOverlay,
+    windowsShell: cfg.windowsShell,
   })
 }
 

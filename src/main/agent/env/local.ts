@@ -63,6 +63,7 @@ import type {
   CommandExit,
   CommandCleanupError,
   LocalRuntimeProfile,
+  WindowsShell,
 } from "./types"
 
 export function normalizeHostShellCommand(
@@ -118,22 +119,45 @@ export function resolveWindowsPowerShell(
   return "powershell.exe"
 }
 
-// The argv after the PowerShell executable. The user's profile loads (no
-// -NoProfile), so a column command sees the same env vars, PATH entries,
-// modules and aliases as in their own PowerShell terminal, where they wrote
-// and tested it. -NonInteractive makes a profile that prompts fail instead of
-// hanging. -Command reports only success (0) or failure (1), so the appended
-// line passes a native program's own exit code through when the command's
-// last step failed.
-export function windowsPowerShellArgs(command: string): string[] {
+// The argv after the PowerShell executable.
+//
+// The user's profile loads (no -NoProfile), for board column commands and an
+// agent's commands alike, so they see the same env vars, PATH entries, modules
+// and aliases as the user's own PowerShell terminal.
+//
+// `interactive`: a PTY session the agent answers through write_stdin needs
+// PowerShell's own prompts (Read-Host, confirmations) to work; everything else
+// gets -NonInteractive so a prompt (the profile's included) fails instead of
+// hanging.
+//
+// -Command reports only success (0) or failure (1), so the appended line
+// passes a native program's own exit code through when the command's last step
+// failed.
+export function windowsPowerShellArgs(
+  command: string,
+  opts: { interactive?: boolean } = {}
+): string[] {
   return [
     "-NoLogo",
-    "-NonInteractive",
+    ...(opts.interactive ? [] : ["-NonInteractive"]),
     "-ExecutionPolicy",
     "Bypass",
     "-Command",
     `${command}\nif (-not $?) { if ($LASTEXITCODE) { exit $LASTEXITCODE }; exit 1 }`,
   ]
+}
+
+// How the system prompt names the Windows shell an agent's commands run under,
+// so the model writes commands in its syntax.
+export function windowsShellLabel(
+  shell: WindowsShell,
+  env: NodeJS.ProcessEnv = process.env,
+  exists?: (path: string) => boolean
+): string {
+  if (shell === "cmd") return "Command Prompt (cmd.exe)"
+  return /pwsh\.exe$/i.test(resolveWindowsPowerShell(env, exists))
+    ? "PowerShell 7+ (pwsh)"
+    : "Windows PowerShell 5.1 (no && or ||; use ; or if ($?) { ... })"
 }
 
 function quoteWindowsArg(arg: string): string {
@@ -213,6 +237,10 @@ interface LocalEnvironmentDeps {
   ) => Promise<FileHandle>
   opendir?: (path: string) => Promise<Dir>
   pathExists?: (path: string) => boolean
+  // Windows host only: the shell spawnCommand (an agent's own commands) runs
+  // under. Omitted = cmd.exe. exec() is not affected: its callers (board
+  // intake, dashboards) choose per call through ExecOptions.windowsShell.
+  windowsShell?: WindowsShell
 }
 
 function resolveRipgrepPath(): string {
@@ -509,11 +537,13 @@ export class LocalEnvironment implements Environment {
 
     let handle: CommandSessionHandle
     if (opts.tty) {
-      const shell = this.shellInvocation(
-        reassertPathPrepend(commandToRun, this.deps.envOverlay, platform),
-        false,
-        opts.readOnlyPaths
-      )
+      const shell =
+        this.agentPowerShell(commandToRun, hostEnv, true) ??
+        this.shellInvocation(
+          reassertPathPrepend(commandToRun, this.deps.envOverlay, platform),
+          false,
+          opts.readOnlyPaths
+        )
       try {
         const term = pty.spawn(shell.file, shell.args, {
           name: "xterm-256color",
@@ -535,13 +565,24 @@ export class LocalEnvironment implements Environment {
     }
 
     try {
-      const child = this.spawnShell(
-        commandToRun,
-        opts.cwd,
-        ["pipe", "pipe", "pipe"],
-        hostEnv,
-        opts.readOnlyPaths
-      )
+      // PowerShell is spawned directly (no `shell: true`, which is always cmd)
+      // and attached like cmd, so the handle's taskkill /T reaps its tree.
+      const powershell = this.agentPowerShell(commandToRun, hostEnv, false)
+      const child = powershell
+        ? this.commandSpawn()(powershell.file, powershell.args, {
+            cwd: opts.cwd,
+            shell: false,
+            detached: false,
+            stdio: ["pipe", "pipe", "pipe"],
+            env: hostEnv,
+          })
+        : this.spawnShell(
+            commandToRun,
+            opts.cwd,
+            ["pipe", "pipe", "pipe"],
+            hostEnv,
+            opts.readOnlyPaths
+          )
       handle = new ChildProcessCommandHandle(child, {
         killGroup: true,
         signal: opts.signal,
@@ -555,6 +596,27 @@ export class LocalEnvironment implements Environment {
           this.cleanupTempFile(path)
         )
       : handle
+  }
+
+  // The PowerShell invocation for one of the agent's own commands, or null when
+  // it runs through the default shell (off Windows, or cmd chosen). Local
+  // profiles other than host-access are unavailable on Windows, so this never
+  // bypasses a sandbox.
+  private agentPowerShell(
+    command: string,
+    env: NodeJS.ProcessEnv,
+    interactive: boolean
+  ): { file: string; args: string[] } | null {
+    if (
+      this.commandPlatform() !== "win32" ||
+      this.deps.windowsShell !== "powershell" ||
+      this.profile !== "host-access"
+    )
+      return null
+    return {
+      file: resolveWindowsPowerShell(env, this.deps.pathExists),
+      args: windowsPowerShellArgs(command, { interactive }),
+    }
   }
 
   commandPlatform(): NodeJS.Platform {

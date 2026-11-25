@@ -59,7 +59,7 @@ export function memorySection(): ContextSection {
       "- memory-knowledge and memory-lessons: facts, conventions, decisions, and past failures for the current workspace.",
       "- memory-recent: summaries of recent sessions; its reference/ folder holds the raw turns.",
       "",
-      "Check memory before acting whenever earlier context could change what you do: the user's preferences or constraints, project conventions or decisions, gotchas hit before, or anything the user refers back to (\"last time\", \"as I said\", \"do you remember\"). Read the relevant skill with read_skill; skip one whose description says it is empty. Where workspace memory and global memory conflict, workspace memory wins.",
+      'Check memory before acting whenever earlier context could change what you do: the user\'s preferences or constraints, project conventions or decisions, gotchas hit before, or anything the user refers back to ("last time", "as I said", "do you remember"). Read the relevant skill with read_skill; skip one whose description says it is empty. Where workspace memory and global memory conflict, workspace memory wins.',
       "",
       "Memory records what was true when it was written. Before relying on a remembered file, function, command, or setting, check that it still exists, and trust what you observe now over what memory says.",
       "",
@@ -134,7 +134,9 @@ export function browserStateSection(
 // Live Electron app sessions (plan 119), so a closed or crashed app is never
 // described as running from history. Host-derived fields only: window titles
 // and URLs are app content and stay in tool results.
-export function electronStateSection(sessions: SessionStatus[]): ContextSection {
+export function electronStateSection(
+  sessions: SessionStatus[]
+): ContextSection {
   const lines = sessions.map(
     (s) =>
       `- ${s.sessionId}: ${s.state}, entry ${s.entry}, ${s.windows.length} window(s)`
@@ -149,7 +151,11 @@ export function electronStateSection(sessions: SessionStatus[]): ContextSection 
           lines.join("\n")
         : "No Electron app launched by this conversation is running. If the history mentions one, it has since ended.") +
       "\nTo run or verify a workspace Electron app, use the electron_* tools, not Electron/Playwright scripts via exec_command. Build it first if needed, then electron_launch. Explore with electron_snapshot/electron_interact; once the behavior is known, encode it as an electron_run check (a workspace .json file can be rerun). Use electron_handoff for native dialogs, menus or sign-in. Packaged apps are unsupported. Close apps you no longer need.",
-    provenance: { trust: "system", channel: "runtime", source: "electron_state" },
+    provenance: {
+      trust: "system",
+      channel: "runtime",
+      source: "electron_state",
+    },
   }
 }
 
@@ -207,6 +213,8 @@ export async function environmentSection(opts: {
   workspacePath?: string
   llmSelection?: LlmSelection
   now?: Date
+  // Windows only: the shell the agent's commands run under (windowsShellLabel).
+  commandShell?: string
 }): Promise<ContextSection | null> {
   const lines: string[] = []
 
@@ -234,6 +242,10 @@ export async function environmentSection(opts: {
       lines.push(`- Git branch: ${branchLabel}`)
     }
   }
+
+  // Chat runs commands too (in its scratch folder), so this isn't tied to a
+  // workspace.
+  if (opts.commandShell) lines.push(`- Shell: ${opts.commandShell}`)
 
   const content =
     "## Environment\n" +

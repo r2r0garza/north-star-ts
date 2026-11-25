@@ -30,6 +30,7 @@ import {
   reassertPathPrepend,
   resolveWindowsPowerShell,
   windowsPowerShellArgs,
+  windowsShellLabel,
 } from "./local"
 import { runToolCallBatches } from "../tool-batch-scheduler"
 import { TOOL_EFFECTS } from "../tools/types"
@@ -1674,6 +1675,20 @@ describe("Windows column-command shell", () => {
     })
   })
 
+  it("keeps board intake on cmd even when conversations use PowerShell", async () => {
+    const calls: Call[] = []
+    await new LocalEnvironment(tmpdir(), "host-access", {
+      platform: "win32",
+      spawn: fakeSpawn(calls),
+      hostCliEnv: async () => ({ Path: "C:\\Tools" }),
+      windowsShell: "powershell",
+    }).exec('gh issue list --repo "o/r"', opts)
+    expect(calls[0]).toMatchObject({
+      file: 'gh issue list --repo "o/r"',
+      opts: { shell: true },
+    })
+  })
+
   it("keeps cmd (shell: true) when no shell is chosen or cmd is", async () => {
     for (const windowsShell of [undefined, "cmd"] as const) {
       const calls: Call[] = []
@@ -1780,6 +1795,131 @@ describe("Windows column-command shell", () => {
         windowsShell: "powershell",
       })
       expect(ok.exitCode).toBe(0)
+    },
+    90_000
+  )
+})
+
+describe("Windows conversation shell (spawnCommand)", () => {
+  type Call = {
+    file: string
+    args?: readonly string[]
+    opts: Record<string, unknown>
+  }
+  function fakeSpawn(calls: Call[]) {
+    return ((file: string, a?: unknown, b?: unknown) => {
+      const [args, opts] = Array.isArray(a) ? [a, b] : [undefined, a]
+      calls.push({ file, args, opts: opts as Record<string, unknown> })
+      const child = new EventEmitter() as ChildProcess
+      Object.assign(child, {
+        pid: 1,
+        stdin: Object.assign(new EventEmitter(), { end() {}, write() {} }),
+        stdout: new EventEmitter(),
+        stderr: new EventEmitter(),
+      })
+      return child
+    }) as unknown as typeof spawnType
+  }
+  const env = (
+    calls: Call[],
+    windowsShell?: "cmd" | "powershell",
+    platform: NodeJS.Platform = "win32"
+  ) =>
+    new LocalEnvironment(tmpdir(), "host-access", {
+      platform,
+      spawn: fakeSpawn(calls),
+      hostCliEnv: async () => ({ Path: "C:\\Tools" }),
+      pathExists: () => false,
+      windowsShell,
+    })
+
+  it("runs an agent's command through PowerShell, with the user's profile", async () => {
+    const calls: Call[] = []
+    await env(calls, "powershell").spawnCommand("Get-ChildItem", {
+      cwd: tmpdir(),
+      tty: false,
+    })
+    expect(calls[0].file).toBe("powershell.exe")
+    expect(calls[0].args).toEqual(windowsPowerShellArgs("Get-ChildItem"))
+    expect(calls[0].args).not.toContain("-NoProfile")
+    expect(calls[0].args).toContain("-NonInteractive")
+    expect(calls[0].opts).toMatchObject({ shell: false, detached: false })
+  })
+
+  it("lets an interactive (PTY) session answer PowerShell's own prompts", () => {
+    const args = windowsPowerShellArgs("Read-Host x", { interactive: true })
+    expect(args).not.toContain("-NonInteractive")
+    expect(args).not.toContain("-NoProfile")
+  })
+
+  it("keeps cmd when cmd is chosen, nothing is set, or off Windows", async () => {
+    for (const [shell, platform] of [
+      ["cmd", "win32"],
+      [undefined, "win32"],
+      ["powershell", "linux"],
+    ] as const) {
+      const calls: Call[] = []
+      await env(calls, shell, platform).spawnCommand("npm test", {
+        cwd: tmpdir(),
+        tty: false,
+      })
+      expect(calls[0]).toMatchObject({
+        file: "npm test",
+        args: undefined,
+        opts: { shell: true },
+      })
+    }
+  })
+
+  it("keeps the setting when re-rooted for a chat's scratch folder", async () => {
+    const calls: Call[] = []
+    await env(calls, "powershell")
+      .withWorkspace(tmpdir())
+      .spawnCommand("Get-Location", { cwd: tmpdir(), tty: false })
+    expect(calls[0].file).toBe("powershell.exe")
+  })
+
+  it("names the shell for the system prompt", () => {
+    expect(windowsShellLabel("cmd")).toBe("Command Prompt (cmd.exe)")
+    expect(windowsShellLabel("powershell", { Path: "C:\\p" }, () => true)).toBe(
+      "PowerShell 7+ (pwsh)"
+    )
+    expect(
+      windowsShellLabel("powershell", { Path: "C:\\p" }, () => false)
+    ).toMatch(/^Windows PowerShell 5\.1 \(no && or \|\|/)
+  })
+
+  async function collect(handle: CommandSessionHandle) {
+    let out = ""
+    handle.onData((chunk) => (out += chunk.data.toString()))
+    const exit = await new Promise<{ exitCode: number | null }>((resolve) =>
+      handle.onExit(resolve)
+    )
+    return { out, exitCode: exit.exitCode }
+  }
+
+  it.runIf(process.platform === "win32")(
+    "runs real PowerShell for a conversation, piped and in a PTY",
+    async () => {
+      const real = new LocalEnvironment(tmpdir(), "host-access", {
+        windowsShell: "powershell",
+      })
+      const piped = await collect(
+        await real.spawnCommand(
+          'Write-Output "v=$($PSVersionTable.PSVersion.Major)"; cmd /c exit 4',
+          { cwd: tmpdir(), tty: false }
+        )
+      )
+      expect(piped.out).toMatch(/v=\d/)
+      expect(piped.exitCode).toBe(4)
+      const tty = await collect(
+        await real.spawnCommand("Write-Output pty-ok", {
+          cwd: tmpdir(),
+          tty: true,
+        })
+      )
+      expect(tty.out).toContain("pty-ok")
+      expect(tty.exitCode).toBe(0)
     },
     90_000
   )

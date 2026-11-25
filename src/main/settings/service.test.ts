@@ -31,6 +31,7 @@ describe("settings service — defaults (back-compat)", () => {
     const exec = service.getExecution()
     expect(exec.backend).toBe("local")
     expect(exec.localProfile).toBe("host-access")
+    expect(exec.windowsShell).toBe("powershell")
     expect(exec.sandbox.autoApprove).toBe(false)
     expect(exec.sandbox.prompted).toBe(false)
   })
@@ -49,6 +50,7 @@ describe("settings service — defaults (back-compat)", () => {
     expect(service.getExecutionConfig()).toEqual({
       kind: "local",
       profile: "host-access",
+      windowsShell: "powershell",
     })
   })
 
@@ -58,6 +60,7 @@ describe("settings service — defaults (back-compat)", () => {
     expect(service.getExecutionConfig()).toEqual({
       kind: "local",
       profile: "read-only",
+      windowsShell: "powershell",
     })
   })
 })
@@ -68,12 +71,27 @@ describe("settings service — persisted overrides", () => {
     service.setExecution({
       backend: "local",
       localProfile: "host-access",
+      windowsShell: "powershell",
       sandbox: { autoApprove: false, prompted: true, categories: {} as never },
     })
     // Persisted "local" beats the docker env var.
     expect(service.getExecutionConfig()).toEqual({
       kind: "local",
       profile: "host-access",
+      windowsShell: "powershell",
+    })
+  })
+
+  it("persists the conversation shell and passes it to the local backend", () => {
+    service.setExecution({
+      ...service.getExecution(),
+      windowsShell: "cmd",
+    })
+    service._resetCacheForTests()
+    expect(service.getExecution().windowsShell).toBe("cmd")
+    expect(service.getExecutionConfig()).toMatchObject({
+      kind: "local",
+      windowsShell: "cmd",
     })
   })
 
@@ -87,12 +105,15 @@ describe("settings service — persisted overrides", () => {
     )
     service._resetCacheForTests()
     expect(service.getExecution().localProfile).toBe("host-access")
+    // Saved before the shell setting existed: conversations get PowerShell.
+    expect(service.getExecution().windowsShell).toBe("powershell")
   })
 
   it("persists a container backend with its image", () => {
     service.setExecution({
       backend: "podman",
       localProfile: "host-access",
+      windowsShell: "powershell",
       image: "alpine:3",
       sandbox: { autoApprove: false, prompted: true, categories: {} as never },
     })
@@ -307,6 +328,7 @@ describe("settings service — sandboxAutoApproves", () => {
     service.setExecution({
       backend: "docker",
       localProfile: "host-access",
+      windowsShell: "powershell",
       sandbox: {
         autoApprove: false,
         prompted: true,
@@ -320,6 +342,7 @@ describe("settings service — sandboxAutoApproves", () => {
     service.setExecution({
       backend: "docker",
       localProfile: "host-access",
+      windowsShell: "powershell",
       sandbox: {
         autoApprove: true,
         prompted: true,

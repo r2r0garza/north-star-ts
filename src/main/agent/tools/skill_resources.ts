@@ -130,9 +130,12 @@ function quotePathForShell(
     )
   }
   if (windows) {
-    if (/["%]/.test(path)) {
+    // The same double quotes serve cmd.exe and PowerShell (the conversation
+    // shell is a setting), so refuse what either would expand inside them:
+    // cmd's %VAR% and PowerShell's $var / $(...).
+    if (/["%$]/.test(path)) {
       throw new Error(
-        "Skill resource path contains characters that cannot be quoted safely for cmd.exe."
+        "Skill resource path contains characters that cannot be quoted safely for cmd.exe or PowerShell."
       )
     }
     return quote === '"' ? path : `"${path}"`

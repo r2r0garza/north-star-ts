@@ -110,6 +110,7 @@ export type {
   ConversationSettings,
   Backend,
   LocalRuntimeProfile,
+  WindowsShell,
   LocalProfileCapabilities,
   FilePermission,
   ApprovalCategory,

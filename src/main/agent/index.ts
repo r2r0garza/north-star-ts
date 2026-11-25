@@ -146,7 +146,7 @@ import { repairDanglingToolCalls } from "./repair"
 import { replayToolCallArguments } from "./tool-call-arguments"
 import { offeredToolNames, unavailableToolResult } from "./tool-availability"
 import { createEnvironment } from "./env"
-import { LocalEnvironment } from "./env/local"
+import { LocalEnvironment, windowsShellLabel } from "./env/local"
 import { CHAT_VENV_PROMPT, resolveChatVenvOverlay } from "../python/chat-venv"
 import type { Environment } from "./env/types"
 import * as settingsService from "../settings/service"
@@ -1665,9 +1665,17 @@ export async function runAgentLoop(
   // workspace line in bare chat. Async (git shells out), so it's awaited here
   // before the synchronous ContextBuilder.build() below. Model label is resolved
   // best-effort from this conversation's selection (resolveLlm runs later).
+  // On Windows, name the shell the agent's commands run under so it writes
+  // their syntax. A container runs a Linux shell, so no line there.
+  const commandShell =
+    process.platform === "win32" &&
+    (!hasWorkspace || settingsService.getExecutionConfig().kind === "local")
+      ? windowsShellLabel(settingsService.getExecution().windowsShell)
+      : undefined
   const envSection = await environmentSection({
     workspacePath: hasWorkspace ? workspace : undefined,
     llmSelection,
+    commandShell,
   })
   if (envSection) sections.push(envSection)
 
@@ -2125,6 +2133,7 @@ export async function runAgentLoop(
   } else {
     env = new LocalEnvironment("", "host-access", {
       envOverlay: chatVenvOverlay ?? undefined,
+      windowsShell: settingsService.getExecution().windowsShell,
     })
   }
 
