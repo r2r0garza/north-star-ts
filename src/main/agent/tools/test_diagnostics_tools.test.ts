@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { resolve } from "path"
 import { EventEmitter } from "events"
+import type { ChildProcess, spawn as spawnType } from "child_process"
+import { mkdtemp, rm, writeFile } from "fs/promises"
+import { tmpdir } from "os"
+import { join } from "path"
+import { LocalEnvironment } from "../env/local"
 import { pollCommandTool } from "./command_session_tools"
 import {
   getTestResultsTool,
@@ -383,7 +388,10 @@ describe("workspace diagnostics and test tools", () => {
         status: "passed",
         durationMs: 749,
       },
-      expect.objectContaining({ name: "TC-003 Create a defect", durationMs: 1300 }),
+      expect.objectContaining({
+        name: "TC-003 Create a defect",
+        durationMs: 1300,
+      }),
     ])
   })
 
@@ -693,5 +701,128 @@ describe("workspace diagnostics and test tools", () => {
     await runTestsTool.execute({ target: "test" }, ctx(env))
 
     expect(env.spawnCommands).toEqual(["npm run 'test'"])
+  })
+})
+
+describe("Windows: quoting for the conversation's shell", () => {
+  type Call = { file: string; args?: readonly string[]; shell?: unknown }
+  let dir: string
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  // A real LocalEnvironment on a temp workspace, with spawn recorded.
+  async function windowsEnv(windowsShell: "cmd" | "powershell") {
+    dir = await mkdtemp(join(tmpdir(), "diag-quote-"))
+    await writeFile(
+      join(dir, "package.json"),
+      JSON.stringify({ scripts: { typecheck: "tsc", test: "vitest" } })
+    )
+    await writeFile(join(dir, "pnpm-lock.yaml"), "")
+    const calls: Call[] = []
+    const spawn = ((file: string, a?: unknown, b?: unknown) => {
+      const [args, opts] = Array.isArray(a) ? [a, b] : [undefined, a]
+      calls.push({
+        file,
+        args,
+        shell: (opts as { shell?: unknown } | undefined)?.shell,
+      })
+      const child = new EventEmitter() as ChildProcess
+      Object.assign(child, {
+        pid: 1,
+        stdin: Object.assign(new EventEmitter(), { end() {}, write() {} }),
+        stdout: new EventEmitter(),
+        stderr: new EventEmitter(),
+      })
+      setImmediate(() => child.emit("close", 0, null))
+      return child
+    }) as unknown as typeof spawnType
+    const env = new LocalEnvironment(dir, "host-access", {
+      platform: "win32",
+      spawn,
+      hostCliEnv: async () => ({}),
+      pathExists: () => false,
+      windowsShell,
+    })
+    return { env, calls }
+  }
+
+  it("runs workspace_diagnostics in PowerShell, single-quoted, when that's the shell", async () => {
+    const { env, calls } = await windowsEnv("powershell")
+    await workspaceDiagnosticsTool.execute(
+      { target: "typecheck" },
+      ctx(env, { workspace: dir })
+    )
+    expect(calls[0].file).toBe("powershell.exe")
+    expect(calls[0].args!.at(-1)).toMatch(/^pnpm run 'typecheck'\n/)
+  })
+
+  it("double-quotes for cmd, which passes single quotes through literally", async () => {
+    const { env, calls } = await windowsEnv("cmd")
+    await workspaceDiagnosticsTool.execute(
+      { target: "typecheck" },
+      ctx(env, { workspace: dir })
+    )
+    expect(calls[0]).toMatchObject({
+      file: 'pnpm run "typecheck"',
+      shell: true,
+    })
+  })
+
+  it("keeps a model-supplied filter one literal argument in PowerShell", async () => {
+    const { env, calls } = await windowsEnv("powershell")
+    await runTestsTool.execute(
+      { name: "it's $(calc)", yield_ms: 20 },
+      ctx(env, { workspace: dir })
+    )
+    expect(calls[0].args!.at(-1)).toMatch(
+      /^pnpm run 'test' --testNamePattern 'it''s \$\(calc\)'\n/
+    )
+  })
+
+  it.runIf(process.platform === "win32")(
+    "runs a real npm script through cmd and through PowerShell",
+    async () => {
+      dir = await mkdtemp(join(tmpdir(), "diag-real-"))
+      await writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({
+          name: "diag-real",
+          version: "1.0.0",
+          scripts: { typecheck: "node -e \"console.log('checked')\"" },
+        })
+      )
+      for (const windowsShell of ["cmd", "powershell"] as const) {
+        const result = parsed(
+          await workspaceDiagnosticsTool.execute(
+            { target: "typecheck", timeout_ms: 120_000 },
+            ctx(new LocalEnvironment(dir, "host-access", { windowsShell }), {
+              workspace: dir,
+            })
+          )
+        )
+        expect(result, windowsShell).toMatchObject({
+          command:
+            windowsShell === "cmd"
+              ? 'npm run "typecheck"'
+              : "npm run 'typecheck'",
+          exitCode: 0,
+        })
+      }
+    },
+    180_000
+  )
+
+  it("refuses a filter cmd can't quote safely, without running anything", async () => {
+    const { env, calls } = await windowsEnv("cmd")
+    for (const name of ['say "hi"', "100%PATH%"]) {
+      const result = await runTestsTool.execute(
+        { name, yield_ms: 20 },
+        ctx(env, { workspace: dir })
+      )
+      expect(result).toContain("ERROR[unsafe_argument]")
+      expect(result).toContain("PowerShell")
+    }
+    expect(calls).toEqual([])
   })
 })

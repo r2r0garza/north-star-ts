@@ -1,4 +1,5 @@
 import { stripAnsi } from "../approval/ansi"
+import { powershellQuote } from "../../../shared/kanban"
 import { shellActionForCommand } from "../approval/shell-analyzer"
 import { LocalEnvironment } from "../env/local"
 import type {
@@ -39,7 +40,11 @@ interface ProviderCommand {
   provider: string
   command: string
   target: string
+  // The shell `command` was quoted for, and so must run under.
+  shell: CommandShell
 }
+
+type CommandShell = "sh" | "cmd" | "powershell"
 
 interface TestSession {
   id: string
@@ -137,6 +142,9 @@ export const workspaceDiagnosticsTool: Tool = {
       timeoutMs: timeoutArg(args.timeout_ms),
       maxOutputBytes: outputCap(args.max_output_bytes),
       signal: ctx.signal,
+      // exec() defaults to cmd on Windows; run in the conversation's shell, as
+      // run_tests (spawnCommand) does, so the quoting matches.
+      windowsShell: command.shell === "powershell" ? "powershell" : undefined,
     })
     const raw = stripAnsi(result.stdout.toString("utf8"))
     const diagnostics = parseDiagnostics(raw)
@@ -355,14 +363,31 @@ async function detectCommand(
     }
   }
   const manager = await detectPackageManager(env)
-  const command =
-    opts.kind === "test"
-      ? withTestFilters(`${manager} run ${shellQuote(script)}`, manager, opts)
-      : `${manager} run ${shellQuote(script)}`
+  const shell: CommandShell =
+    env instanceof LocalEnvironment ? env.commandShell : "sh"
+  const quote = QUOTE[shell]
+  let command: string
+  try {
+    command =
+      opts.kind === "test"
+        ? withTestFilters(`${manager} run ${quote(script)}`, manager, {
+            ...opts,
+            quote,
+          })
+        : `${manager} run ${quote(script)}`
+  } catch (err) {
+    return {
+      error: toolError(
+        "unsafe_argument",
+        err instanceof Error ? err.message : String(err)
+      ),
+    }
+  }
   return {
     provider: `package-json:${manager}`,
     command,
     target: script,
+    shell,
   }
 }
 
@@ -471,12 +496,16 @@ async function detectPackageManager(
 function withTestFilters(
   command: string,
   manager: "pnpm" | "yarn" | "npm",
-  opts: { pathFilter?: string; nameFilter?: string }
+  opts: {
+    pathFilter?: string
+    nameFilter?: string
+    quote: (value: string) => string
+  }
 ): string {
   const extras: string[] = []
-  if (opts.pathFilter) extras.push(shellQuote(opts.pathFilter))
+  if (opts.pathFilter) extras.push(opts.quote(opts.pathFilter))
   if (opts.nameFilter) {
-    extras.push("--testNamePattern", shellQuote(opts.nameFilter))
+    extras.push("--testNamePattern", opts.quote(opts.nameFilter))
   }
   if (!extras.length) return command
   // pnpm and yarn forward a literal `--` to the script, where vitest stops treating
@@ -540,8 +569,7 @@ function parseTestCases(raw: string): TestCaseResult[] {
         suite: path,
         path,
         name,
-        status:
-          mark === "✘" ? "failed" : mark === "-" ? "skipped" : "passed",
+        status: mark === "✘" ? "failed" : mark === "-" ? "skipped" : "passed",
         durationMs: amount
           ? Number(amount) * (unit === "m" ? 60_000 : unit === "s" ? 1000 : 1)
           : undefined,
@@ -893,8 +921,22 @@ function stringArg(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined
 }
 
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`
+// One argument per shell. Script names come from package.json and filters
+// from the model, so each must stay a single literal argument.
+const QUOTE: Record<CommandShell, (value: string) => string> = {
+  sh: (value) => `'${value.replace(/'/g, `'\\''`)}'`,
+  // Single quotes expand nothing in PowerShell; it also ends a literal at a
+  // typographic single quote, so powershellQuote doubles those too.
+  powershell: powershellQuote,
+  // cmd has no literal quoting: inside "..." a % still expands a variable and
+  // a " ends the quote. Refuse those rather than guess at escaping.
+  cmd: (value) => {
+    if (/["%\r\n]/.test(value))
+      throw new Error(
+        `Can't pass ${JSON.stringify(value)} through Command Prompt safely: it contains a double quote, a percent sign or a line break. Switch Settings → Environment → Shell to PowerShell, or use a different value.`
+      )
+    return `"${value}"`
+  },
 }
 
 function cryptoRandomId(): string {

@@ -329,6 +329,17 @@ export class LocalEnvironment implements Environment {
     return this.profile
   }
 
+  // The shell an agent's own commands (spawnCommand) run under, so a tool that
+  // builds a command line can quote its arguments for it: sh off Windows, else
+  // the conversation's Windows shell setting.
+  get commandShell(): "sh" | WindowsShell {
+    if (this.commandPlatform() !== "win32") return "sh"
+    return this.deps.windowsShell === "powershell" &&
+      this.profile === "host-access"
+      ? "powershell"
+      : "cmd"
+  }
+
   // The same profile and deps (env overlay included) rooted at another
   // directory. Chat has no workspace, so its commands are rooted in the
   // conversation's scratch dir this way (tools/chat_shell.ts).
